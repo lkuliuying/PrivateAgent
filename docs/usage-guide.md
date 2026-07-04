@@ -783,7 +783,7 @@ sidecar 不打包这些，需用户本机具备：
 尚未完成（第五阶段规划，尚未实现）：
 
 1. **代码签名**：当前无证书，安装包未签名，SmartScreen 会警告（绕过：更多信息 → 仍要运行）。长期对策见 `phase5-installer-updater.md` §7。
-2. **Updater 发布源**：`plugins.updater`（endpoints/pubkey）与 `createUpdaterArtifacts` 尚未写入 `tauri.conf.json`——需先生成签名密钥对（`tauri signer generate`）并部署 `latest.json`。命令已就绪，配置完成后「检查更新」即可用。
+2. **Updater 发布源**：签名密钥对已生成、`plugins.updater`（pubkey/endpoints）与 `createUpdaterArtifacts` 已写入 `tauri.conf.json`，构建已产出 `.sig`。尚未部署：需把 `endpoints` 中的 `OWNER/REPO` 替换为实际 GitHub 仓库，并把 `docs/updater-latest.json` + 安装包 + `.sig` 上传到该仓库的 Release。部署完成后「检查更新」即可用。
 3. **onedir + Tauri resources**：onefile 首启解压慢，可切 onedir（启动快）+ Tauri `resources` 打包整个目录，sidecar 用绝对路径调起。
 4. **跨平台**：macOS / Linux 的 sidecar target triple + PyInstaller 产物。
 5. **体积优化**：排除 onnxruntime（若确认 chromadb 用 Ollama embedding 不触发默认 embedding）可显著减小体积，需运行时验证。

@@ -63,7 +63,7 @@
 | `createUpdaterArtifacts` | `true`：当构建时设置了 `TAURI_SIGNING_PRIVATE_KEY`，额外生成 `*.exe.sig` 供 updater 校验；无私钥时不生成。 |
 | `publisher` / `copyright` / `category` | 元数据，显示在“添加/删除程序”与安装界面。 |
 
-> 注意：`bundle.windows.nsis`（installMode/languages）与 `targets: ["nsis"]` 已写入 `tauri.conf.json`。`createUpdaterArtifacts` 与 `plugins.updater` 暂未写入——需先生成签名密钥对（§3.3）再启用，否则未签名构建会失败。
+> 已写入 `tauri.conf.json`：`bundle.windows.nsis`（installMode/languages）、`targets: ["nsis"]`、`createUpdaterArtifacts: true`、`plugins.updater`（endpoints/pubkey）。签名密钥对已生成（私钥 `%USERPROFILE%\.tauri\personal-assistant.key`，不入库），公钥已填入 `plugins.updater.pubkey`；构建已验证产出 `*.exe.sig`。`endpoints` 中的 `OWNER/REPO` 占位需替换为实际 GitHub 仓库后「检查更新」才真正可用。
 
 ---
 
@@ -103,14 +103,18 @@ tauri-plugin-process = "2"   # 更新后 relaunch() 重启应用
 
 ### 3.3 生成 keypair（签名密钥对）
 
+已为本项目生成（私钥 `%USERPROFILE%\.tauri\personal-assistant.key`，密码在同目录 `.key.pwd`，均不入库）。重新生成或为新项目生成时：
+
 ```bat
 cd /d F:\Program\Agent\apps\desktop
-npm run tauri signer generate -- -w %USERPROFILE%\.tauri\personal-assistant.key
+:: 非交互式：-p 指定密码，--ci 跳过提示，-f 覆盖
+npx tauri signer generate -w %USERPROFILE%\.tauri\personal-assistant.key -p "<密码>" --ci -f
 ```
 
-- 命令会**提示输入密码**（用于加密私钥），请记牢。
-- 私钥写入 `%USERPROFILE%\.tauri\personal-assistant.key`。
-- 公钥打印到**标准输出**（base64 字符串），复制后填入 `tauri.conf.json` 的 `plugins.updater.pubkey`。
+- 私钥写入 `%USERPROFILE%\.tauri\personal-assistant.key`，公钥写入 `.key.pub`。
+- 把 `.key.pub` 的内容（base64）填入 `tauri.conf.json` 的 `plugins.updater.pubkey`。
+- 密码写入 `%USERPROFILE%\.tauri\personal-assistant.key.pwd`（一行），`build-release.bat` 会自动读取并设为 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。
+- **丢失私钥或密码将无法签发更新包**——务必备份。
 
 ### 3.4 构建时使用私钥
 
@@ -143,6 +147,8 @@ npm run tauri signer generate -- -w %USERPROFILE%\.tauri\personal-assistant.key
 | [2/4] 设置 MSVC 环境 | `call vcvars64.bat >nul 2>&1`；`set PATH=%USERPROFILE%\.cargo\bin;%PATH%` | `exit /b 1` |
 | [3/4] 可选 updater 签名 | 若存在 `%USERPROFILE%\.tauri\personal-assistant.key` 则 `set /p` 读入私钥（+ 可选 `.pwd` 读密码）；否则跳过 | 不阻断 |
 | [4/4] tauri build | `cd apps\desktop && npm run tauri build` | `exit /b 1` |
+
+> **代理**：`tauri build` 首次会从 GitHub 下载 NSIS 工具链（`nsis-3.11.zip`、`nsis_tauri_utils.dll`）。若 GitHub 不可达（报 `timeout: global`），需先设代理再运行：`set HTTPS_PROXY=http://127.0.0.1:10808`（端口换成你本地代理，如 v2rayN 的 10808）。下载一次后缓存在 `%LOCALAPPDATA%\tauri\`，后续构建无需代理。
 
 **用法**：
 
@@ -292,7 +298,7 @@ Tauri on Windows 依赖 **WebView2 Runtime**（基于 Edge 内核渲染前端）
 | 代码签名 | 无证书，SmartScreen 警告 | 上 OV/EV 证书（见 §7） |
 | 更新粒度 | 全量更新（每次下载完整安装包） | Tauri v2 暂无官方 delta；可接受 |
 | 发布源 | endpoints/latest.json 设计完成，**未部署** | 部署 GitHub Releases 或静态托管（见 §5.3） |
-| Updater 前端 | 命令与 UI 已实现，发布源未部署 | 生成密钥对 + 写入 `plugins.updater` + 部署 `latest.json` |
+| Updater 前端 | 命令/UI/签名已启用，发布源未部署 | 替换 `endpoints` 的 `OWNER/REPO` + 上传 `latest.json`/安装包/`.sig` 到 GitHub Releases |
 | 平台 | 仅 Windows x64 | macOS/Linux sidecar target triple + PyInstaller 产物 |
 | sidecar 模式 | onefile，首启略慢 | onedir + Tauri resources（见 §8） |
 | onnxruntime | 打包进 sidecar | 验证可移除后减小体积（见 §8） |

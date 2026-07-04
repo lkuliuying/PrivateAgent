@@ -161,3 +161,5 @@ cd apps/desktop && npm run tauri build    # 打包安装程序
 - **`tauri dev` 报 `link.exe not found`**：未装 MSVC Build Tools，见上文「依赖准备」。
 - **端口 1420 被占**：`netstat -ano | grep :1420` 找 PID，`taskkill /PID <pid> /F`。
 - **MySQL `Access denied`**：确认 `.env` 的 `PA_DB_URL` 中用户名/密码正确。
+- **构建安装包**：`scripts\build-release.bat`（需 MSVC + uv + Node；自动打包 sidecar → NSIS 安装包 + 更新签名 `.sig`）。
+- **`tauri build` 下载 NSIS 超时（`timeout: global`）**：GitHub 不可达，先设代理 `set HTTPS_PROXY=http://127.0.0.1:10808`（端口换成你本地代理）再跑 `build-release.bat`；首次下载后缓存在 `%LOCALAPPDATA%\tauri\`。
