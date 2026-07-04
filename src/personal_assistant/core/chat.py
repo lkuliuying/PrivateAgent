@@ -1,0 +1,176 @@
+"""对话编排：历史注入 + 流式输出 + 首轮标题生成 + 可选 RAG。
+
+模型参数（温度/上下文/模型名）从 settings 表动态读取，支持运行时调整。
+M1 采用最简链路（ChatOllama.astream），LangGraph 留待后续复杂编排。
+
+事件类型：
+  token / done(含 sources) / title / error
+停止生成：前端断开 -> 生成器 finally 保存已生成部分。
+"""
+from __future__ import annotations
+
+import json
+from collections.abc import AsyncIterator
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..logging_setup import get_logger
+from .history import MessageRepository, SessionRepository
+from .provider import OllamaProvider, ProviderError
+from .settings import SettingsService
+
+logger = get_logger(__name__)
+
+SYSTEM_PROMPT = "你是一个有用的私人助手，请用中文简洁、准确地回答用户的问题。"
+
+TITLE_PROMPT = (
+    "请根据下面的对话，生成一个简短的中文会话标题，不超过12个字，"
+    "不要加引号或标点符号，只输出标题本身。\n\n"
+    "用户：{user}\n\n助手：{assistant}"
+)
+
+
+class ChatService:
+    def __init__(
+        self, db: AsyncSession, provider: OllamaProvider | None = None
+    ) -> None:
+        self.db = db
+        self._provider = provider
+        self.sessions = SessionRepository(db)
+        self.messages = MessageRepository(db)
+
+    async def _get_provider(self) -> OllamaProvider:
+        """从 settings 读取模型参数构造 Provider（支持运行时调整）。"""
+        if self._provider is not None:
+            return self._provider
+        s = await SettingsService(self.db).get_all()
+        return OllamaProvider(
+            llm_model=s["llm_model"],
+            temperature=float(s["llm_temperature"]),
+            context_length=int(s["llm_context_length"]),
+        )
+
+    async def stream_reply(
+        self, session_id: int, user_content: str, knowledge_base: bool = False
+    ) -> AsyncIterator[dict]:
+        """对指定会话流式生成回复。knowledge_base=True 时启用 RAG 检索。"""
+        history = await self.messages.list_by_session(session_id)
+        is_first_turn = len(history) == 0
+        await self.messages.add(session_id, "user", user_content)
+
+        provider = await self._get_provider()
+
+        # 构造 prompt
+        sources: list[dict] = []
+        if knowledge_base:
+            from .rag import RagService
+
+            rag = RagService(self.db)
+            chunks = await rag.retrieve(user_content, top_k=5)
+            if chunks:
+                sources = rag.format_sources(chunks)
+                context = "\n\n".join(
+                    f"[来源：{c.doc_name}·片段{c.ordinal}]\n{c.content}"
+                    for c in chunks
+                )
+                system_content = (
+                    "你是一个有用的私人助手。请根据下方「参考资料」回答用户问题，"
+                    "只能基于资料作答，不要编造；资料不足时说明「未在知识库中找到相关资料」。\n\n"
+                    "参考资料：\n" + context
+                )
+            else:
+                system_content = (
+                    "你是一个有用的私人助手。提示：未在知识库中找到相关资料，"
+                    "请如实告知用户「未在知识库中找到相关资料」。"
+                )
+            msgs: list[dict[str, str]] = [
+                {"role": "system", "content": system_content}
+            ]
+        else:
+            msgs: list[dict[str, str]] = [
+                {"role": "system", "content": SYSTEM_PROMPT}
+            ]
+        for m in history:
+            msgs.append({"role": m.role, "content": m.content})
+        msgs.append({"role": "user", "content": user_content})
+
+        logger.info(
+            "chat start",
+            session_id=session_id,
+            first_turn=is_first_turn,
+            kb=knowledge_base,
+        )
+
+        saved = False
+        collected: list[str] = []
+        try:
+            async for token in provider.chat_stream(msgs):
+                collected.append(token)
+                yield {"type": "token", "content": token}
+
+            assistant_content = "".join(collected)
+            msg = await self.messages.add(
+                session_id, "assistant", assistant_content
+            )
+            saved = True
+            yield {
+                "type": "done",
+                "message_id": msg.id,
+                "content": assistant_content,
+                "sources": sources,
+            }
+
+            if is_first_turn:
+                title = await self._generate_title(
+                    session_id, user_content, assistant_content, provider
+                )
+                if title:
+                    yield {"type": "title", "title": title}
+
+        except ProviderError as e:
+            logger.warning("chat provider error", session_id=session_id, error=str(e))
+            yield {"type": "error", "message": str(e)}
+        except Exception as e:  # noqa: BLE001
+            logger.exception("chat stream failed", session_id=session_id)
+            yield {"type": "error", "message": f"生成失败: {e}"}
+        finally:
+            if not saved and collected:
+                try:
+                    await self.messages.add(
+                        session_id, "assistant", "".join(collected)
+                    )
+                    logger.info(
+                        "chat stopped, partial saved",
+                        session_id=session_id,
+                        chars=len("".join(collected)),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("save partial failed", session_id=session_id)
+
+    async def _generate_title(
+        self,
+        session_id: int,
+        user_content: str,
+        assistant_content: str,
+        provider: OllamaProvider,
+    ) -> str | None:
+        """基于首轮对话生成标题，失败时返回 None（保留默认「新对话」）。"""
+        prompt = TITLE_PROMPT.format(
+            user=user_content[:500], assistant=assistant_content[:500]
+        )
+        try:
+            raw = await provider.chat([{"role": "user", "content": prompt}])
+            title = raw.strip().strip("\"'""''「」").strip().replace("\n", " ")
+            title = title[:30]
+            if not title:
+                return None
+            await self.sessions.rename(session_id, title)
+            logger.info("title generated", session_id=session_id, title=title)
+            return title
+        except Exception as e:  # noqa: BLE001
+            logger.warning("title generation failed", session_id=session_id, error=str(e))
+            return None
+
+    @staticmethod
+    def event_to_sse(event: dict) -> str:
+        return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
