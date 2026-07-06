@@ -30,6 +30,23 @@ TITLE_PROMPT = (
 )
 
 
+def _format_tool_result(tool_name: str, output: dict) -> str:
+    """把工具执行结果格式化为注入 system prompt 的上下文片段。"""
+    if tool_name == "read_file":
+        content = output.get("content", "")
+        size = output.get("size_bytes", 0)
+        trunc = "（已截断）" if output.get("truncated") else ""
+        return (
+            f"【工具 read_file 已读取文件】（{size} 字节{trunc}）：\n"
+            f"{content}\n\n请基于以上文件内容回答用户。"
+        )
+    # 通用格式：JSON 摘要（截断防止过长）
+    dump = json.dumps(output, ensure_ascii=False)
+    if len(dump) > 2000:
+        dump = dump[:2000] + "…（截断）"
+    return f"【工具 {tool_name} 执行结果】：\n{dump}\n\n请基于以上结果回答用户。"
+
+
 class ChatService:
     def __init__(
         self, db: AsyncSession, provider: OllamaProvider | None = None
@@ -51,16 +68,25 @@ class ChatService:
         )
 
     async def stream_reply(
-        self, session_id: int, user_content: str, knowledge_base: bool = False
+        self,
+        session_id: int,
+        user_content: str,
+        knowledge_base: bool = False,
+        tool_result: dict | None = None,
     ) -> AsyncIterator[dict]:
-        """对指定会话流式生成回复。knowledge_base=True 时启用 RAG 检索。"""
+        """对指定会话流式生成回复。
+
+        knowledge_base=True 时启用 RAG 检索。
+        tool_result 非空时（plan-then-reply：工具执行后），把工具结果注入 system 上下文，
+        让助手基于结果作答；工具结果持久化在 tool_calls 表，不进 messages。
+        """
         history = await self.messages.list_by_session(session_id)
         is_first_turn = len(history) == 0
         await self.messages.add(session_id, "user", user_content)
 
         provider = await self._get_provider()
 
-        # 构造 prompt
+        # 构造 system prompt
         sources: list[dict] = []
         if knowledge_base:
             from .rag import RagService
@@ -83,13 +109,16 @@ class ChatService:
                     "你是一个有用的私人助手。提示：未在知识库中找到相关资料，"
                     "请如实告知用户「未在知识库中找到相关资料」。"
                 )
-            msgs: list[dict[str, str]] = [
-                {"role": "system", "content": system_content}
-            ]
         else:
-            msgs: list[dict[str, str]] = [
-                {"role": "system", "content": SYSTEM_PROMPT}
-            ]
+            system_content = SYSTEM_PROMPT
+
+        # 工具结果注入
+        if tool_result:
+            system_content = system_content + "\n\n" + _format_tool_result(
+                tool_result.get("tool_name", "工具"), tool_result.get("output") or {}
+            )
+
+        msgs: list[dict[str, str]] = [{"role": "system", "content": system_content}]
         for m in history:
             msgs.append({"role": m.role, "content": m.content})
         msgs.append({"role": "user", "content": user_content})

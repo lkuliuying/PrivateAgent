@@ -52,11 +52,11 @@
 | 流式协议 | **SSE 优先**，必要时 WebSocket | 对话 token 流、导入进度、状态事件 |
 | 本地 LLM 服务 | **Ollama** + Qwen2.5-14B-Instruct（Q4） | 4070(12G)+32G 可运行；第一阶段主模型 |
 | 轻量任务模型 | Qwen2.5-7B（可选） | 快速问答、标题生成备用 |
-| 编排框架 | **LangChain + LangGraph** | 对话记忆、RAG 编排、后续 Agent 演进 |
+| 编排框架 | **LangChain，预留 LangGraph** | M1 先用最简流式链路；复杂状态编排与后续 Agent 演进再启用 LangGraph |
 | Ollama 集成 | **langchain-ollama** | 本地模型优先使用官方 LangChain Ollama 集成 |
 | 向量库 | **ChromaDB 嵌入式持久化** | 存向量 + 最小元数据，路径为 `data/chroma/` |
 | 业务数据库 | **MySQL 8.0+**（本机） | 存会话、消息、文档元数据、切片原文、设置 |
-| ORM / 迁移 | **SQLAlchemy 2.0 async + Alembic** | AsyncSession + asyncmy；迁移可追溯 |
+| ORM / 迁移 | **SQLAlchemy 2.0 async + Alembic** | AsyncSession + aiomysql；迁移可追溯 |
 | 嵌入模型 | **bge-m3**（经 Ollama） | 中文检索质量好 |
 | 文档解析 | pypdf / python-docx / markdown | 覆盖 PDF / Word / MD / TXT |
 | 配置管理 | pydantic-settings + .env | 类型安全配置 |
@@ -205,7 +205,7 @@ CREATE TABLE settings (
 
 ### 5.2 异步约定
 - FastAPI route 使用 `async def`。
-- SQLAlchemy 使用 `AsyncSession` + `asyncmy`。
+- SQLAlchemy 使用 `AsyncSession` + `aiomysql`。计划初版考虑过 `asyncmy`，但 Windows + Python 3.13 下编译依赖更重，第一阶段采用纯 Python 驱动降低本机开发门槛。
 - LLM 流式输出通过 async generator 转为 SSE。
 - 文档解析、嵌入式 ChromaDB 同步调用等阻塞操作用 `asyncio.to_thread()` 隔离。
 - 前端通过 SSE 消费 token 流；用户点击停止时，前端发取消请求，后端终止当前生成任务。
@@ -270,7 +270,7 @@ Agent/
 - [ ] 本机 MySQL 建库：`CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`。
 - [ ] 建 Python 项目骨架：`pyproject.toml`、`src/` 布局、配置读取、日志。
 - [ ] 建 Tauri + Vue 3 项目骨架：`apps/desktop/`、基础窗口、前端路由。
-- [ ] Python 依赖：`fastapi`、`uvicorn`、`sqlalchemy[asyncio]`、`asyncmy`、`alembic`、`pydantic-settings`、`langchain`、`langchain-ollama`、`langchain-chroma`、`langgraph`、`chromadb`、`pypdf`、`python-docx`、`markdown`。
+- [ ] Python 依赖：`fastapi`、`uvicorn`、`sqlalchemy[asyncio]`、`aiomysql`、`alembic`、`pydantic-settings`、`langchain`、`langchain-ollama`、`langchain-chroma`、`langgraph`、`chromadb`、`pypdf`、`python-docx`、`markdown`。
 - [ ] Alembic 初始化 + 首个迁移 + 建表。
 - [ ] `core/provider.py` 实现 Ollama Provider，验证 LLM 回复和 embedding 维度。
 - [ ] `GET /health` 返回 API、Ollama、MySQL、ChromaDB 状态。
@@ -278,7 +278,7 @@ Agent/
 
 ### M1 · 对话助手（目标：能稳定聊天）
 - [ ] `core/history.py`：会话/消息 async 仓储。
-- [ ] `core/chat.py`：LangGraph 对话编排，支持历史上下文。
+- [ ] `core/chat.py`：最简流式对话编排，支持历史上下文；LangGraph 留给后续复杂状态图与 Agent 编排。
 - [ ] `POST /chat/stream`：SSE 流式输出 token。
 - [ ] 会话标题生成：首轮对话后自动生成简短标题，失败时回退为“新对话”。
 - [ ] Vue 聊天页：消息列表、输入框、新建会话、切换会话、停止生成。
@@ -336,8 +336,8 @@ Agent/
 | 14B 模型在 12G 显存上偶尔 OOM | 降级 7B；限制上下文长度；量化用 Q4 |
 | MySQL 与 ChromaDB 数据不一致 | 状态机 + 失败补偿 + 一致性校验，避免声称跨库事务 |
 | 嵌入式 ChromaDB 同步 API 阻塞事件循环 | 用 `asyncio.to_thread()` 隔离 |
-| asyncmy 在 Windows 上兼容性不佳 | M0 验证；必要时切换 aiomysql |
-| LangChain/LangGraph 抽象成本 | M1 先跑通最简链路，复杂记忆策略后置 |
+| aiomysql 退出时偶发 Windows event loop 清理 warning | 避免跨 event loop 复用连接；脚本型检查结束前主动 dispose engine |
+| LangGraph 抽象成本 | M1 先跑通最简 LangChain/Ollama 流式链路，复杂记忆策略和 Agent 状态图后置 |
 | 文档解析质量参差 | 首版支持 PDF/Word/MD/TXT，扫描件 PDF 明确暂不支持 |
 | 本地端口冲突 | 后端支持可配置端口，Tauri 启动时读取配置或探测可用端口 |
 

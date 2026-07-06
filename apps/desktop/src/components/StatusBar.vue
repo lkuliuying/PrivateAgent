@@ -1,0 +1,140 @@
+<script setup lang="ts">
+import { ref, onMounted, onUnmounted } from "vue";
+import { PhCpu, PhActivity } from "@phosphor-icons/vue";
+import { getHealth, getSettings, type AppSettings } from "../api";
+
+/**
+ * 底部状态栏。独立轮询 /health（5s）并读取 /settings 显示当前模型。
+ * 展示 API/Ollama/MySQL/Chroma 四服务状态点 + 当前模型 + 任务状态。
+ * 任务状态由父组件通过 taskLabel 传入（M0：生成中/空闲；M4 接入活动流后扩展）。
+ */
+defineProps<{ taskLabel?: string }>();
+
+type DotState = "ok" | "bad" | "idle";
+
+const services = ref<Record<string, DotState>>({
+  api: "idle",
+  ollama: "idle",
+  mysql: "idle",
+  chroma: "idle",
+});
+const settings = ref<AppSettings | null>(null);
+let timer: number | null = null;
+
+function okOf(h: Record<string, unknown>, key: string): boolean | undefined {
+  const v = h[key] as { ok?: boolean } | undefined;
+  return v?.ok;
+}
+
+async function refresh() {
+  try {
+    const h = await getHealth();
+    services.value = {
+      api: okOf(h, "api") ? "ok" : "bad",
+      ollama: okOf(h, "ollama") ? "ok" : "bad",
+      mysql: okOf(h, "mysql") ? "ok" : "bad",
+      chroma: okOf(h, "chroma") ? "ok" : "bad",
+    };
+  } catch {
+    // 后端不可达（启动中/未连接）：全部置 idle
+    services.value = { api: "idle", ollama: "idle", mysql: "idle", chroma: "idle" };
+  }
+}
+
+async function loadSettings() {
+  try {
+    settings.value = await getSettings();
+  } catch {
+    settings.value = null;
+  }
+}
+
+onMounted(() => {
+  refresh();
+  loadSettings();
+  timer = window.setInterval(refresh, 5000);
+});
+onUnmounted(() => {
+  if (timer) window.clearInterval(timer);
+});
+
+const serviceList: { key: string; label: string }[] = [
+  { key: "api", label: "API" },
+  { key: "ollama", label: "Ollama" },
+  { key: "mysql", label: "MySQL" },
+  { key: "chroma", label: "Chroma" },
+];
+</script>
+
+<template>
+  <div class="statusbar" role="status" aria-label="服务状态">
+    <div class="sb-services">
+      <div
+        v-for="s in serviceList"
+        :key="s.key"
+        class="sb-service"
+        :title="`${s.label}: ${services[s.key]}`"
+      >
+        <span class="pa-status-dot" :class="`pa-status-dot--${services[s.key]}`" />
+        <span class="sb-label">{{ s.label }}</span>
+      </div>
+    </div>
+
+    <div class="sb-right">
+      <div class="sb-item" :title="`当前模型：${settings?.llm_model || '—'}`">
+        <PhCpu :size="12" weight="regular" />
+        <span class="sb-value pa-ellipsis">{{
+          settings?.llm_model || "—"
+        }}</span>
+      </div>
+      <div class="sb-item">
+        <PhActivity :size="12" weight="regular" />
+        <span class="sb-value">{{ taskLabel || "空闲" }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.statusbar {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-3);
+  gap: var(--space-3);
+  font-size: var(--text-xs);
+  color: var(--color-fg-muted);
+}
+.sb-services {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.sb-service {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.sb-label {
+  color: var(--color-fg-subtle);
+}
+.sb-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  flex-shrink: 0;
+}
+.sb-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  white-space: nowrap;
+}
+.sb-value {
+  max-width: 220px;
+  font-variant-numeric: tabular-nums;
+}
+</style>

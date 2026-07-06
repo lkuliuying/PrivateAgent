@@ -1,18 +1,26 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from "vue";
-import type { Message, Source } from "../types";
+import type { Message, Source, ToolCall } from "../types";
+import ToolApprovalCard from "./ToolApprovalCard.vue";
 
-type ChatMessage = Message & { sources?: Source[] };
+type ChatMessage = Message & { sources?: Source[]; tool_call?: ToolCall };
 
-const props = defineProps<{
-  messages: ChatMessage[];
-  streaming: boolean;
-  knowledgeBase: boolean;
-}>();
+const props = withDefaults(
+  defineProps<{
+    messages: ChatMessage[];
+    streaming: boolean;
+    knowledgeBase: boolean;
+    pendingTool?: boolean;
+  }>(),
+  { pendingTool: false }
+);
 const emit = defineEmits<{
   send: [text: string];
   stop: [];
   "toggle-kb": [];
+  approve: [id: number];
+  reject: [id: number];
+  "select-chunk": [chunkId: number];
 }>();
 
 const input = ref("");
@@ -20,7 +28,7 @@ const listRef = ref<HTMLElement | null>(null);
 
 function send() {
   const t = input.value.trim();
-  if (!t || props.streaming) return;
+  if (!t || props.streaming || props.pendingTool) return;
   emit("send", t);
   input.value = "";
 }
@@ -42,31 +50,47 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
       <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
         <div class="avatar">{{ m.role === "user" ? "我" : "AI" }}</div>
         <div class="bubble-wrap">
-          <div class="bubble">
-            {{ m.content
-            }}<span
-              v-if="
-                m.role === 'assistant' &&
-                streaming &&
-                i === messages.length - 1 &&
-                m.content
-              "
-              class="cursor"
-              >▍</span
+          <ToolApprovalCard
+            v-if="m.tool_call"
+            :tool-call="m.tool_call"
+            @approve="emit('approve', $event)"
+            @reject="emit('reject', $event)"
+          />
+          <template v-else>
+            <div class="bubble">
+              {{ m.content
+              }}<span
+                v-if="
+                  m.role === 'assistant' &&
+                  streaming &&
+                  i === messages.length - 1 &&
+                  m.content
+                "
+                class="cursor"
+                >▍</span
+              >
+            </div>
+            <div
+              v-if="m.role === 'assistant' && m.sources && m.sources.length"
+              class="sources"
             >
-          </div>
-          <div
-            v-if="m.role === 'assistant' && m.sources && m.sources.length"
-            class="sources"
-          >
-            📎 来源：<span
-              v-for="(s, si) in m.sources"
-              :key="si"
-              class="source"
-              >{{ s.doc_name }} · 片段{{ s.ordinal
-              }}<span v-if="si < m.sources.length - 1">；</span></span
-            >
-          </div>
+              📎 来源：<span
+                v-for="(s, si) in m.sources"
+                :key="si"
+                class="source"
+                @click="emit('select-chunk', s.chunk_id)"
+                >{{ s.doc_name }} · 片段{{ s.ordinal
+                }}<span
+                  v-if="s.matched_keywords && s.matched_keywords.length"
+                  class="src-hit"
+                  >（命中：{{ s.matched_keywords.slice(0, 3).join("、") }}<template
+                    v-if="s.matched_keywords.length > 3"
+                    >等</template
+                  >）</span
+                ><span v-if="si < m.sources.length - 1">；</span></span
+              >
+            </div>
+          </template>
         </div>
       </div>
     </div>
@@ -80,13 +104,18 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
         v-model="input"
         @keydown.enter.exact.prevent="send"
         placeholder="输入消息，Enter 发送，Shift+Enter 换行…"
-        :disabled="streaming"
+        :disabled="streaming || pendingTool"
         rows="1"
       ></textarea>
-      <button v-if="!streaming" class="send-btn" @click="send" :disabled="!input.trim()">
+      <button v-if="streaming" class="stop-btn" @click="emit('stop')">停止生成</button>
+      <button
+        v-else
+        class="send-btn"
+        @click="send"
+        :disabled="!input.trim() || pendingTool"
+      >
         发送
       </button>
-      <button v-else class="stop-btn" @click="emit('stop')">停止生成</button>
     </div>
   </div>
 </template>
@@ -177,6 +206,10 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
 .source {
   color: #1565c0;
 }
+.src-hit {
+  color: var(--color-fg-faint);
+  font-size: 11px;
+}
 .cursor {
   display: inline-block;
   animation: blink 1s steps(2) infinite;
@@ -195,6 +228,7 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
   gap: 10px;
   background: #fff;
   align-items: flex-end;
+  min-width: 0;
 }
 .kb-toggle {
   display: flex;
@@ -228,6 +262,7 @@ textarea {
   outline: none;
   max-height: 120px;
   line-height: 1.5;
+  min-width: 0;
 }
 textarea:focus {
   border-color: #1a1b1e;

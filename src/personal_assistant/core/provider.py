@@ -61,11 +61,14 @@ class OllamaProvider:
 
     # ---------------- LLM ----------------
     def _chat_llm(self) -> ChatOllama:
+        # client_kwargs.timeout 限制每次 HTTP 读写，避免 Ollama 连接但卡住时
+        # ainvoke/astream 无限挂起（ollama 客户端默认 timeout=None）。
         return ChatOllama(
             model=self.llm_model,
             base_url=self.base_url,
             temperature=self.temperature,
             num_ctx=self.context_length,
+            client_kwargs={"timeout": httpx.Timeout(60.0)},
         )
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
@@ -91,7 +94,11 @@ class OllamaProvider:
 
     # ---------------- Embedding ----------------
     def _embedder(self) -> OllamaEmbeddings:
-        return OllamaEmbeddings(model=self.embed_model, base_url=self.base_url)
+        return OllamaEmbeddings(
+            model=self.embed_model,
+            base_url=self.base_url,
+            client_kwargs={"timeout": httpx.Timeout(60.0)},
+        )
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:

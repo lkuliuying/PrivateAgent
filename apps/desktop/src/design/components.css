@@ -1,0 +1,226 @@
+/**
+ * 通用控件基础样式 · components.css
+ * 跨组件复用的控件 primitive，统一 hover/focus/disabled 状态与令牌引用。
+ * 类名统一加 pa- 前缀，避免与各视图 scoped 样式冲突。
+ * 各视图仍可保留自己的 scoped 样式；新组件优先使用此处 primitive。
+ */
+
+/* ============ 按钮 ============ */
+.pa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-base);
+  font-weight: var(--font-medium);
+  line-height: 1;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease),
+    color var(--duration-fast) var(--ease);
+  white-space: nowrap;
+  user-select: none;
+}
+.pa-btn:hover {
+  background: var(--color-surface-sunken);
+}
+.pa-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+.pa-btn:disabled {
+  color: var(--color-fg-disabled);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.pa-btn:disabled:hover {
+  background: var(--color-surface);
+}
+
+/* 主按钮 · 强调色（仅用于关键操作，不铺满） */
+.pa-btn--primary {
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  border-color: var(--color-accent);
+}
+.pa-btn--primary:hover {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+.pa-btn--primary:disabled:hover {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+/* 幽灵按钮 · 透明底带边 */
+.pa-btn--ghost {
+  background: transparent;
+  border-color: var(--color-border-strong);
+  color: var(--color-fg);
+}
+.pa-btn--ghost:hover {
+  background: var(--color-surface-sunken);
+}
+
+/* 次级按钮 · 极轻底 */
+.pa-btn--subtle {
+  background: transparent;
+  color: var(--color-fg-muted);
+}
+.pa-btn--subtle:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-fg);
+}
+
+/* 危险按钮 */
+.pa-btn--danger {
+  background: var(--color-danger);
+  color: #fff;
+  border-color: var(--color-danger);
+}
+.pa-btn--danger:hover {
+  background: #b91c1c;
+  border-color: #b91c1c;
+}
+
+/* 尺寸 */
+.pa-btn--sm {
+  height: 26px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+}
+.pa-btn--icon {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+.pa-btn--icon.pa-btn--sm {
+  width: 26px;
+  height: 26px;
+}
+
+/* ============ 输入框 ============ */
+.pa-input {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: var(--text-base);
+  color: var(--color-fg);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  transition: border-color var(--duration-fast) var(--ease),
+    box-shadow var(--duration-fast) var(--ease);
+  width: 100%;
+}
+.pa-input::placeholder {
+  color: var(--color-fg-faint);
+}
+.pa-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+.pa-input:disabled {
+  background: var(--color-surface-sunken);
+  color: var(--color-fg-disabled);
+  cursor: not-allowed;
+}
+
+/* ============ 徽标 / 标签 ============ */
+.pa-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 20px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: 1;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+  color: var(--color-fg-muted);
+}
+.pa-badge--success {
+  background: var(--color-success-soft);
+  color: var(--color-success-fg);
+}
+.pa-badge--warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning-fg);
+}
+.pa-badge--danger {
+  background: var(--color-danger-soft);
+  color: var(--color-danger-fg);
+}
+.pa-badge--info {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-soft-fg);
+}
+
+/* ============ 状态点 ============ */
+.pa-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--pa-status-color, var(--color-fg-faint));
+  flex-shrink: 0;
+}
+.pa-status-dot--ok {
+  --pa-status-color: var(--color-success);
+}
+.pa-status-dot--warn {
+  --pa-status-color: var(--color-warning);
+}
+.pa-status-dot--bad {
+  --pa-status-color: var(--color-danger);
+}
+.pa-status-dot--idle {
+  --pa-status-color: var(--color-fg-faint);
+}
+/* 在线脉冲（用于实时连接态） */
+.pa-status-dot--pulse {
+  box-shadow: 0 0 0 0 var(--pa-status-color);
+  animation: pa-pulse 1.8s var(--ease) infinite;
+}
+@keyframes pa-pulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--pa-status-color) 50%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 5px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* ============ 卡片（仅用于独立对象：消息/文档/活动/审批）============ */
+.pa-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+}
+.pa-card--raised {
+  box-shadow: var(--shadow);
+}
+
+/* ============ 工具类 ============ */
+.pa-muted {
+  color: var(--color-fg-muted);
+}
+.pa-subtle {
+  color: var(--color-fg-subtle);
+}
+.pa-ellipsis {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

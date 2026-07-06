@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
-import Sidebar from "./components/Sidebar.vue";
+import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import WorkspaceShell from "./components/WorkspaceShell.vue";
+import NavRail from "./components/NavRail.vue";
+import SessionList from "./components/SessionList.vue";
+import InspectorPanel from "./components/InspectorPanel.vue";
+import StatusBar from "./components/StatusBar.vue";
+import TaskWorkspace from "./components/TaskWorkspace.vue";
 import ChatView from "./components/ChatView.vue";
 import KnowledgeView from "./components/KnowledgeView.vue";
+import ProjectWorkspace from "./components/ProjectWorkspace.vue";
+import LearningWorkspace from "./components/LearningWorkspace.vue";
 import SettingsView from "./components/SettingsView.vue";
 import ConfigWizard from "./components/ConfigWizard.vue";
 import {
@@ -13,14 +20,21 @@ import {
   setApiBase,
   setApiBaseDefault,
   streamChat,
+  planTools,
+  approveToolCall,
+  rejectToolCall,
+  listToolCalls,
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
 } from "./api";
 import { isTauri } from "@tauri-apps/api/core";
-import type { Message, Session, Source } from "./types";
+import type { Message, Session, Source, ToolCall } from "./types";
 
-type ChatMessage = Message & { sources?: Source[] };
+type ChatMessage = Message & { sources?: Source[]; tool_call?: ToolCall };
+
+// 工作台视图（与 NavRail 的 View 对齐）
+type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "settings";
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -32,16 +46,72 @@ const bootError = ref("");
 const sessions = ref<Session[]>([]);
 const currentSessionId = ref<number | null>(null);
 const messages = ref<ChatMessage[]>([]);
-const view = ref<"chat" | "kb" | "settings">("chat");
+const view = ref<View>("chat");
 const streaming = ref(false);
 const knowledgeBase = ref(false);
+// 当前在检查器中展示的引用片段 id（点击来源后设置）
+const currentChunkId = ref<number | null>(null);
+// 右侧检查器折叠状态：宽屏默认展开，窄屏默认收起。
+// rail(60)+list(280)+inspector(340)=680；低于 INSPECTOR_MIN_W 展开会挤压主工作区。
+const INSPECTOR_MIN_W = 1100;
+const viewportWidth = ref(
+  typeof window !== "undefined" ? window.innerWidth : 1280
+);
+const inspectorOpen = ref(
+  typeof window !== "undefined" && window.innerWidth >= 1280
+);
+// 仅在 chat 视图且视口足够宽时允许切换检查器，避免窄屏挤压主工作区
+const inspectorToggleable = computed(
+  () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
+);
 let controller: AbortController | null = null;
+// plan 请求序号：每次 sendMessage 自增，旧 plan 解析回来时若序号不匹配则放弃，
+// 避免「停止 planning 后立即发新消息」时旧 plan 结果交错插入。
+let planSeq = 0;
+// plan-then-reply：toolCallId -> 原始用户消息（批准后用于流式总结，按 id 索引避免单槽覆盖）
+const pendingToolText = ref<Map<number, string>>(new Map());
+// 用户在 planning 阶段点停止时置 true，阻止 plan 完成后继续回复
+const planningCancelled = ref(false);
+// 是否有未决工具调用（待审批时阻止发送新消息，避免交错持久化/单槽覆盖）
+const hasPendingTool = computed(
+  () => messages.value.some((m) => m.tool_call?.status === "pending_approval")
+);
 
 const currentSession = computed(
   () => sessions.value.find((s) => s.id === currentSessionId.value) ?? null
 );
 
-onMounted(boot);
+// 顶栏标题
+const pageTitle = computed(() => {
+  switch (view.value) {
+    case "chat":
+      return currentSession.value?.title || "私人助手";
+    case "kb":
+      return "知识库";
+    case "projects":
+      return "项目";
+    case "learning":
+      return "学习";
+    case "tasks":
+      return "任务";
+    case "settings":
+      return "设置 / 状态";
+  }
+});
+
+function onResize() {
+  viewportWidth.value = window.innerWidth;
+  // 缩窄到阈值以下时强制收起检查器，防止挤压主工作区
+  if (window.innerWidth < INSPECTOR_MIN_W) inspectorOpen.value = false;
+}
+
+onMounted(() => {
+  window.addEventListener("resize", onResize);
+  boot();
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", onResize);
+});
 
 // ============ 启动引导 ============
 
@@ -157,6 +227,12 @@ async function retryBoot() {
   await boot();
 }
 
+// ============ 导航 ============
+
+function onNavigate(v: View) {
+  view.value = v;
+}
+
 // ============ 会话 / 对话 ============
 
 async function loadSessions() {
@@ -179,6 +255,34 @@ async function selectSession(id: number) {
   } catch {
     messages.value = [];
   }
+  // 重水合未决工具调用卡片（重载/切换会话后仍可审批，避免 pending_approval 行孤立）
+  await rehydrateToolCalls(id);
+}
+
+/** 加载会话的工具调用，把未决（pending_approval）的重新渲染为审批卡片。 */
+async function rehydrateToolCalls(sessionId: number) {
+  try {
+    const calls = await listToolCalls(sessionId);
+    for (const tc of calls) {
+      if (
+        tc.status === "pending_approval" &&
+        !messages.value.some((m) => m.tool_call?.id === tc.id)
+      ) {
+        messages.value.push({
+          id: -1000000 - tc.id,
+          session_id: sessionId,
+          role: "assistant",
+          content: "",
+          created_at: tc.created_at,
+          tool_call: tc,
+        });
+        // 原始用户消息可能未持久化（仅在 /chat/stream 时持久化），留空由批准时用默认提示
+        pendingToolText.value.set(tc.id, "");
+      }
+    }
+  } catch {
+    // 工具调用加载失败不影响会话查看
+  }
 }
 
 async function newSession() {
@@ -193,7 +297,7 @@ async function newSession() {
 }
 
 function sendMessage(text: string) {
-  if (!currentSession.value || streaming.value) return;
+  if (!currentSession.value || streaming.value || hasPendingTool.value) return;
   const sid = currentSession.value.id;
   const now = new Date().toISOString();
 
@@ -204,12 +308,59 @@ function sendMessage(text: string) {
     content: text,
     created_at: now,
   });
+  streaming.value = true;
+  planningCancelled.value = false;
+  const mySeq = ++planSeq;
+
+  // plan-then-reply：先判断是否需工具
+  planTools(sid, text)
+    .then((res) => {
+      // 被用户停止或被新消息取代：放弃本次 plan 结果
+      if (planningCancelled.value || mySeq !== planSeq) {
+        if (mySeq === planSeq) streaming.value = false;
+        return;
+      }
+      const tc = res?.tool_call ?? null;
+      if (tc) {
+        // 插入工具卡片，等待用户审批
+        messages.value.push({
+          id: -Date.now() - 1,
+          session_id: sid,
+          role: "assistant",
+          content: "",
+          created_at: new Date().toISOString(),
+          tool_call: tc,
+        });
+        pendingToolText.value.set(tc.id, text);
+        streaming.value = false;
+        return;
+      }
+      // 无工具：普通流式回复
+      streamAssistantReply(sid, text, knowledgeBase.value);
+    })
+    .catch(() => {
+      if (planningCancelled.value || mySeq !== planSeq) {
+        if (mySeq === planSeq) streaming.value = false;
+        return;
+      }
+      // plan 失败，降级普通回复
+      streamAssistantReply(sid, text, knowledgeBase.value);
+    });
+}
+
+/** 流式助手回复（无工具，或工具执行后带 tool_result 总结）。 */
+function streamAssistantReply(
+  sid: number,
+  text: string,
+  kb: boolean,
+  toolResult?: { tool_name: string; output: Record<string, unknown> }
+) {
   messages.value.push({
     id: -2,
     session_id: sid,
     role: "assistant",
     content: "",
-    created_at: now,
+    created_at: new Date().toISOString(),
   });
   const aiIdx = messages.value.length - 1;
   streaming.value = true;
@@ -217,7 +368,7 @@ function sendMessage(text: string) {
   controller = streamChat(
     sid,
     text,
-    knowledgeBase.value,
+    kb,
     (e) => {
       if (e.type === "token" && e.content) {
         messages.value[aiIdx].content += e.content;
@@ -239,20 +390,73 @@ function sendMessage(text: string) {
     },
     () => {
       streaming.value = false;
-    }
+    },
+    toolResult
   );
 }
 
+/** 批准工具调用：执行后流式总结结果。 */
+async function onApproveToolCall(id: number) {
+  if (!currentSession.value) return;
+  const sid = currentSession.value.id;
+  const msgIdx = messages.value.findIndex((m) => m.tool_call?.id === id);
+  if (msgIdx < 0) return;
+  // 乐观更新为执行中
+  messages.value[msgIdx].tool_call = {
+    ...messages.value[msgIdx].tool_call!,
+    status: "running",
+  };
+  streaming.value = true;
+  try {
+    const updated = await approveToolCall(id);
+    messages.value[msgIdx].tool_call = updated;
+    if (updated.status === "succeeded" && updated.output_json) {
+      // 重水合的卡片可能无原始用户消息，用默认提示
+      const text =
+        pendingToolText.value.get(id) || "请基于以下工具结果回答。";
+      pendingToolText.value.delete(id);
+      streamAssistantReply(sid, text, knowledgeBase.value, {
+        tool_name: updated.tool_name,
+        output: updated.output_json,
+      });
+    } else {
+      // failed
+      streaming.value = false;
+      pendingToolText.value.delete(id);
+    }
+  } catch (e) {
+    streaming.value = false;
+    pendingToolText.value.delete(id);
+    messages.value[msgIdx].tool_call = {
+      ...messages.value[msgIdx].tool_call!,
+      status: "failed",
+      error_message: String(e),
+    };
+  }
+}
+
+/** 拒绝工具调用：不执行，状态写回卡片。 */
+async function onRejectToolCall(id: number) {
+  const msgIdx = messages.value.findIndex((m) => m.tool_call?.id === id);
+  if (msgIdx < 0) return;
+  try {
+    const updated = await rejectToolCall(id);
+    messages.value[msgIdx].tool_call = updated;
+  } catch {
+    messages.value[msgIdx].tool_call = {
+      ...messages.value[msgIdx].tool_call!,
+      status: "rejected",
+    };
+  }
+  pendingToolText.value.delete(id);
+}
+
 function stopGenerate() {
+  // 标记 planning 取消，阻止 plan 完成后继续回复（plan 阶段 controller 尚未赋值）
+  planningCancelled.value = true;
   controller?.abort();
   streaming.value = false;
 }
-
-const titleMap: Record<string, string> = {
-  chat: "私人助手",
-  kb: "知识库",
-  settings: "设置 / 状态",
-};
 </script>
 
 <template>
@@ -273,170 +477,139 @@ const titleMap: Record<string, string> = {
     <div v-else class="boot-card">
       <p class="boot-err">⚠ 启动失败</p>
       <p class="hint">{{ bootError }}</p>
-      <button class="retry-btn" @click="retryBoot">重试</button>
-      <button v-if="isTauri()" class="retry-btn ghost" @click="reconfigure">
+      <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
+      <button
+        v-if="isTauri()"
+        class="pa-btn pa-btn--ghost"
+        @click="reconfigure"
+      >
         重新配置连接
       </button>
     </div>
   </div>
 
-  <!-- 主应用 -->
-  <div v-else class="app">
-    <Sidebar
-      :sessions="sessions"
-      :current-id="currentSessionId"
-      @select="selectSession"
-      @new="newSession"
-      @show-kb="view = 'kb'"
-      @show-settings="view = 'settings'"
-    />
-    <main class="main">
-      <header class="topbar">
-        <span class="title">{{
-          view === "chat"
-            ? currentSession?.title || "私人助手"
-            : titleMap[view]
-        }}</span>
-        <span v-if="bootState === 'dev'" class="dev-tag">DEV · 手动后端 8000</span>
-      </header>
-      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
-      <KnowledgeView v-else-if="view === 'kb'" />
-      <ChatView
-        v-else-if="currentSession"
-        :messages="messages"
-        :streaming="streaming"
-        :knowledge-base="knowledgeBase"
-        @send="sendMessage"
-        @stop="stopGenerate"
-        @toggle-kb="knowledgeBase = !knowledgeBase"
+  <!-- 主应用 · 四区工作台 -->
+  <WorkspaceShell
+    v-else
+    :title="pageTitle"
+    :show-dev-tag="bootState === 'dev'"
+    :show-list="view === 'chat'"
+    :inspector-open="view === 'chat' && inspectorOpen"
+    :inspector-toggleable="inspectorToggleable"
+    @toggle-inspector="inspectorOpen = !inspectorOpen"
+  >
+    <template #rail>
+      <NavRail :active="view" @navigate="onNavigate" />
+    </template>
+
+    <template #list>
+      <SessionList
+        :sessions="sessions"
+        :current-id="currentSessionId"
+        @select="selectSession"
+        @new="newSession"
       />
-      <div v-else class="placeholder">
-        <p>👋 欢迎使用私人助手</p>
-        <p class="hint">点击左侧「+ 新建」开始对话</p>
-      </div>
-    </main>
-  </div>
+    </template>
+
+    <!-- 主工作区 -->
+    <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+    <KnowledgeView v-else-if="view === 'kb'" />
+    <ProjectWorkspace v-else-if="view === 'projects'" />
+    <LearningWorkspace v-else-if="view === 'learning'" />
+    <TaskWorkspace v-else-if="view === 'tasks'" />
+    <ChatView
+      v-else-if="view === 'chat' && currentSession"
+      :messages="messages"
+      :streaming="streaming"
+      :knowledge-base="knowledgeBase"
+      :pending-tool="hasPendingTool"
+      @send="sendMessage"
+      @stop="stopGenerate"
+      @toggle-kb="knowledgeBase = !knowledgeBase"
+      @approve="onApproveToolCall"
+      @reject="onRejectToolCall"
+      @select-chunk="currentChunkId = $event"
+    />
+    <div v-else class="welcome">
+      <p class="welcome-title">👋 欢迎使用私人助手</p>
+      <p class="hint">点击左侧「新建」开始对话</p>
+    </div>
+
+    <template #inspector>
+      <InspectorPanel
+        :session="currentSession"
+        :message-count="messages.length"
+        :chunk-id="currentChunkId"
+      />
+    </template>
+
+    <template #statusbar>
+      <StatusBar :task-label="streaming ? '生成中…' : '空闲'" />
+    </template>
+  </WorkspaceShell>
 </template>
 
-<style>
-:root {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Microsoft YaHei", sans-serif;
-  font-size: 14px;
-  color: #1a1b1e;
-  background-color: #f7f7f8;
-}
-* {
-  box-sizing: border-box;
-}
-body,
-html {
-  margin: 0;
-  padding: 0;
-}
-.app {
-  display: flex;
-  height: 100vh;
-  width: 100vw;
-  overflow: hidden;
-}
-.main {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.topbar {
-  height: 48px;
-  background: #fff;
-  border-bottom: 1px solid #e5e6e8;
-  display: flex;
-  align-items: center;
-  padding: 0 20px;
-  gap: 12px;
-  flex-shrink: 0;
-}
-.topbar .title {
-  font-size: 15px;
-  font-weight: 500;
-}
-.dev-tag {
-  font-size: 11px;
-  color: #9a9b9e;
-  border: 1px solid #e5e6e8;
-  border-radius: 10px;
-  padding: 2px 8px;
-}
-.placeholder {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  color: #6a6b6e;
-}
-.placeholder p {
-  margin: 4px 0;
-}
-.placeholder .hint {
-  font-size: 13px;
-  color: #9a9b9e;
-}
-
-/* 启动引导 */
+<style scoped>
+/* 启动引导覆盖层（工作台就绪前显示） */
 .boot {
   height: 100vh;
   width: 100vw;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f7f7f8;
+  background: var(--color-bg);
 }
 .boot-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 40px;
+  gap: var(--space-2);
+  padding: var(--space-10);
 }
 .boot-card p {
   margin: 0;
 }
 .boot-card .hint {
-  font-size: 13px;
-  color: #9a9b9e;
+  font-size: var(--text-sm);
+  color: var(--color-fg-faint);
 }
 .boot-err {
-  color: #b71c1c;
-  font-size: 16px;
+  color: var(--color-danger-fg);
+  font-size: var(--text-lg);
+}
+.boot-card .pa-btn {
+  margin-top: var(--space-3);
 }
 .spinner {
   width: 32px;
   height: 32px;
-  border: 3px solid #e5e6e8;
-  border-top-color: #1a1b1e;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-fg);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
-  margin-bottom: 6px;
+  margin-bottom: var(--space-2);
 }
 @keyframes spin {
   to {
     transform: rotate(360deg);
   }
 }
-.retry-btn {
-  margin-top: 10px;
-  background: #1a1b1e;
-  color: #fff;
-  border: none;
-  border-radius: 8px;
-  padding: 8px 20px;
-  font-size: 14px;
-  cursor: pointer;
+
+/* chat 无会话时的欢迎占位（位于主工作区） */
+.welcome {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-subtle);
 }
-.retry-btn.ghost {
-  background: #fff;
-  color: #1a1b1e;
-  border: 1px solid #d8d9da;
+.welcome-title {
+  margin: var(--space-1) 0;
+  font-size: var(--text-lg);
+}
+.welcome .hint {
+  font-size: var(--text-sm);
+  color: var(--color-fg-faint);
 }
 </style>

@@ -27,6 +27,10 @@
 - Kept health check, auto-refresh, manual refresh, and future-feature alerts functional.
 - Separated silent auto-refresh from manual refresh so the button remains `刷新` during polling.
 - Verified production build with `npm run build`.
+- Added phase 2 responsive workspace screenshots:
+  - `phase2-workspace-900x900.png`: inspector auto-collapsed; rail, session list, main workspace, and status bar fit without overlap.
+  - `phase2-workspace-1200x900.png`: inspector remains collapsed by default; main workspace has stable width and no text collision.
+  - `phase2-workspace-1600x900.png`: inspector expanded; file authorization controls fit inside the right panel without overflow.
 
 **Follow-up Polish**
 - A future iteration can add a tiny raster texture/noise asset to the sidebar and hero for even closer image fidelity.
@@ -35,5 +39,7 @@
 - Installed `@phosphor-icons/vue`.
 - Reworked `apps/desktop/src/App.vue` to match the supplied visual direction.
 - Adjusted refresh state behavior and card title spacing after QA.
+- Added file summary and directory scan actions to the inspector's trusted-path list.
+- Captured 900 / 1200 / 1600 px workspace screenshots using Chrome headless against `http://127.0.0.1:4173/`.
 
 **final result: passed**

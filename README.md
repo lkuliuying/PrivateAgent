@@ -1,8 +1,8 @@
 # 私人助手 Agent
 
-本地优先、隐私可控的桌面私人助手。第一阶段目标：**稳定对话 + 本地知识库问答**。
+本地优先、隐私可控的桌面私人助手。第三阶段新增：**项目工作区 + 学习系统 + 文档工作台 + 混合检索**。
 
-> 详细需求见 `docs/requirements.md`，开发计划见 `docs/phase1-plan.md`。
+> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md`。
 
 ## 技术栈
 
@@ -141,6 +141,24 @@ cd apps/desktop && npm run tauri build    # 打包安装程序
 - M1 对话助手：流式 SSE、多轮上下文、停止生成、首轮自动生成标题、会话历史持久化到 MySQL。
 - M2 知识库 RAG：导入 PDF/Word/MD/TXT、切分、向量化、检索、来源引用、删除一致性、失败重试。
 - M3 设置与打磨：设置/状态页、参数持久化、结构化日志、错误提示、pytest 基础测试。
+
+**第二阶段（M0–M5）已完成** ✅：从"问答应用"升级为"受控工作台助手"。详见 `docs/phase2-plan.md`。
+- M0 UI 大改造：四区工作台（导航 rail / 列表区 / 主工作区 / 右检查器 / 状态栏）+ 设计令牌系统（`design/tokens.css`）。
+- M1 工具调用底座：`ToolRegistry`/`ToolExecutor` + 审批状态机 + `tool_calls` 审计表 + `ToolApprovalCard`。
+- M2 文件工具：`read_file`/`summarize_file`/`import_to_kb` 三工具（支持 PDF/Word/MD/TXT）+ `trusted_paths` 授权校验 + Tauri 原生文件选择器 + 检查器内文件摘要/目录扫描（`/files/summarize`、`/files/scan`，扫描 200 上限）。
+- M3 知识库增强：搜索/状态筛选/启用禁用 + 批量导入 + 单文档/全量重建索引 + 引用片段详情（`/chunks/{id}`）+ 禁用文档不参与 RAG 检索。
+- M4 活动流：工具调用/文档导入/索引重建统一写入 `activities` + 活动页（筛选/展开输入输出/失败重试）+ 聊天页检查器显示会话活动。
+- M5 测试与收尾：`pytest` 39 通过（工具/审批/路径校验/知识库增强/活动流/文件处理）+ `npm run build` + `cargo check` 全绿。
+
+**第三阶段（M0–M6）已完成** ✅：从"受控工作台助手"升级为"学习 + 文档 + 编码"个人 Agent。详见 `docs/phase3-plan.md`。
+- M0 数据底座：迁移 0004（`projects`/`project_files`/`learning_*` 表 + `documents`/`doc_chunks` 元数据增列）+ ORM + 导航扩展为六入口（聊天/知识库/项目/学习/任务/设置）+ 项目/学习骨架页。
+- M1 项目工作区（只读）：授权项目目录、后台扫描索引（忽略 `.git`/`node_modules` 等）、目录树、文件名/内容搜索、文件片段读取、git status/diff；5 个代码工具注册（`search_files`/`grep_code`/`read_code_file`/`get_git_status`/`get_git_diff`）；越界 `rel_path` 拒绝（403）。
+- M2 混合检索：向量召回 + 关键词 LIKE 召回 + RRF 融合 + 可插拔 rerank 接口 + 命中原因（`matched_via`/`matched_keywords`）；禁用文档两路均排除；文档元数据（`doc_type`/`topic`/`tags`/`language`/`project_id`）筛选与编辑；引用展示命中关键词。
+- M3 学习系统：学习主题 CRUD、基于知识库资料生成学习路线/练习题/复习卡片、答题批改记录；5 个学习工具注册（`create_learning_plan`/`save_learning_note`/`generate_quiz`/`grade_quiz_answer`/`create_review_cards`）；学习工作台四标签 UI（路线/笔记/练习/卡片，含翻卡动画）。
+- M4 文档工作台：章节摘要、多文档对比（共同点/差异/冲突/阅读顺序）、术语表、Markdown 导出（授权目录+不覆盖）、生成笔记入库；4 个文档工具注册；知识库页多选 + 对比浮层 + 摘要浮层。
+- M5 编码修改与命令验证：`propose_patch` 只读生成 diff；`apply_patch_to_workspace` 审批后写入授权项目文件并校验旧内容哈希；`run_whitelisted_command` 审批后在项目根运行白名单命令（`pytest` / `python -m pytest` / `npm run build` / `cargo check` 等），输出自动截断。
+- M6 多步任务编排：新增迁移 0005（`agent_tasks` / `agent_task_steps` / `agent_evidence` + `tool_calls.task_id/step_id`）；任务页可创建计划、运行步骤、批准高风险步骤、失败重试、查看证据与 Markdown 最终报告。
+- 测试：`pytest` 76 通过（含项目工作区/混合检索/学习系统/文档工作台/编码工具/任务编排）+ `npm run build` + `cargo check` 全绿。
 
 **M4 打包预研（非硬验收）已完成** ✅：Tauri sidecar + 端口协商 + PyInstaller 打包可行性验证通过，详见 `docs/phase4-sidecar-research.md`。
 

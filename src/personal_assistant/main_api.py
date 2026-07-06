@@ -12,11 +12,18 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api.routes_activities import router as activities_router
+from .api.routes_agent_tasks import router as agent_tasks_router
 from .api.routes_chat import router as chat_router
+from .api.routes_coding import router as coding_router
 from .api.routes_documents import router as documents_router
+from .api.routes_files import router as files_router
 from .api.routes_health import router as health_router
+from .api.routes_learning import router as learning_router
+from .api.routes_projects import router as projects_router
 from .api.routes_sessions import router as sessions_router
 from .api.routes_settings import router as settings_router
+from .api.routes_tools import router as tools_router
 from .config import settings
 from .logging_setup import get_logger, setup_logging
 
@@ -59,6 +66,13 @@ app.include_router(sessions_router)
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(settings_router)
+app.include_router(tools_router)
+app.include_router(files_router)
+app.include_router(activities_router)
+app.include_router(projects_router)
+app.include_router(learning_router)
+app.include_router(coding_router)
+app.include_router(agent_tasks_router)
 
 
 @app.get("/")

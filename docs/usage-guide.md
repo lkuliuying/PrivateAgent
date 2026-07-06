@@ -21,9 +21,24 @@
 | M2 | 知识库 RAG：导入 PDF/Word/MD/TXT、切分、向量化、检索、来源引用、删除一致性、失败重试 | 已完成 |
 | M3 | 设置与打磨：设置/状态页、参数持久化、结构化日志、错误提示、pytest 基础测试 | 已完成 |
 | M4 | 打包预研：Tauri sidecar + 端口协商 + PyInstaller 打包可行性验证 | 已完成 |
+| 第二阶段 | 四区工作台 UI + 受控工具调用（审批状态机）+ 授权路径 + 文件/知识库增强 + 活动流 | 已完成 |
+| 第三阶段 M0–M6 | 项目工作区 + 混合检索 + 学习系统 + 文档工作台 + 编码修改（补丁审批写入）+ 白名单命令执行 + 多步任务编排 + 六入口导航 | 已完成 |
 | 第五阶段 | 完整安装包 / 依赖检测向导 / 配置 UI / 自动更新预研 / 跨平台 / 体积优化 | 部分完成（见下） |
 
 第五阶段已实现：NSIS 安装包、首启依赖检测向导、连接配置 UI、sidecar 生命周期与端口协商、Tauri updater 命令接线。尚未完成：updater 发布源与签名密钥部署、跨平台（macOS/Linux）、onedir 体积优化。文中涉及尚未完成的部分仍标注「（第五阶段规划，尚未实现）」。
+
+## 第三阶段新增能力（M0–M6）
+
+第三阶段把产品从「受控工作台助手」升级为「学习 + 文档 + 编码」个人 Agent。导航由四入口扩展为六入口：聊天 / 知识库 / 项目 / 学习 / 任务 / 设置。
+
+- **项目工作区（M1）**：在「项目」页授权一个代码项目目录，助手后台扫描目录树（自动忽略 `.git`/`node_modules`/`__pycache__` 等），提供目录树浏览、文件名/内容搜索（正则）、文件片段读取、git 状态/diff 查看。默认读取能力只读；写入与命令执行必须走 M5 审批工具。`rel_path` 越界访问被拒绝（403）。
+- **混合检索（M2）**：知识库检索同时使用向量相似度与关键词子串匹配，RRF 融合后可插拔 rerank。引用来源展示命中关键词与分数；禁用文档在两路召回中均被排除。文档支持 `doc_type`/`topic`/`tags`/`language` 元数据筛选与编辑。
+- **学习系统（M3）**：在「学习」页创建学习主题，助手基于知识库资料生成学习路线、练习题、复习卡片，并批改答题记录掌握程度。四标签页：路线 / 笔记 / 练习 / 卡片（翻卡复习）。
+- **文档工作台（M4）**：知识库页支持文档多选对比（共同点/差异/冲突/阅读顺序）、单文档章节摘要与术语表、对比结果导出 Markdown（须授权目录）、生成笔记重新入库。
+- **编码修改与命令验证（M5）**：`propose_patch` 只生成 diff，不写文件；`apply_patch_to_workspace` 审批后写入授权项目文件，并用 `expected_old_sha256` 防止应用过期补丁；`run_whitelisted_command` 只允许 `pytest`、`python -m pytest`、`npm run build`、`cargo check` 等白名单命令，输出会截断保存。
+- **多步任务编排（M6）**：任务页支持创建计划、按步骤运行工具、在高风险步骤暂停等待批准、失败步骤重试、查看每步证据，并在完成后生成可复制的 Markdown 报告。
+
+高风险操作（写文件、跑命令、多步任务）已经按 M5/M6 开放，仍坚持审批边界。
 
 ---
 
@@ -209,28 +224,28 @@ CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode
 
 ### 4.1 界面总览
 
-桌面应用采用左侧栏 + 主区两栏布局：
+第二阶段起，桌面应用采用「四区工作台 + 底部状态栏」布局：
 
 ```
-┌──────────────┬─────────────────────────────────┐
-│  左侧栏       │  主区（三视图切换）               │
-│  ─────────   │  ┌───────────────────────────┐  │
-│  私人助手     │  │  顶部标题栏                │  │
-│  + 新建       │  ├───────────────────────────┤  │
-│              │  │                           │  │
-│  会话列表     │  │  聊天视图 / 知识库视图 /    │  │
-│  · 会话A     │  │  设置状态视图              │  │
-│  · 会话B     │  │                           │  │
-│              │  │                           │  │
-│  ─────────   │  ├───────────────────────────┤  │
-│  📚 知识库   │  │  输入区（仅聊天视图）       │  │
-│  ⚙ 设置/状态 │  └───────────────────────────┘  │
-└──────────────┴─────────────────────────────────┘
+┌────┬────────────┬──────────────────────┬──────────────┐
+│导航│  列表区     │  主工作区             │  右检查器     │
+│rail│（仅聊天页）│  ┌──────────────────┐ │（可折叠）     │
+│    │  会话列表   │  │ 顶部标题栏        │ │ 当前会话上下文│
+│ 💬 │  · 会话A   │  ├──────────────────┤ │ 引用片段详情  │
+│ 📚 │  · 会话B   │  │ 聊天/知识库/任务/ │ │ 文件授权      │
+│ ✅ │            │  │ 设置 视图         │ │ 会话活动      │
+│ ⚙ │            │  │                  │ │              │
+├────┴────────────┴──────────────────────┴──────────────┤
+│ 状态栏：API · Ollama · MySQL · ChromaDB · 模型 · 任务   │
+└──────────────────────────────────────────────────────┘
 ```
 
-- **左侧栏（Sidebar）**：顶部品牌名与「+ 新建」按钮；中部会话列表（标题 + 最近更新时间，按更新时间倒序）；底部「📚 知识库」「⚙ 设置 / 状态」入口。
-- **主区**：顶部标题栏显示当前会话标题或视图名；下方根据当前视图显示聊天、知识库或设置/状态。
-- **三视图**：聊天（chat）、知识库（kb）、设置/状态（settings）。点击侧栏底部按钮切换到知识库或设置；在知识库/设置页时可点击任一会话回到聊天。
+- **导航 rail（最左）**：四个主入口——聊天 💬、知识库 📚、任务 ✅、设置 ⚙。
+- **列表区**：仅聊天页显示会话列表；其他页隐藏，主工作区占满。
+- **主工作区**：顶部标题栏 + 当前视图内容（聊天/知识库/任务/设置）。
+- **右检查器（可折叠）**：聊天页显示当前会话上下文、引用片段详情（点击对话中的来源引用查看原文）、文件授权、授权文件摘要、授权目录扫描、会话活动流。宽屏（≥1100px）可切换，窄屏自动收起避免挤压。
+- **底部状态栏**：API / Ollama / MySQL / ChromaDB 四项状态点 + 当前模型 + 任务状态，每 5 秒刷新。
+- **四视图**：聊天（chat）、知识库（kb）、任务（tasks）、设置（settings），点击导航 rail 切换。
 
 ### 4.2 聊天与会话管理
 
@@ -802,6 +817,9 @@ sidecar 不打包这些，需用户本机具备：
 | `test_health.py` | `GET /health` 返回四项（api/ollama/mysql/chroma），每项含 `ok` |
 | `test_repo.py` | 会话/消息 CRUD（创建、重命名、列表）、文档状态更新与 hash 查重 |
 | `test_settings.py` | 设置默认值存在、更新持久化、未知 key 被忽略 |
+| `test_tools.py` | M1 工具调用底座：ToolRegistry、审批状态机、is_trusted_path 越界、/tools/plan、approve/reject、tool_result 注入聊天、活动 started_at |
+| `test_chat_rag_e2e.py` | 聊天 SSE 流式 + RAG 端到端 |
+| `test_phase2.py` | M2/M3/M4：工具注册（summarize_file/import_to_kb）、批量导入、启用禁用、引用片段、禁用文档不参与检索、活动流列表与重试、文件扫描/摘要 |
 
 ### 11.2 运行测试
 
@@ -838,13 +856,15 @@ uv run pytest
 2. `ChatService._get_provider()` 与 `RagService._get_provider()` 根据 settings 选择具体 Provider。
 3. 上层 `chat.py` / `rag.py` 编排逻辑无需改动（依赖 Provider 接口而非具体实现）。
 
-### 12.2 Agent / 工具调用预留
+### 12.2 工具调用（第二阶段已实现）
 
-第一阶段不做自主 Agent 行动（不执行代码、不联网搜索、不读写系统文件）。架构上已为后续预留：
+第二阶段已实现受控工具调用（不执行代码、不联网搜索、不写系统文件，所有 confirm 工具需审批）：
 
-- `core/` 零 UI 依赖，可被任意 async 调用方复用（CLI / Web / 其他桌面端）。
-- 技术栈含 LangGraph，第一阶段用最简链路（`ChatOllama.astream`），复杂编排留待后续。
-- 第二阶段方向：工具调用与本地自动化（文件检索、代码辅助、联网搜索、命令执行审批）。
+- **工具底座**：`core/tools.py` 的 `ToolRegistry`/`ToolExecutor` + `core/approvals.py` 审批状态机 + `tool_calls` 审计表。
+- **三个工具**：`read_file`（读取授权文件）、`summarize_file`（LLM 摘要）、`import_to_kb`（导入知识库），均支持 PDF/Word/MD/TXT，均为 confirm 风险（执行前展示审批卡片，批准后才执行）。
+- **文件授权**：`trusted_paths` 表记录用户授权路径，工具只能访问授权路径（`core/permissions.py` 防 `..` 越界）。前端用 Tauri 原生文件选择器（`tauri-plugin-dialog`）授权，并可在检查器内直接对授权文件生成摘要、扫描授权目录下的可处理文件。
+- **活动流**：工具调用、文档导入、索引重建统一写入 `activities` 表，任务页与聊天页检查器展示，失败活动可重试。
+- **不做的边界**：第二阶段不开放 restricted 工具（写文件、删除、执行命令），不做完全自主 Agent。
 
 ### 12.3 云端能力预留
 
@@ -898,10 +918,27 @@ uv run pytest
 | POST | `/sessions` | 新建会话（标题默认「新对话」） | — | `{id,title,created_at,updated_at}`（201） |
 | GET | `/sessions/{id}/messages` | 指定会话的消息历史（时间正序） | — | `[{id,session_id,role,content,created_at}]` |
 | POST | `/chat/stream` | SSE 流式对话 | `{session_id,message,knowledge_base}` | SSE：`data: {type:token/done/title/error,...}\n\n` |
-| GET | `/documents` | 文档列表 | — | `[{id,name,status,chunk_count,size_bytes,...}]` |
+| GET | `/documents` | 文档列表（支持 search/status/enabled 筛选） | query | `[{id,name,status,enabled,chunk_count,...}]` |
 | POST | `/documents/import` | 上传文档（multipart `file`） | `file` | 文档对象（201）；重复返回 409 |
+| POST | `/documents/batch-import` | 批量导入（multipart `files`，上限 200） | `files` | `[{name,status,doc_id,error}]` |
+| PATCH | `/documents/{id}` | 启用/禁用文档 | `{enabled}` | 文档对象 |
+| POST | `/documents/{id}/reindex` | 重建单个文档索引 | — | 文档对象 |
+| POST | `/documents/reindex-all` | 重建全部文档索引 | — | `{triggered,skipped}` |
 | DELETE | `/documents/{id}` | 删除文档（同步清 ChromaDB + MySQL + 文件） | — | `{ok,id}` |
 | POST | `/documents/{id}/retry` | 重试失败/待处理导入（仅 failed/pending） | — | 文档对象 |
+| GET | `/chunks/{id}` | 引用片段详情 | — | `{id,doc_id,ordinal,content,...}` |
+| GET | `/tools` | 可用工具列表 | — | `[{name,description,risk_level,input_schema,...}]` |
+| POST | `/tools/plan` | LLM 规划是否需工具 | `{session_id,message}` | `{tool_call}` |
+| POST | `/tool-calls/{id}/approve` | 批准并执行工具 | — | 工具调用对象 |
+| POST | `/tool-calls/{id}/reject` | 拒绝工具（不执行） | — | 工具调用对象 |
+| GET | `/tool-calls` | 工具调用记录（可按 session 过滤） | query | `[工具调用对象]` |
+| POST | `/files/authorize` | 授权路径到 trusted_paths | `{path,kind}` | 授权对象（201） |
+| GET | `/files/trusted` | 已授权路径列表 | — | `[授权对象]` |
+| POST | `/files/summarize` | 总结已授权文件 | `{path}` | `{summary,name,size_bytes,...}` |
+| GET | `/files/scan` | 扫描授权目录可处理文件（上限 200） | query:path | `{path,files,count,truncated}` |
+| GET | `/activities` | 活动列表（可按 session/kind/status 过滤） | query | `[活动对象]` |
+| GET | `/activities/{id}` | 活动详情 | — | 活动对象 |
+| POST | `/activities/{id}/retry` | 重试失败活动（文档导入/索引重建） | — | 活动对象 |
 | GET | `/settings` | 获取设置 | — | `{llm_model,embed_model,llm_temperature,llm_context_length,kb_enabled_by_default,openai_api_key,openai_base_url,claude_api_key}` |
 | PUT | `/settings` | 更新设置（部分字段） | 同上结构的子集 | 更新后的完整设置 |
 
@@ -909,7 +946,7 @@ uv run pytest
 
 ## 附录 C · 数据库表结构
 
-共 5 张表，字符集 `utf8mb4` / `utf8mb4_unicode_ci`，引擎 InnoDB，主键 BIGINT 自增。由 `alembic/versions/0001_init.py` 创建。
+共 8 张表，字符集 `utf8mb4` / `utf8mb4_unicode_ci`，引擎 InnoDB，主键 BIGINT 自增。由 `alembic/versions/0001_init.py`（5 张）、`0002_phase2_tools.py`（tool_calls/trusted_paths/activities 3 张）、`0003_phase3_documents.py`（documents 增强）创建。
 
 ### sessions（会话）
 | 列 | 类型 | 说明 |
@@ -946,6 +983,8 @@ uv run pytest
 | status | ENUM('pending','processing','ready','failed','deleting') | 状态，默认 pending |
 | error_message | TEXT | 失败原因（可空） |
 | indexed_at | DATETIME(3) | 索引完成时间（可空） |
+| enabled | BOOLEAN | 启用/禁用，默认 true；禁用后不参与 RAG 检索（0003 迁移新增） |
+| last_error_at | DATETIME(3) | 最近失败时间（可空，0003 迁移新增） |
 | created_at / updated_at | DATETIME(3) | 创建/更新时间 |
 
 索引：`idx_doc_status(status)`、`idx_doc_hash(content_hash)`。
@@ -968,6 +1007,44 @@ uv run pytest
 | key | VARCHAR(128) PK | 设置键 |
 | value | TEXT | 设置值（可空） |
 | updated_at | DATETIME(3) | 更新时间 |
+
+### tool_calls（工具调用审计，0002 迁移新增）
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK AI | 主键 |
+| session_id | BIGINT FK→sessions(id)（可空） | 关联会话 |
+| tool_name | VARCHAR(128) | 工具名 |
+| risk_level | ENUM('safe','confirm','restricted') | 风险等级 |
+| status | ENUM('pending_approval','approved','rejected','running','succeeded','failed','cancelled') | 审批/执行状态；当前 approve 接口会原子占用 `pending_approval` 并直接进入 `running` 执行，避免并发重复执行 |
+| input_json / output_json | JSON | 输入/输出（可空） |
+| error_message | TEXT | 错误信息（可空） |
+| created_at / updated_at | DATETIME(3) | 创建/更新时间 |
+
+索引：`idx_tool_session(session_id, created_at)`、`idx_tool_status(status)`。
+
+### trusted_paths（授权路径，0002 迁移新增）
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK AI | 主键 |
+| path | VARCHAR(2048) | 授权的文件/目录绝对路径 |
+| kind | ENUM('file','directory') | 路径类型 |
+| granted_at | DATETIME(3) | 授权时间 |
+
+### activities（活动流，0002 迁移新增）
+| 列 | 类型 | 说明 |
+|---|---|---|
+| id | BIGINT PK AI | 主键 |
+| session_id | BIGINT FK→sessions(id)（可空） | 关联会话 |
+| kind | ENUM('tool','document_import','reindex','system') | 活动类型 |
+| title | VARCHAR(255) | 标题 |
+| status | ENUM('pending','waiting_approval','running','succeeded','failed','cancelled') | 状态 |
+| ref_type / ref_id | VARCHAR(64) / BIGINT | 关联对象类型与 id（如 tool_call / document_import） |
+| detail_json | JSON | 输入/输出摘要（可空） |
+| error_message | TEXT | 错误信息（可空） |
+| started_at / finished_at | DATETIME(3) | 开始/结束时间（可空） |
+| created_at / updated_at | DATETIME(3) | 创建/更新时间 |
+
+索引：`idx_activity_session(session_id, created_at)`、`idx_activity_status(status)`。
 
 ---
 

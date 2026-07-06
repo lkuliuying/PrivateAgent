@@ -17,10 +17,16 @@ from ..core.history import SessionRepository
 router = APIRouter(tags=["chat"])
 
 
+class ToolResultPayload(BaseModel):
+    tool_name: str
+    output: dict
+
+
 class ChatRequest(BaseModel):
     session_id: int
     message: str
     knowledge_base: bool = False
+    tool_result: ToolResultPayload | None = None
 
 
 @router.post("/chat/stream")
@@ -31,11 +37,15 @@ async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_session))
         raise HTTPException(status_code=404, detail="会话不存在")
 
     service = ChatService(db)
+    tool_result = req.tool_result.model_dump() if req.tool_result else None
 
     async def event_gen():
         try:
             async for event in service.stream_reply(
-                req.session_id, req.message, req.knowledge_base
+                req.session_id,
+                req.message,
+                req.knowledge_base,
+                tool_result=tool_result,
             ):
                 yield service.event_to_sse(event)
         except Exception as e:  # noqa: BLE001
