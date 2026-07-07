@@ -14,6 +14,7 @@ from sqlalchemy.dialects.mysql import (
     CHAR,
     DATETIME,
     ENUM,
+    FLOAT,
     INTEGER,
     JSON,
     MEDIUMTEXT,
@@ -465,11 +466,20 @@ class LearningCard(Base):
     )
     front: Mapped[str] = mapped_column(TEXT, nullable=False)
     back: Mapped[str] = mapped_column(TEXT, nullable=False)
+    # 第四阶段 M0：间隔重复调度字段（SM-2）。
+    due_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    interval_days: Mapped[int] = mapped_column(INTEGER, nullable=False, default=0, server_default="0")
+    ease_factor: Mapped[float] = mapped_column(FLOAT, nullable=False, default=2.5, server_default="2.5")
+    review_count: Mapped[int] = mapped_column(INTEGER, nullable=False, default=0, server_default="0")
+    lapse_count: Mapped[int] = mapped_column(INTEGER, nullable=False, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(
         DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
     )
 
-    __table_args__ = (Index("idx_learning_card_topic", "topic_id"),)
+    __table_args__ = (
+        Index("idx_learning_card_topic", "topic_id"),
+        Index("idx_learning_card_due", "topic_id", "due_at"),
+    )
 
 
 class LearningQuiz(Base):
@@ -533,8 +543,11 @@ class AgentTask(Base):
     goal: Mapped[str | None] = mapped_column(TEXT, nullable=True)
     status: Mapped[str] = mapped_column(
         ENUM(
+            "plan_draft",
+            "plan_approved",
             "planned",
             "waiting_approval",
+            "paused",
             "running",
             "succeeded",
             "failed",
@@ -648,4 +661,319 @@ class AgentEvidence(Base):
     __table_args__ = (
         Index("idx_agent_evidence_task", "task_id", "created_at"),
         Index("idx_agent_evidence_step", "step_id"),
+    )
+
+
+# ============================================================================
+# 第四阶段 M0：个人工作流（记忆 / 复习 / 补丁集 / 集合 / 抽取）
+# ============================================================================
+
+
+class MemoryItem(Base):
+    """长期记忆：偏好/学习/项目/文档/工作流/笔记，可被检索与沉淀。"""
+
+    __tablename__ = "memory_items"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "preference",
+            "learning",
+            "project",
+            "document",
+            "workflow",
+            "note",
+            name="memory_kind_enum",
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    content_md: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    summary: Mapped[str | None] = mapped_column(VARCHAR(1024), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    # 跨域软引用：不建外键，避免与 projects/learning_topics 循环依赖。
+    project_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    topic_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    tags_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(FLOAT, nullable=True)
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    sensitive: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    # 第四阶段 M1：记忆生命周期。draft=候选待确认 / confirmed=已确认 / archived=已归档。
+    # 与 enabled（运行时禁用开关）正交：检索默认取 status='confirmed' AND enabled=True。
+    status: Mapped[str] = mapped_column(
+        ENUM("draft", "confirmed", "archived", name="memory_status_enum"),
+        nullable=False,
+        default="confirmed",
+        server_default="confirmed",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    events: Mapped[list["MemoryEvent"]] = relationship(
+        back_populates="memory", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_memory_kind_enabled", "kind", "enabled"),
+        Index("idx_memory_project", "project_id"),
+        Index("idx_memory_topic", "topic_id"),
+        Index("idx_memory_status", "status", "enabled"),
+    )
+
+
+class MemoryEvent(Base):
+    """记忆事件流：创建/使用/编辑/禁用/删除等操作审计。"""
+
+    __tablename__ = "memory_events"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    memory_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("memory_items.id", ondelete="CASCADE"), nullable=False
+    )
+    event_type: Mapped[str] = mapped_column(
+        ENUM(
+            "created",
+            "used",
+            "edited",
+            "disabled",
+            "deleted",
+            name="memory_event_type_enum",
+        ),
+        nullable=False,
+    )
+    ref_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    ref_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    memory: Mapped[MemoryItem] = relationship(back_populates="events")
+
+    __table_args__ = (Index("idx_memory_event_memory", "memory_id", "created_at"),)
+
+
+class LearningReview(Base):
+    """复习记录：rating 驱动 SM-2 调度，更新所属卡片的 due_at/interval/ease。"""
+
+    __tablename__ = "learning_reviews"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    card_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("learning_cards.id", ondelete="CASCADE"), nullable=False
+    )
+    topic_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("learning_topics.id", ondelete="CASCADE"), nullable=False
+    )
+    rating: Mapped[str] = mapped_column(
+        ENUM("again", "hard", "good", "easy", name="learning_review_rating_enum"),
+        nullable=False,
+    )
+    previous_due_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    next_due_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_review_topic_time", "topic_id", "created_at"),
+        Index("idx_review_card_time", "card_id", "created_at"),
+    )
+
+
+class ProjectCommandProfile(Base):
+    """项目命令模板：test/build/lint/format/typecheck/custom，供任务编排复用。"""
+
+    __tablename__ = "project_command_profiles"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    # 跨域软引用：projects 表在另一域，不建外键。
+    project_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    name: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    command_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "test",
+            "build",
+            "lint",
+            "format",
+            "typecheck",
+            "custom",
+            name="command_profile_kind_enum",
+        ),
+        nullable=False,
+    )
+    timeout_seconds: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=120, server_default="120"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (Index("idx_command_profile_project", "project_id", "enabled"),)
+
+
+class PatchSet(Base):
+    """补丁集：一组文件级变更，带审批/应用/回滚状态机。"""
+
+    __tablename__ = "patch_sets"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    # 跨域软引用：projects / agent_tasks 在另一域，不建外键。
+    project_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    task_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "draft",
+            "waiting_approval",
+            "applied",
+            "rejected",
+            "rolled_back",
+            name="patch_set_status_enum",
+        ),
+        nullable=False,
+        default="draft",
+        server_default="draft",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    files: Mapped[list["PatchFile"]] = relationship(
+        back_populates="patch_set", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (Index("idx_patch_set_project", "project_id", "created_at"),)
+
+
+class PatchFile(Base):
+    """补丁集中单个文件的变更：diff + 旧/新内容与 sha256。"""
+
+    __tablename__ = "patch_files"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    patch_set_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("patch_sets.id", ondelete="CASCADE"), nullable=False
+    )
+    rel_path: Mapped[str] = mapped_column(VARCHAR(2048), nullable=False)
+    old_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    new_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    diff_text: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    old_content: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    new_content: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "draft",
+            "applied",
+            "rejected",
+            "rolled_back",
+            name="patch_file_status_enum",
+        ),
+        nullable=False,
+        default="draft",
+        server_default="draft",
+    )
+
+    patch_set: Mapped[PatchSet] = relationship(back_populates="files")
+
+    __table_args__ = (Index("idx_patch_file_set", "patch_set_id"),)
+
+
+class DocumentCollection(Base):
+    """文档集合：围绕一个目标聚合多篇文档，供抽取与检索。"""
+
+    __tablename__ = "document_collections"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    goal: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    tags_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    items: Mapped[list["DocumentCollectionItem"]] = relationship(
+        back_populates="collection", cascade="all, delete-orphan"
+    )
+
+
+class DocumentCollectionItem(Base):
+    """集合成员：doc_id 软引用 documents，order_index 决定展示顺序。"""
+
+    __tablename__ = "document_collection_items"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    collection_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("document_collections.id", ondelete="CASCADE"), nullable=False
+    )
+    # 跨域软引用：documents 在另一域，不建外键。
+    doc_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    order_index: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+
+    collection: Mapped[DocumentCollection] = relationship(back_populates="items")
+
+    __table_args__ = (UniqueConstraint("collection_id", "doc_id", name="uk_collection_doc"),)
+
+
+class DocumentExtraction(Base):
+    """文档/集合的结构化抽取：术语/表格摘要/行动项/论断/代码/模板报告。"""
+
+    __tablename__ = "document_extractions"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    # 跨域软引用：documents / document_collections 在另一域，不建外键。
+    doc_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    collection_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "terms",
+            "table_summary",
+            "actions",
+            "claims",
+            "code",
+            "template_report",
+            name="extraction_kind_enum",
+        ),
+        nullable=False,
+    )
+    content_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    content_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    source_refs_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_extraction_doc", "doc_id", "kind"),
+        Index("idx_extraction_collection", "collection_id", "kind"),
     )

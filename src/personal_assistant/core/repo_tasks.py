@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import AgentEvidence, AgentTask, AgentTaskStep
@@ -21,12 +21,13 @@ class AgentTaskRepository:
         goal: str | None,
         session_id: int | None,
         plan_json: dict | None,
+        status: str = "planned",
     ) -> AgentTask:
         task = AgentTask(
             title=title,
             goal=goal,
             session_id=session_id,
-            status="planned",
+            status=status,
             plan_json=plan_json,
         )
         self.db.add(task)
@@ -57,6 +58,31 @@ class AgentTaskRepository:
         )
         await self.db.commit()
 
+    async def update_plan(
+        self,
+        task_id: int,
+        *,
+        title: str | None = None,
+        goal: str | None = None,
+        plan_json: dict | None = None,
+        status: str | None = None,
+    ) -> None:
+        values: dict = {}
+        if title is not None:
+            values["title"] = title
+        if goal is not None:
+            values["goal"] = goal
+        if plan_json is not None:
+            values["plan_json"] = plan_json
+        if status is not None:
+            values["status"] = status
+        if not values:
+            return
+        await self.db.execute(
+            update(AgentTask).where(AgentTask.id == task_id).values(**values)
+        )
+        await self.db.commit()
+
 
 class AgentTaskStepRepository:
     def __init__(self, db: AsyncSession) -> None:
@@ -79,6 +105,13 @@ class AgentTaskStepRepository:
         for obj in objs:
             await self.db.refresh(obj)
         return objs
+
+    async def replace_many(self, task_id: int, steps: list[dict]) -> list[AgentTaskStep]:
+        await self.db.execute(
+            delete(AgentTaskStep).where(AgentTaskStep.task_id == task_id)
+        )
+        await self.db.commit()
+        return await self.create_many(task_id, steps)
 
     async def get(self, step_id: int) -> Optional[AgentTaskStep]:
         return await self.db.get(AgentTaskStep, step_id)
@@ -126,6 +159,37 @@ class AgentTaskStepRepository:
         )
         await self.db.commit()
 
+    async def reset_from(self, task_id: int, ordinal: int) -> None:
+        await self.db.execute(
+            update(AgentTaskStep)
+            .where(
+                AgentTaskStep.task_id == task_id,
+                AgentTaskStep.ordinal >= ordinal,
+            )
+            .values(
+                status="planned",
+                tool_call_id=None,
+                output_json=None,
+                error_message=None,
+                started_at=None,
+                finished_at=None,
+            )
+        )
+        await self.db.commit()
+
+    async def cancel_pending(self, task_id: int) -> None:
+        await self.db.execute(
+            update(AgentTaskStep)
+            .where(
+                AgentTaskStep.task_id == task_id,
+                AgentTaskStep.status.in_(
+                    ["planned", "waiting_approval", "running"]
+                ),
+            )
+            .values(status="cancelled", finished_at=utcnow())
+        )
+        await self.db.commit()
+
 
 class AgentEvidenceRepository:
     def __init__(self, db: AsyncSession) -> None:
@@ -154,11 +218,21 @@ class AgentEvidenceRepository:
         await self.db.refresh(ev)
         return ev
 
-    async def list_by_task(self, task_id: int) -> list[AgentEvidence]:
+    async def list_by_task(
+        self,
+        task_id: int,
+        *,
+        step_id: int | None = None,
+        kind: str | None = None,
+    ) -> list[AgentEvidence]:
         stmt = (
             select(AgentEvidence)
             .where(AgentEvidence.task_id == task_id)
             .order_by(AgentEvidence.created_at.asc(), AgentEvidence.id.asc())
         )
+        if step_id is not None:
+            stmt = stmt.where(AgentEvidence.step_id == step_id)
+        if kind is not None:
+            stmt = stmt.where(AgentEvidence.kind == kind)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())

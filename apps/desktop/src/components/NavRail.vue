@@ -5,12 +5,13 @@ import {
   PhFolderSimple,
   PhGraduationCap,
   PhListChecks,
+  PhBrain,
   PhGearSix,
   PhSparkle,
 } from "@phosphor-icons/vue";
 
 /** 工作台视图名（与 App.vue view union 对齐） */
-type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "settings";
+type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
 
 defineProps<{ active: View }>();
 const emit = defineEmits<{ navigate: [view: View] }>();
@@ -21,6 +22,7 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "projects", label: "项目", icon: PhFolderSimple },
   { key: "learning", label: "学习", icon: PhGraduationCap },
   { key: "tasks", label: "任务", icon: PhListChecks },
+  { key: "memory", label: "记忆", icon: PhBrain },
   { key: "settings", label: "设置", icon: PhGearSix },
 ];
 </script>

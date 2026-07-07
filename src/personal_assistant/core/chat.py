@@ -4,7 +4,7 @@
 M1 采用最简链路（ChatOllama.astream），LangGraph 留待后续复杂编排。
 
 事件类型：
-  token / done(含 sources) / title / error
+  token / done(含 sources 与 memories) / title / error
 停止生成：前端断开 -> 生成器 finally 保存已生成部分。
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
 from .history import MessageRepository, SessionRepository
-from .provider import OllamaProvider, ProviderError
+from .provider import OllamaProvider, ProviderError, ProviderRouter
 from .settings import SettingsService
 
 logger = get_logger(__name__)
@@ -61,11 +61,7 @@ class ChatService:
         if self._provider is not None:
             return self._provider
         s = await SettingsService(self.db).get_all()
-        return OllamaProvider(
-            llm_model=s["llm_model"],
-            temperature=float(s["llm_temperature"]),
-            context_length=int(s["llm_context_length"]),
-        )
+        return ProviderRouter(s).chat_provider()
 
     async def stream_reply(
         self,
@@ -88,6 +84,7 @@ class ChatService:
 
         # 构造 system prompt
         sources: list[dict] = []
+        memories_used: list[dict] = []
         if knowledge_base:
             from .rag import RagService
 
@@ -111,6 +108,25 @@ class ChatService:
                 )
         else:
             system_content = SYSTEM_PROMPT
+
+        # 长期记忆注入（独立于 knowledge_base；失败容错降级为空，不阻断聊天）
+        try:
+            from .memory import MemoryService
+
+            mem_svc = MemoryService(self.db)
+            mems = await mem_svc.retrieve_for_context(user_content, top_k=5)
+            if mems:
+                memories_used = mem_svc.format_sources(mems)
+                system_content = (
+                    system_content
+                    + "\n\n以下是关于用户的长期记忆，回答时请酌情参考：\n"
+                    + mem_svc.format_memory_context(mems)
+                )
+                await mem_svc.record_usage(
+                    [m.id for m in mems], ref_type="chat_session", ref_id=session_id
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("memory injection failed, continuing without memory")
 
         # 工具结果注入
         if tool_result:
@@ -147,6 +163,7 @@ class ChatService:
                 "message_id": msg.id,
                 "content": assistant_content,
                 "sources": sources,
+                "memories": memories_used,
             }
 
             if is_first_turn:

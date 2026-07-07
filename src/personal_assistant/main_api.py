@@ -14,13 +14,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .api.routes_activities import router as activities_router
 from .api.routes_agent_tasks import router as agent_tasks_router
+from .api.routes_backup import router as backup_router
 from .api.routes_chat import router as chat_router
 from .api.routes_coding import router as coding_router
+from .api.routes_commands import router as commands_router
+from .api.routes_document_collections import router as document_collections_router
 from .api.routes_documents import router as documents_router
 from .api.routes_files import router as files_router
 from .api.routes_health import router as health_router
 from .api.routes_learning import router as learning_router
+from .api.routes_learning_reviews import router as learning_reviews_router
+from .api.routes_memories import router as memories_router
+from .api.routes_patch_sets import router as patch_sets_router
 from .api.routes_projects import router as projects_router
+from .api.routes_providers import router as providers_router
 from .api.routes_sessions import router as sessions_router
 from .api.routes_settings import router as settings_router
 from .api.routes_tools import router as tools_router
@@ -73,6 +80,13 @@ app.include_router(projects_router)
 app.include_router(learning_router)
 app.include_router(coding_router)
 app.include_router(agent_tasks_router)
+app.include_router(backup_router)
+app.include_router(document_collections_router)
+app.include_router(learning_reviews_router)
+app.include_router(memories_router)
+app.include_router(patch_sets_router)
+app.include_router(commands_router)
+app.include_router(providers_router)
 
 
 @app.get("/")

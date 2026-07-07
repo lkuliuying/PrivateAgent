@@ -160,6 +160,16 @@ cd apps/desktop && npm run tauri build    # 打包安装程序
 - M6 多步任务编排：新增迁移 0005（`agent_tasks` / `agent_task_steps` / `agent_evidence` + `tool_calls.task_id/step_id`）；任务页可创建计划、运行步骤、批准高风险步骤、失败重试、查看证据与 Markdown 最终报告。
 - 测试：`pytest` 76 通过（含项目工作区/混合检索/学习系统/文档工作台/编码工具/任务编排）+ `npm run build` + `cargo check` 全绿。
 
+**第四阶段（M0–M6）已完成** ✅：从"学习 + 文档 + 编码"个人 Agent 升级为"长期记忆 + 主动复习 + 可回滚工作流 + 可配置 Provider"个人系统。详见 `docs/phase4-plan.md`。
+- M0 底座：迁移 0006/0007/0008（长期记忆、学习复习、文档集合、patch set、任务计划状态扩展）+ 七入口导航（新增记忆）。
+- M1 长期记忆：记忆 CRUD、搜索、候选生成、启用/禁用/敏感过滤、聊天注入并展示引用来源。
+- M2 学习 2.0：due_at 复习调度、今日复习、错题本、主题 dashboard、学习周报、学习复习候选记忆。
+- M3 文档工作台 2.0：文档集合、结构化抽取、模板报告、OCR 入口占位与来源 refs。
+- M4 编码工作流 2.0：项目命令配置、多文件 patch set、审批 apply/reject/rollback、命令失败诊断。
+- M5 任务计划 2.0：`task_planner.py`、计划草稿、计划编辑、整体审批、暂停/取消/继续、从指定步骤继续、证据筛选。
+- M6 Provider 与数据治理：`ProviderRouter`、OpenAI-compatible/Claude Provider、远程发送范围提示、备份导出、恢复预览、学习主题/任务报告导出。
+- 测试：`pytest` 123 通过 + `npm run build` + `cargo check` 全绿，`alembic current -> 0008 (head)`，健康检查 API/Ollama/MySQL/ChromaDB 全绿。
+
 **M4 打包预研（非硬验收）已完成** ✅：Tauri sidecar + 端口协商 + PyInstaller 打包可行性验证通过，详见 `docs/phase4-sidecar-research.md`。
 
 **第五阶段（安装包与分发）已部分完成** ✅：

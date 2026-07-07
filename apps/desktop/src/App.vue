@@ -10,6 +10,7 @@ import ChatView from "./components/ChatView.vue";
 import KnowledgeView from "./components/KnowledgeView.vue";
 import ProjectWorkspace from "./components/ProjectWorkspace.vue";
 import LearningWorkspace from "./components/LearningWorkspace.vue";
+import MemoryWorkspace from "./components/MemoryWorkspace.vue";
 import SettingsView from "./components/SettingsView.vue";
 import ConfigWizard from "./components/ConfigWizard.vue";
 import {
@@ -27,14 +28,19 @@ import {
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
+  candidateMemories,
 } from "./api";
 import { isTauri } from "@tauri-apps/api/core";
-import type { Message, Session, Source, ToolCall } from "./types";
+import type { Message, MemorySource, Session, Source, ToolCall } from "./types";
 
-type ChatMessage = Message & { sources?: Source[]; tool_call?: ToolCall };
+type ChatMessage = Message & {
+  sources?: Source[];
+  memories?: MemorySource[];
+  tool_call?: ToolCall;
+};
 
 // 工作台视图（与 NavRail 的 View 对齐）
-type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "settings";
+type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -94,6 +100,8 @@ const pageTitle = computed(() => {
       return "学习";
     case "tasks":
       return "任务";
+    case "memory":
+      return "记忆";
     case "settings":
       return "设置 / 状态";
   }
@@ -376,6 +384,7 @@ function streamAssistantReply(
         if (e.message_id) messages.value[aiIdx].id = e.message_id;
         if (e.content) messages.value[aiIdx].content = e.content;
         if (e.sources) messages.value[aiIdx].sources = e.sources;
+        if (e.memories) messages.value[aiIdx].memories = e.memories;
       } else if (e.type === "title" && e.title && currentSession.value) {
         currentSession.value.title = e.title;
         const s = sessions.value.find((x) => x.id === sid);
@@ -393,6 +402,21 @@ function streamAssistantReply(
     },
     toolResult
   );
+}
+
+/** 从当前对话生成候选记忆（落库 draft，待用户在记忆页确认）。 */
+async function onGenCandidates() {
+  if (!currentSession.value) return;
+  const sid = currentSession.value.id;
+  try {
+    const list = await candidateMemories({
+      source_type: "chat_session",
+      source_id: sid,
+    });
+    window.alert(`已生成 ${list.length} 条候选记忆（draft，请在记忆页确认）`);
+  } catch (e) {
+    window.alert(`生成候选记忆失败：${e}`);
+  }
 }
 
 /** 批准工具调用：执行后流式总结结果。 */
@@ -517,6 +541,7 @@ function stopGenerate() {
     <ProjectWorkspace v-else-if="view === 'projects'" />
     <LearningWorkspace v-else-if="view === 'learning'" />
     <TaskWorkspace v-else-if="view === 'tasks'" />
+    <MemoryWorkspace v-else-if="view === 'memory'" />
     <ChatView
       v-else-if="view === 'chat' && currentSession"
       :messages="messages"
@@ -529,6 +554,7 @@ function stopGenerate() {
       @approve="onApproveToolCall"
       @reject="onRejectToolCall"
       @select-chunk="currentChunkId = $event"
+      @gen-candidates="onGenCandidates"
     />
     <div v-else class="welcome">
       <p class="welcome-title">👋 欢迎使用私人助手</p>

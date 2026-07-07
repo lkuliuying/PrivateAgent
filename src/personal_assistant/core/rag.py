@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
-from .provider import OllamaProvider
+from .provider import OllamaProvider, ProviderRouter
 
 logger = get_logger(__name__)
 
@@ -147,7 +147,7 @@ class RagService:
         from .settings import SettingsService
 
         s = await SettingsService(self.db).get_all()
-        return OllamaProvider(embed_model=s["embed_model"])
+        return ProviderRouter(s).embedding_provider()
 
     async def retrieve(
         self,

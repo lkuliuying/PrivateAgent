@@ -31,6 +31,7 @@ export interface ChatEvent {
   title?: string;
   message?: string;
   sources?: Source[];
+  memories?: MemorySource[];
 }
 
 export type DocStatus = "pending" | "processing" | "ready" | "failed" | "deleting";
@@ -247,6 +248,12 @@ export interface LearningCard {
   front: string;
   back: string;
   created_at: string;
+  // 第四阶段 M0：间隔重复（ALTER ADDITIVE，不重排既有字段）
+  due_at: string | null;
+  interval_days: number;
+  ease_factor: number;
+  review_count: number;
+  lapse_count: number;
 }
 
 // ============ 第三阶段 M1：项目工作区 ============
@@ -344,8 +351,11 @@ export interface ProjectStats {
 // ============ 第三阶段 M6：多步任务 ============
 
 export type AgentTaskStatus =
+  | "plan_draft"
+  | "plan_approved"
   | "planned"
   | "waiting_approval"
+  | "paused"
   | "running"
   | "succeeded"
   | "failed"
@@ -429,4 +439,421 @@ export interface CompareResult {
 export interface ExportResult {
   path: string;
   size_bytes: number;
+}
+
+// ============ 第四阶段 M1：长期记忆 ============
+
+export type MemoryKind =
+  | 'preference'
+  | 'learning'
+  | 'project'
+  | 'document'
+  | 'workflow'
+  | 'note';
+
+export type MemoryStatus = 'draft' | 'confirmed' | 'archived';
+
+export type MemoryEventType =
+  | 'created'
+  | 'used'
+  | 'edited'
+  | 'disabled'
+  | 'deleted';
+
+export interface MemoryItem {
+  id: number;
+  kind: MemoryKind;
+  title: string;
+  content_md: string;
+  summary: string | null;
+  source_type: string | null;
+  source_id: number | null;
+  project_id: number | null;
+  topic_id: number | null;
+  tags_json: string[] | null;
+  confidence: number | null;
+  enabled: boolean;
+  sensitive: boolean;
+  status: MemoryStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 聊天回答中「使用了哪些记忆」的来源条目。 */
+export interface MemorySource {
+  id: number;
+  title: string;
+  kind: MemoryKind;
+  summary: string | null;
+}
+
+export interface MemoryEvent {
+  id: number;
+  memory_id: number;
+  event_type: MemoryEventType;
+  ref_type: string | null;
+  ref_id: number | null;
+  detail_json: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface MemoryCreate {
+  kind: MemoryKind;
+  title: string;
+  content_md: string;
+  summary?: string;
+  source_type?: string;
+  source_id?: number;
+  project_id?: number;
+  topic_id?: number;
+  tags?: string[];
+  confidence?: number;
+  sensitive?: boolean;
+}
+
+export interface MemoryUpdate {
+  title?: string;
+  content_md?: string;
+  summary?: string;
+  tags?: string[];
+  confidence?: number;
+  enabled?: boolean;
+  sensitive?: boolean;
+  status?: MemoryStatus;
+}
+
+export interface MemorySearchRequest {
+  query?: string;
+  kind?: MemoryKind;
+  status?: MemoryStatus;
+  enabled?: boolean;
+  project_id?: number;
+  topic_id?: number;
+}
+
+export interface MemoryCandidateRequest {
+  source_type: 'agent_task' | 'chat_session' | 'learning_review';
+  source_id: number;
+}
+
+// ============ 第四阶段 M0：学习复习（骨架） ============
+
+export type ReviewRating = 'again' | 'hard' | 'good' | 'easy';
+
+export interface LearningReview {
+  id: number;
+  card_id: number;
+  topic_id: number;
+  rating: ReviewRating;
+  previous_due_at: string | null;
+  next_due_at: string | null;
+  created_at: string;
+}
+
+// ============ 第四阶段 M2：学习复习 2.0 ============
+
+export interface ReviewResponse {
+  card: LearningCard;
+  review: LearningReview;
+}
+
+export interface LearningDashboard {
+  topic_id: number;
+  topic_title: string;
+  total_cards: number;
+  due_today: number;
+  reviewed_cards: number;
+  total_lapses: number;
+  total_nodes: number;
+  mastered_nodes: number;
+  weak_nodes: number;
+  reviews_7d: number;
+  rating_counts_7d: Record<string, number>;
+}
+
+export interface WeakPoint {
+  kind: 'node' | 'card';
+  id: number;
+  title: string;
+  summary: string | null;
+  mastery_level: string | null;
+  lapse_count: number | null;
+  due_at: string | null;
+}
+
+export interface WrongAnswer {
+  attempt_id: number;
+  quiz_id: number;
+  question: string;
+  reference_answer: string;
+  explanation: string | null;
+  user_answer: string | null;
+  result: 'wrong' | 'partial';
+  created_at: string | null;
+}
+
+export interface WeeklyReport {
+  report_md: string;
+  stats: {
+    reviews_7d: number;
+    rating_counts: Record<string, number>;
+    wrong_count: number;
+    weak_count: number;
+  };
+}
+
+// ============ 第四阶段 M0：文档集合 / 抽取（骨架） ============
+
+export type ExtractionKind =
+  | 'terms'
+  | 'table_summary'
+  | 'actions'
+  | 'claims'
+  | 'code'
+  | 'template_report';
+
+export interface DocumentCollection {
+  id: number;
+  title: string;
+  goal: string | null;
+  tags_json: string[] | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentCollectionItem {
+  id: number;
+  collection_id: number;
+  doc_id: number;
+  order_index: number;
+}
+
+export interface DocumentExtraction {
+  id: number;
+  doc_id: number | null;
+  collection_id: number | null;
+  kind: ExtractionKind;
+  content_json: Record<string, unknown> | null;
+  content_md: string | null;
+  source_refs_json: unknown[] | null;
+  created_at: string;
+}
+
+// ============ 第四阶段 M3：文档集合 / 抽取 / 模板报告 ============
+
+export type DocExtractionKind =
+  | 'terms'
+  | 'table_summary'
+  | 'actions'
+  | 'claims'
+  | 'code';
+
+export type TemplateKind =
+  | 'study_note'
+  | 'tech_summary'
+  | 'paper_reading'
+  | 'project_materials'
+  | 'meeting_minutes';
+
+export interface CollectionDetailItem {
+  id: number;
+  collection_id: number;
+  doc_id: number;
+  doc_name: string | null;
+  doc_status: string | null;
+  order_index: number;
+}
+
+export interface CollectionDetail extends DocumentCollection {
+  items: CollectionDetailItem[];
+}
+
+export interface ExtractRequest {
+  kind: DocExtractionKind;
+}
+
+export interface TemplateReportRequest {
+  template: TemplateKind;
+  doc_ids?: number[];
+  collection_id?: number;
+}
+
+export interface TemplateReportResponse {
+  report_md: string;
+  extraction: DocumentExtraction;
+}
+
+export interface OcrResult {
+  doc_id: number;
+  status: string;
+  message: string;
+}
+
+// ============ 第四阶段 M0：Patch set / 命令配置 / Provider / 备份（骨架） ============
+
+export type PatchSetStatus =
+  | 'draft'
+  | 'waiting_approval'
+  | 'applied'
+  | 'rejected'
+  | 'rolled_back';
+
+export type PatchFileStatus =
+  | 'draft'
+  | 'applied'
+  | 'rejected'
+  | 'rolled_back';
+
+export type CommandProfileKind =
+  | 'test'
+  | 'build'
+  | 'lint'
+  | 'format'
+  | 'typecheck'
+  | 'custom';
+
+export type ProviderType = 'ollama' | 'openai' | 'claude';
+
+export interface ProjectCommandProfile {
+  id: number;
+  project_id: number;
+  name: string;
+  command_json: Record<string, unknown>;
+  kind: CommandProfileKind;
+  timeout_seconds: number;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface PatchFile {
+  id: number;
+  patch_set_id: number;
+  rel_path: string;
+  old_sha256: string | null;
+  new_sha256: string | null;
+  diff_text: string;
+  status: PatchFileStatus;
+}
+
+export interface PatchSet {
+  id: number;
+  project_id: number;
+  task_id: number | null;
+  title: string;
+  status: PatchSetStatus;
+  created_at: string;
+  updated_at: string;
+  files: PatchFile[];
+}
+
+// ============ 第四阶段 M4：编码工作流 ============
+
+export interface PatchFileCreate {
+  rel_path: string;
+  new_content: string;
+  create?: boolean;
+}
+
+export interface PatchSetCreate {
+  title: string;
+  files: PatchFileCreate[];
+  task_id?: number;
+}
+
+export interface ApplyResult {
+  patch_set_id: number;
+  status: string;
+  written?: Array<{ rel_path: string; size_bytes?: number }>;
+  restored?: Array<{ rel_path: string; action: string }>;
+}
+
+export interface CommandProfileCreate {
+  name: string;
+  command_json: Record<string, unknown>;
+  kind: CommandProfileKind;
+  timeout_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface CommandProfileUpdate {
+  name?: string;
+  command_json?: Record<string, unknown>;
+  kind?: CommandProfileKind;
+  timeout_seconds?: number;
+  enabled?: boolean;
+}
+
+export interface RunResult {
+  project_id: number;
+  profile_id: number;
+  profile_name: string;
+  args: string[];
+  cwd: string;
+  returncode: number;
+  stdout: string;
+  stderr: string;
+  output: string;
+  truncated: boolean;
+  succeeded: boolean;
+}
+
+export interface DiagnoseRequest {
+  output: string;
+  returncode: number;
+  args?: string[];
+}
+
+export interface ErrorFileOut {
+  file: string;
+  line: number;
+  message: string;
+}
+
+export interface DiagnoseResult {
+  summary: string;
+  error_files: ErrorFileOut[];
+  suggestion: string;
+}
+
+export interface ProviderInfo {
+  type: ProviderType;
+  enabled: boolean;
+  remote: boolean;
+  configured?: boolean;
+}
+
+export interface ProviderConfig {
+  provider_type: ProviderType;
+  remote_provider_enabled: boolean;
+  ollama: { model: string; embed_model: string };
+  openai: { base_url: string; model: string; configured: boolean };
+  claude: { model: string; configured: boolean };
+}
+
+export interface ProviderPrivacy {
+  provider_type: ProviderType;
+  remote_provider_enabled: boolean;
+  sends: string[];
+}
+
+export interface ProviderStatus {
+  config: ProviderConfig;
+  privacy: ProviderPrivacy;
+  items: ProviderInfo[];
+}
+
+export interface BackupExportResult {
+  path: string;
+  size_bytes: number;
+  created_at: string;
+  tables?: Record<string, number>;
+}
+
+export interface BackupRestorePreview {
+  path: string;
+  created_at: string;
+  tables: Record<string, number>;
+  will_restore: string[];
+  preview_only: string[];
+  note: string;
 }

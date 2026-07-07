@@ -143,3 +143,199 @@ class OllamaProvider:
         # 兼容 :latest 等后缀差异
         wanted_base = wanted.split(":")[0]
         return any(m.split(":")[0] == wanted_base for m in available)
+
+
+class OpenAICompatibleProvider:
+    """OpenAI-compatible chat provider using raw HTTP.
+
+    Embeddings intentionally fall back to Ollama elsewhere unless a later phase
+    adds an OpenAI embedding model selector.
+    """
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        temperature: float = 0.7,
+    ) -> None:
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+
+    def _headers(self) -> dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    async def chat(self, messages: list[dict[str, str]]) -> str:
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    f"{self.base_url}/chat/completions",
+                    headers=self._headers(),
+                    json=payload,
+                )
+                r.raise_for_status()
+                data = r.json()
+                return str(data["choices"][0]["message"]["content"])
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"OpenAI-compatible chat 失败: {e}") from e
+
+    async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        yield await self.chat(messages)
+
+    async def health(self) -> dict[str, Any]:
+        result = {
+            "ok": False,
+            "base_url": self.base_url,
+            "model": self.model,
+            "privacy_scope": "chat messages and selected context",
+        }
+        if not self.api_key:
+            result["error"] = "未配置 API key"
+            return result
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(f"{self.base_url}/models", headers=self._headers())
+                result["ok"] = r.status_code < 500
+                result["status_code"] = r.status_code
+        except Exception as e:  # noqa: BLE001
+            result["error"] = f"无法连接 OpenAI-compatible Provider: {e}"
+        return result
+
+
+class ClaudeProvider:
+    """Anthropic Claude messages provider using raw HTTP."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        temperature: float = 0.7,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+        self.base_url = "https://api.anthropic.com/v1"
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+        }
+
+    @staticmethod
+    def _convert_messages(messages: list[dict[str, str]]) -> tuple[str | None, list[dict]]:
+        system_parts: list[str] = []
+        out: list[dict] = []
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system_parts.append(content)
+            elif role == "assistant":
+                out.append({"role": "assistant", "content": content})
+            else:
+                out.append({"role": "user", "content": content})
+        return ("\n\n".join(system_parts) or None), out
+
+    async def chat(self, messages: list[dict[str, str]]) -> str:
+        system, converted = self._convert_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": converted,
+            "max_tokens": 4096,
+            "temperature": self.temperature,
+        }
+        if system:
+            payload["system"] = system
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                r = await client.post(
+                    f"{self.base_url}/messages", headers=self._headers(), json=payload
+                )
+                r.raise_for_status()
+                data = r.json()
+                parts = data.get("content") or []
+                return "".join(
+                    str(p.get("text", "")) for p in parts if p.get("type") == "text"
+                )
+        except Exception as e:  # noqa: BLE001
+            raise ProviderError(f"Claude chat 失败: {e}") from e
+
+    async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+        yield await self.chat(messages)
+
+    async def health(self) -> dict[str, Any]:
+        if not self.api_key:
+            return {"ok": False, "model": self.model, "error": "未配置 API key"}
+        return {
+            "ok": True,
+            "model": self.model,
+            "privacy_scope": "chat messages and selected context",
+            "note": "Claude Provider 使用真实调用时会在聊天接口验证。",
+        }
+
+
+class ProviderRouter:
+    """Resolve configured LLM provider while keeping Ollama as the safe default."""
+
+    def __init__(self, settings: dict[str, str]) -> None:
+        self.settings = settings
+
+    def privacy_scope(self) -> dict[str, Any]:
+        provider_type = self.settings.get("provider_type", "ollama")
+        remote_enabled = (
+            self.settings.get("remote_provider_enabled", "false").lower() == "true"
+        )
+        return {
+            "provider_type": provider_type,
+            "remote_provider_enabled": remote_enabled,
+            "sends": (
+                []
+                if provider_type == "ollama" or not remote_enabled
+                else ["system prompt", "recent chat messages", "selected RAG/memory context"]
+            ),
+        }
+
+    def chat_provider(self) -> Any:
+        provider_type = self.settings.get("provider_type", "ollama")
+        remote_enabled = (
+            self.settings.get("remote_provider_enabled", "false").lower() == "true"
+        )
+        temperature = float(self.settings.get("llm_temperature", settings.llm_temperature))
+        if provider_type == "openai" and remote_enabled:
+            return OpenAICompatibleProvider(
+                base_url=self.settings.get("openai_base_url") or "https://api.openai.com/v1",
+                api_key=self.settings.get("openai_api_key") or "",
+                model=self.settings.get("openai_model") or "gpt-4o-mini",
+                temperature=temperature,
+            )
+        if provider_type == "claude" and remote_enabled:
+            return ClaudeProvider(
+                api_key=self.settings.get("claude_api_key") or "",
+                model=self.settings.get("claude_model") or "claude-3-5-sonnet-latest",
+                temperature=temperature,
+            )
+        return OllamaProvider(
+            llm_model=self.settings.get("llm_model") or settings.llm_model,
+            temperature=temperature,
+            context_length=int(
+                self.settings.get("llm_context_length", settings.llm_context_length)
+            ),
+        )
+
+    def embedding_provider(self) -> OllamaProvider:
+        return OllamaProvider(embed_model=self.settings.get("embed_model") or settings.embed_model)

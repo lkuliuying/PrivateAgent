@@ -6,6 +6,7 @@ import {
   deleteDocument,
   importDocument,
   listDocuments,
+  ocrDocument,
   patchDocument,
   reindexAllDocuments,
   reindexDocument,
@@ -14,6 +15,7 @@ import {
 } from "../api";
 import type { CompareResult, DocumentItem, SectionSummary } from "../types";
 import DocumentComparePanel from "./DocumentComparePanel.vue";
+import CollectionWorkspace from "./CollectionWorkspace.vue";
 
 const docs = ref<DocumentItem[]>([]);
 const search = ref("");
@@ -30,6 +32,10 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const batchInput = ref<HTMLInputElement | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let loadSeq = 0;
+
+// 子视图切换：文档列表 / 文档集合
+const subView = ref<"docs" | "collections">("docs");
 
 // 多选 + 对比
 const selectedIds = ref<Set<number>>(new Set());
@@ -44,13 +50,16 @@ const summarySections = ref<SectionSummary[]>([]);
 const summarizing = ref(false);
 
 async function load() {
+  const seq = ++loadSeq;
   try {
-    docs.value = await listDocuments(
+    const result = await listDocuments(
       search.value || undefined,
       statusFilter.value || undefined,
       undefined,
       docTypeFilter.value || undefined
     );
+    // 丢弃过期响应（防抖搜索与 3s 轮询竞态），仅保留最新一次结果
+    if (seq === loadSeq) docs.value = result;
   } catch {
     // 后端未连接
   }
@@ -64,7 +73,9 @@ function onSearchInput() {
 
 onMounted(() => {
   load();
-  timer = setInterval(load, 3000);
+  timer = setInterval(() => {
+    if (subView.value === "docs") load();
+  }, 3000);
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
@@ -222,6 +233,15 @@ async function runSummary(d: DocumentItem) {
   }
 }
 
+async function runOcr(d: DocumentItem) {
+  try {
+    const r = await ocrDocument(d.id);
+    alert(r.message);
+  } catch (e) {
+    alert("OCR 失败：" + String(e));
+  }
+}
+
 const STATUS_TEXT: Record<string, string> = {
   pending: "等待中",
   processing: "处理中",
@@ -247,11 +267,18 @@ function fmtSize(b: number | null): string {
 
 <template>
   <section class="content">
-    <h1>知识库</h1>
-    <p class="subtitle">
-      导入本地文档（PDF / Word / Markdown / TXT），启用知识库后助手可基于资料回答并标注来源。
-    </p>
+    <div class="kv-head">
+      <h1>知识库</h1>
+      <p class="subtitle">
+        导入本地文档（PDF / Word / Markdown / TXT），启用知识库后助手可基于资料回答并标注来源。
+      </p>
+      <nav class="sub-tabs">
+        <button :class="{ active: subView === 'docs' }" @click="subView = 'docs'">文档</button>
+        <button :class="{ active: subView === 'collections' }" @click="subView = 'collections'">集合</button>
+      </nav>
+    </div>
 
+    <div v-if="subView === 'docs'" class="docs-view">
     <div class="toolbar">
       <input
         v-model="search"
@@ -336,6 +363,7 @@ function fmtSize(b: number | null): string {
         </div>
         <div class="doc-actions">
           <button class="icon-btn" title="章节摘要" @click="runSummary(d)">摘要</button>
+          <button class="icon-btn" title="OCR（预留接口）" @click="runOcr(d)">OCR</button>
           <button class="icon-btn" title="编辑元数据" @click="editMetadata(d)">元数据</button>
           <label class="enable-toggle" :title="d.enabled ? '已启用，参与检索' : '已禁用，不参与检索'">
             <input type="checkbox" :checked="d.enabled" @change="toggleEnabled(d)" />
@@ -347,6 +375,9 @@ function fmtSize(b: number | null): string {
         </div>
       </div>
     </div>
+    </div>
+
+    <CollectionWorkspace v-else-if="subView === 'collections'" />
 
     <!-- 对比浮层 -->
     <DocumentComparePanel
@@ -380,9 +411,43 @@ function fmtSize(b: number | null): string {
 
 <style scoped>
 .content {
-  padding: 28px 32px;
-  overflow: auto;
+  overflow: hidden;
   flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.kv-head {
+  flex-shrink: 0;
+  padding: 28px 32px 0;
+}
+.docs-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 32px 28px;
+}
+.sub-tabs {
+  display: flex;
+  gap: 2px;
+  margin: var(--space-3) 0 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.sub-tabs button {
+  border: none;
+  background: transparent;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  border-bottom: 2px solid transparent;
+}
+.sub-tabs button:hover {
+  color: var(--color-fg);
+}
+.sub-tabs button.active {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
 }
 h1 {
   margin: 0 0 4px;

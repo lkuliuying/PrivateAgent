@@ -344,23 +344,18 @@ def is_whitelisted_command(args: list[str]) -> bool:
     return False
 
 
-async def run_whitelisted_command(
-    db: AsyncSession,
-    project_id: int,
-    command: str | list[str],
-    *,
-    timeout: float = COMMAND_TIMEOUT,
+async def _execute_command(
+    args: list[str], cwd: str, *, timeout: float = COMMAND_TIMEOUT
 ) -> dict:
-    """Run an approved command in the project root if it matches the whitelist."""
-    project = await ProjectService(db).get(project_id)
-    args = parse_command(command)
-    if not is_whitelisted_command(args):
-        raise PermissionError_("非白名单命令，已拒绝执行")
+    """在 cwd 运行 args（已通过权限/配置校验），返回结果 dict。
+
+    供 run_whitelisted_command（全局白名单）与项目命令配置（预授权）复用。
+    """
     timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
-            cwd=project.root_path,
+            cwd=cwd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -381,9 +376,8 @@ async def run_whitelisted_command(
     if truncated:
         combined = combined[:COMMAND_OUTPUT_MAX_CHARS] + "\n... output truncated"
     return {
-        "project_id": project_id,
-        "cwd": project.root_path,
         "args": args,
+        "cwd": cwd,
         "returncode": proc.returncode,
         "stdout": stdout[:COMMAND_OUTPUT_MAX_CHARS],
         "stderr": stderr[:COMMAND_OUTPUT_MAX_CHARS],
@@ -391,3 +385,20 @@ async def run_whitelisted_command(
         "truncated": truncated,
         "succeeded": proc.returncode == 0,
     }
+
+
+async def run_whitelisted_command(
+    db: AsyncSession,
+    project_id: int,
+    command: str | list[str],
+    *,
+    timeout: float = COMMAND_TIMEOUT,
+) -> dict:
+    """Run an approved command in the project root if it matches the whitelist."""
+    project = await ProjectService(db).get(project_id)
+    args = parse_command(command)
+    if not is_whitelisted_command(args):
+        raise PermissionError_("非白名单命令，已拒绝执行")
+    result = await _execute_command(args, project.root_path, timeout=timeout)
+    result["project_id"] = project_id
+    return result

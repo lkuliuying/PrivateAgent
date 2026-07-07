@@ -17,10 +17,13 @@ class SettingsOut(BaseModel):
     llm_temperature: float
     llm_context_length: int
     kb_enabled_by_default: bool
-    # Provider 接口位（第一阶段仅展示，不开放修改）
+    provider_type: str
+    remote_provider_enabled: bool
     openai_api_key: str
     openai_base_url: str
+    openai_model: str
     claude_api_key: str
+    claude_model: str
 
 
 class SettingsUpdate(BaseModel):
@@ -29,6 +32,13 @@ class SettingsUpdate(BaseModel):
     llm_temperature: float | None = None
     llm_context_length: int | None = None
     kb_enabled_by_default: bool | None = None
+    provider_type: str | None = None
+    remote_provider_enabled: bool | None = None
+    openai_api_key: str | None = None
+    openai_base_url: str | None = None
+    openai_model: str | None = None
+    claude_api_key: str | None = None
+    claude_model: str | None = None
 
 
 def _to_out(d: dict[str, str]) -> SettingsOut:
@@ -38,9 +48,14 @@ def _to_out(d: dict[str, str]) -> SettingsOut:
         llm_temperature=float(d["llm_temperature"]),
         llm_context_length=int(d["llm_context_length"]),
         kb_enabled_by_default=d["kb_enabled_by_default"].lower() == "true",
+        provider_type=d.get("provider_type", "ollama"),
+        remote_provider_enabled=d.get("remote_provider_enabled", "false").lower()
+        == "true",
         openai_api_key=d.get("openai_api_key", ""),
         openai_base_url=d.get("openai_base_url", ""),
+        openai_model=d.get("openai_model", "gpt-4o-mini"),
         claude_api_key=d.get("claude_api_key", ""),
+        claude_model=d.get("claude_model", "claude-3-5-sonnet-latest"),
     )
 
 
@@ -53,5 +68,9 @@ async def get_settings(db: AsyncSession = Depends(get_session)):
 async def update_settings(
     updates: SettingsUpdate, db: AsyncSession = Depends(get_session)
 ):
-    data = {k: str(v) for k, v in updates.model_dump().items() if v is not None}
+    data = {}
+    for k, v in updates.model_dump().items():
+        if v is None:
+            continue
+        data[k] = str(v).lower() if isinstance(v, bool) else str(v)
     return _to_out(await SettingsService(db).update(data))

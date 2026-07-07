@@ -148,9 +148,9 @@ class HybridRetriever:
         from .settings import SettingsService
 
         s = await SettingsService(self.db).get_all()
-        from .provider import OllamaProvider
+        from .provider import ProviderRouter
 
-        return OllamaProvider(embed_model=s["embed_model"])
+        return ProviderRouter(s).embedding_provider()
 
     async def retrieve(
         self,

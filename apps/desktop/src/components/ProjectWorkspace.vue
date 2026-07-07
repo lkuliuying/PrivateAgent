@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/vue";
 import ProjectTree from "./ProjectTree.vue";
 import CodeSearchPanel from "./CodeSearchPanel.vue";
+import CodingWorkflowPanel from "./CodingWorkflowPanel.vue";
 import {
   listProjects,
   createProject,
@@ -37,6 +38,7 @@ import type {
  */
 const projects = ref<Project[]>([]);
 const currentId = ref<number | null>(null);
+const pwView = ref<"browse" | "coding">("browse");
 const tree = ref<TreeData | null>(null);
 const stats = ref<ProjectStats | null>(null);
 const scanning = ref(false);
@@ -248,6 +250,10 @@ function fmtSize(n: number | null | undefined): string {
         <PhArrowClockwise :size="14" weight="regular" />
         <span>{{ scanning ? "扫描中…" : "重新扫描" }}</span>
       </button>
+      <div v-if="currentProject" class="pw-view-toggle">
+        <button :class="{ active: pwView === 'browse' }" @click="pwView = 'browse'">浏览</button>
+        <button :class="{ active: pwView === 'coding' }" @click="pwView = 'coding'">编码</button>
+      </div>
       <div class="pw-spacer" />
       <div v-if="currentProject" class="pw-meta">
         <span v-if="currentProject.framework" class="chip">{{ currentProject.framework }}</span>
@@ -283,7 +289,7 @@ function fmtSize(n: number | null | undefined): string {
     </div>
 
     <!-- 三栏工作区 -->
-    <div v-else-if="currentProject" class="pw-body">
+    <div v-else-if="currentProject && pwView === 'browse'" class="pw-body">
       <!-- 左：目录树 -->
       <aside class="pw-tree">
         <div class="pane-head">
@@ -386,6 +392,11 @@ function fmtSize(n: number | null | undefined): string {
           <pre class="diff-block">{{ gitDiff.diff }}</pre>
         </div>
       </aside>
+    </div>
+
+    <!-- 编码工作流（补丁集 / 命令配置 / 诊断） -->
+    <div v-else-if="currentProject && pwView === 'coding'" class="pw-coding">
+      <CodingWorkflowPanel :project-id="currentId ?? 0" />
     </div>
   </section>
 </template>
@@ -753,5 +764,31 @@ function fmtSize(n: number | null | undefined): string {
   white-space: pre;
   overflow: auto;
   color: var(--color-fg);
+}
+.pw-view-toggle {
+  display: flex;
+  gap: 2px;
+  background: var(--color-surface-sunken);
+  border-radius: var(--radius);
+  padding: 2px;
+}
+.pw-view-toggle button {
+  border: none;
+  background: transparent;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+  padding: 3px 10px;
+  font-size: var(--text-sm);
+  border-radius: var(--radius);
+}
+.pw-view-toggle button.active {
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  font-weight: var(--font-medium);
+}
+.pw-coding {
+  flex: 1;
+  min-height: 0;
+  display: flex;
 }
 </style>

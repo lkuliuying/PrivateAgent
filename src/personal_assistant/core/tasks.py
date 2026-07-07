@@ -71,11 +71,16 @@ class AgentTaskService:
         session_id: int | None,
         steps: list[dict] | None = None,
         project_id: int | None = None,
+        status: str = "planned",
     ) -> AgentTask:
         planned_steps = steps or default_plan(title, goal or title, project_id)
         plan = {"goal": goal, "steps": planned_steps}
         task = await self.tasks.create(
-            title=title, goal=goal, session_id=session_id, plan_json=plan
+            title=title,
+            goal=goal,
+            session_id=session_id,
+            plan_json=plan,
+            status=status,
         )
         await self.steps.create_many(task.id, planned_steps)
         await self.activities.sync_system(
@@ -84,6 +89,36 @@ class AgentTaskService:
             title=f"Agent 任务：{title}",
             act_status="pending",
             detail={"task_id": task.id, "goal": goal, "steps": planned_steps},
+        )
+        return await self.get(task.id)
+
+    async def create_plan_draft(
+        self,
+        *,
+        title: str,
+        goal: str,
+        session_id: int | None,
+        project_id: int | None = None,
+    ) -> AgentTask:
+        from .task_planner import TaskPlannerService
+
+        plan = await TaskPlannerService(self.db).generate(
+            title=title, goal=goal, project_id=project_id
+        )
+        task = await self.tasks.create(
+            title=title,
+            goal=goal,
+            session_id=session_id,
+            plan_json=plan,
+            status="plan_draft",
+        )
+        await self.steps.create_many(task.id, plan["steps"])
+        await self.activities.sync_system(
+            ref_type="agent_task",
+            ref_id=task.id,
+            title=f"Agent 计划草稿：{title}",
+            act_status="pending",
+            detail={"task_id": task.id, "goal": goal, "steps": plan["steps"]},
         )
         return await self.get(task.id)
 
@@ -100,12 +135,118 @@ class AgentTaskService:
         await self.get(task_id)
         return await self.steps.list_by_task(task_id)
 
-    async def list_evidence(self, task_id: int) -> list[AgentEvidence]:
+    async def list_evidence(
+        self,
+        task_id: int,
+        *,
+        step_id: int | None = None,
+        kind: str | None = None,
+        tool_name: str | None = None,
+        text: str | None = None,
+    ) -> list[AgentEvidence]:
         await self.get(task_id)
-        return await self.evidence.list_by_task(task_id)
+        rows = await self.evidence.list_by_task(task_id, step_id=step_id, kind=kind)
+        if tool_name:
+            rows = [
+                r
+                for r in rows
+                if (r.meta_json or {}).get("tool_name") == tool_name
+            ]
+        if text:
+            needle = text.lower()
+            rows = [
+                r
+                for r in rows
+                if needle in r.title.lower() or needle in r.content_md.lower()
+            ]
+        return rows
+
+    async def update_plan(
+        self,
+        task_id: int,
+        *,
+        title: str | None,
+        goal: str | None,
+        steps: list[dict],
+    ) -> AgentTask:
+        task = await self.get(task_id)
+        if task.status in {"running", "waiting_approval", "succeeded", "cancelled"}:
+            raise ValueError("当前任务状态不允许编辑计划")
+        clean_steps = [self._normalize_step(s) for s in steps]
+        plan = {
+            **(task.plan_json or {}),
+            "title": title or task.title,
+            "goal": goal if goal is not None else task.goal,
+            "steps": clean_steps,
+        }
+        await self.tasks.update_plan(
+            task_id,
+            title=title,
+            goal=goal,
+            plan_json=plan,
+            status="plan_draft",
+        )
+        await self.steps.replace_many(task_id, clean_steps)
+        return await self.get(task_id)
+
+    async def approve_plan(self, task_id: int) -> AgentTask:
+        task = await self.get(task_id)
+        if task.status not in {"plan_draft", "planned"}:
+            raise ValueError("只有计划草稿可以批准")
+        await self.tasks.update_status(task_id, status="plan_approved")
+        await self.evidence.create(
+            task_id=task_id,
+            step_id=None,
+            kind="note",
+            title="计划已批准",
+            content_md="用户已批准整体计划，后续执行仍遵守工具风险审批。",
+        )
+        await self._sync_task_activity(task_id, "pending")
+        return await self.get(task_id)
+
+    async def pause(self, task_id: int) -> AgentTask:
+        task = await self.get(task_id)
+        if task.status in {"succeeded", "failed", "cancelled"}:
+            raise ValueError("终态任务不能暂停")
+        await self.tasks.update_status(task_id, status="paused")
+        await self._sync_task_activity(task_id, "running")
+        return await self.get(task_id)
+
+    async def cancel(self, task_id: int) -> AgentTask:
+        await self.get(task_id)
+        await self.steps.cancel_pending(task_id)
+        await self.tasks.update_status(task_id, status="cancelled")
+        await self._sync_task_activity(task_id, "cancelled")
+        return await self.get(task_id)
+
+    async def resume(self, task_id: int) -> AgentTask:
+        task = await self.get(task_id)
+        if task.status not in {"paused", "failed", "plan_approved", "planned"}:
+            raise ValueError("当前任务状态不能继续")
+        await self.tasks.update_status(task_id, status="running")
+        await self._sync_task_activity(task_id, "running")
+        return await self._run_until_pause_or_done(task_id)
+
+    async def resume_from(self, task_id: int, step_id: int) -> AgentTask:
+        task = await self.get(task_id)
+        step = await self.steps.get(step_id)
+        if step is None or step.task_id != task.id:
+            raise StepNotFound(f"步骤不存在: {step_id}")
+        if task.status in {"succeeded", "cancelled"}:
+            raise ValueError("终态任务不能从步骤继续")
+        await self.steps.reset_from(task_id, step.ordinal)
+        await self.tasks.update_status(task_id, status="running")
+        await self._sync_task_activity(task_id, "running")
+        return await self._run_until_pause_or_done(task_id)
 
     async def run(self, task_id: int) -> AgentTask:
-        await self.get(task_id)
+        task = await self.get(task_id)
+        if task.status == "plan_draft":
+            raise ValueError("计划批准前不会执行")
+        if task.status == "paused":
+            raise ValueError("任务已暂停，请先继续")
+        if task.status == "cancelled":
+            raise ValueError("任务已取消")
         await self.tasks.update_status(task_id, status="running")
         await self._sync_task_activity(task_id, "running")
         return await self._run_until_pause_or_done(task_id)
@@ -170,6 +311,9 @@ class AgentTaskService:
 
     async def _run_until_pause_or_done(self, task_id: int) -> AgentTask:
         while True:
+            task = await self.get(task_id)
+            if task.status in {"paused", "cancelled"}:
+                return task
             steps = await self.steps.list_by_task(task_id)
             next_step = next((s for s in steps if s.status == "planned"), None)
             if next_step is None:
@@ -249,6 +393,23 @@ class AgentTaskService:
                 content_md=f"```json\n{_brief_json(tc.output_json)}\n```",
                 meta_json={"tool_call_id": tc.id, "tool_name": tc.tool_name},
             )
+
+    @staticmethod
+    def _normalize_step(step: dict) -> dict:
+        title = str(step.get("title") or "").strip()
+        tool_name = step.get("tool_name")
+        if not title:
+            raise ValueError("步骤标题不能为空")
+        if tool_name is not None:
+            tool_name = str(tool_name).strip() or None
+        input_json = step.get("input_json") or {}
+        if not isinstance(input_json, dict):
+            raise ValueError("input_json 必须是对象")
+        return {
+            "title": title[:255],
+            "tool_name": tool_name,
+            "input_json": input_json,
+        }
 
     async def _build_report(self, task_id: int) -> str:
         task = await self.get(task_id)

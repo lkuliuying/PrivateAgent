@@ -8,6 +8,10 @@ import {
   PhQuestion,
   PhCards,
   PhTreeStructure,
+  PhChartBar,
+  PhWarningCircle,
+  PhFileText,
+  PhClock,
   PhX,
 } from "@phosphor-icons/vue";
 import {
@@ -23,6 +27,12 @@ import {
   gradeQuizAnswer,
   generateCards,
   listCards,
+  listReviewsToday,
+  reviewCard,
+  topicDashboard,
+  weakPoints,
+  wrongAnswers,
+  weeklyReport,
 } from "../api";
 import type {
   LearningTopic,
@@ -31,16 +41,21 @@ import type {
   LearningQuiz,
   LearningCard,
   GradeResult,
+  LearningDashboard,
+  WeakPoint,
+  WrongAnswer,
+  ReviewRating,
 } from "../types";
 
 /**
- * 学习工作区 · 第三阶段 M3。
- * 左：学习主题列表 + 新建；右：四标签（路线/笔记/练习/卡片）。
- * 生成类基于知识库资料（无指定文档时按主题目标检索）。
+ * 学习工作区 · 第三阶段 M3 + 第四阶段 M2。
+ * 左：学习主题列表 + 新建；右：五标签（概览/路线/笔记/练习/卡片）。
+ * 概览：仪表盘统计 + 薄弱点 + 错题本 + 周报。
+ * 卡片：间隔重复评分（SM-2），due_at 内联更新。
  */
 const topics = ref<LearningTopic[]>([]);
 const currentId = ref<number | null>(null);
-const tab = ref<"path" | "notes" | "quiz" | "cards">("path");
+const tab = ref<"overview" | "path" | "notes" | "quiz" | "cards">("overview");
 
 const nodes = ref<LearningNode[]>([]);
 const notes = ref<LearningNote[]>([]);
@@ -48,6 +63,18 @@ const quizzes = ref<LearningQuiz[]>([]);
 const cards = ref<LearningCard[]>([]);
 const loadingGen = ref(false);
 const genError = ref("");
+
+// 概览（M2）
+const dashboard = ref<LearningDashboard | null>(null);
+const weak = ref<WeakPoint[]>([]);
+const wrong = ref<WrongAnswer[]>([]);
+const reportMd = ref("");
+const reportBusy = ref(false);
+const dueByTopic = ref<Record<number, number>>({});
+
+// 卡片复习（M2）
+const onlyDue = ref(false);
+const ratingBusy = ref<Set<number>>(new Set());
 
 // 新建主题
 const newOpen = ref(false);
@@ -75,6 +102,7 @@ onMounted(load);
 async function load() {
   try {
     topics.value = await listLearningTopics();
+    await refreshDueByTopic();
     if (topics.value.length > 0 && currentId.value === null) {
       await selectTopic(topics.value[0].id);
     }
@@ -83,11 +111,26 @@ async function load() {
   }
 }
 
+async function refreshDueByTopic() {
+  try {
+    const due = await listReviewsToday();
+    const counts: Record<number, number> = {};
+    for (const c of due) {
+      counts[c.topic_id] = (counts[c.topic_id] || 0) + 1;
+    }
+    dueByTopic.value = counts;
+  } catch {
+    dueByTopic.value = {};
+  }
+}
+
 async function selectTopic(id: number) {
   currentId.value = id;
-  tab.value = "path";
+  tab.value = "overview";
   quizAnswers.value = {};
   quizResults.value = {};
+  onlyDue.value = false;
+  reportMd.value = "";
   await loadAll();
 }
 
@@ -95,16 +138,22 @@ async function loadAll() {
   if (!currentId.value) return;
   const id = currentId.value;
   try {
-    const [n, ns, qs, cs] = await Promise.all([
+    const [n, ns, qs, cs, db, wp, wa] = await Promise.all([
       listLearningNodes(id),
       listLearningNotes(id),
       listQuizzes(id),
       listCards(id),
+      topicDashboard(id).catch(() => null),
+      weakPoints(id).catch(() => []),
+      wrongAnswers(id).catch(() => []),
     ]);
     nodes.value = n;
     notes.value = ns;
     quizzes.value = qs;
     cards.value = cs;
+    dashboard.value = db;
+    weak.value = wp;
+    wrong.value = wa;
   } catch {
     // ignore
   }
@@ -186,6 +235,8 @@ async function genCards() {
   try {
     await generateCards(currentId.value, undefined, 5);
     cards.value = await listCards(currentId.value);
+    // 新卡 due_at=now 立即到期，刷新主题 due 徽标。
+    await refreshDueByTopic();
   } catch (e) {
     genError.value = String(e);
   } finally {
@@ -250,6 +301,108 @@ const RESULT_CLASS: Record<string, string> = {
   partial: "warn",
   wrong: "bad",
 };
+
+// ============ 卡片复习评分（M2）============
+
+const RATINGS: { v: ReviewRating; label: string; cls: string }[] = [
+  { v: "again", label: "忘记", cls: "bad" },
+  { v: "hard", label: "模糊", cls: "warn" },
+  { v: "good", label: "记得", cls: "ok" },
+  { v: "easy", label: "熟练", cls: "great" },
+];
+
+function parseDue(s: string): number {
+  // 后端 due_at 为 naive UTC（与 created_at 同基准），补 "Z" 当 UTC 解析。
+  return new Date(s + "Z").getTime();
+}
+
+function dueLabel(card: LearningCard): string {
+  if (!card.due_at) return "未排期";
+  const due = parseDue(card.due_at);
+  const now = Date.now();
+  if (due <= now) return "今日到期";
+  const diff = due - now;
+  if (diff < 86400000) return `${Math.max(1, Math.round(diff / 3600000))} 小时后`;
+  return `${Math.ceil(diff / 86400000)} 天后`;
+}
+
+function isDue(card: LearningCard): boolean {
+  if (!card.due_at) return true;
+  return parseDue(card.due_at) <= Date.now();
+}
+
+const cardsFiltered = computed(() =>
+  onlyDue.value ? cards.value.filter((c) => isDue(c)) : cards.value
+);
+
+async function rateCard(cardId: number, r: ReviewRating) {
+  ratingBusy.value = new Set(ratingBusy.value).add(cardId);
+  try {
+    const idx = cards.value.findIndex((c) => c.id === cardId);
+    // 评分前是否到期：仅到期卡评分后不再到期才扣减 due 徽标，避免给未到期卡评分误减。
+    const wasDue = idx >= 0 ? isDue(cards.value[idx]) : false;
+    const res = await reviewCard(cardId, r);
+    if (idx >= 0) {
+      cards.value[idx] = { ...cards.value[idx], ...res.card };
+    }
+    if (wasDue && !isDue(res.card) && currentId.value != null) {
+      const cur = dueByTopic.value[currentId.value] || 0;
+      dueByTopic.value = {
+        ...dueByTopic.value,
+        [currentId.value]: Math.max(0, cur - 1),
+      };
+    }
+  } catch (e) {
+    alert("评分失败：" + String(e));
+  } finally {
+    const s = new Set(ratingBusy.value);
+    s.delete(cardId);
+    ratingBusy.value = s;
+  }
+}
+
+// ============ 周报（M2）============
+
+async function genWeeklyReport() {
+  if (!currentId.value) return;
+  reportBusy.value = true;
+  try {
+    const r = await weeklyReport(currentId.value);
+    reportMd.value = r.report_md;
+  } catch (e) {
+    alert("周报生成失败：" + String(e));
+  } finally {
+    reportBusy.value = false;
+  }
+}
+
+async function saveReportAsNote() {
+  if (!currentId.value || !reportMd.value) return;
+  try {
+    await saveLearningNote({
+      topic_id: currentId.value,
+      title: `${currentTopic.value?.title || "学习"} 学习周报`,
+      body_md: reportMd.value,
+    });
+    notes.value = await listLearningNotes(currentId.value);
+    alert("已保存为学习笔记");
+  } catch (e) {
+    alert("保存失败：" + String(e));
+  }
+}
+
+function exportReport() {
+  if (!reportMd.value) return;
+  const blob = new Blob([reportMd.value], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${currentTopic.value?.title || "学习"}-周报.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 </script>
 
 <template>
@@ -274,6 +427,7 @@ const RESULT_CLASS: Record<string, string> = {
           <div class="topic-sub">
             <span v-if="t.level">{{ t.level }}</span>
             <span v-if="t.status !== 'active'">· {{ t.status }}</span>
+            <span v-if="dueByTopic[t.id]" class="due-badge">{{ dueByTopic[t.id] }} 待复习</span>
           </div>
         </button>
         <div v-if="topics.length === 0" class="pane-empty">
@@ -307,6 +461,9 @@ const RESULT_CLASS: Record<string, string> = {
         </header>
 
         <nav class="tabs">
+          <button :class="{ active: tab === 'overview' }" @click="tab = 'overview'">
+            <PhChartBar :size="14" /> 概览
+          </button>
           <button :class="{ active: tab === 'path' }" @click="tab = 'path'">
             <PhTreeStructure :size="14" /> 路线
           </button>
@@ -323,6 +480,92 @@ const RESULT_CLASS: Record<string, string> = {
 
         <div class="tab-body">
           <p v-if="genError" class="err">{{ genError }}</p>
+
+          <!-- 概览 -->
+          <div v-if="tab === 'overview'" class="overview-tab">
+            <div v-if="dashboard" class="stats-grid">
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.due_today }}</span>
+                <span class="stat-label">今日待复习</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.total_cards }}</span>
+                <span class="stat-label">卡片总数</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.reviewed_cards }}</span>
+                <span class="stat-label">已复习</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.mastered_nodes }}/{{ dashboard.total_nodes }}</span>
+                <span class="stat-label">掌握节点</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.reviews_7d }}</span>
+                <span class="stat-label">近 7 天复习</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ dashboard.total_lapses }}</span>
+                <span class="stat-label">遗忘次数</span>
+              </div>
+              <div class="stat">
+                <span class="stat-num">{{ quizzes.length }}</span>
+                <span class="stat-label">练习题</span>
+              </div>
+            </div>
+            <div v-else class="tab-empty">暂无统计数据</div>
+
+            <div class="overview-section">
+              <div class="ov-head"><PhWarningCircle :size="14" /> 薄弱点</div>
+              <div v-if="weak.length === 0" class="tab-empty">暂无薄弱点，继续保持</div>
+              <div v-else class="weak-list">
+                <div v-for="w in weak" :key="`${w.kind}-${w.id}`" class="weak-item">
+                  <span class="weak-kind" :class="w.kind">{{ w.kind === 'node' ? '节点' : '卡片' }}</span>
+                  <span class="weak-title pa-ellipsis">{{ w.title }}</span>
+                  <span v-if="w.lapse_count" class="weak-meta">遗忘 {{ w.lapse_count }} 次</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="overview-section">
+              <div class="ov-head"><PhQuestion :size="14" /> 错题本</div>
+              <div v-if="wrong.length === 0" class="tab-empty">暂无错题</div>
+              <div v-else class="wrong-list">
+                <div v-for="w in wrong" :key="w.attempt_id" class="wrong-item">
+                  <div class="wrong-q">{{ w.question }}</div>
+                  <div class="wrong-ans">你的答案：{{ w.user_answer || '（空）' }}</div>
+                  <div class="wrong-ref">参考：{{ w.reference_answer }}</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="overview-section">
+              <div class="ov-head">
+                <span><PhFileText :size="14" /> 学习周报</span>
+                <div class="ov-actions">
+                  <button
+                    v-if="reportMd"
+                    class="pa-btn pa-btn--subtle pa-btn--sm"
+                    @click="saveReportAsNote"
+                  >保存为笔记</button>
+                  <button
+                    v-if="reportMd"
+                    class="pa-btn pa-btn--subtle pa-btn--sm"
+                    @click="exportReport"
+                  >导出 Markdown</button>
+                  <button
+                    class="pa-btn pa-btn--primary pa-btn--sm"
+                    :disabled="reportBusy"
+                    @click="genWeeklyReport"
+                  >
+                    {{ reportBusy ? "生成中…" : "生成周报" }}
+                  </button>
+                </div>
+              </div>
+              <pre v-if="reportMd" class="report-md">{{ reportMd }}</pre>
+              <div v-else class="tab-empty">点击「生成周报」生成本周学习报告</div>
+            </div>
+          </div>
 
           <!-- 路线 -->
           <div v-if="tab === 'path'" class="path-tab">
@@ -409,28 +652,47 @@ const RESULT_CLASS: Record<string, string> = {
 
           <!-- 卡片 -->
           <div v-if="tab === 'cards'" class="cards-tab">
-            <button class="pa-btn pa-btn--primary pa-btn--sm" :disabled="loadingGen" @click="genCards">
-              <PhSparkle :size="14" />
-              {{ loadingGen ? "生成中…" : "生成 5 张复习卡片" }}
-            </button>
+            <div class="cards-head">
+              <button class="pa-btn pa-btn--primary pa-btn--sm" :disabled="loadingGen" @click="genCards">
+                <PhSparkle :size="14" />
+                {{ loadingGen ? "生成中…" : "生成 5 张复习卡片" }}
+              </button>
+              <label class="due-toggle">
+                <input type="checkbox" v-model="onlyDue" /> 仅看今日到期
+              </label>
+            </div>
             <div v-if="cards.length === 0" class="tab-empty">尚无复习卡片</div>
+            <div v-else-if="cardsFiltered.length === 0" class="tab-empty">今日无到期卡片 🎉</div>
             <div class="card-grid">
-              <div
-                v-for="c in cards"
-                :key="c.id"
-                class="flash-card"
-                :class="{ flipped: flipped.has(c.id) }"
-                @click="flip(c.id)"
-              >
-                <div class="flash-inner">
-                  <div class="flash-face front">
-                    <span class="flash-label">问题</span>
-                    <p>{{ c.front }}</p>
+              <div v-for="c in cardsFiltered" :key="c.id" class="card-cell">
+                <div
+                  class="flash-card"
+                  :class="{ flipped: flipped.has(c.id) }"
+                  @click="flip(c.id)"
+                >
+                  <div class="flash-inner">
+                    <div class="flash-face front">
+                      <span class="flash-label">问题</span>
+                      <p>{{ c.front }}</p>
+                      <span class="card-due" :class="{ due: isDue(c) }">
+                        <PhClock :size="11" /> {{ dueLabel(c) }}
+                      </span>
+                    </div>
+                    <div class="flash-face back">
+                      <span class="flash-label">答案</span>
+                      <p>{{ c.back }}</p>
+                    </div>
                   </div>
-                  <div class="flash-face back">
-                    <span class="flash-label">答案</span>
-                    <p>{{ c.back }}</p>
-                  </div>
+                </div>
+                <div class="card-actions" @click.stop>
+                  <button
+                    v-for="r in RATINGS"
+                    :key="r.v"
+                    class="rate-btn"
+                    :class="r.cls"
+                    :disabled="ratingBusy.has(c.id)"
+                    @click="rateCard(c.id, r.v)"
+                  >{{ r.label }}</button>
                 </div>
               </div>
             </div>
@@ -890,5 +1152,210 @@ const RESULT_CLASS: Record<string, string> = {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-top: var(--space-3);
+}
+
+/* 主题 due 徽标 */
+.due-badge {
+  color: var(--color-warning-fg);
+  background: var(--color-warning-soft);
+  padding: 0 6px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  margin-left: 4px;
+}
+
+/* 概览（M2） */
+.overview-tab {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: var(--space-2);
+}
+.stat {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stat-num {
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  color: var(--color-fg);
+}
+.stat-label {
+  font-size: var(--text-xs);
+  color: var(--color-fg-faint);
+}
+.overview-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ov-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-fg-muted);
+}
+.ov-head > span {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ov-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.weak-list,
+.wrong-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.weak-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+}
+.weak-kind {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  color: var(--color-fg-faint);
+  background: var(--color-surface-sunken);
+}
+.weak-kind.card {
+  color: var(--color-warning-fg);
+  background: var(--color-warning-soft);
+}
+.weak-title {
+  flex: 1;
+  min-width: 0;
+}
+.weak-meta {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--color-danger-fg);
+}
+.wrong-item {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+}
+.wrong-q {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  margin-bottom: var(--space-1);
+}
+.wrong-ans {
+  font-size: var(--text-xs);
+  color: var(--color-danger-fg);
+  margin-bottom: 2px;
+}
+.wrong-ref {
+  font-size: var(--text-xs);
+  color: var(--color-fg-muted);
+}
+.report-md {
+  margin: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--color-fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+}
+
+/* 卡片复习（M2） */
+.cards-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+.due-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--color-fg-muted);
+  cursor: pointer;
+}
+.card-cell {
+  display: flex;
+  flex-direction: column;
+}
+.card-due {
+  margin-top: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: var(--text-xs);
+  color: var(--color-fg-faint);
+  align-self: flex-start;
+}
+.card-due.due {
+  color: var(--color-warning-fg);
+}
+.card-actions {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: var(--space-2) 0 0;
+}
+.rate-btn {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  font-size: var(--text-xs);
+  padding: var(--space-1) 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.rate-btn:hover:not(:disabled) {
+  background: var(--color-surface-sunken);
+}
+.rate-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.rate-btn.bad {
+  color: var(--color-danger-fg);
+  border-color: var(--color-danger-soft);
+}
+.rate-btn.warn {
+  color: var(--color-warning-fg);
+  border-color: var(--color-warning-soft);
+}
+.rate-btn.ok {
+  color: var(--color-success-fg);
+  border-color: var(--color-success-soft);
+}
+.rate-btn.great {
+  color: var(--color-accent);
+  border-color: var(--color-accent-soft);
 }
 </style>

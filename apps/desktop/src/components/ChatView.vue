@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { ref, nextTick, watch } from "vue";
-import type { Message, Source, ToolCall } from "../types";
+import type { MemorySource, Message, Source, ToolCall } from "../types";
 import ToolApprovalCard from "./ToolApprovalCard.vue";
 
-type ChatMessage = Message & { sources?: Source[]; tool_call?: ToolCall };
+type ChatMessage = Message & {
+  sources?: Source[];
+  memories?: MemorySource[];
+  tool_call?: ToolCall;
+};
 
 const props = withDefaults(
   defineProps<{
@@ -21,6 +25,7 @@ const emit = defineEmits<{
   approve: [id: number];
   reject: [id: number];
   "select-chunk": [chunkId: number];
+  "gen-candidates": [];
 }>();
 
 const input = ref("");
@@ -90,6 +95,19 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
                 ><span v-if="si < m.sources.length - 1">；</span></span
               >
             </div>
+            <div
+              v-if="m.role === 'assistant' && m.memories && m.memories.length"
+              class="memories"
+            >
+              🧠 记忆：<span
+                v-for="(mem, mi) in m.memories"
+                :key="mem.id"
+                class="memory"
+                >{{ mem.title }}<span v-if="mem.summary" class="mem-summary"
+                  >（{{ mem.summary }}）</span
+                ><span v-if="mi < m.memories.length - 1">；</span></span
+              >
+            </div>
           </template>
         </div>
       </div>
@@ -100,6 +118,14 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
         <input type="checkbox" :checked="knowledgeBase" @change="emit('toggle-kb')" />
         <span>📚 知识库</span>
       </label>
+      <button
+        class="kb-toggle"
+        :disabled="streaming"
+        title="从当前对话生成候选记忆"
+        @click="emit('gen-candidates')"
+      >
+        <span>🧠 记忆</span>
+      </button>
       <textarea
         v-model="input"
         @keydown.enter.exact.prevent="send"
@@ -207,6 +233,19 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
   color: #1565c0;
 }
 .src-hit {
+  color: var(--color-fg-faint);
+  font-size: 11px;
+}
+.memories {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6a6b6e;
+  padding: 0 4px;
+}
+.memory {
+  color: #6a1b9a;
+}
+.mem-summary {
   color: var(--color-fg-faint);
   font-size: 11px;
 }

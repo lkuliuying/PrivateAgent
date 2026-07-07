@@ -1,5 +1,7 @@
 # 私人助手 Agent · M4 打包预研
 
+> **命名说明**：本文件名含 `phase4`，但实为**第一阶段 M4** sidecar 打包预研的历史归档（对应 `docs/phase1-plan.md` M4），与第四阶段产品能力阶段（`docs/phase4-plan.md` / `docs/phase4-requirements.md`，即"个人化记忆与主动工作流增强"）无直接关系。文件名中的 `phase4` 为早期命名遗留，勿与第四阶段混淆。
+
 > 对应 `docs/phase1-plan.md` M4（非硬验收）。目标：验证 Tauri 启动 Python sidecar 的方案、端口协商、依赖说明，形成可行性结论与操作文档。不要求产出完美安装包。
 
 ---

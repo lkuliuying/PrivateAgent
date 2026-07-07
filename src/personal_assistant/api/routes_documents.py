@@ -16,6 +16,7 @@ import asyncio
 import hashlib
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
@@ -23,9 +24,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..core.db import get_session
+from ..core.document_extraction import (
+    DocumentExtractionService,
+    ExtractionNotFound,
+)
 from ..core.exports import DocNotFound, ExportService
 from ..core.permissions import PermissionError_
 from ..core.repo import DocChunkRepository, DocumentRepository
+from ..core.repo_documents import DocumentExtractionRepository
 from ..core.store_chroma import chroma_store
 from ..logging_setup import get_logger
 from ..workers.importer import import_document, reindex_document, retry_import
@@ -376,3 +382,96 @@ async def import_note(req: ImportNoteRequest, db: AsyncSession = Depends(get_ses
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+# ============ 第四阶段 M3：结构化抽取 / 模板报告 / OCR ============
+
+
+DocExtractionKind = Literal["terms", "table_summary", "actions", "claims", "code"]
+TemplateKind = Literal["study_note", "tech_summary", "paper_reading", "project_materials", "meeting_minutes"]
+
+
+class DocExtractRequest(BaseModel):
+    kind: DocExtractionKind
+
+
+class TemplateReportRequest(BaseModel):
+    template: TemplateKind
+    doc_ids: list[int] | None = None
+    collection_id: int | None = None
+
+
+class DocExtractionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    doc_id: int | None
+    collection_id: int | None
+    kind: str
+    content_json: dict | None
+    content_md: str | None
+    source_refs_json: list | None
+    created_at: datetime
+
+
+class TemplateReportResponse(BaseModel):
+    report_md: str
+    extraction: DocExtractionOut
+
+
+class OcrResult(BaseModel):
+    doc_id: int
+    status: str
+    message: str
+
+
+@router.post("/documents/{doc_id}/extract", response_model=DocExtractionOut)
+async def extract_document(
+    doc_id: int, req: DocExtractRequest, db: AsyncSession = Depends(get_session)
+):
+    """单文档结构化抽取（术语/行动项/关键观点/表格摘要/代码）。"""
+    try:
+        return await DocumentExtractionService(db).extract(req.kind, doc_id=doc_id)
+    except ExtractionNotFound as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.post("/documents/{doc_id}/ocr", response_model=OcrResult)
+async def ocr_document(doc_id: int, db: AsyncSession = Depends(get_session)):
+    """OCR 处理入口（M3 预留：未引入引擎，返回 unavailable，不改文档状态）。"""
+    try:
+        return await DocumentExtractionService(db).ocr_document(doc_id)
+    except ExtractionNotFound as e:
+        raise HTTPException(404, str(e))
+
+
+@router.post("/documents/template-report", response_model=TemplateReportResponse)
+async def template_report(
+    req: TemplateReportRequest, db: AsyncSession = Depends(get_session)
+):
+    """按模板生成 Markdown 报告（学习笔记/技术摘要/论文阅读/项目资料整理）。"""
+    try:
+        return await DocumentExtractionService(db).generate_template_report(
+            req.template, doc_ids=req.doc_ids, collection_id=req.collection_id
+        )
+    except ExtractionNotFound as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.get(
+    "/documents/{doc_id}/extractions", response_model=list[DocExtractionOut]
+)
+async def list_doc_extractions(
+    doc_id: int,
+    kind: str | None = Query(default=None),
+    db: AsyncSession = Depends(get_session),
+):
+    """文档抽取结果列表（可按 kind 过滤）。"""
+    doc = await DocumentRepository(db).get(doc_id)
+    if doc is None:
+        raise HTTPException(404, "文档不存在")
+    return await DocumentExtractionRepository(db).list_by_doc(doc_id, kind=kind)

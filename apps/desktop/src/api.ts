@@ -2,28 +2,54 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   AgentTask,
   Activity,
+  BackupExportResult,
   BatchImportItem,
   ChatEvent,
   ChunkDetail,
   CodeFileContent,
   CompareResult,
   ContentSearchResponse,
+  CollectionDetail,
+  CollectionDetailItem,
+  DocumentCollection,
+  DocumentExtraction,
   DocumentItem,
+  ExtractRequest,
+  OcrResult,
+  TemplateReportRequest,
+  TemplateReportResponse,
   ExportResult,
   GitDiff,
   GitStatus,
   GradeResult,
   LearningCard,
+  LearningDashboard,
   LearningNode,
   LearningNote,
   LearningQuiz,
   LearningTopic,
+  MemoryEvent,
+  MemoryItem,
+  MemoryKind,
+  MemoryStatus,
   Message,
   NameSearchResponse,
+  ApplyResult,
+  CommandProfileCreate,
+  CommandProfileUpdate,
+  DiagnoseRequest,
+  DiagnoseResult,
+  PatchSet,
+  PatchSetCreate,
   Project,
+  ProjectCommandProfile,
   ProjectFile,
   ProjectStats,
   ProjectTree,
+  ProviderStatus,
+  ReviewRating,
+  ReviewResponse,
+  RunResult,
   ScanResponse,
   SectionSummary,
   Session,
@@ -32,6 +58,10 @@ import type {
   ToolDefinition,
   ToolPlanResponse,
   TrustedPath,
+  WeakPoint,
+  WeeklyReport,
+  WrongAnswer,
+  BackupRestorePreview,
 } from "./types";
 
 let API_BASE: string | null = null;
@@ -577,9 +607,104 @@ export async function createAgentTask(data: {
   return r.json();
 }
 
+export async function createAgentTaskPlan(data: {
+  title: string;
+  goal: string;
+  project_id?: number;
+}): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
 export async function runAgentTask(id: number): Promise<AgentTask> {
   const base = await ensureApiBase();
   const r = await fetch(`${base}/agent-tasks/${id}/run`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateAgentTaskPlan(
+  id: number,
+  data: {
+    title?: string;
+    goal?: string;
+    steps: Array<{
+      title: string;
+      tool_name: string;
+      input_json: Record<string, unknown>;
+    }>;
+  }
+): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/plan`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function approveAgentTaskPlan(id: number): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/approve-plan`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function pauseAgentTask(id: number): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/pause`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function cancelAgentTask(id: number): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/cancel`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function resumeAgentTask(id: number): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/resume`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function resumeAgentTaskFrom(id: number, stepId: number): Promise<AgentTask> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/agent-tasks/${id}/resume-from/${stepId}`, {
+    method: "POST",
+  });
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
     throw new Error(d.detail || `HTTP ${r.status}`);
@@ -790,6 +915,624 @@ export async function listCards(topicId: number): Promise<LearningCard[]> {
   return r.json();
 }
 
+// ---- 长期记忆（第四阶段 M1）----
+export async function listMemories(opts?: {
+  kind?: string;
+  status?: string;
+  project_id?: number;
+  topic_id?: number;
+  search?: string;
+  enabled?: boolean;
+}): Promise<MemoryItem[]> {
+  const base = await ensureApiBase();
+  const params = new URLSearchParams();
+  if (opts?.kind) params.set("kind", opts.kind);
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.project_id !== undefined)
+    params.set("project_id", String(opts.project_id));
+  if (opts?.topic_id !== undefined)
+    params.set("topic_id", String(opts.topic_id));
+  if (opts?.search) params.set("search", opts.search);
+  if (opts?.enabled !== undefined) params.set("enabled", String(opts.enabled));
+  const qs = params.toString() ? `?${params}` : "";
+  const r = await fetch(`${base}/memories${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getMemory(id: number): Promise<MemoryItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/${id}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createMemory(data: {
+  kind: MemoryKind;
+  title: string;
+  content_md: string;
+  summary?: string;
+  source_type?: string;
+  source_id?: number;
+  project_id?: number;
+  topic_id?: number;
+  tags?: string[];
+  confidence?: number;
+  sensitive?: boolean;
+}): Promise<MemoryItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateMemory(
+  id: number,
+  data: {
+    title?: string;
+    content_md?: string;
+    summary?: string;
+    tags?: string[];
+    confidence?: number;
+    enabled?: boolean;
+    sensitive?: boolean;
+    status?: MemoryStatus;
+  }
+): Promise<MemoryItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function deleteMemory(id: number): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 204) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+}
+
+export async function searchMemories(req: {
+  query?: string;
+  kind?: string;
+  status?: string;
+  enabled?: boolean;
+  project_id?: number;
+  topic_id?: number;
+}): Promise<MemoryItem[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/search`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function candidateMemories(req: {
+  source_type: "agent_task" | "chat_session" | "learning_review";
+  source_id: number;
+}): Promise<MemoryItem[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/candidates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function useMemory(
+  id: number,
+  ref?: { ref_type?: string; ref_id?: number }
+): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/${id}/use`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ref || {}),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+}
+
+export async function listMemoryEvents(id: number): Promise<MemoryEvent[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/memories/${id}/events`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---- 学习复习（第四阶段 M2）----
+export async function listReviewsToday(
+  topicId?: number
+): Promise<LearningCard[]> {
+  const base = await ensureApiBase();
+  const qs = topicId != null ? `?topic_id=${topicId}` : "";
+  const r = await fetch(`${base}/learning/reviews/today${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function reviewCard(
+  cardId: number,
+  rating: ReviewRating
+): Promise<ReviewResponse> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/learning/cards/${cardId}/review`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rating }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function topicDashboard(
+  topicId: number
+): Promise<LearningDashboard> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/learning/topics/${topicId}/dashboard`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function weakPoints(topicId: number): Promise<WeakPoint[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/learning/topics/${topicId}/weak-points`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function wrongAnswers(topicId: number): Promise<WrongAnswer[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/learning/topics/${topicId}/wrong-answers`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function weeklyReport(topicId: number): Promise<WeeklyReport> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/learning/topics/${topicId}/weekly-report`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ---- 文档集合 / 抽取 / 模板报告（第四阶段 M3）----
+export async function listDocumentCollections(): Promise<DocumentCollection[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createDocumentCollection(data: {
+  title: string;
+  goal?: string;
+  tags?: string[];
+}): Promise<DocumentCollection> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function getDocumentCollection(
+  id: number
+): Promise<CollectionDetail> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections/${id}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function updateDocumentCollection(
+  id: number,
+  data: { title?: string; goal?: string; tags?: string[] }
+): Promise<DocumentCollection> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function deleteDocumentCollection(id: number): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+}
+
+export async function addCollectionItem(
+  collectionId: number,
+  docId: number
+): Promise<CollectionDetailItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections/${collectionId}/items`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ doc_id: docId }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function removeCollectionItem(
+  collectionId: number,
+  docId: number
+): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(
+    `${base}/document-collections/${collectionId}/items/${docId}`,
+    { method: "DELETE" }
+  );
+  if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+}
+
+export async function extractDocument(
+  docId: number,
+  kind: ExtractRequest["kind"]
+): Promise<DocumentExtraction> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/documents/${docId}/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function extractCollection(
+  collectionId: number,
+  kind: ExtractRequest["kind"]
+): Promise<DocumentExtraction> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/document-collections/${collectionId}/extract`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function templateReport(
+  req: TemplateReportRequest
+): Promise<TemplateReportResponse> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/documents/template-report`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function ocrDocument(docId: number): Promise<OcrResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/documents/${docId}/ocr`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function listDocumentExtractions(
+  docId: number,
+  kind?: string
+): Promise<DocumentExtraction[]> {
+  const base = await ensureApiBase();
+  const qs = kind ? `?kind=${kind}` : "";
+  const r = await fetch(`${base}/documents/${docId}/extractions${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function listCollectionExtractions(
+  collectionId: number,
+  kind?: string
+): Promise<DocumentExtraction[]> {
+  const base = await ensureApiBase();
+  const qs = kind ? `?kind=${kind}` : "";
+  const r = await fetch(
+    `${base}/document-collections/${collectionId}/extractions${qs}`
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---- Patch set（第四阶段 M4）----
+export async function listPatchSets(projectId: number): Promise<PatchSet[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/patch-sets`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createPatchSet(
+  projectId: number,
+  data: PatchSetCreate
+): Promise<PatchSet> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/patch-sets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function getPatchSet(patchSetId: number): Promise<PatchSet> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/patch-sets/${patchSetId}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function submitPatchSet(patchSetId: number): Promise<PatchSet> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/patch-sets/${patchSetId}/submit`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function applyPatchSet(patchSetId: number): Promise<ApplyResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/patch-sets/${patchSetId}/apply`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function rejectPatchSet(patchSetId: number): Promise<PatchSet> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/patch-sets/${patchSetId}/reject`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function rollbackPatchSet(patchSetId: number): Promise<ApplyResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/patch-sets/${patchSetId}/rollback`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ---- 命令配置 / 诊断（第四阶段 M4）----
+export async function listProjectCommands(
+  projectId: number
+): Promise<ProjectCommandProfile[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/commands`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createProjectCommand(
+  projectId: number,
+  data: CommandProfileCreate
+): Promise<ProjectCommandProfile> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/commands`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateProjectCommand(
+  projectId: number,
+  commandId: number,
+  data: CommandProfileUpdate
+): Promise<ProjectCommandProfile> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/commands/${commandId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function deleteProjectCommand(
+  projectId: number,
+  commandId: number
+): Promise<ProjectCommandProfile> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/commands/${commandId}`, {
+    method: "DELETE",
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function runProjectCommand(
+  projectId: number,
+  commandId: number
+): Promise<RunResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/commands/${commandId}/run`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function diagnoseCommandOutput(
+  projectId: number,
+  data: DiagnoseRequest
+): Promise<DiagnoseResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/diagnose-command-output`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ---- Provider（第四阶段 M6）----
+export async function listProviders(): Promise<ProviderStatus> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function updateProviders(data: {
+  provider_type?: "ollama" | "openai" | "claude";
+  remote_provider_enabled?: boolean;
+  openai_api_key?: string;
+  openai_base_url?: string;
+  openai_model?: string;
+  claude_api_key?: string;
+  claude_model?: string;
+}): Promise<ProviderStatus> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function testProvider(): Promise<Record<string, unknown>> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers/test`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ---- 备份（第四阶段 M6）----
+export async function listBackups(): Promise<{ items: BackupExportResult[]; last_backup_at: string | null }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/backup`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function exportBackup(): Promise<BackupExportResult> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/backup/export`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function previewRestoreBackup(path: string): Promise<BackupRestorePreview> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/backup/restore/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
 // ---- 设置 ----
 export interface AppSettings {
   llm_model: string;
@@ -797,9 +1540,13 @@ export interface AppSettings {
   llm_temperature: number;
   llm_context_length: number;
   kb_enabled_by_default: boolean;
+  provider_type: "ollama" | "openai" | "claude";
+  remote_provider_enabled: boolean;
   openai_api_key: string;
   openai_base_url: string;
+  openai_model: string;
   claude_api_key: string;
+  claude_model: string;
 }
 
 export async function getSettings(): Promise<AppSettings> {

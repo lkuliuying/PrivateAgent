@@ -18,10 +18,14 @@ DEFAULTS: dict[str, str] = {
     "llm_temperature": str(cfg.llm_temperature),
     "llm_context_length": str(cfg.llm_context_length),
     "kb_enabled_by_default": str(cfg.kb_enabled_by_default).lower(),
-    # Provider 接口位（第一阶段仅预留，不实现云端调用）
+    # Provider / 模型路由（第四阶段 M6）
+    "provider_type": "ollama",
+    "remote_provider_enabled": "false",
     "openai_api_key": "",
     "openai_base_url": "",
+    "openai_model": "gpt-4o-mini",
     "claude_api_key": "",
+    "claude_model": "claude-3-5-sonnet-latest",
 }
 
 
