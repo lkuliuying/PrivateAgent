@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -53,11 +54,17 @@ def _run_migrations() -> None:
 
 def main() -> None:
     _ensure_data_dirs()
-    try:
-        _run_migrations()
-    except Exception as exc:  # noqa: BLE001
-        # 迁移失败不阻断启动：MySQL 可能尚未就绪，前端状态页会展示 MySQL 不可用
-        print(f"[server_entry] 自动迁移失败（继续启动）: {exc}", file=sys.stderr)
+    # PA_SKIP_MIGRATIONS lets tooling (e.g. scripts/measure_sidecar_baseline.py) spawn
+    # the sidecar without running alembic against a real database -- keeps the startup
+    # measurement side-effect-free. Normal packaged startup leaves it unset.
+    if os.environ.get("PA_SKIP_MIGRATIONS", "").lower() in ("1", "true", "yes"):
+        print("[server_entry] PA_SKIP_MIGRATIONS set; skipping alembic migration.", file=sys.stderr)
+    else:
+        try:
+            _run_migrations()
+        except Exception as exc:  # noqa: BLE001
+            # 迁移失败不阻断启动：MySQL 可能尚未就绪，前端状态页会展示 MySQL 不可用
+            print(f"[server_entry] 自动迁移失败（继续启动）: {exc}", file=sys.stderr)
 
     import uvicorn
     from personal_assistant.config import settings

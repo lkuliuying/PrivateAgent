@@ -29,10 +29,17 @@ apps/desktop/src-tauri/gen/
 apps/desktop/src-tauri/binaries/*.exe
 apps/desktop/src-tauri/binaries/*.sig
 
-# Tauri 签名私钥（仅本地持有，严禁入库）
+# Tauri updater 签名私钥 + Windows 代码签名证书（仅本地持有，严禁入库）
 .tauri/
 *.key
 *.key.pwd
+*.pem
+*.p12
+*.pfx
+*.cert
+*.crt
+*.cer
+*.der
 
 # 日志
 *.log

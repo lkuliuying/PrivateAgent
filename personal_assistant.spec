@@ -21,6 +21,10 @@ hiddenimports = []
 hiddenimports += collect_submodules("personal_assistant")
 hiddenimports += collect_submodules("chromadb")
 hiddenimports += ["aiomysql", "pymysql"]
+# cryptography: MySQL 8 默认 caching_sha2_password 认证需要它；aiomysql 在 try/except
+# 里动态 import，PyInstaller 静态分析看不到，必须显式声明，否则打包模式连 MySQL 报
+# "'cryptography' package is required for sha256_password or caching_sha2_password"。
+hiddenimports += ["cryptography"]
 hiddenimports += collect_submodules("langchain")
 hiddenimports += collect_submodules("langchain_ollama")
 hiddenimports += collect_submodules("langchain_chroma")

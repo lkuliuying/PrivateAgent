@@ -24,9 +24,9 @@
 | 第二阶段 | 四区工作台 UI + 受控工具调用（审批状态机）+ 授权路径 + 文件/知识库增强 + 活动流 | 已完成 |
 | 第三阶段 M0–M6 | 项目工作区 + 混合检索 + 学习系统 + 文档工作台 + 编码修改（补丁审批写入）+ 白名单命令执行 + 多步任务编排 + 六入口导航 | 已完成 |
 | 第四阶段 M0–M6 | 长期记忆 + 学习复习 + 文档集合/抽取 + 多文件 patch set + 可编辑任务计划 + Provider 路由 + 备份/恢复预览 | 已完成 |
-| 第五阶段 | 完整安装包 / 依赖检测向导 / 配置 UI / 自动更新预研 / 跨平台 / 体积优化 | 部分完成（见下） |
+| 第五阶段 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA 矩阵 / 体积与启动评估 / 跨平台预研 | 已完成 M0–M6（见下） |
 
-第五阶段已实现：NSIS 安装包、首启依赖检测向导、连接配置 UI、sidecar 生命周期与端口协商、Tauri updater 命令接线。尚未完成：updater 发布源与签名密钥部署、跨平台（macOS/Linux）、onedir 体积优化。文中涉及尚未完成的部分仍标注「（第五阶段规划，尚未实现）」。
+第五阶段已实现：可复现 Windows 构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。已重新构建 sidecar 并验证 `cryptography` 修复后 MySQL 8 连通。待真实环境执行：部署 GitHub Release 跑通升级 smoke、接入 Windows 代码签名、macOS/Linux 实机构建。
 
 ## 第三阶段新增能力（M0–M6）
 
@@ -803,17 +803,18 @@ sidecar 不打包这些，需用户本机具备：
 - `env.py` 从 `settings.db_url` 注入 URL。
 - 迁移失败不阻断启动（MySQL 可能未就绪），前端状态页展示 MySQL 不可用。
 
-### 10.5 安装包与分发（第五阶段已部分实现）
+### 10.5 安装包与分发（第五阶段 M0–M6）
 
-第五阶段已落地：NSIS 安装包（`installMode: currentUser`，简中/英文）、首启依赖检测向导、连接配置 UI、sidecar 生命周期与端口协商、Tauri updater 命令接线。一键构建：`scripts\build-release.bat`。详见 `docs/phase5-installer-updater.md`。
+第五阶段已落地完整发布工程化链路（Windows 硬验收）：可复现构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。详见 `docs/phase5-plan.md`、`docs/phase5-requirements.md`、`docs/release-checklist.md`、`docs/signing-and-keys.md`、`docs/cross-platform.md`。
 
-尚未完成（第五阶段规划，尚未实现）：
+重要缺陷修复（已重新构建验证）：实测发现旧打包 sidecar 缺 `cryptography`，连 MySQL 8（默认 `caching_sha2_password`）会认证失败。已在 `personal_assistant.spec` 的 `hiddenimports` 显式加入 `"cryptography"`；2026-07-08 重新构建 v0.1.1 sidecar 后，打包模式 `/health` 已验证 API / Ollama / MySQL / ChromaDB 全绿。
 
-1. **代码签名**：当前无证书，安装包未签名，SmartScreen 会警告（绕过：更多信息 → 仍要运行）。长期对策见 `phase5-installer-updater.md` §7。
-2. **Updater 发布源**：签名密钥对已生成、`plugins.updater`（pubkey/endpoints）与 `createUpdaterArtifacts` 已写入 `tauri.conf.json`，构建已产出 `.sig`。尚未部署：需把 `endpoints` 中的 `OWNER/REPO` 替换为实际 GitHub 仓库，并把 `docs/updater-latest.json` + 安装包 + `.sig` 上传到该仓库的 Release。部署完成后「检查更新」即可用。
-3. **onedir + Tauri resources**：onefile 首启解压慢，可切 onedir（启动快）+ Tauri `resources` 打包整个目录，sidecar 用绝对路径调起。
-4. **跨平台**：macOS / Linux 的 sidecar target triple + PyInstaller 产物。
-5. **体积优化**：排除 onnxruntime（若确认 chromadb 用 Ollama embedding 不触发默认 embedding）可显著减小体积，需运行时验证。
+待真实环境执行（工具与文档已就绪）：
+
+1. **部署 GitHub Release**（安装包 + `.sig` + `latest.json`）并跑通 v0.1.0 -> v0.1.1 升级 smoke。
+2. **Windows 代码签名**：当前无证书，安装包未签名，SmartScreen 会警告（绕过：更多信息 -> 仍要运行）。方案见 `docs/signing-and-keys.md` §2。
+3. **macOS / Linux 实机构建与 smoke**：见 `docs/cross-platform.md`（当前仅预研，未实测）。
+4. **体积优化**：onefile 已评估（v0.1.1 sidecar 约 88.6MB，安装包约 92.0MB），onedir 暂不切换；onnxruntime 裁剪需运行时验证（见 `docs/phase5-plan.md` M5）。
 
 ---
 
@@ -891,7 +892,7 @@ uv run pytest
 | 第二阶段 | 工具调用与本地自动化 | 文件检索、代码辅助、联网搜索、命令执行审批 |
 | 第三阶段 | 任务与个人工作流 | 日程、待办、笔记、长期记忆 |
 | 第四阶段 | 多 Agent 与高级编排 | 研究 Agent、执行 Agent、总结 Agent 协作 |
-| 第五阶段 | 安装包与分发 | NSIS 安装包、依赖检测向导、配置 UI 已实现；自动更新接线完成（发布源待部署）、跨平台/体积优化待续 |
+| 第五阶段 | 安装包与发布工程化 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA / 体积评估 / 跨平台预研（M0–M6 完成；代码签名与升级 smoke 待真实环境执行） |
 
 ---
 

@@ -12,13 +12,79 @@ const installing = ref(false);
 const update = ref<UpdateInfo | null>(null);
 const upToDate = ref(false);
 const error = ref("");
+const errorDetail = ref("");
 const note = ref("");
+
+type ErrorKind = "network" | "manifest" | "signature" | "unknown";
+
+/** Classify an updater error string into a user-facing category with a next step.
+ *  Tauri plugin errors are strings: network/manifest failures surface at check(),
+ *  signature failures surface at download_and_install(). Keyword ordering matters:
+ *  signature is checked first (so base64/minisign decode errors like "invalid symbol"
+ *  are not swallowed by the manifest bucket's "invalid"), and binary-download HTTP
+ *  failures ("download request failed with status: 404") are matched as network
+ *  before the manifest bucket's "404". */
+function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; detail: string } {
+  const raw = e instanceof Error ? e.message : String(e);
+  const s = raw.toLowerCase();
+  let kind: ErrorKind = "unknown";
+  if (
+    s.includes("signature") ||
+    s.includes("signing") ||
+    s.includes("verify") ||
+    // verify_signature() surfaces base64-decode (Error::Base64) and minisign-decode
+    // (Error::Minisign::InvalidEncoding) failures whose Display strings contain
+    // "invalid" but NOT "signature"/"verify" -- catch them here before the manifest
+    // bucket's "invalid" keyword, so a malformed/tampered signature is reported as such.
+    s.includes("minisign") ||
+    s.includes("invalid symbol") ||
+    s.includes("invalid last symbol") ||
+    s.includes("invalid padding") ||
+    s.includes("invalid input length") ||
+    s.includes("could not be decoded")
+  ) {
+    kind = "signature";
+  } else if (
+    s.includes("network") ||
+    s.includes("download request failed") || // binary-download HTTP failure (e.g. 404 on the asset), not a manifest problem
+    s.includes("failed to fetch") ||
+    s.includes("sending request") ||
+    s.includes("dns") ||
+    s.includes("connect") ||
+    s.includes("timeout") ||
+    s.includes("timed out") ||
+    s.includes("refused") ||
+    s.includes("unreachable") ||
+    s.includes("proxy")
+  ) {
+    kind = "network";
+  } else if (
+    s.includes("manifest") ||
+    s.includes("json") ||
+    s.includes("parse") ||
+    s.includes("deserialize") ||
+    s.includes("404") ||
+    s.includes("not found") ||
+    s.includes("version") ||
+    s.includes("invalid")
+  ) {
+    kind = "manifest";
+  }
+  const messages: Record<ErrorKind, string> = {
+    network: "无法连接更新服务器。请检查网络后重试（自动更新需访问 GitHub Release）。",
+    manifest: "更新清单 (latest.json) 无效或未找到。可能是发布源尚未部署或版本号配置错误。",
+    signature: "更新签名验证失败。安装包可能被篡改或签名密钥不匹配，已拒绝更新。",
+    unknown: "操作失败，请稍后重试或手动下载新版本。",
+  };
+  return { kind, message: messages[kind], detail: raw };
+}
 
 async function check() {
   checking.value = true;
   update.value = null;
   upToDate.value = false;
   error.value = "";
+  errorDetail.value = "";
   note.value = "";
   try {
     const res = await cmdCheckForUpdates();
@@ -28,8 +94,9 @@ async function check() {
       upToDate.value = true;
     }
   } catch (e) {
-    // updater 未配置（无发布源/公钥）时也会走到这里。
-    error.value = String(e);
+    const c = classifyUpdateError(e);
+    error.value = c.message;
+    errorDetail.value = c.detail;
   } finally {
     checking.value = false;
   }
@@ -39,12 +106,30 @@ async function install() {
   installing.value = true;
   note.value = "";
   error.value = "";
+  errorDetail.value = "";
   try {
-    await cmdDownloadAndInstallUpdate();
+    // 1) download + install (signature is verified here; sidecar is killed first by Rust).
+    try {
+      await cmdDownloadAndInstallUpdate();
+    } catch (e) {
+      const c = classifyUpdateError(e);
+      // Manifest was already validated during check(); an install-time failure is a
+      // download/signature/unknown problem, so only signature/network get their own
+      // wording -- never the manifest-invalid message.
+      error.value = c.kind === "signature" || c.kind === "network" ? c.message : "安装失败，请稍后重试或手动下载新版本。";
+      errorDetail.value = c.detail;
+      return;
+    }
+    // 2) install succeeded -- relaunch. A relaunch failure must clear the success note
+    // so we never render a green "下载安装完成" next to a red error.
     note.value = "下载安装完成，正在重启…";
-    await cmdRelaunchApp();
-  } catch (e) {
-    error.value = "安装失败：" + String(e);
+    try {
+      await cmdRelaunchApp();
+    } catch (e) {
+      note.value = "";
+      error.value = "更新已安装，但自动重启失败，请手动重启应用。";
+      errorDetail.value = e instanceof Error ? e.message : String(e);
+    }
   } finally {
     installing.value = false;
   }
@@ -70,7 +155,8 @@ async function install() {
     <p v-if="upToDate" class="msg ok">✓ 当前已是最新版本。</p>
     <p v-if="error" class="msg err">
       ⚠ {{ error }}
-      <span class="hint">（自动更新需配置发布源与签名公钥，见 docs/phase5-installer-updater.md）</span>
+      <span v-if="errorDetail" class="hint">（{{ errorDetail }}）</span>
+      <span class="hint">详见 docs/phase5-plan.md 与 docs/signing-and-keys.md</span>
     </p>
     <p v-if="note" class="msg ok">{{ note }}</p>
 

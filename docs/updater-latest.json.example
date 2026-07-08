@@ -1,11 +1,11 @@
 {
-  "version": "0.1.0",
-  "notes": "私人助手 v0.1.0",
+  "version": "0.1.1",
+  "notes": "私人助手 v0.1.1",
   "pub_date": "2026-07-04T12:00:00Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "把 apps/desktop/src-tauri/target/release/bundle/nsis/私人助手_0.1.0_x64-setup.exe.sig 的完整内容粘到这里",
-      "url": "https://github.com/OWNER/REPO/releases/download/v0.1.0/私人助手_0.1.0_x64-setup.exe"
+      "signature": "把 apps/desktop/src-tauri/target/release/bundle/nsis/私人助手_0.1.1_x64-setup.exe.sig 的完整内容粘到这里",
+      "url": "https://github.com/OWNER/REPO/releases/download/v0.1.1/%E7%A7%81%E4%BA%BA%E5%8A%A9%E6%89%8B_0.1.1_x64-setup.exe"
     }
   }
 }

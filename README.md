@@ -1,8 +1,8 @@
 # 私人助手 Agent
 
-本地优先、隐私可控的桌面私人助手。第三阶段新增：**项目工作区 + 学习系统 + 文档工作台 + 混合检索**。
+本地优先、隐私可控的桌面私人助手。当前已完成到第五阶段：**长期记忆 + 学习复习 + 文档集合 + 可回滚编码工作流 + 可编辑任务计划 + Provider 路由 + 安装包与发布工程化**。
 
-> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md`。
+> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md` / `docs/phase4-requirements.md` / `docs/phase5-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md`。
 
 ## 技术栈
 
@@ -108,31 +108,51 @@ uv run alembic revision --autogenerate -m "xxx"      # 自动生成（需连库�
 
 桌面端状态页每 5 秒自动刷新 `/health` 并展示四项状态；后端未连接时显示「本地后端未连接」提示。
 
-## 打包（M4 预研）
+## 打包与发布（第五阶段）
 
-将 Python 后端打包为 Tauri sidecar，桌面应用启动时自动拉起后端，无需手动开终端。详见 `docs/phase4-sidecar-research.md`。
+将 Python 后端打包为 Tauri sidecar，桌面应用启动时自动拉起后端，无需手动开终端。第五阶段已形成可复现的 Windows 发布闭环：构建脚本不再硬编码本机路径，提供发布前校验、发布清单与 updater 清单自动生成。
+
+### 0. 发布前校验
+```bash
+scripts\release-check.bat        # pytest / npm build / cargo check / alembic current
+```
 
 ### 1. 打包后端 sidecar
 ```bash
 scripts\build-sidecar.bat
 ```
-用 PyInstaller（`personal_assistant.spec`）把后端打成 `personal-assistant-server.exe`（onefile，~85MB），复制到 `apps/desktop/src-tauri/binaries/`。
+用 PyInstaller（`personal_assistant.spec`）把后端打成 `personal-assistant-server.exe`（onefile，~85MB），复制到 `apps/desktop/src-tauri/binaries/`。脚本自动从 PATH 查找 `uv`、按脚本位置推导项目根，无需改本机路径。
 
-### 2. 启动 / 构建
+### 2. 一键构建 NSIS 安装包
 ```bash
-scripts\run-tauri-dev.bat                # 开发模式（binaries/ 为真实 sidecar 时自动拉起；占位时后端手动起）
-cd apps/desktop && npm run tauri build    # 打包安装程序
+scripts\build-release.bat
 ```
+串联：sidecar 打包 → 自动检测 MSVC `vcvars64.bat`（vswhere + 常见路径）→ 可选 updater 签名（`%USERPROFILE%\.tauri\personal-assistant.key`）→ `tauri build` → 生成发布清单 `dist\release-manifest-<ver>.md`（含 sha256 / git commit / 校验项）。
 
-### 3. 运行时依赖（打包后仍需本机具备）
+> 首次 `tauri build` 从 GitHub 下载 NSIS 工具链；不可达时先 `set HTTPS_PROXY=http://127.0.0.1:10808`。
+
+### 3. 生成 updater 发布清单
+```bash
+uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dist\latest.json
+```
+自动从 `tauri.conf.json` 读版本、从 git remote 读 repo、从 `.sig` 读签名，并对安装包文件名做百分号编码（updater 要求 ASCII URL）。
+
+### 4. 上传 GitHub Release
+上传三个资产到 `v<version>` Release：安装包、`.sig`、`latest.json`。应用内"检查更新"即从 `.../releases/latest/download/latest.json` 拉取。详见 `docs/release-checklist.md`。
+
+### 5. 运行时依赖（打包后仍需本机具备）
 - **Ollama** + 模型（`qwen2.5:14b-instruct-q4_K_M`、`bge-m3`）
 - **MySQL 8**（建库见上文）
-- **配置文件** `%APPDATA%/personal-assistant/.env`，至少：
-  ```
-  PA_DB_URL=mysql+aiomysql://root:<密码>@127.0.0.1:3306/personal_assistant?charset=utf8mb4
-  ```
+- **配置文件** `%APPDATA%/personal-assistant/.env`（首启向导自动写入）
 
 启动后 Tauri 自动分配空闲端口拉起 sidecar，前端动态连接；退出时清理 sidecar 进程。
+
+### 相关文档
+- `docs/phase5-plan.md` / `docs/phase5-requirements.md`：第五阶段计划与需求。
+- `docs/release-checklist.md`：发布 QA 矩阵与回滚。
+- `docs/signing-and-keys.md`：updater 签名与 Windows 代码签名。
+- `docs/cross-platform.md`：macOS / Linux 预研（Windows 为第五阶段硬验收）。
+- `docs/phase4-sidecar-research.md`：sidecar 机制预研历史归档。
 
 ## 当前进度
 
@@ -172,15 +192,16 @@ cd apps/desktop && npm run tauri build    # 打包安装程序
 
 **M4 打包预研（非硬验收）已完成** ✅：Tauri sidecar + 端口协商 + PyInstaller 打包可行性验证通过，详见 `docs/phase4-sidecar-research.md`。
 
-**第五阶段（安装包与分发）已部分完成** ✅：
-- NSIS 安装包（`installMode: currentUser`，简中/英文）+ 一键构建 `scripts/build-release.bat`。
-- 首启依赖检测向导 + 连接配置 UI（`ConfigWizard.vue`），写入 `%APPDATA%/personal-assistant/.env`。
-- sidecar 生命周期重构：`start_sidecar` 按需拉起、重试时先终止旧进程避免孤儿、dev 模式回退手动后端。
-- 启动引导状态机（`App.vue`：checking/wizard/starting/done/dev/error）+ `/health` 依赖就绪判定。
-- Tauri updater 命令接线（`check_for_updates`/`download_and_install_update`/`relaunch_app`）+ `UpdateChecker.vue`。
-- 详见 `docs/phase5-installer-updater.md` 与 `docs/usage-guide.md`。
+**第五阶段（安装包与发布工程化）已完成 M0–M6** ✅：
+- M1 可复现构建：`build-sidecar.bat` / `build-release.bat` 去硬编码（脚本位置推导根目录、PATH 查找 uv、vswhere + 常见路径检测 MSVC）；新增 `release-check.bat`（pytest/npm build/cargo check/alembic current）与 `generate_release_manifest.py`（发布清单 + sha256）。
+- M2 updater 发布源：`generate-latest-json.py` 自动产出与 `.sig` 一致的 `latest.json`（版本来自 tauri.conf.json、repo 来自 git remote、文件名百分号编码）；`UpdateChecker.vue` 区分网络/清单/签名/无更新错误；已校验 `tauri.conf.json` 公钥与本地私钥匹配、`.sig` 与清单一致。
+- M3 签名与密钥：`docs/signing-and-keys.md`（updater 私钥策略 + 轮换 + Windows 代码签名方案 + 签名顺序）；`.gitignore` 覆盖密钥与证书，已确认仓库不含私钥。
+- M4 发布 QA：`docs/release-checklist.md`（安装/升级/卸载 QA 矩阵、用户数据目录行为、迁移与回滚、发布清单模板、GitHub Release 上传、v0.1.0→v0.1.1 升级 smoke）。
+- M5 体积与启动：`measure_sidecar_baseline.py` 实测基线（sidecar 84.7MB / 安装包 88.0MB / 启动到 /health ≈5s）；`personal_assistant_onedir.spec` 评估 onedir；发现并修复打包缺 `cryptography`（MySQL 8 认证）缺陷；结论暂不切换 onefile。
+- M6 跨平台预研：`build-sidecar.sh`（macOS/Linux）+ `docs/cross-platform.md`（macOS/Linux 差异与待验证清单，Windows 为硬验收）。
+- 详见 `docs/phase5-plan.md`、`docs/phase5-requirements.md`、`docs/release-checklist.md`、`docs/signing-and-keys.md`、`docs/cross-platform.md`。
 
-> 待续：代码签名、updater 发布源（需生成签名密钥对 + 部署 `latest.json`）、跨平台、onedir 体积优化。
+> 待真实环境执行（工具与文档已就绪）：部署 GitHub Release 资产并跑通 v0.1.0→v0.1.1 升级 smoke；接入 Windows 代码签名证书；macOS/Linux 实机构建与 smoke。`cryptography` 打包缺陷已在 v0.1.1 sidecar 重新构建后验证修复，打包模式 `/health` API / Ollama / MySQL / ChromaDB 全绿。
 
 ## 常见问题
 
