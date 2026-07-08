@@ -5,13 +5,14 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import (
     BIGINT,
     BOOLEAN,
     CHAR,
+    DATE,
     DATETIME,
     ENUM,
     FLOAT,
@@ -976,4 +977,261 @@ class DocumentExtraction(Base):
     __table_args__ = (
         Index("idx_extraction_doc", "doc_id", "kind"),
         Index("idx_extraction_collection", "collection_id", "kind"),
+    )
+
+
+# ============================================================================
+# 第六阶段 M1：主动个人中枢（收件箱 / 提醒 / 目标 / 简报 / 隐私审计）
+# ============================================================================
+
+
+class InboxItem(Base):
+    """统一收件箱：聚合聊天/任务/学习/活动/记忆等待处理项。
+
+    source_type/source_id 指向来源对象（软引用，不建外键）；
+    target_type/target_id 指向转化后的目标（reminder/agent_task/memory 等）。
+    完成/归档不删除原始对象，只改 inbox 自身状态。
+    """
+
+    __tablename__ = "inbox_items"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    body_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    item_type: Mapped[str] = mapped_column(
+        ENUM(
+            "todo",
+            "reminder",
+            "review",
+            "approval",
+            "failure",
+            "memory",
+            "note",
+            "system",
+            name="inbox_item_type_enum",
+        ),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM("open", "snoozed", "done", "ignored", "archived", name="inbox_item_status_enum"),
+        nullable=False,
+        default="open",
+        server_default="open",
+    )
+    priority: Mapped[str] = mapped_column(
+        ENUM("low", "normal", "high", "urgent", name="inbox_item_priority_enum"),
+        nullable=False,
+        default="normal",
+        server_default="normal",
+    )
+    due_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    target_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    target_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    meta_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_inbox_status_due", "status", "due_at"),
+        Index("idx_inbox_source", "source_type", "source_id"),
+    )
+
+
+class Reminder(Base):
+    """通用提醒：一次性/重复。next_fire_at 由 due_at 初始化，tick 扫描驱动。"""
+
+    __tablename__ = "reminders"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    body_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM("active", "snoozed", "done", "cancelled", name="reminder_status_enum"),
+        nullable=False,
+        default="active",
+        server_default="active",
+    )
+    due_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    # 轻量重复规则 JSON：{freq: none/daily/weekly/monthly, interval: N, ...}。
+    recurrence_rule: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    next_fire_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    source_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        Index("idx_reminder_next", "status", "next_fire_at"),
+        Index("idx_reminder_source", "source_type", "source_id"),
+    )
+
+
+class PersonalGoal(Base):
+    """跨模块长期目标：关联学习主题/项目/任务/文档集合，支持 check-in 与周回顾。"""
+
+    __tablename__ = "personal_goals"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    domain: Mapped[str] = mapped_column(
+        VARCHAR(64), nullable=False, default="custom", server_default="custom"
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM("active", "paused", "done", "archived", name="personal_goal_status_enum"),
+        nullable=False,
+        default="active",
+        server_default="active",
+    )
+    priority: Mapped[str] = mapped_column(
+        ENUM("low", "normal", "high", name="personal_goal_priority_enum"),
+        nullable=False,
+        default="normal",
+        server_default="normal",
+    )
+    start_date: Mapped[date | None] = mapped_column(DATE, nullable=True)
+    target_date: Mapped[date | None] = mapped_column(DATE, nullable=True)
+    success_criteria_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (Index("idx_goal_status", "status", "priority"),)
+
+
+class GoalLink(Base):
+    """目标关联对象：target_type/target_id 软引用 learning_topic/project/agent_task/collection。
+
+    relation：supports/blocks/evidence/result。同域 goal_id 亦不建 FK CASCADE，
+    遵循「不自动级联删除用户数据」。
+    """
+
+    __tablename__ = "goal_links"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    target_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    target_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    relation: Mapped[str] = mapped_column(
+        VARCHAR(64), nullable=False, default="supports", server_default="supports"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "goal_id", "target_type", "target_id", "relation", name="uk_goal_target"
+        ),
+        Index("idx_goal_links_goal", "goal_id"),
+    )
+
+
+class GoalCheckin(Base):
+    """目标回顾：进度笔记、信心度、阻塞项、下一步。供周回顾引用。"""
+
+    __tablename__ = "goal_checkins"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    goal_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    checkin_date: Mapped[date] = mapped_column(DATE, nullable=False)
+    progress_note_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    confidence: Mapped[float | None] = mapped_column(FLOAT, nullable=True)
+    blockers_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    next_actions_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (Index("idx_goal_checkins_goal_date", "goal_id", "checkin_date"),)
+
+
+class Briefing(Base):
+    """主动简报：today/weekly/learning/project/goal。sources_json 只存摘要与 id。"""
+
+    __tablename__ = "briefings"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "today",
+            "weekly",
+            "learning",
+            "project",
+            "goal",
+            name="briefing_kind_enum",
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    body_md: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    sources_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (Index("idx_briefing_kind_time", "kind", "created_at"),)
+
+
+class ProviderCallAudit(Base):
+    """远程 Provider 请求级审计：只存类别与估算大小，不存完整 prompt。"""
+
+    __tablename__ = "provider_call_audits"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    provider_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    purpose: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    remote: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    context_types_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    estimated_input_chars: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    estimated_output_chars: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "planned",
+            "sent",
+            "succeeded",
+            "failed",
+            "cancelled",
+            name="provider_audit_status_enum",
+        ),
+        nullable=False,
+        default="planned",
+        server_default="planned",
+    )
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_provider_audit_time", "created_at"),
+        Index("idx_provider_audit_remote", "remote", "created_at"),
     )

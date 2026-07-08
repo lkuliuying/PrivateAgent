@@ -26,6 +26,7 @@ const emit = defineEmits<{
   reject: [id: number];
   "select-chunk": [chunkId: number];
   "gen-candidates": [];
+  "save-inbox": [messageId: number, content: string];
 }>();
 
 const input = ref("");
@@ -108,6 +109,18 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
                 ><span v-if="mi < m.memories.length - 1">；</span></span
               >
             </div>
+            <button
+              v-if="
+                m.id > 0 &&
+                m.content &&
+                !(streaming && i === messages.length - 1)
+              "
+              class="msg-action"
+              title="保存这条消息到收件箱"
+              @click="emit('save-inbox', m.id, m.content)"
+            >
+              存为收件箱
+            </button>
           </template>
         </div>
       </div>
@@ -248,6 +261,20 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
 .mem-summary {
   color: var(--color-fg-faint);
   font-size: 11px;
+}
+.msg-action {
+  margin-top: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #6a6b6e;
+  background: transparent;
+  border: 1px solid #e5e6e8;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.msg-action:hover {
+  color: #1565c0;
+  border-color: #1565c0;
 }
 .cursor {
   display: inline-block;

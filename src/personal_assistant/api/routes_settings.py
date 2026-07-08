@@ -24,6 +24,9 @@ class SettingsOut(BaseModel):
     openai_model: str
     claude_api_key: str
     claude_model: str
+    reminders_enabled: bool
+    reminder_tick_seconds: int
+    desktop_notifications_enabled: bool
 
 
 class SettingsUpdate(BaseModel):
@@ -39,6 +42,9 @@ class SettingsUpdate(BaseModel):
     openai_model: str | None = None
     claude_api_key: str | None = None
     claude_model: str | None = None
+    reminders_enabled: bool | None = None
+    reminder_tick_seconds: int | None = None
+    desktop_notifications_enabled: bool | None = None
 
 
 def _to_out(d: dict[str, str]) -> SettingsOut:
@@ -56,6 +62,10 @@ def _to_out(d: dict[str, str]) -> SettingsOut:
         openai_model=d.get("openai_model", "gpt-4o-mini"),
         claude_api_key=d.get("claude_api_key", ""),
         claude_model=d.get("claude_model", "claude-3-5-sonnet-latest"),
+        reminders_enabled=d.get("reminders_enabled", "true").lower() == "true",
+        reminder_tick_seconds=int(d.get("reminder_tick_seconds", "60") or 60),
+        desktop_notifications_enabled=d.get("desktop_notifications_enabled", "false").lower()
+        == "true",
     )
 
 

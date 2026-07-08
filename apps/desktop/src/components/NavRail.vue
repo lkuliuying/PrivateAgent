@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   PhChatsCircle,
+  PhSun,
   PhBooks,
   PhFolderSimple,
   PhGraduationCap,
@@ -11,13 +12,14 @@ import {
 } from "@phosphor-icons/vue";
 
 /** 工作台视图名（与 App.vue view union 对齐） */
-type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
+type View = "chat" | "today" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
 
 defineProps<{ active: View }>();
 const emit = defineEmits<{ navigate: [view: View] }>();
 
 const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "chat", label: "聊天", icon: PhChatsCircle },
+  { key: "today", label: "今日", icon: PhSun },
   { key: "kb", label: "知识库", icon: PhBooks },
   { key: "projects", label: "项目", icon: PhFolderSimple },
   { key: "learning", label: "学习", icon: PhGraduationCap },

@@ -25,8 +25,20 @@
 | 第三阶段 M0–M6 | 项目工作区 + 混合检索 + 学习系统 + 文档工作台 + 编码修改（补丁审批写入）+ 白名单命令执行 + 多步任务编排 + 六入口导航 | 已完成 |
 | 第四阶段 M0–M6 | 长期记忆 + 学习复习 + 文档集合/抽取 + 多文件 patch set + 可编辑任务计划 + Provider 路由 + 备份/恢复预览 | 已完成 |
 | 第五阶段 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA 矩阵 / 体积与启动评估 / 跨平台预研 | 已完成 M0–M6（见下） |
+| 第六阶段 | 今日中枢 / 统一收件箱 / 提醒与例行回顾 / 目标追踪 / 主动简报 / 隐私审计 / 数据体检 | 已完成 M0–M7 |
 
 第五阶段已实现：可复现 Windows 构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。已重新构建 sidecar 并验证 `cryptography` 修复后 MySQL 8 连通。待真实环境执行：部署 GitHub Release 跑通升级 smoke、接入 Windows 代码签名、macOS/Linux 实机构建。
+
+## 第六阶段新增能力（M0–M7）
+
+第六阶段把应用升级为“主动个人中枢”。打开「今日」页可以集中处理到期复习、待关注任务、失败活动、候选记忆、到期提醒、收件箱、目标、简报和数据体检。
+
+- **今日中枢与收件箱**：左侧导航新增「今日」入口；Today 页面显示跨模块待处理事项，并可把聊天消息或快照项保存为收件箱。收件箱支持创建、编辑、完成、稍后、忽略、归档、转任务草稿和转提醒。
+- **提醒与例行回顾**：提醒支持一次性、每日、每周、每月重复规则，支持 snooze、完成和手动 tick。打包模式下后台 tick 跟随 sidecar 生命周期，桌面通知不可用时降级到 Today 页面展示。
+- **长期目标**：Today 页内的「长期目标」区块支持创建目标、设置状态/优先级、添加 check-in、关联 `learning_topic` / `project` / `agent_task` / `document_collection` 等对象，并可生成任务草稿或目标简报。
+- **主动简报**：简报区支持生成今日简报和周回顾，历史简报可查看 Markdown 内容并一键转为任务草稿；目标详情可生成目标简报。
+- **隐私与维护**：隐私面板支持请求级上下文预览，敏感记忆不会进入远程上下文；OpenAI/Claude 等远程 Provider 调用会记录审计。维护健康报告展示最近备份、失败活动、草稿记忆、关注任务、收件箱和到期提醒。
+- **验证状态**：`pytest -q` 146 通过，`npm run build`、`cargo check`、`alembic current -> 0009 (head)`、`git diff --check` 通过。
 
 ## 第三阶段新增能力（M0–M6）
 
@@ -893,6 +905,7 @@ uv run pytest
 | 第三阶段 | 任务与个人工作流 | 日程、待办、笔记、长期记忆 |
 | 第四阶段 | 多 Agent 与高级编排 | 研究 Agent、执行 Agent、总结 Agent 协作 |
 | 第五阶段 | 安装包与发布工程化 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA / 体积评估 / 跨平台预研（M0–M6 完成；代码签名与升级 smoke 待真实环境执行） |
+| 第六阶段 | 主动个人中枢 | 今日入口 / 统一收件箱 / 提醒与例行回顾 / 目标追踪 / 主动简报 / 隐私审计 / 数据体检（M0–M7 完成） |
 
 ---
 

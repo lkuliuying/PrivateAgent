@@ -857,3 +857,259 @@ export interface BackupRestorePreview {
   preview_only: string[];
   note: string;
 }
+
+// ============ 第六阶段 M1/M2：今日中枢 / 收件箱 ============
+
+export type InboxItemType =
+  | 'todo'
+  | 'reminder'
+  | 'review'
+  | 'approval'
+  | 'failure'
+  | 'memory'
+  | 'note'
+  | 'system';
+
+export type InboxStatus = 'open' | 'snoozed' | 'done' | 'ignored' | 'archived';
+export type InboxPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface InboxItem {
+  id: number;
+  title: string;
+  body_md: string | null;
+  item_type: InboxItemType;
+  status: InboxStatus;
+  priority: InboxPriority;
+  due_at: string | null;
+  source_type: string | null;
+  source_id: number | null;
+  target_type: string | null;
+  target_id: number | null;
+  meta_json: Record<string, unknown> | null;
+  created_at: string;
+  updated_at: string;
+  handled_at: string | null;
+}
+
+export interface InboxCreate {
+  title: string;
+  item_type: InboxItemType;
+  body_md?: string;
+  priority?: InboxPriority;
+  due_at?: string;
+  source_type?: string;
+  source_id?: number;
+}
+
+export interface InboxUpdate {
+  title?: string;
+  body_md?: string;
+  status?: InboxStatus;
+  priority?: InboxPriority;
+  due_at?: string | null;
+}
+
+/** 今日快照中的卡片项：各来源共用一个宽松结构（仅展示与跳转来源所需字段）。 */
+export interface TodayItem {
+  id: number;
+  title?: string;
+  front?: string;
+  status?: string;
+  item_type?: string;
+  priority?: string;
+  kind?: string;
+  due_at?: string | null;
+  next_fire_at?: string | null;
+  recurring?: boolean;
+  topic_id?: number;
+  ref_type?: string | null;
+  ref_id?: number | null;
+  error_message?: string | null;
+  summary?: string | null;
+  source_type: string;
+  source_id: number;
+  origin_source_type?: string | null;
+  origin_source_id?: number | null;
+}
+
+export interface TodaySummary {
+  due_cards: number;
+  attention_tasks: number;
+  failed_activities: number;
+  draft_memories: number;
+  due_reminders: number;
+  open_inbox: number;
+  last_backup_at: string | null;
+}
+
+export interface TodaySnapshot {
+  generated_at: string;
+  summary: TodaySummary;
+  due_cards: TodayItem[];
+  attention_tasks: TodayItem[];
+  failed_activities: TodayItem[];
+  draft_memories: TodayItem[];
+  due_reminders: TodayItem[];
+  open_inbox: TodayItem[];
+  backup: { last_backup_at: string | null; count: number };
+}
+
+// ============ 第六阶段 M3：提醒 ============
+
+export type ReminderStatus = 'active' | 'snoozed' | 'done' | 'cancelled';
+export type RecurrenceFreq = 'none' | 'daily' | 'weekly' | 'monthly';
+
+export interface RecurrenceRule {
+  freq: RecurrenceFreq;
+  interval: number;
+}
+
+export interface Reminder {
+  id: number;
+  title: string;
+  body_md: string | null;
+  status: ReminderStatus;
+  due_at: string;
+  recurrence_rule: RecurrenceRule | null;
+  next_fire_at: string | null;
+  last_fired_at: string | null;
+  source_type: string | null;
+  source_id: number | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReminderCreate {
+  title: string;
+  due_at: string;
+  body_md?: string;
+  recurrence_rule?: RecurrenceRule;
+  source_type?: string;
+  source_id?: number;
+}
+
+export interface ReminderUpdate {
+  title?: string;
+  body_md?: string;
+  due_at?: string;
+  recurrence_rule?: RecurrenceRule;
+  status?: ReminderStatus;
+}
+
+// ============ 第六阶段 M4/M5/M6：目标 / 简报 / 隐私维护 ============
+
+export type GoalStatus = 'active' | 'paused' | 'done' | 'archived';
+export type GoalPriority = 'low' | 'normal' | 'high';
+
+export interface PersonalGoal {
+  id: number;
+  title: string;
+  description: string | null;
+  domain: string;
+  status: GoalStatus;
+  priority: GoalPriority;
+  start_date: string | null;
+  target_date: string | null;
+  success_criteria_md: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalCreate {
+  title: string;
+  description?: string;
+  domain?: string;
+  status?: GoalStatus;
+  priority?: GoalPriority;
+  start_date?: string | null;
+  target_date?: string | null;
+  success_criteria_md?: string;
+}
+
+export interface GoalUpdate {
+  title?: string;
+  description?: string;
+  domain?: string;
+  status?: GoalStatus;
+  priority?: GoalPriority;
+  start_date?: string | null;
+  target_date?: string | null;
+  success_criteria_md?: string;
+}
+
+export interface GoalLink {
+  id: number;
+  goal_id: number;
+  target_type: string;
+  target_id: number;
+  relation: string;
+  created_at: string;
+}
+
+export interface GoalCheckin {
+  id: number;
+  goal_id: number;
+  checkin_date: string;
+  progress_note_md: string | null;
+  confidence: number | null;
+  blockers_json: string[] | null;
+  next_actions_json: string[] | null;
+  created_at: string;
+}
+
+export interface GoalDetail {
+  goal: PersonalGoal;
+  links: GoalLink[];
+  checkins: GoalCheckin[];
+}
+
+export interface Briefing {
+  id: number;
+  kind: 'today' | 'weekly' | 'learning' | 'project' | 'goal';
+  title: string;
+  body_md: string;
+  sources_json: Array<Record<string, unknown>> | null;
+  created_at: string;
+}
+
+export interface PrivacyPreview {
+  audit_id: number;
+  provider_type: string;
+  remote: boolean;
+  remote_provider_enabled: boolean;
+  context_types: string[];
+  estimated_input_chars: number;
+  safe_memory_count: number;
+  sensitive_memory_excluded: number;
+  will_send_raw_sensitive_memory: boolean;
+}
+
+export interface ProviderCallAudit {
+  id: number;
+  provider_type: string;
+  model: string | null;
+  purpose: string;
+  remote: boolean;
+  context_types_json: string[] | null;
+  estimated_input_chars: number | null;
+  estimated_output_chars: number | null;
+  status: string;
+  error_message: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface MaintenanceHealthReport {
+  generated_at: string;
+  summary: {
+    last_backup_at: string | null;
+    backup_count: number;
+    failed_activities: number;
+    draft_memories: number;
+    attention_tasks: number;
+    orphan_evidence: number;
+    open_inbox: number;
+    due_reminders: number;
+  };
+  recommendations: string[];
+}

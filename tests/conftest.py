@@ -12,6 +12,7 @@ from personal_assistant.core.db import get_session
 import personal_assistant.core.db as dbmod
 import personal_assistant.workers.importer as importer_mod
 import personal_assistant.workers.project_scanner as scanner_mod
+import personal_assistant.core.reminders as reminders_mod
 from personal_assistant.main_api import app
 
 
@@ -61,6 +62,9 @@ async def client():
     # engine（import 时绑定到别的 event loop），跨 loop 写入失败 + 连接泄漏警告。
     scanner_mod.async_session_factory = test_factory
     importer_mod.async_session_factory = test_factory
+    # 提醒后台 tick 用 reminders_mod.async_session_factory（lifespan 不在测试运行，
+    # 但若未来测试触发，重绑可避免跨 event loop 泄漏 aiomysql 连接）。
+    reminders_mod.async_session_factory = test_factory
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
@@ -83,4 +87,5 @@ async def client():
         dbmod.async_session_factory = orig_factory
         scanner_mod.async_session_factory = orig_factory
         importer_mod.async_session_factory = orig_factory
+        reminders_mod.async_session_factory = orig_factory
         await test_engine.dispose()

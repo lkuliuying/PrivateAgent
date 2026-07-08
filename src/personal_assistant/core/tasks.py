@@ -122,6 +122,42 @@ class AgentTaskService:
         )
         return await self.get(task.id)
 
+    async def create_draft(
+        self,
+        *,
+        title: str,
+        goal: str | None,
+        source_type: str | None = None,
+        source_id: int | None = None,
+    ) -> AgentTask:
+        """创建任务计划草稿（不调 LLM）：空步骤，plan_json 携带来源引用，待用户细化。
+
+        供收件箱/简报「转任务」用：把一个待处理项提升为 plan_draft 任务，
+        用户可在任务页用 LLM 重新生成或手动编辑步骤后再批准执行。
+        """
+        source = {"type": source_type, "id": source_id} if source_type else None
+        plan: dict = {"goal": goal, "steps": [], "source": source}
+        task = await self.tasks.create(
+            title=title,
+            goal=goal,
+            session_id=None,
+            plan_json=plan,
+            status="plan_draft",
+        )
+        await self.activities.sync_system(
+            ref_type="agent_task",
+            ref_id=task.id,
+            title=f"Agent 计划草稿：{title}",
+            act_status="pending",
+            detail={
+                "task_id": task.id,
+                "goal": goal,
+                "source_type": source_type,
+                "source_id": source_id,
+            },
+        )
+        return await self.get(task.id)
+
     async def get(self, task_id: int) -> AgentTask:
         task = await self.tasks.get(task_id)
         if task is None:

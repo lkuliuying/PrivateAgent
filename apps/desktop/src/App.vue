@@ -11,6 +11,7 @@ import KnowledgeView from "./components/KnowledgeView.vue";
 import ProjectWorkspace from "./components/ProjectWorkspace.vue";
 import LearningWorkspace from "./components/LearningWorkspace.vue";
 import MemoryWorkspace from "./components/MemoryWorkspace.vue";
+import TodayView from "./components/TodayView.vue";
 import SettingsView from "./components/SettingsView.vue";
 import ConfigWizard from "./components/ConfigWizard.vue";
 import {
@@ -29,6 +30,7 @@ import {
   cmdConfigExists,
   cmdRelaunchApp,
   candidateMemories,
+  createInbox,
 } from "./api";
 import { isTauri } from "@tauri-apps/api/core";
 import type { Message, MemorySource, Session, Source, ToolCall } from "./types";
@@ -40,7 +42,7 @@ type ChatMessage = Message & {
 };
 
 // 工作台视图（与 NavRail 的 View 对齐）
-type View = "chat" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
+type View = "chat" | "today" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -92,6 +94,8 @@ const pageTitle = computed(() => {
   switch (view.value) {
     case "chat":
       return currentSession.value?.title || "私人助手";
+    case "today":
+      return "今日";
     case "kb":
       return "知识库";
     case "projects":
@@ -419,6 +423,24 @@ async function onGenCandidates() {
   }
 }
 
+/** 把一条聊天消息保存到收件箱（保留 chat_message 来源引用）。 */
+async function onSaveMessageToInbox(messageId: number, content: string) {
+  const text = content.trim();
+  const title = (text.split("\n")[0] || text).slice(0, 255);
+  try {
+    await createInbox({
+      title: title || `消息 #${messageId}`,
+      item_type: "note",
+      body_md: text || undefined,
+      source_type: "chat_message",
+      source_id: messageId,
+    });
+    window.alert("已保存到收件箱（今日页可查看）");
+  } catch (e) {
+    window.alert(`保存到收件箱失败：${e}`);
+  }
+}
+
 /** 批准工具调用：执行后流式总结结果。 */
 async function onApproveToolCall(id: number) {
   if (!currentSession.value) return;
@@ -537,6 +559,7 @@ function stopGenerate() {
 
     <!-- 主工作区 -->
     <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+    <TodayView v-else-if="view === 'today'" @navigate="onNavigate" />
     <KnowledgeView v-else-if="view === 'kb'" />
     <ProjectWorkspace v-else-if="view === 'projects'" />
     <LearningWorkspace v-else-if="view === 'learning'" />
@@ -555,6 +578,7 @@ function stopGenerate() {
       @reject="onRejectToolCall"
       @select-chunk="currentChunkId = $event"
       @gen-candidates="onGenCandidates"
+      @save-inbox="onSaveMessageToInbox"
     />
     <div v-else class="welcome">
       <p class="welcome-title">👋 欢迎使用私人助手</p>

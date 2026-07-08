@@ -62,6 +62,23 @@ import type {
   WeeklyReport,
   WrongAnswer,
   BackupRestorePreview,
+  InboxCreate,
+  InboxItem,
+  InboxUpdate,
+  Reminder,
+  ReminderCreate,
+  ReminderUpdate,
+  TodaySnapshot,
+  Briefing,
+  GoalCheckin,
+  GoalCreate,
+  GoalDetail,
+  GoalLink,
+  GoalUpdate,
+  MaintenanceHealthReport,
+  PersonalGoal,
+  PrivacyPreview,
+  ProviderCallAudit,
 } from "./types";
 
 let API_BASE: string | null = null;
@@ -1533,6 +1550,352 @@ export async function previewRestoreBackup(path: string): Promise<BackupRestoreP
   return r.json();
 }
 
+// ---- 今日中枢 / 收件箱（第六阶段 M2）----
+export async function getToday(): Promise<TodaySnapshot> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/today`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function listInbox(opts?: {
+  status?: string;
+  item_type?: string;
+  priority?: string;
+  source_type?: string;
+}): Promise<InboxItem[]> {
+  const base = await ensureApiBase();
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.item_type) params.set("item_type", opts.item_type);
+  if (opts?.priority) params.set("priority", opts.priority);
+  if (opts?.source_type) params.set("source_type", opts.source_type);
+  const qs = params.toString() ? `?${params}` : "";
+  const r = await fetch(`${base}/inbox${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createInbox(data: InboxCreate): Promise<InboxItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/inbox`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateInbox(
+  id: number,
+  data: InboxUpdate
+): Promise<InboxItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/inbox/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function deleteInbox(id: number): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/inbox/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+}
+
+export async function inboxToTask(id: number): Promise<InboxItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/inbox/${id}/to-task`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function inboxToReminder(
+  id: number,
+  data?: { due_at?: string; recurrence_rule?: Record<string, unknown> }
+): Promise<InboxItem> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/inbox/${id}/to-reminder`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data || {}),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+// ---- 提醒（第六阶段 M3）----
+export async function listReminders(status?: string): Promise<Reminder[]> {
+  const base = await ensureApiBase();
+  const qs = status ? `?status=${status}` : "";
+  const r = await fetch(`${base}/reminders${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createReminder(data: ReminderCreate): Promise<Reminder> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateReminder(
+  id: number,
+  data: ReminderUpdate
+): Promise<Reminder> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function snoozeReminder(
+  id: number,
+  data: { next_fire_at?: string; minutes?: number }
+): Promise<Reminder> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders/${id}/snooze`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function doneReminder(id: number): Promise<Reminder> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders/${id}/done`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function tickReminders(): Promise<{ fired: number }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders/tick`, { method: "POST" });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function deleteReminder(id: number): Promise<void> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/reminders/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+}
+
+// ---- 目标 / 简报 / 隐私维护（第六阶段 M4/M5/M6）----
+export async function listGoals(opts?: {
+  status?: string;
+  domain?: string;
+}): Promise<PersonalGoal[]> {
+  const base = await ensureApiBase();
+  const params = new URLSearchParams();
+  if (opts?.status) params.set("status", opts.status);
+  if (opts?.domain) params.set("domain", opts.domain);
+  const qs = params.toString() ? `?${params}` : "";
+  const r = await fetch(`${base}/goals${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createGoal(data: GoalCreate): Promise<PersonalGoal> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function getGoal(id: number): Promise<GoalDetail> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${id}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function updateGoal(
+  id: number,
+  data: GoalUpdate
+): Promise<PersonalGoal> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function addGoalLink(
+  goalId: number,
+  data: { target_type: string; target_id: number; relation?: string }
+): Promise<GoalLink> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${goalId}/links`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function addGoalCheckin(
+  goalId: number,
+  data: {
+    checkin_date?: string;
+    progress_note_md?: string;
+    confidence?: number;
+    blockers_json?: string[];
+    next_actions_json?: string[];
+  }
+): Promise<GoalCheckin> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${goalId}/checkins`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function createGoalTaskDraft(
+  goalId: number
+): Promise<{ task_id: number }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${goalId}/task-draft`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createGoalBriefing(goalId: number): Promise<Briefing> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/goals/${goalId}/briefing`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createTodayBriefing(): Promise<Briefing> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/today/briefing`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createWeeklyBriefing(): Promise<Briefing> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/briefings/weekly`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function listBriefings(kind?: string): Promise<Briefing[]> {
+  const base = await ensureApiBase();
+  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
+  const r = await fetch(`${base}/briefings${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function briefingToTask(id: number): Promise<{ task_id: number }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/briefings/${id}/to-task`, { method: "POST" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function privacyPreview(data: {
+  purpose?: string;
+  provider_type?: string;
+  include_kb?: boolean;
+  include_memories?: boolean;
+  include_messages?: boolean;
+  estimated_message_chars?: number;
+}): Promise<PrivacyPreview> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/privacy/preview`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function listPrivacyAudits(
+  remote?: boolean
+): Promise<ProviderCallAudit[]> {
+  const base = await ensureApiBase();
+  const qs = remote === undefined ? "" : `?remote=${String(remote)}`;
+  const r = await fetch(`${base}/privacy/audits${qs}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getMaintenanceHealthReport(): Promise<MaintenanceHealthReport> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/maintenance/health-report`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 // ---- 设置 ----
 export interface AppSettings {
   llm_model: string;
@@ -1547,6 +1910,9 @@ export interface AppSettings {
   openai_model: string;
   claude_api_key: string;
   claude_model: string;
+  reminders_enabled: boolean;
+  reminder_tick_seconds: number;
+  desktop_notifications_enabled: boolean;
 }
 
 export async function getSettings(): Promise<AppSettings> {

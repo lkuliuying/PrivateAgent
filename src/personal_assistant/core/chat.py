@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..logging_setup import get_logger
 from .history import MessageRepository, SessionRepository
 from .provider import OllamaProvider, ProviderError, ProviderRouter
+from .repo_privacy import ProviderCallAuditRepository
 from .settings import SettingsService
 
 logger = get_logger(__name__)
@@ -80,7 +81,10 @@ class ChatService:
         is_first_turn = len(history) == 0
         await self.messages.add(session_id, "user", user_content)
 
-        provider = await self._get_provider()
+        provider_settings = await SettingsService(self.db).get_all()
+        router = ProviderRouter(provider_settings)
+        privacy_scope = router.privacy_scope()
+        provider = self._provider or router.chat_provider()
 
         # 构造 system prompt
         sources: list[dict] = []
@@ -139,6 +143,30 @@ class ChatService:
             msgs.append({"role": m.role, "content": m.content})
         msgs.append({"role": "user", "content": user_content})
 
+        audit_id: int | None = None
+        if privacy_scope.get("remote_provider_enabled") and privacy_scope.get(
+            "provider_type"
+        ) in {"openai", "claude"}:
+            context_types = ["chat_messages"]
+            if knowledge_base:
+                context_types.append("kb_chunks")
+            if memories_used:
+                context_types.append("memories")
+            if tool_result:
+                context_types.append("tool_result")
+            audit = await ProviderCallAuditRepository(self.db).create(
+                provider_type=str(privacy_scope.get("provider_type")),
+                purpose="chat",
+                model=provider_settings.get(
+                    f"{privacy_scope.get('provider_type')}_model"
+                ),
+                remote=True,
+                context_types_json=context_types,
+                estimated_input_chars=sum(len(m["content"]) for m in msgs),
+                status="sent",
+            )
+            audit_id = audit.id
+
         logger.info(
             "chat start",
             session_id=session_id,
@@ -173,11 +201,26 @@ class ChatService:
                 if title:
                     yield {"type": "title", "title": title}
 
+            if audit_id is not None:
+                await ProviderCallAuditRepository(self.db).finish(
+                    audit_id,
+                    status="succeeded",
+                    estimated_output_chars=len(assistant_content),
+                )
+
         except ProviderError as e:
             logger.warning("chat provider error", session_id=session_id, error=str(e))
+            if audit_id is not None:
+                await ProviderCallAuditRepository(self.db).finish(
+                    audit_id, status="failed", error_message=str(e)
+                )
             yield {"type": "error", "message": str(e)}
         except Exception as e:  # noqa: BLE001
             logger.exception("chat stream failed", session_id=session_id)
+            if audit_id is not None:
+                await ProviderCallAuditRepository(self.db).finish(
+                    audit_id, status="failed", error_message=str(e)
+                )
             yield {"type": "error", "message": f"生成失败: {e}"}
         finally:
             if not saved and collected:

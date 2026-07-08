@@ -43,6 +43,21 @@ class AgentTaskRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_by_status(
+        self, statuses: list[str], limit: int = 100
+    ) -> list[AgentTask]:
+        """按状态集合过滤的任务列表（第六阶段今日中枢用：待审批/失败/暂停）。"""
+        if not statuses:
+            return []
+        stmt = (
+            select(AgentTask)
+            .where(AgentTask.status.in_(statuses))
+            .order_by(AgentTask.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
     async def update_status(
         self,
         task_id: int,

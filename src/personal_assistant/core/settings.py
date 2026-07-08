@@ -26,6 +26,10 @@ DEFAULTS: dict[str, str] = {
     "openai_model": "gpt-4o-mini",
     "claude_api_key": "",
     "claude_model": "claude-3-5-sonnet-latest",
+    # 提醒与例行任务（第六阶段 M3）
+    "reminders_enabled": "true",
+    "reminder_tick_seconds": "60",
+    "desktop_notifications_enabled": "false",
 }
 
 

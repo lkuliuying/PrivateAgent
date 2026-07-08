@@ -1,8 +1,8 @@
 # 私人助手 Agent
 
-本地优先、隐私可控的桌面私人助手。当前已完成到第五阶段：**长期记忆 + 学习复习 + 文档集合 + 可回滚编码工作流 + 可编辑任务计划 + Provider 路由 + 安装包与发布工程化**。
+本地优先、隐私可控的桌面私人助手。当前已完成到第六阶段：**长期记忆 + 学习复习 + 文档集合 + 可回滚编码工作流 + 可编辑任务计划 + Provider 路由 + 安装包与发布工程化 + 主动个人中枢**。
 
-> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md` / `docs/phase4-requirements.md` / `docs/phase5-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md`。
+> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md` / `docs/phase4-requirements.md` / `docs/phase5-requirements.md` / `docs/phase6-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md` / `docs/phase6-plan.md`。
 
 ## 技术栈
 
@@ -149,6 +149,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 ### 相关文档
 - `docs/phase5-plan.md` / `docs/phase5-requirements.md`：第五阶段计划与需求。
+- `docs/phase6-plan.md` / `docs/phase6-requirements.md`：第六阶段主动个人中枢规划。
 - `docs/release-checklist.md`：发布 QA 矩阵与回滚。
 - `docs/signing-and-keys.md`：updater 签名与 Windows 代码签名。
 - `docs/cross-platform.md`：macOS / Linux 预研（Windows 为第五阶段硬验收）。
@@ -202,6 +203,12 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 - 详见 `docs/phase5-plan.md`、`docs/phase5-requirements.md`、`docs/release-checklist.md`、`docs/signing-and-keys.md`、`docs/cross-platform.md`。
 
 > 待真实环境执行（工具与文档已就绪）：部署 GitHub Release 资产并跑通 v0.1.0→v0.1.1 升级 smoke；接入 Windows 代码签名证书；macOS/Linux 实机构建与 smoke。`cryptography` 打包缺陷已在 v0.1.1 sidecar 重新构建后验证修复，打包模式 `/health` API / Ollama / MySQL / ChromaDB 全绿。
+
+**第六阶段（主动个人中枢）已完成 M0–M7** ✅：
+- M1–M3：新增 `0009_phase6_proactive_hub.py`、Today 聚合服务、统一收件箱、通用提醒、后台 tick、桌面通知降级和 Today/Inbox/Reminder 前端。
+- M4–M6：新增长期目标、目标关联、check-in、目标/今日/周回顾简报、简报转任务、隐私预览、Provider 调用审计和维护健康报告。
+- M7 验证：`pytest -q` 146 通过，`npm run build`、`cargo check`、`alembic current -> 0009 (head)`、`git diff --check` 通过。
+- 详见 `docs/phase6-plan.md` 与 `docs/phase6-requirements.md`。
 
 ## 常见问题
 
