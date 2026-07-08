@@ -8,7 +8,7 @@ import {
   PhListChecks,
   PhBrain,
   PhGearSix,
-  PhSparkle,
+  PhCaretDoubleLeft,
 } from "@phosphor-icons/vue";
 
 /** 工作台视图名（与 App.vue view union 对齐） */
@@ -18,8 +18,8 @@ defineProps<{ active: View }>();
 const emit = defineEmits<{ navigate: [view: View] }>();
 
 const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
-  { key: "chat", label: "聊天", icon: PhChatsCircle },
   { key: "today", label: "今日", icon: PhSun },
+  { key: "chat", label: "对话", icon: PhChatsCircle },
   { key: "kb", label: "知识库", icon: PhBooks },
   { key: "projects", label: "项目", icon: PhFolderSimple },
   { key: "learning", label: "学习", icon: PhGraduationCap },
@@ -32,7 +32,12 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
 <template>
   <nav class="navrail" aria-label="主导航">
     <div class="navrail-brand" title="私人助手">
-      <PhSparkle class="brand-icon" :size="22" weight="fill" />
+      <div class="brand-mark">P</div>
+      <div class="brand-copy">
+        <strong>PrivateAgent</strong>
+        <span>本地优先</span>
+      </div>
+      <PhCaretDoubleLeft class="brand-collapse" :size="16" />
     </div>
 
     <ul class="navrail-items">
@@ -49,6 +54,13 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
         </button>
       </li>
     </ul>
+    <div class="navrail-status">
+      <span class="status-dot" />
+      <div>
+        <strong>本地运行中</strong>
+        <span>Qwen3 · 本机向量库</span>
+      </div>
+    </div>
   </nav>
 </template>
 
@@ -62,44 +74,73 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   flex-direction: column;
   align-items: stretch;
   color: var(--color-rail-fg);
+  padding: var(--space-5) var(--space-4);
+  gap: var(--space-5);
 }
 
 /* 品牌 */
 .navrail-brand {
-  height: var(--topbar-h);
   display: flex;
   align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--color-rail-border);
+  justify-content: flex-start;
+  gap: var(--space-2);
   flex-shrink: 0;
 }
-.brand-icon {
-  color: var(--color-rail-accent);
+.brand-mark {
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, #11bfd9, #075f78);
+  color: #fff;
+  font-weight: 800;
+  font-size: var(--text-lg);
+  flex-shrink: 0;
+}
+.brand-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.brand-copy strong {
+  font-size: var(--text-md);
+  color: var(--color-rail-fg-strong);
+  line-height: 1.2;
+}
+.brand-copy span {
+  font-size: var(--text-xs);
+  color: var(--color-rail-fg-muted);
+}
+.brand-collapse {
+  margin-left: auto;
+  color: var(--color-rail-fg-muted);
 }
 
 /* 导航项 */
 .navrail-items {
   list-style: none;
   margin: 0;
-  padding: var(--space-2) 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--space-1);
 }
 .nav-item {
   position: relative;
   width: 100%;
-  height: 52px;
+  height: 42px;
   border: none;
   background: transparent;
   color: var(--color-rail-fg-muted);
   cursor: pointer;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 3px;
-  border-radius: 0;
+  justify-content: flex-start;
+  gap: var(--space-3);
+  border-radius: var(--radius-md);
+  padding: 0 var(--space-3);
   transition: background var(--duration-fast) var(--ease),
     color var(--duration-fast) var(--ease);
 }
@@ -112,14 +153,14 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   box-shadow: inset 0 0 0 2px var(--color-rail-accent);
 }
 .nav-item.active {
-  color: var(--color-rail-accent);
+  color: var(--color-rail-fg-strong);
   background: var(--color-rail-active);
 }
 /* 激活指示条 */
 .nav-item.active::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: -16px;
   top: 50%;
   transform: translateY(-50%);
   width: 3px;
@@ -131,8 +172,61 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   flex-shrink: 0;
 }
 .nav-label {
-  font-size: var(--text-xs);
+  font-size: var(--text-base);
   line-height: 1;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
+}
+.navrail-status {
+  margin-top: auto;
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-rail-border);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  color: var(--color-rail-fg-muted);
+}
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #22c55e;
+  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.navrail-status strong,
+.navrail-status span {
+  display: block;
+}
+.navrail-status strong {
+  font-size: var(--text-sm);
+  color: var(--color-rail-fg-strong);
+  font-weight: var(--font-medium);
+}
+.navrail-status span {
+  margin-top: 2px;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+@media (max-width: 1120px) {
+  .navrail {
+    padding: var(--space-4) var(--space-2);
+    align-items: center;
+  }
+  .brand-copy,
+  .brand-collapse,
+  .nav-label,
+  .navrail-status {
+    display: none;
+  }
+  .nav-item {
+    justify-content: center;
+    padding: 0;
+    width: 44px;
+  }
+  .nav-item.active::before {
+    left: -14px;
+  }
 }
 </style>

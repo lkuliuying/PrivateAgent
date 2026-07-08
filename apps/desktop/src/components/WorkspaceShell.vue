@@ -16,12 +16,14 @@ withDefaults(
     showList?: boolean;
     inspectorOpen?: boolean;
     inspectorToggleable?: boolean;
+    showTopbar?: boolean;
   }>(),
   {
     showDevTag: false,
     showList: false,
     inspectorOpen: false,
     inspectorToggleable: false,
+    showTopbar: true,
   }
 );
 
@@ -45,8 +47,11 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
       <!-- 主工作区 -->
       <div class="workspace-main">
-        <header class="workspace-topbar">
-          <span class="topbar-title">{{ title }}</span>
+        <header v-if="showTopbar" class="workspace-topbar">
+          <div class="topbar-copy">
+            <span class="topbar-kicker">PrivateAgent</span>
+            <span class="topbar-title">{{ title }}</span>
+          </div>
           <span v-if="showDevTag" class="topbar-dev">DEV · 手动后端 8000</span>
           <div class="topbar-spacer" />
           <button
@@ -110,7 +115,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   width: var(--list-w);
   min-width: 0;
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-panel) 88%, white);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -122,21 +127,33 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg);
+  background: radial-gradient(circle at 45% 0%, rgba(7, 135, 163, 0.05), transparent 36%),
+    var(--color-bg);
 }
 
 .workspace-topbar {
   flex-shrink: 0;
-  height: var(--topbar-h);
+  min-height: var(--topbar-h);
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-6);
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-bg) 92%, white);
+}
+.topbar-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.topbar-kicker {
+  font-size: var(--text-xs);
+  color: var(--color-fg-faint);
+  letter-spacing: 0.04em;
 }
 .topbar-title {
-  font-size: var(--text-md);
+  font-size: var(--text-xl);
   font-weight: var(--font-semibold);
   color: var(--color-fg);
   white-space: nowrap;
@@ -172,7 +189,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   width: var(--inspector-w);
   min-width: 0;
   border-left: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-panel) 88%, white);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -183,7 +200,13 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   flex-shrink: 0;
   height: var(--statusbar-h);
   border-top: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-bg) 92%, white);
+}
+
+@media (max-width: 1120px) {
+  .workspace-rail {
+    width: 72px;
+  }
 }
 
 /* 区块进入/离开过渡（短滑入淡入，120–180ms） */

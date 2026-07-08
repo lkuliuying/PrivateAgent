@@ -276,7 +276,7 @@
 | 指标 | onefile（当前默认） | 说明 |
 |---|---|---|
 | sidecar exe | 88.6 MB（92,915,395 B） | `personal-assistant-server-x86_64-pc-windows-msvc.exe`，v0.1.1 rebuild |
-| NSIS 安装包 | 92.0 MB（96,437,285 B） | `私人助手_0.1.1_x64-setup.exe` |
+| NSIS 安装包 | 92.1 MB（96,531,735 B） | `PrivateAgent_0.1.1_x64-setup.exe` |
 | updater `.sig` | 424 B | |
 | 启动到 `/health`（OS 缓存命中） | 冷 ≈ 5.4s / 热 ≈ 5.6s | `measure_sidecar_baseline.py --startup`，dev .env 配置 |
 | 启动到 `/health`（真冷：重启后首次） | 更高且不稳定（≈20–25s 观测） | 主要成本：`_MEIPASS` 解压 + ChromaDB lifespan 初始化 |

@@ -26,8 +26,8 @@ scripts\build-release.bat
 
 产出（`apps\desktop\src-tauri\target\release\bundle\nsis\`）：
 
-- `私人助手_<version>_x64-setup.exe`（NSIS 安装包）
-- `私人助手_<version>_x64-setup.exe.sig`（updater 签名；需 `%USERPROFILE%\.tauri\personal-assistant.key`）
+- `PrivateAgent_<version>_x64-setup.exe`（NSIS 安装包）
+- `PrivateAgent_<version>_x64-setup.exe.sig`（updater 签名；需 `%USERPROFILE%\.tauri\personal-assistant.key`）
 - `dist\release-manifest-<version>.md`（自动生成，含 sha256 / git commit / 校验清单）
 
 ## 3. 生成 updater 发布清单
@@ -46,8 +46,8 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 1. 在 GitHub 创建 Release，tag = `v<version>`（与 `latest.json` 的 tag 一致）。
 2. 上传**三个**资产：
-   - `私人助手_<version>_x64-setup.exe`
-   - `私人助手_<version>_x64-setup.exe.sig`
+   - `PrivateAgent_<version>_x64-setup.exe`
+   - `PrivateAgent_<version>_x64-setup.exe.sig`
    - `latest.json`
 3. Release 说明写入 changelog 与 SmartScreen 风险提示（未代码签名时）。
 
@@ -59,7 +59,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 ### 5.1 干净安装
 - [ ] 双击安装包，安装成功（`installMode: currentUser`，无需管理员）。
-- [ ] 开始菜单出现"私人助手"。
+- [ ] 开始菜单出现 `PrivateAgent`。
 - [ ] 首启进入配置向导（`ConfigWizard.vue`）。
 
 ### 5.2 首启配置向导

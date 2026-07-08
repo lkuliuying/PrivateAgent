@@ -1,7 +1,7 @@
 /**
  * 设计令牌 · tokens.css
  * 第二阶段 M0 设计系统基础。所有颜色/字号/间距/圆角/阴影/动效/布局尺寸统一自此引用。
- * 视觉方向：冷静、专业、桌面工作台；浅色默认 + 深色预留；青蓝仅作强调色。
+ * 视觉方向：Calm Agent Workbench；浅色生产力桌面 + 深色品牌 rail；青蓝仅作强调色。
  *
  * 使用：在 main.ts 中先于 App 引入。组件内用 var(--token) 引用，禁止再硬编码 hex。
  */
@@ -15,10 +15,11 @@
 
   /* ============ 颜色 · 浅色主题（默认）============ */
   /* 背景层 */
-  --color-bg: #f7f7f8; /* 雾白 · 应用底色 */
+  --color-bg: #fbfaf7; /* 暖雾白 · 应用底色 */
   --color-surface: #ffffff; /* 卡片/面板表面 */
-  --color-surface-sunken: #f0f0f1; /* 内陷区/输入框底 */
+  --color-surface-sunken: #f4f2ee; /* 内陷区/输入框底 */
   --color-surface-raised: #ffffff; /* 抬升卡片（带阴影） */
+  --color-panel: #fdfcf9; /* 工作台面板 */
 
   /* 文字层 */
   --color-fg: #1a1b1e; /* 石墨 · 主文字 */
@@ -28,16 +29,16 @@
   --color-fg-disabled: #c0c1c4; /* 禁用 */
 
   /* 描边 */
-  --color-border: #e5e6e8; /* 默认分割线/卡片边 */
-  --color-border-strong: #d8d9da; /* 输入框/强调边 */
+  --color-border: #e8e3da; /* 默认分割线/卡片边 */
+  --color-border-strong: #d8d0c4; /* 输入框/强调边 */
 
   /* 强调色 · 青蓝（仅用于激活态/链接/聚焦环，不铺满） */
-  --color-accent: #0891b2;
-  --color-accent-hover: #0e7490;
-  --color-accent-active: #155e75;
+  --color-accent: #0787a3;
+  --color-accent-hover: #056d83;
+  --color-accent-active: #0f5363;
   --color-accent-fg: #ffffff;
-  --color-accent-soft: #ecfeff;
-  --color-accent-soft-fg: #155e75;
+  --color-accent-soft: #e9f7f8;
+  --color-accent-soft-fg: #0f5363;
 
   /* 语义状态色 */
   --color-success: #16a34a;
@@ -53,14 +54,14 @@
   --color-info-soft: #dbeafe;
 
   /* 导航 rail · 深色（与浅色内容区对照） */
-  --color-rail-bg: #1e1f22;
-  --color-rail-surface: #2a2b2e; /* rail 内 hover */
-  --color-rail-active: #2f3033; /* rail 内选中 */
-  --color-rail-border: #2d2e31;
-  --color-rail-fg: #d8d9da;
-  --color-rail-fg-strong: #e0e1e2;
-  --color-rail-fg-muted: #9a9b9e;
-  --color-rail-accent: #22d3ee; /* rail 内激活指示，亮一档以在深底可见 */
+  --color-rail-bg: #07131d;
+  --color-rail-surface: rgba(255, 255, 255, 0.08); /* rail 内 hover */
+  --color-rail-active: rgba(255, 255, 255, 0.12); /* rail 内选中 */
+  --color-rail-border: rgba(255, 255, 255, 0.08);
+  --color-rail-fg: #dbe7ee;
+  --color-rail-fg-strong: #ffffff;
+  --color-rail-fg-muted: #9dafba;
+  --color-rail-accent: #17c0dc; /* rail 内激活指示，亮一档以在深底可见 */
 
   /* ============ 字号 ============ */
   --text-xs: 11px;
@@ -96,9 +97,9 @@
   --radius-full: 9999px;
 
   /* ============ 阴影（克制）============ */
-  --shadow-sm: 0 1px 2px rgba(16, 17, 18, 0.04);
-  --shadow: 0 2px 8px rgba(16, 17, 18, 0.06);
-  --shadow-lg: 0 8px 24px rgba(16, 17, 18, 0.1);
+  --shadow-sm: 0 1px 2px rgba(42, 35, 25, 0.04);
+  --shadow: 0 2px 10px rgba(42, 35, 25, 0.06);
+  --shadow-lg: 0 12px 32px rgba(42, 35, 25, 0.1);
 
   /* ============ 动效（plan 要求 120–180ms）============ */
   --duration-fast: 120ms;
@@ -108,11 +109,11 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
   /* ============ 布局尺寸 ============ */
-  --rail-w: 60px;
+  --rail-w: 200px;
   --list-w: 280px;
   --inspector-w: 340px;
-  --statusbar-h: 28px;
-  --topbar-h: 44px;
+  --statusbar-h: 32px;
+  --topbar-h: 56px;
 
   /* ============ z-index 层级 ============ */
   --z-base: 0;

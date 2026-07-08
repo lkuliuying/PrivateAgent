@@ -1,11 +1,11 @@
 {
   "version": "0.1.1",
-  "notes": "私人助手 v0.1.1（第五阶段发布工程化收尾）",
-  "pub_date": "2026-07-08T07:22:02Z",
+  "notes": "PrivateAgent v0.1.1",
+  "pub_date": "2026-07-08T11:31:37Z",
   "platforms": {
     "windows-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZlpIWnlYM2NWWG5zeXNPMm5Talh6QnlSNDBJKzV1SHNUWEdiZWRvdzI0WCt6SkZSU3dwSXVuTXlLRFdQOVpQN09heVRJaTVSYlpVT0ZBSXcxcUJ1YmFlUzdTVTZqWGdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNDk1Mjk2CWZpbGU656eB5Lq65Yqp5omLXzAuMS4xX3g2NC1zZXR1cC5leGUKOXUyNm5GTnJIUnNtcldHVCtlallYOG8xaGI0NFpDZS94YWFaM2N0R3AyR3ZlYXNIajhyYS9pbEtBT0pvbjc2U0U0U1k0Ti9CNXRuVEU3WDVlLzBNQ0E9PQo=",
-      "url": "https://github.com/lkuliuying/PrivateAgent/releases/download/v0.1.1/%E7%A7%81%E4%BA%BA%E5%8A%A9%E6%89%8B_0.1.1_x64-setup.exe"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZlpIWnlYM2NWWGdQMnY2SEpuRCtGU29lRFRmSWh5dFVwbk1RTG9GOCtrNDdwZG9DYjN4UWhPdW03cm1WZG12MVpRNUx4UFJ4eHRPbzBTcXRqMENoWGVMbkN0UHJIYUFvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzgzNTEwMjg3CWZpbGU6UHJpdmF0ZUFnZW50XzAuMS4xX3g2NC1zZXR1cC5leGUKR3FEZjJVTVJuYVZtLzlzNnNZbGdUNFB0ajI3N2J2dWlxYWNaTkx3ZEVhVVIySFRqQ0hVOElqaXBQY0xFRlJ6Y3AzL1FNVXAwZzc2eWExcTh4R0p1QUE9PQo=",
+      "url": "https://github.com/lkuliuying/PrivateAgent/releases/download/v0.1.1/PrivateAgent_0.1.1_x64-setup.exe"
     }
   }
 }

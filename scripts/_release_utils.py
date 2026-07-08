@@ -31,7 +31,7 @@ def read_version() -> str:
 
 def find_installer(version: str) -> Path:
     """Return the NSIS setup exe whose filename embeds ``version``
-    (matches the ``_<version>_`` segment, e.g. ``私人助手_0.1.10_x64-setup.exe``).
+    (matches the ``_<version>_`` segment, e.g. ``PrivateAgent_0.1.10_x64-setup.exe``).
 
     Aborts (SystemExit) if the bundle dir is missing, no installer matches the
     version, or multiple match (stale installers) -- never silently picks the

@@ -54,7 +54,7 @@ const bootError = ref("");
 const sessions = ref<Session[]>([]);
 const currentSessionId = ref<number | null>(null);
 const messages = ref<ChatMessage[]>([]);
-const view = ref<View>("chat");
+const view = ref<View>("today");
 const streaming = ref(false);
 const knowledgeBase = ref(false);
 // 当前在检查器中展示的引用片段 id（点击来源后设置）
@@ -251,17 +251,17 @@ async function loadSessions() {
   try {
     sessions.value = await listSessions();
     if (sessions.value.length > 0 && currentSessionId.value === null) {
-      await selectSession(sessions.value[0].id);
+      await selectSession(sessions.value[0].id, false);
     }
   } catch {
     // 后端未连接，设置/状态页会展示提示
   }
 }
 
-async function selectSession(id: number) {
+async function selectSession(id: number, switchToChat = true) {
   if (streaming.value) return;
   currentSessionId.value = id;
-  view.value = "chat";
+  if (switchToChat) view.value = "chat";
   try {
     messages.value = await getMessages(id);
   } catch {
@@ -539,9 +539,10 @@ function stopGenerate() {
     v-else
     :title="pageTitle"
     :show-dev-tag="bootState === 'dev'"
-    :show-list="view === 'chat'"
+    :show-list="view === 'chat' || view === 'today'"
     :inspector-open="view === 'chat' && inspectorOpen"
     :inspector-toggleable="inspectorToggleable"
+    :show-topbar="view === 'chat'"
     @toggle-inspector="inspectorOpen = !inspectorOpen"
   >
     <template #rail>

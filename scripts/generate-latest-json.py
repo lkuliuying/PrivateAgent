@@ -4,8 +4,9 @@
 Auto-detects the NSIS installer and its ``.sig`` from the build output, reads
 the version from ``tauri.conf.json``, and derives the GitHub repo from
 ``git remote``. The installer filename is **percent-encoded** in the download
-URL: the Tauri updater's HTTP client requires an ASCII URL, so a raw non-ASCII
-name like ``私人助手_0.1.0_x64-setup.exe`` would be rejected.
+URL: the Tauri updater's HTTP client requires an ASCII URL; the current
+``PrivateAgent_<version>_x64-setup.exe`` product name keeps the release asset
+human-readable without relying on escaped Chinese characters.
 
 Usage (project root, after ``scripts/build-release.bat``)::
 
