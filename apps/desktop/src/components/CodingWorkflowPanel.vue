@@ -33,6 +33,9 @@ import type {
   RunResult,
   DiagnoseResult,
 } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const props = defineProps<{ projectId: number }>();
 
@@ -171,7 +174,7 @@ async function doSubmit() {
 
 async function doApply() {
   if (!currentPatchId.value) return;
-  if (!confirm("确认应用该补丁集？将写入所有文件。")) return;
+  if (!await notify.confirm({ title: "确认应用该补丁集？", danger: true, impact: "将把补丁集中所有文件变更写入项目工作区" })) return;
   patchBusy.value = true;
   try {
     await applyPatchSet(currentPatchId.value);
@@ -199,7 +202,7 @@ async function doReject() {
 
 async function doRollback() {
   if (!currentPatchId.value) return;
-  if (!confirm("确认回滚该补丁集？将恢复旧内容。")) return;
+  if (!await notify.confirm({ title: "确认回滚该补丁集？", danger: true, impact: "将恢复该补丁集写入的文件为旧内容" })) return;
   patchBusy.value = true;
   try {
     await rollbackPatchSet(currentPatchId.value);
@@ -246,7 +249,7 @@ async function toggleCmd(c: ProjectCommandProfile) {
 }
 
 async function removeCmd(id: number) {
-  if (!confirm("删除该命令配置？")) return;
+  if (!await notify.confirm({ title: "删除该命令配置？", danger: true, impact: "该操作不可撤销，命令配置将被永久删除" })) return;
   try {
     await deleteProjectCommand(props.projectId, id);
     await loadCommands();

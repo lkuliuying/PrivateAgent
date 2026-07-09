@@ -29,6 +29,9 @@ import type {
   DocExtractionKind,
   TemplateKind,
 } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 /**
  * 文档集合工作区 · 第四阶段 M3。
@@ -128,13 +131,13 @@ async function submitNew() {
     newOpen.value = false;
     await selectCollection(c.id);
   } catch (e) {
-    alert("创建失败：" + String(e));
+    notify.error("创建失败", String(e));
   }
 }
 
 async function removeCollection() {
   if (!currentId.value) return;
-  if (!confirm("确认删除该集合？成员关联会一并清除。")) return;
+  if (!await notify.confirm({ title: "确认删除该集合？", danger: true, impact: "该操作不可撤销，集合及其成员关联将被永久删除" })) return;
   try {
     await deleteDocumentCollection(currentId.value);
     collections.value = collections.value.filter((c) => c.id !== currentId.value);
@@ -142,7 +145,7 @@ async function removeCollection() {
     extractions.value = [];
     currentId.value = null;
   } catch (e) {
-    alert("删除失败：" + String(e));
+    notify.error("删除失败", String(e));
   }
 }
 
@@ -153,7 +156,7 @@ async function addDoc() {
     await selectCollection(currentId.value);
     addDocId.value = null;
   } catch (e) {
-    alert("添加失败：" + String(e));
+    notify.error("添加失败", String(e));
   }
 }
 
@@ -163,7 +166,7 @@ async function removeDoc(docId: number) {
     await removeCollectionItem(currentId.value, docId);
     await selectCollection(currentId.value);
   } catch (e) {
-    alert("移除失败：" + String(e));
+    notify.error("移除失败", String(e));
   }
 }
 

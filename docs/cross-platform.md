@@ -1,8 +1,21 @@
-# 跨平台打包预研（第五阶段 M6）
+# 跨平台打包预研（第五阶段 M6 / 第八阶段 M5 更新）
 
-> 对应 `docs/phase5-plan.md` M6 与 `docs/phase5-requirements.md` 5.9。
+> 对应 `docs/phase5-plan.md` M6、`docs/phase8-plan.md` M5 与 `docs/phase8-requirements.md` 5.5。
 >
-> **状态边界**：第五阶段**硬验收只针对 Windows**。macOS / Linux 仅为预研与构建脚本准备，**未实际构建或 smoke**。本文不宣称 macOS/Linux 已可用。
+> **状态边界**：Windows 为硬验收目标。macOS / Linux 在第八阶段 M5 已修正数据目录与多平台清单逻辑，但**仍未实机构建或 smoke**（本机无 macOS/Linux 环境）。本文不宣称 macOS/Linux 已可用。
+
+## 第八阶段 M5 已落地（代码/配置/清单）
+
+- **macOS 数据目录修正**：`config.py` 与 `src-tauri/src/lib.rs` 的 `config_dir` 在 macOS 打包模式改用 `~/Library/Application Support/personal-assistant`（原先误用 XDG `~/.local/share`）。
+- **多平台 updater 清单**：`scripts/generate-latest-json.py` 支持 `--extra-platform KEY:INSTALLER_PATH`（可重复），为 darwin-aarch64 / darwin-x86_64 / linux-x86_64 生成独立 `{signature, url}` 条目；多平台清单逻辑有测试（`tests/test_phase8_release.py`）。
+- **跨平台清单发现**：`scripts/_release_utils.py` 的 `find_cross_platform_installers` 与 `PLATFORM_BUNDLES` 覆盖三类 OS 的 bundle 子目录与安装包 glob。
+- **bundle targets**：保留 `["nsis"]` 为 Windows 默认；macOS/Linux 用 CLI 覆盖：`tauri build --bundles app,dmg`（macOS）/ `--bundles appimage,deb`（Linux）。
+
+## 待真实环境执行
+
+- macOS/Linux 实机 `scripts/build-sidecar.sh` + `tauri build --bundles ...` + 首启配置 + `/health` + 聊天/文档导入 smoke。
+- macOS Gatekeeper / codesign / notarization 状态记录。
+- 未实测平台继续标注「未实测」，不写成已支持。
 
 ---
 

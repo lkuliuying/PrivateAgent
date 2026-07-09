@@ -16,6 +16,9 @@ import {
 import type { CompareResult, DocumentItem, SectionSummary } from "../types";
 import DocumentComparePanel from "./DocumentComparePanel.vue";
 import CollectionWorkspace from "./CollectionWorkspace.vue";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const docs = ref<DocumentItem[]>([]);
 const search = ref("");
@@ -90,7 +93,7 @@ async function onFile(e: Event) {
     await importDocument(file);
     await load();
   } catch (err) {
-    alert("导入失败：" + String(err));
+    notify.error("导入失败", String(err));
   } finally {
     uploading.value = false;
     if (fileInput.value) fileInput.value.value = "";
@@ -112,7 +115,7 @@ async function onBatchFiles(e: Event) {
     };
     await load();
   } catch (err) {
-    alert("批量导入失败：" + String(err));
+    notify.error("批量导入失败", String(err));
   } finally {
     batchUploading.value = false;
     if (batchInput.value) batchInput.value.value = "";
@@ -125,16 +128,16 @@ async function toggleEnabled(d: DocumentItem) {
     await patchDocument(d.id, !d.enabled);
     d.enabled = !d.enabled;
   } catch (err) {
-    alert("切换启用状态失败：" + String(err));
+    notify.error("切换启用状态失败", String(err));
   }
 }
 
 async function editMetadata(d: DocumentItem) {
-  const topic = prompt("主题（topic，留空清除）", d.topic || "");
+  const topic = await notify.prompt({ title: "主题（topic，留空清除）", defaultValue: d.topic || "" });
   if (topic === null) return;
-  const tagsStr = prompt("标签（逗号分隔，留空清除）", (d.tags_json || []).join(", "));
+  const tagsStr = await notify.prompt({ title: "标签（逗号分隔，留空清除）", defaultValue: (d.tags_json || []).join(", ") });
   if (tagsStr === null) return;
-  const language = prompt("语言（如 zh / en，留空清除）", d.language || "");
+  const language = await notify.prompt({ title: "语言（如 zh / en，留空清除）", defaultValue: d.language || "" });
   if (language === null) return;
   const tags = tagsStr
     .split(",")
@@ -148,7 +151,7 @@ async function editMetadata(d: DocumentItem) {
     });
     Object.assign(d, updated);
   } catch (err) {
-    alert("保存元数据失败：" + String(err));
+    notify.error("保存元数据失败", String(err));
   }
 }
 
@@ -157,28 +160,28 @@ async function reindex(d: DocumentItem) {
     await reindexDocument(d.id);
     await load();
   } catch (err) {
-    alert("重建索引失败：" + String(err));
+    notify.error("重建索引失败", String(err));
   }
 }
 
 async function reindexAll() {
-  if (!confirm("确认重建全部文档索引？此操作会重新解析所有文档。")) return;
+  if (!await notify.confirm({ title: "确认重建全部文档索引？", message: "此操作会重新解析所有文档。", danger: true, impact: "将重新解析并重建全部文档的向量索引，耗时较长" })) return;
   try {
     const res = await reindexAllDocuments();
-    alert(`已触发 ${res.triggered} 个文档重建，跳过 ${res.skipped} 个（文件缺失）`);
+    notify.success("已触发重建", `触发 ${res.triggered} 个文档重建，跳过 ${res.skipped} 个（文件缺失）`);
     await load();
   } catch (err) {
-    alert("重建全部失败：" + String(err));
+    notify.error("重建全部失败", String(err));
   }
 }
 
 async function remove(id: number) {
-  if (!confirm("确认删除该文档？将同步清理向量数据。")) return;
+  if (!await notify.confirm({ title: "确认删除该文档？", danger: true, impact: "该操作不可撤销，文档及其向量数据将被永久删除" })) return;
   try {
     await deleteDocument(id);
     await load();
   } catch (err) {
-    alert("删除失败：" + String(err));
+    notify.error("删除失败", String(err));
   }
 }
 
@@ -187,7 +190,7 @@ async function retry(id: number) {
     await retryDocument(id);
     await load();
   } catch (err) {
-    alert("重试失败：" + String(err));
+    notify.error("重试失败", String(err));
   }
 }
 
@@ -211,7 +214,7 @@ async function runCompare() {
   try {
     compareResult.value = await compareDocuments(Array.from(selectedIds.value));
   } catch (e) {
-    alert("对比失败：" + String(e));
+    notify.error("对比失败", String(e));
     showCompare.value = false;
   } finally {
     comparing.value = false;
@@ -226,7 +229,7 @@ async function runSummary(d: DocumentItem) {
   try {
     summarySections.value = await summarizeSections(d.id);
   } catch (e) {
-    alert("摘要失败：" + String(e));
+    notify.error("摘要失败", String(e));
     showSummary.value = false;
   } finally {
     summarizing.value = false;
@@ -236,9 +239,9 @@ async function runSummary(d: DocumentItem) {
 async function runOcr(d: DocumentItem) {
   try {
     const r = await ocrDocument(d.id);
-    alert(r.message);
+    notify.info("OCR 结果", r.message);
   } catch (e) {
-    alert("OCR 失败：" + String(e));
+    notify.error("OCR 失败", String(e));
   }
 }
 

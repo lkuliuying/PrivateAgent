@@ -140,6 +140,8 @@ npx tauri signer sign -k "%USERPROFILE%\.tauri\personal-assistant.key" \
 ## 3. 当前状态小结
 
 - ✅ updater 私钥本地持有，公钥与 `tauri.conf.json` 一致，`.gitignore` 覆盖密钥与证书，仓库不含私钥。
-- ✅ 构建自动生成 `.sig`；`generate-latest-json.py` 自动产出与 `.sig` 一致的 `latest.json`。
+- ✅ 构建自动生成 `.sig`；`generate-latest-json.py` 自动产出与 `.sig` 一致的 `latest.json`（第八阶段 M5 起支持多平台）。
 - ✅ `UpdateChecker.vue` 区分网络/清单/签名/无更新错误。
-- ⏳ Windows 代码签名未接入：发布说明需保留 SmartScreen 风险提示；证书采购与 signtool 接入方案已明确（见 §2），待证书到位后执行。
+- ✅ 第八阶段 M4：`scripts/sign_installer.py` 接入 signtool sign/verify + 重新生成 `.sig`（遵循 §2.3 签名顺序）；`build-release.bat` 在 tauri build 与 manifest 之间调用。
+- ✅ 无证书透明策略：未设 `PA_CODESIGN_PFX` 时不阻塞构建，写 `dist/unsigned-note-<version>.md`（SmartScreen 说明）+ `dist/codesign-status-<version>.json`（`code_signed: false`），release manifest 标记 `code_signed: no`。
+- ⏳ 真实代码签名：证书采购到位后设 `PA_CODESIGN_PFX` / `PA_CODESIGN_PASSWORD[_FILE]` / `PA_CODESIGN_TIMESTAMP` 即自动走 signtool 实签流程；当前本机无证书，按 unsigned 透明策略发布。

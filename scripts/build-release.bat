@@ -61,6 +61,20 @@ if errorlevel 1 (
 )
 popd
 
+echo === [4.5/5] Code signing (Authenticode) ===
+REM 证书配置（不入库）：PA_CODESIGN_PFX / PA_CODESIGN_PASSWORD[_FILE] / PA_CODESIGN_TIMESTAMP
+REM 无证书时不阻塞，写 unsigned note + status（manifest 标 code_signed: no）。
+call "%SCRIPTS_DIR%_find-uv.bat" >nul 2>&1
+if errorlevel 1 (
+    echo [INFO] uv not found; skipping code signing
+) else (
+    "%UV_EXE%" run python "%SCRIPTS_DIR%sign_installer.py"
+    if errorlevel 1 (
+        echo [build-release] code signing failed
+        exit /b 1
+    )
+)
+
 echo === [5/5] Release manifest ===
 call "%SCRIPTS_DIR%_find-uv.bat" >nul 2>&1
 if errorlevel 1 (

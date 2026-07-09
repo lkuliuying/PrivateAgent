@@ -1,17 +1,19 @@
 """第四阶段 M6：本地数据备份、恢复预览与低风险设置恢复。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .. import __version__
 from ..config import settings
-from .models import Setting
+from .models import DocChunk, Setting
 from .timeutil import utcnow
 
 
@@ -41,7 +43,47 @@ BACKUP_TABLES = [
     "project_command_profiles",
     "patch_sets",
     "patch_files",
+    # 第六阶段：主动个人中枢
+    "inbox_items",
+    "reminders",
+    "personal_goals",
+    "goal_links",
+    "goal_checkins",
+    "briefings",
+    "provider_call_audits",
+    # 第七阶段：可信赖日常操作层
+    "app_notifications",
+    "capture_items",
+    "ocr_jobs",
+    "diagnostic_runs",
+    "data_integrity_findings",
+    "search_recent_items",
+    # 第八阶段：本地集成与扩展注册（test_runs/release_artifacts/upgrade_smoke_runs 可重建，不备份）
+    "integration_sources",
+    "integration_imports",
+    "extension_registry_items",
 ]
+
+
+# 迁移失败 runbook（第八阶段 M9）：诊断中心 / 发布前检查可引用。
+MIGRATION_RUNBOOK = {
+    "mysql_unavailable": (
+        "确认 MySQL 8.0+ 服务已启动；检查 .env 的 PA_DB_URL 用户名/密码/端口；"
+        "库 personal_assistant 需 utf8mb4_unicode_ci。"
+    ),
+    "alembic_failed": (
+        "uv run alembic current 查看当前 head；uv run alembic upgrade head 重试；"
+        "失败时检查迁移脚本语法；必要时 uv run alembic downgrade <prev> 回退一格。"
+    ),
+    "chroma_inconsistent": (
+        "运行数据完整性体检（POST /maintenance/integrity/run）；"
+        "mysql_only 切片在知识库页重建索引；chroma_only 孤立向量用修复计划删除。"
+    ),
+    "backup_incompatible": (
+        "备份包 manifest 缺 schema_head/checksum 或校验失败时，不要强制恢复业务数据；"
+        "用 POST /backup/restore/drill 预览；仅恢复 settings，业务数据手动迁移或重建。"
+    ),
+}
 
 
 class BackupService:
@@ -75,10 +117,21 @@ class BackupService:
             tables[table] = rows
             counts[table] = len(rows)
 
+        # checksum 基于 tables.json 的确切字节（写入与校验用同一份字符串，保证可复现）。
+        tables_json_str = json.dumps(
+            tables, ensure_ascii=False, indent=2, default=str
+        )
+        checksum = hashlib.sha256(tables_json_str.encode("utf-8")).hexdigest()
+        schema_head = await self._schema_head()
         manifest = {
-            "version": 1,
+            "version": 2,
             "created_at": utcnow().isoformat(),
+            "app_version": __version__,
+            "schema_head": schema_head,
+            "modules": list(counts.keys()),
             "tables": counts,
+            "checksum": checksum,
+            "checksum_algorithm": "sha256",
             "includes": {
                 "mysql_business_data": True,
                 "settings": True,
@@ -87,15 +140,18 @@ class BackupService:
             },
         }
         with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
             zf.writestr(
-                "tables.json", json.dumps(tables, ensure_ascii=False, indent=2, default=str)
+                "manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2)
             )
+            zf.writestr("tables.json", tables_json_str)
         return {
             "path": str(path),
             "size_bytes": path.stat().st_size,
             "created_at": manifest["created_at"],
+            "app_version": __version__,
+            "schema_head": schema_head,
             "tables": counts,
+            "checksum": checksum,
         }
 
     async def restore_preview(self, backup_path: str) -> dict:
@@ -133,9 +189,107 @@ class BackupService:
             "restored": {"settings": restored},
         }
 
+    async def _schema_head(self) -> str | None:
+        """读取当前 alembic head（与 diagnostics._migration_head 同源）。"""
+        try:
+            result = await self.db.execute(text("SELECT version_num FROM alembic_version"))
+            row = result.first()
+            return row[0] if row else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def validate_manifest(self, backup_path: str) -> dict:
+        """校验备份 manifest：app_version / schema_head / checksum（sha256 of tables.json 字节）。"""
+        path = Path(backup_path)
+        if not path.exists() or path.suffix.lower() != ".zip":
+            raise FileNotFoundError(f"备份包不存在: {backup_path}")
+        _empty = {
+            "valid": False,
+            "issues": [],
+            "app_version": None,
+            "schema_head": None,
+            "checksum": None,
+            "manifest_version": None,
+        }
+        issues: list[str] = []
+        manifest: dict = {}
+        raw_tables = b""
+        try:
+            with zipfile.ZipFile(path) as zf:
+                names = set(zf.namelist())
+                if "manifest.json" not in names:
+                    _empty["issues"] = ["missing manifest.json"]
+                    return _empty
+                if "tables.json" not in names:
+                    _empty["issues"] = ["missing tables.json"]
+                    return _empty
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+                raw_tables = zf.read("tables.json")
+        except (json.JSONDecodeError, KeyError, zipfile.BadZipFile) as e:
+            _empty["issues"] = [f"corrupt backup: {e}"]
+            return _empty
+        if "app_version" not in manifest:
+            issues.append("missing app_version")
+        if "schema_head" not in manifest:
+            issues.append("missing schema_head")
+        if "checksum" not in manifest:
+            issues.append("missing checksum")
+        else:
+            actual = hashlib.sha256(raw_tables).hexdigest()
+            if actual != manifest.get("checksum"):
+                issues.append("checksum mismatch")
+        return {
+            "valid": len(issues) == 0,
+            "issues": issues,
+            "app_version": manifest.get("app_version"),
+            "schema_head": manifest.get("schema_head"),
+            "checksum": manifest.get("checksum"),
+            "manifest_version": manifest.get("version"),
+        }
+
+    async def restore_drill(self, backup_path: str) -> dict:
+        """恢复演练：恢复预览 + manifest 校验 + 现有完整性发现 + Chroma/MySQL 一致性。
+
+        不执行实际恢复，不重新跑体检（避免副作用），只汇总可恢复性与一致性状态。
+        对齐 docs/phase8-requirements.md §5.9（恢复预览 + 完整性体检路径）。
+        """
+        preview = await self.restore_preview(backup_path)
+        validation = await self.validate_manifest(backup_path)
+        from .integrity import IntegrityService  # 延迟导入避免循环
+
+        open_findings = await IntegrityService(self.db).list_findings(status="open")
+        chroma = await self._chroma_mysql_summary()
+        return {
+            "preview": preview,
+            "manifest_validation": validation,
+            "open_integrity_findings": len(open_findings),
+            "chroma_mysql": chroma,
+            "ready": validation["valid"],
+        }
+
+    async def _chroma_mysql_summary(self) -> dict:
+        """Chroma/MySQL 切片一致性摘要（consistent = 无缺失向量）。"""
+        try:
+            from .store_chroma import chroma_store
+
+            mysql_ids = set((await self.db.execute(select(DocChunk.id))).scalars().all())
+            chroma_ids = set(await chroma_store.list_ids())
+            return {
+                "mysql_count": len(mysql_ids),
+                "chroma_count": len(chroma_ids),
+                "missing_vectors": len(mysql_ids - chroma_ids),
+                "orphan_vectors": len(chroma_ids - mysql_ids),
+                "consistent": not (mysql_ids - chroma_ids),
+            }
+        except Exception:  # noqa: BLE001
+            return {"consistent": False, "error": "chroma/mysql 检查失败"}
+
     async def _dump_table(self, table: str) -> list[dict[str, Any]]:
         try:
-            result = await self.db.execute(text(f"SELECT * FROM {table}"))
+            # stream_results=True 用服务端游标分批拉取，降低大表单次内存峰值（第八阶段审查）。
+            result = await self.db.execute(
+                text(f"SELECT * FROM {table}").execution_options(stream_results=True)
+            )
         except Exception:  # noqa: BLE001
             return []
         return [dict(row) for row in result.mappings().all()]

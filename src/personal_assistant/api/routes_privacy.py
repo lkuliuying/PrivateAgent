@@ -45,6 +45,13 @@ class ProviderAuditOut(BaseModel):
     context_types_json: list | None
     estimated_input_chars: int | None
     estimated_output_chars: int | None
+    # 第七阶段 M6：调用耗时、token 估算、错误分类、回退标记、开始时间。
+    started_at: datetime | None = None
+    duration_ms: int | None = None
+    estimated_input_tokens: int | None = None
+    estimated_output_tokens: int | None = None
+    error_code: str | None = None
+    fallback_used: bool = False
     status: str
     error_message: str | None
     created_at: datetime

@@ -19,7 +19,60 @@ logger = get_logger(__name__)
 
 
 class ProviderError(RuntimeError):
-    """Provider 调用失败。"""
+    """Provider 调用失败。error_code 为第七阶段 M6 失败分类。"""
+
+    def __init__(self, message: str, *, error_code: str | None = None) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+# 第七阶段 M6 失败分类（对齐 docs/phase7-requirements.md §5.6）
+PROVIDER_ERROR_CODES = (
+    "missing_api_key",
+    "unauthorized",
+    "network_error",
+    "timeout",
+    "rate_limited",
+    "model_not_found",
+    "provider_error",
+)
+
+
+def classify_error(
+    exc: Exception, *, provider_type: str = "", api_key: str = ""
+) -> str:
+    """把异常映射到 M6 失败分类。已带 error_code 的 ProviderError 直接沿用。"""
+    if isinstance(exc, ProviderError) and exc.error_code:
+        return exc.error_code
+    if isinstance(exc, httpx.TimeoutException):
+        return "timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "network_error"
+    if isinstance(exc, httpx.HTTPStatusError):
+        resp = getattr(exc, "response", None)
+        sc = getattr(resp, "status_code", 0) or 0
+        if sc in (401, 403):
+            return "unauthorized"
+        if sc == 429:
+            return "rate_limited"
+        if sc == 404:
+            return "model_not_found"
+        if 500 <= sc < 600:
+            return "provider_error"
+    msg = str(exc).lower()
+    if not api_key and ("key" in msg or "unauthorized" in msg):
+        return "missing_api_key"
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "unauthorized" in msg or " 401" in msg or " 403" in msg:
+        return "unauthorized"
+    if "rate" in msg and "limit" in msg:
+        return "rate_limited"
+    if "not found" in msg or " 404" in msg or "model" in msg and "not" in msg:
+        return "model_not_found"
+    if "connection" in msg or "network" in msg or "connect" in msg or "refused" in msg:
+        return "network_error"
+    return "provider_error"
 
 
 def _to_lc_messages(messages: list[dict[str, str]]) -> list[Any]:
@@ -79,7 +132,8 @@ class OllamaProvider:
             content = resp.content
             return content if isinstance(content, str) else str(content)
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"Ollama chat 失败: {e}") from e
+            code = classify_error(e, provider_type="ollama")
+            raise ProviderError(f"Ollama chat 失败: {e}", error_code=code) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         """流式对话，逐 token 产出字符串片段。"""
@@ -114,10 +168,14 @@ class OllamaProvider:
 
     # ---------------- 健康 ----------------
     async def health(self) -> dict[str, Any]:
-        """检查 Ollama 服务连通性与模型可用性。"""
+        """检查 Ollama 服务连通性与模型可用性。
+
+        超时 3s（第八阶段 M6 热点优化）：Ollama 离线/慢响应时不再阻塞诊断快照与
+        /health 轮询 5s；3s 内无响应即视为不可用，足够本地探测。
+        """
         result: dict[str, Any] = {"ok": False, "base_url": self.base_url}
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=3.0) as client:
                 r = await client.get(f"{self.base_url}/api/tags")
                 if r.status_code != 200:
                     result["error"] = f"Ollama /api/tags 返回 {r.status_code}"
@@ -172,6 +230,11 @@ class OpenAICompatibleProvider:
         return headers
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
+        if not self.api_key:
+            raise ProviderError(
+                "OpenAI-compatible Provider 未配置 API key",
+                error_code="missing_api_key",
+            )
         payload = {
             "model": self.model,
             "messages": messages,
@@ -189,7 +252,10 @@ class OpenAICompatibleProvider:
                 data = r.json()
                 return str(data["choices"][0]["message"]["content"])
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"OpenAI-compatible chat 失败: {e}") from e
+            code = classify_error(e, provider_type="openai", api_key=self.api_key)
+            raise ProviderError(
+                f"OpenAI-compatible chat 失败: {e}", error_code=code
+            ) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         yield await self.chat(messages)
@@ -252,6 +318,10 @@ class ClaudeProvider:
         return ("\n\n".join(system_parts) or None), out
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
+        if not self.api_key:
+            raise ProviderError(
+                "Claude Provider 未配置 API key", error_code="missing_api_key"
+            )
         system, converted = self._convert_messages(messages)
         payload: dict[str, Any] = {
             "model": self.model,
@@ -273,7 +343,8 @@ class ClaudeProvider:
                     str(p.get("text", "")) for p in parts if p.get("type") == "text"
                 )
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"Claude chat 失败: {e}") from e
+            code = classify_error(e, provider_type="claude", api_key=self.api_key)
+            raise ProviderError(f"Claude chat 失败: {e}", error_code=code) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         yield await self.chat(messages)
@@ -339,3 +410,15 @@ class ProviderRouter:
 
     def embedding_provider(self) -> OllamaProvider:
         return OllamaProvider(embed_model=self.settings.get("embed_model") or settings.embed_model)
+
+    def fallback_provider(self) -> OllamaProvider:
+        """远程 Provider 失败时回退到的本地 Ollama Provider（M6 降级）。"""
+        return OllamaProvider(
+            llm_model=self.settings.get("llm_model") or settings.llm_model,
+            temperature=float(
+                self.settings.get("llm_temperature", settings.llm_temperature)
+            ),
+            context_length=int(
+                self.settings.get("llm_context_length", settings.llm_context_length)
+            ),
+        )

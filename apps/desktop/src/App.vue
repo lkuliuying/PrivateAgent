@@ -13,7 +13,17 @@ import LearningWorkspace from "./components/LearningWorkspace.vue";
 import MemoryWorkspace from "./components/MemoryWorkspace.vue";
 import TodayView from "./components/TodayView.vue";
 import SettingsView from "./components/SettingsView.vue";
+import DiagnosticsView from "./components/DiagnosticsView.vue";
+import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
+import IntegrationImportPanel from "./components/IntegrationImportPanel.vue";
+import BackupUpgradePanel from "./components/BackupUpgradePanel.vue";
 import ConfigWizard from "./components/ConfigWizard.vue";
+import ToastHost from "./components/ToastHost.vue";
+import ConfirmDialog from "./components/ConfirmDialog.vue";
+import NotificationCenter from "./components/NotificationCenter.vue";
+import CommandPalette from "./components/CommandPalette.vue";
+import GlobalSearch from "./components/GlobalSearch.vue";
+import { useNotifications } from "./stores/notifications";
 import {
   createSession,
   getHealth,
@@ -33,7 +43,7 @@ import {
   createInbox,
 } from "./api";
 import { isTauri } from "@tauri-apps/api/core";
-import type { Message, MemorySource, Session, Source, ToolCall } from "./types";
+import type { Message, MemorySource, Session, Source, ToolCall, View } from "./types";
 
 type ChatMessage = Message & {
   sources?: Source[];
@@ -41,8 +51,12 @@ type ChatMessage = Message & {
   tool_call?: ToolCall;
 };
 
-// 工作台视图（与 NavRail 的 View 对齐）
-type View = "chat" | "today" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
+// 统一通知/确认/toast store（第七阶段 M4 基建）
+const notify = useNotifications();
+// 命令面板开关（Ctrl/Cmd+K）；CommandPalette 组件在 M2 接入。
+const commandPaletteOpen = ref(false);
+// 全局搜索开关（命令面板的「全局搜索」命令触发）
+const searchOpen = ref(false);
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -108,6 +122,14 @@ const pageTitle = computed(() => {
       return "记忆";
     case "settings":
       return "设置 / 状态";
+    case "diagnostics":
+      return "诊断中心";
+    case "extensions":
+      return "扩展注册表";
+    case "integrations":
+      return "本地集成";
+    case "backup":
+      return "备份恢复";
   }
 });
 
@@ -117,12 +139,22 @@ function onResize() {
   if (window.innerWidth < INSPECTOR_MIN_W) inspectorOpen.value = false;
 }
 
+/** 全局快捷键：Ctrl/Cmd+K 打开命令面板（M2 接入 CommandPalette 组件）。 */
+function onKeydown(e: KeyboardEvent) {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault();
+    commandPaletteOpen.value = !commandPaletteOpen.value;
+  }
+}
+
 onMounted(() => {
   window.addEventListener("resize", onResize);
+  window.addEventListener("keydown", onKeydown);
   boot();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
+  window.removeEventListener("keydown", onKeydown);
 });
 
 // ============ 启动引导 ============
@@ -245,6 +277,20 @@ function onNavigate(v: View) {
   view.value = v;
 }
 
+// 命令面板 / 全局搜索 跳转
+function onPaletteNavigate(v: View) {
+  commandPaletteOpen.value = false;
+  onNavigate(v);
+}
+function onPaletteOpenSearch() {
+  commandPaletteOpen.value = false;
+  searchOpen.value = true;
+}
+function onSearchNavigate(v: View) {
+  searchOpen.value = false;
+  onNavigate(v);
+}
+
 // ============ 会话 / 对话 ============
 
 async function loadSessions() {
@@ -304,7 +350,7 @@ async function newSession() {
     sessions.value.unshift(s);
     await selectSession(s.id);
   } catch (e) {
-    alert("新建会话失败：" + String(e));
+    notify.error("新建会话失败", String(e));
   }
 }
 
@@ -417,9 +463,9 @@ async function onGenCandidates() {
       source_type: "chat_session",
       source_id: sid,
     });
-    window.alert(`已生成 ${list.length} 条候选记忆（draft，请在记忆页确认）`);
+    notify.success("候选记忆已生成", `${list.length} 条 draft，请在记忆页确认`);
   } catch (e) {
-    window.alert(`生成候选记忆失败：${e}`);
+    notify.error("生成候选记忆失败", String(e));
   }
 }
 
@@ -435,9 +481,9 @@ async function onSaveMessageToInbox(messageId: number, content: string) {
       source_type: "chat_message",
       source_id: messageId,
     });
-    window.alert("已保存到收件箱（今日页可查看）");
+    notify.success("已保存到收件箱", "今日页可查看");
   } catch (e) {
-    window.alert(`保存到收件箱失败：${e}`);
+    notify.error("保存到收件箱失败", String(e));
   }
 }
 
@@ -560,6 +606,10 @@ function stopGenerate() {
 
     <!-- 主工作区 -->
     <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+    <DiagnosticsView v-else-if="view === 'diagnostics'" />
+    <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
+    <IntegrationImportPanel v-else-if="view === 'integrations'" />
+    <BackupUpgradePanel v-else-if="view === 'backup'" />
     <TodayView v-else-if="view === 'today'" @navigate="onNavigate" />
     <KnowledgeView v-else-if="view === 'kb'" />
     <ProjectWorkspace v-else-if="view === 'projects'" />
@@ -598,6 +648,22 @@ function stopGenerate() {
       <StatusBar :task-label="streaming ? '生成中…' : '空闲'" />
     </template>
   </WorkspaceShell>
+
+  <!-- 第七阶段全局覆盖层：toast / 确认对话框 / 通知中心（Teleport 到 body） -->
+  <ToastHost />
+  <ConfirmDialog />
+  <NotificationCenter />
+  <CommandPalette
+    v-if="commandPaletteOpen"
+    @navigate="onPaletteNavigate"
+    @open-search="onPaletteOpenSearch"
+    @close="commandPaletteOpen = false"
+  />
+  <GlobalSearch
+    v-if="searchOpen"
+    @navigate="onSearchNavigate"
+    @close="searchOpen = false"
+  />
 </template>
 
 <style scoped>

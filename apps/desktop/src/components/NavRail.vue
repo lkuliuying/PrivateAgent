@@ -8,11 +8,13 @@ import {
   PhListChecks,
   PhBrain,
   PhGearSix,
+  PhActivity,
+  PhPuzzlePiece,
+  PhPlugs,
+  PhDatabase,
   PhCaretDoubleLeft,
 } from "@phosphor-icons/vue";
-
-/** 工作台视图名（与 App.vue view union 对齐） */
-type View = "chat" | "today" | "kb" | "projects" | "learning" | "tasks" | "memory" | "settings";
+import type { View } from "../types";
 
 defineProps<{ active: View }>();
 const emit = defineEmits<{ navigate: [view: View] }>();
@@ -25,6 +27,10 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "learning", label: "学习", icon: PhGraduationCap },
   { key: "tasks", label: "任务", icon: PhListChecks },
   { key: "memory", label: "记忆", icon: PhBrain },
+  { key: "diagnostics", label: "诊断", icon: PhActivity },
+  { key: "extensions", label: "扩展", icon: PhPuzzlePiece },
+  { key: "integrations", label: "集成", icon: PhPlugs },
+  { key: "backup", label: "备份", icon: PhDatabase },
   { key: "settings", label: "设置", icon: PhGearSix },
 ];
 </script>

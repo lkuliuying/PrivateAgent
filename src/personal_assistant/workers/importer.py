@@ -14,14 +14,38 @@ import asyncio
 from ..config import settings
 from ..core.activities import ActivityService
 from ..core.db import async_session_factory
+from ..core.notifications import NotificationService
 from ..core.provider import OllamaProvider
-from ..core.rag import extract_heading, parse_document, split_text
+from ..core.rag import NeedsOcrError, extract_heading, parse_document, split_text
 from ..core.repo import DocChunkRepository, DocumentRepository
 from ..core.store_chroma import chroma_store
 from ..core.timeutil import utcnow
 from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
+
+
+async def _notify(
+    level: str,
+    kind: str,
+    title: str,
+    message: str | None = None,
+    *,
+    source_id: int | None = None,
+) -> None:
+    """后台导入结果写入统一通知中心（独立 session）。"""
+    try:
+        async with async_session_factory() as db:
+            await NotificationService(db).notify(
+                level=level,
+                kind=kind,
+                title=title,
+                message=message,
+                source_type="document",
+                source_id=source_id,
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning("notify failed", exc_info=True)
 
 
 async def _index_core(doc_id: int, file_path: str) -> int:
@@ -114,7 +138,43 @@ async def import_document(
                 embedding_model=settings.embed_model,
             )
         await _sync_activity(activity_kind, doc_id, doc_name, "ready")
+        action_label = "重建索引" if activity_kind == "reindex" else "导入"
+        await _notify(
+            "success",
+            "import",
+            f"文档{action_label}完成：{doc_name}",
+            f"{chunk_count} 个切片已入库",
+            source_id=doc_id,
+        )
         logger.info("import done", doc_id=doc_id, chunks=chunk_count, kind=activity_kind)
+    except NeedsOcrError:
+        # 扫描件 PDF：创建 OCR job 并置 needs_ocr，而非 hard fail（第七阶段 M3）。
+        logger.info("import needs ocr", doc_id=doc_id, kind=activity_kind)
+        async with async_session_factory() as db:
+            docs = DocumentRepository(db)
+            await docs.update_status(
+                doc_id, status="needs_ocr", error_message="扫描件 PDF 需 OCR 处理"
+            )
+            from ..core.repo_ocr_jobs import OcrJobRepository
+
+            await OcrJobRepository(db).create(
+                doc_id=doc_id,
+                file_path=file_path,
+                source="document_import",
+                source_type="document",
+                source_id=doc_id,
+            )
+        await _sync_activity(
+            activity_kind, doc_id, doc_name, "needs_ocr", error_message="需 OCR"
+        )
+        action_label = "重建索引" if activity_kind == "reindex" else "导入"
+        await _notify(
+            "warning",
+            "import",
+            f"文档需 OCR：{doc_name}",
+            "扫描件 PDF 已加入 OCR 队列，请在 OCR 队列查看",
+            source_id=doc_id,
+        )
     except Exception as e:  # noqa: BLE001
         logger.exception("import failed", doc_id=doc_id, kind=activity_kind)
         async with async_session_factory() as db:
@@ -124,6 +184,14 @@ async def import_document(
             )
         await _sync_activity(
             activity_kind, doc_id, doc_name, "failed", error_message=str(e)[:1000]
+        )
+        action_label = "重建索引" if activity_kind == "reindex" else "导入"
+        await _notify(
+            "error",
+            "import",
+            f"文档{action_label}失败：{doc_name}",
+            str(e)[:200],
+            source_id=doc_id,
         )
 
 

@@ -16,6 +16,9 @@ import {
   snoozeReminder,
 } from "../api";
 import type { RecurrenceFreq, Reminder } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const reminders = ref<Reminder[]>([]);
 const loading = ref(false);
@@ -110,7 +113,7 @@ async function done(r: Reminder) {
 }
 
 async function remove(r: Reminder) {
-  if (!window.confirm(`确定删除提醒「${r.title}」？`)) return;
+  if (!await notify.confirm({ title: `确定删除提醒「${r.title}」？`, danger: true, impact: "该操作不可撤销，提醒将被永久删除" })) return;
   busy.value = true;
   error.value = "";
   try {

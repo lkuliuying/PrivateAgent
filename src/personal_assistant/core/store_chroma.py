@@ -78,11 +78,36 @@ class ChromaStore:
 
         await asyncio.to_thread(_del)
 
+    async def delete_by_chunk_id(self, chunk_id: int) -> None:
+        """删除单个切片的向量（按 chroma id，即 doc_chunks.id 字符串）。
+
+        用于完整性修复「Chroma 孤立向量」发现：其 ref_id 是 chunk_id，不是 doc_id，
+        必须按 id 删，不能用 delete_by_doc（按 doc_id 元数据删会误删别的文档的向量）。
+        """
+        def _del() -> None:
+            self._ensure().delete(ids=[str(chunk_id)])
+
+        await asyncio.to_thread(_del)
+
     async def count(self) -> int:
         def _c() -> int:
             return self._ensure().count()
 
         return await asyncio.to_thread(_c)
+
+    async def list_ids(self) -> list[int]:
+        """枚举 collection 中全部 chunk_id（M7 与 MySQL doc_chunks 一致性检查用）。"""
+        def _l() -> list[int]:
+            res = self._ensure().get(include=[], limit=1_000_000)
+            out: list[int] = []
+            for i in res.get("ids", []):
+                try:
+                    out.append(int(i))
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        return await asyncio.to_thread(_l)
 
 
 # 单例

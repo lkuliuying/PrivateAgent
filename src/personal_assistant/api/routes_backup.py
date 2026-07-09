@@ -49,6 +49,25 @@ async def restore_backup(
         raise HTTPException(404, str(e))
 
 
+@router.post("/backup/restore/drill")
+async def restore_drill(
+    req: RestoreRequest, db: AsyncSession = Depends(get_session)
+) -> dict:
+    """恢复演练：预览 + manifest 校验 + 完整性 + Chroma/MySQL 一致性（不实际恢复）。"""
+    try:
+        return await BackupService(db).restore_drill(req.path)
+    except FileNotFoundError as e:
+        raise HTTPException(404, str(e))
+
+
+@router.get("/backup/migration-runbook")
+async def migration_runbook() -> dict:
+    """迁移失败 runbook（MySQL 不可用 / Alembic 失败 / Chroma 不一致 / 备份包不兼容）。"""
+    from ..core.backup import MIGRATION_RUNBOOK
+
+    return {"runbook": MIGRATION_RUNBOOK}
+
+
 @router.post("/exports/learning-topic/{topic_id}")
 async def export_learning_topic(
     topic_id: int, db: AsyncSession = Depends(get_session)

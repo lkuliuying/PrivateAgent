@@ -234,18 +234,15 @@ async def test_template_report(client, db, monkeypatch, _cleanup):
 @pytest.mark.asyncio
 async def test_ocr_stub(client, db, _cleanup):
     coll_ids, doc_ids, ext_ids = _cleanup
-    from personal_assistant.core.models import Document
 
     did = await _make_doc(db, doc_ids)
     res = await client.post(f"/documents/{did}/ocr")
     assert res.status_code == 200, res.text
     body = res.json()
-    assert body["status"] == "unavailable"
+    # 第七阶段 M3：OCR 不再返回 unavailable 桩，而是创建 OCR job（status=pending）。
+    assert body["status"] == "pending"
+    assert body["job_id"] is not None
     assert body["doc_id"] == did
-    # 文档状态未被 OCR 改动
-    doc = await db.get(Document, did)
-    assert doc is not None
-    assert doc.status == "ready"
 
 
 # ============ 来源溯源结构 ============

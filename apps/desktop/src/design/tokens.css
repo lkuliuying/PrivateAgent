@@ -122,6 +122,9 @@
   --z-overlay: 100;
   --z-toast: 200;
 
+  /* 遮罩（模态/确认对话框/全局搜索/命令面板背景） */
+  --color-scrim: rgba(20, 22, 26, 0.42);
+
   /* 聚焦环（无障碍） */
   --focus-ring: 0 0 0 2px var(--color-accent-soft), 0 0 0 3px var(--color-accent);
 

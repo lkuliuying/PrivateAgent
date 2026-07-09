@@ -46,6 +46,9 @@ import type {
   WrongAnswer,
   ReviewRating,
 } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 /**
  * 学习工作区 · 第三阶段 M3 + 第四阶段 M2。
@@ -180,7 +183,7 @@ async function submitNew() {
     newOpen.value = false;
     await selectTopic(t.id);
   } catch (e) {
-    alert("创建失败：" + String(e));
+    notify.error("创建失败", String(e));
   }
 }
 
@@ -192,7 +195,7 @@ async function archiveTopic() {
     });
     Object.assign(currentTopic.value, updated);
   } catch (e) {
-    alert("归档失败：" + String(e));
+    notify.error("归档失败", String(e));
   }
 }
 
@@ -258,7 +261,7 @@ async function submitNote() {
     noteBody.value = "";
     notes.value = await listLearningNotes(currentId.value);
   } catch (e) {
-    alert("保存失败：" + String(e));
+    notify.error("保存失败", String(e));
   }
 }
 
@@ -271,7 +274,7 @@ async function submitAnswer(qid: number) {
     const grade = await gradeQuizAnswer(qid, ans);
     quizResults.value[qid] = grade;
   } catch (e) {
-    alert("批改失败：" + String(e));
+    notify.error("批改失败", String(e));
   }
 }
 
@@ -353,7 +356,7 @@ async function rateCard(cardId: number, r: ReviewRating) {
       };
     }
   } catch (e) {
-    alert("评分失败：" + String(e));
+    notify.error("评分失败", String(e));
   } finally {
     const s = new Set(ratingBusy.value);
     s.delete(cardId);
@@ -370,7 +373,7 @@ async function genWeeklyReport() {
     const r = await weeklyReport(currentId.value);
     reportMd.value = r.report_md;
   } catch (e) {
-    alert("周报生成失败：" + String(e));
+    notify.error("周报生成失败", String(e));
   } finally {
     reportBusy.value = false;
   }
@@ -385,9 +388,9 @@ async function saveReportAsNote() {
       body_md: reportMd.value,
     });
     notes.value = await listLearningNotes(currentId.value);
-    alert("已保存为学习笔记");
+    notify.success("已保存为学习笔记");
   } catch (e) {
-    alert("保存失败：" + String(e));
+    notify.error("保存失败", String(e));
   }
 }
 

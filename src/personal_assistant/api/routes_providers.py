@@ -13,6 +13,10 @@ from ..core.settings import SettingsService
 
 router = APIRouter(tags=["providers"])
 
+# 密钥掩码占位（与 routes_settings 一致）；PATCH 收到此值时跳过，保留原值，
+# 避免把掩码当真实密钥写入（第八阶段审查回归修复）。
+_KEY_MASK = "********"
+
 
 ProviderType = Literal["ollama", "openai", "claude"]
 
@@ -78,6 +82,12 @@ async def update_providers(
     req: ProviderUpdate, db: AsyncSession = Depends(get_session)
 ) -> dict:
     data = {k: str(v) for k, v in req.model_dump().items() if v is not None}
+    # 密钥掩码占位 -> 跳过（保留原值），避免覆盖真实密钥
+    data = {
+        k: v
+        for k, v in data.items()
+        if not (k in ("openai_api_key", "claude_api_key") and v == _KEY_MASK)
+    }
     if "remote_provider_enabled" in data:
         data["remote_provider_enabled"] = data["remote_provider_enabled"].lower()
     s = await SettingsService(db).update(data)

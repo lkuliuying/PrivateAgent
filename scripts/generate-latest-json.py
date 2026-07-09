@@ -28,7 +28,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from _release_utils import find_installer, installer_sig, read_version
+from _release_utils import (
+    assemble_manifest,
+    build_platform_entry,
+    find_installer,
+    installer_sig,
+    read_version,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DIST = PROJECT_ROOT / "dist"
@@ -74,6 +80,12 @@ def main() -> int:
     ap.add_argument("--tag", help="release tag (default: v<version>)")
     ap.add_argument("--notes", default=None, help="release notes (default: 私人助手 v<version>)")
     ap.add_argument("--out", default=None, help="output path (default: dist/latest.json)")
+    ap.add_argument(
+        "--extra-platform",
+        action="append",
+        default=[],
+        help="额外平台 KEY:INSTALLER_PATH（macOS/Linux），sig 取 installer.sig；可重复",
+    )
     args = ap.parse_args()
 
     version = read_version()
@@ -90,22 +102,27 @@ def main() -> int:
     tag = args.tag or f"v{version}"
     notes = args.notes if args.notes is not None else f"私人助手 v{version}"
 
-    # Percent-encode the installer filename: non-ASCII must be encoded for HTTP.
-    encoded_name = quote(installer.name, safe="")
-    url = f"https://github.com/{repo}/releases/download/{tag}/{encoded_name}"
     pub_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    manifest = {
-        "version": version,
-        "notes": notes,
-        "pub_date": pub_date,
-        "platforms": {
-            "windows-x86_64": {
-                "signature": signature,
-                "url": url,
-            }
-        },
+    # 默认 windows-x86_64 条目 + 额外平台（macOS/Linux，--extra-platform KEY:PATH）。
+    platforms = {
+        "windows-x86_64": build_platform_entry(installer, sig, repo, tag),
     }
+    for spec in args.extra_platform:
+        key, _, path = spec.partition(":")
+        if not key or not path:
+            raise SystemExit(
+                f"[latest.json] --extra-platform 格式应为 KEY:INSTALLER_PATH，得到: {spec}"
+            )
+        extra_installer = Path(path)
+        extra_sig = installer_sig(extra_installer)
+        if not extra_sig.exists():
+            raise SystemExit(
+                f"[latest.json] --extra-platform {key}: signature not found: {extra_sig}"
+            )
+        platforms[key] = build_platform_entry(extra_installer, extra_sig, repo, tag)
+
+    manifest = assemble_manifest(version, notes, pub_date, platforms)
 
     out = Path(args.out) if args.out else DIST / "latest.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -113,13 +130,10 @@ def main() -> int:
     print(f"[latest.json] written: {out}")
     print(f"  version:    {version}")
     print(f"  tag:        {tag}")
+    print(f"  platforms:  {', '.join(platforms.keys())}")
     print(f"  installer:  {installer.name}")
-    print(f"  url:        {url}")
     print(f"  signature:  {len(signature)} chars")
-    print(f"\nNext: upload these three assets to the GitHub Release ({tag}):")
-    print(f"  1. {installer.name}")
-    print(f"  2. {sig.name}")
-    print(f"  3. {out.name}")
+    print(f"\nNext: upload latest.json + each platform's installer + .sig to the GitHub Release ({tag}).")
     print("The updater endpoint in tauri.conf.json points to .../releases/latest/download/latest.json")
     return 0
 

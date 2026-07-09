@@ -1,8 +1,8 @@
 # 私人助手 Agent
 
-本地优先、隐私可控的桌面私人助手。当前已完成到第六阶段：**长期记忆 + 学习复习 + 文档集合 + 可回滚编码工作流 + 可编辑任务计划 + Provider 路由 + 安装包与发布工程化 + 主动个人中枢**。
+本地优先、隐私可控的桌面私人助手。当前已完成到第八阶段：**长期记忆 + 学习复习 + 文档集合 + 可回滚编码工作流 + 可编辑任务计划 + Provider 路由 + 安装包与发布工程化 + 主动个人中枢 + 可信赖日常操作层 + 发布级质量与可扩展集成层**。
 
-> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md` / `docs/phase4-requirements.md` / `docs/phase5-requirements.md` / `docs/phase6-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md` / `docs/phase6-plan.md`。
+> 详细需求见 `docs/requirements.md`（一阶段）/ `docs/phase2-requirements.md` / `docs/phase3-requirements.md` / `docs/phase4-requirements.md` / `docs/phase5-requirements.md` / `docs/phase6-requirements.md` / `docs/phase7-requirements.md` / `docs/phase8-requirements.md`，开发计划见 `docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md` / `docs/phase6-plan.md` / `docs/phase7-plan.md` / `docs/phase8-plan.md`。
 
 ## 技术栈
 
@@ -71,7 +71,7 @@ copy .env.example .env       # Linux/macOS: cp
 # 安装依赖
 uv sync --extra dev
 
-# 数据库迁移（建 5 张表）
+# 数据库迁移（应用全部 Alembic 迁移，当前 head 为 0011）
 uv run alembic upgrade head
 
 # 启动后端（默认 127.0.0.1:8000）
@@ -150,6 +150,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 ### 相关文档
 - `docs/phase5-plan.md` / `docs/phase5-requirements.md`：第五阶段计划与需求。
 - `docs/phase6-plan.md` / `docs/phase6-requirements.md`：第六阶段主动个人中枢规划。
+- `docs/phase7-plan.md` / `docs/phase7-requirements.md`：第七阶段可信赖日常操作层完成态与验收清单。
 - `docs/release-checklist.md`：发布 QA 矩阵与回滚。
 - `docs/signing-and-keys.md`：updater 签名与 Windows 代码签名。
 - `docs/cross-platform.md`：macOS / Linux 预研（Windows 为第五阶段硬验收）。
@@ -209,6 +210,42 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 - M4–M6：新增长期目标、目标关联、check-in、目标/今日/周回顾简报、简报转任务、隐私预览、Provider 调用审计和维护健康报告。
 - M7 验证：`pytest -q` 146 通过，`npm run build`、`cargo check`、`alembic current -> 0009 (head)`、`git diff --check` 通过。
 - 详见 `docs/phase6-plan.md` 与 `docs/phase6-requirements.md`。
+
+**第七阶段（可信赖日常操作层）已完成 M0–M9** ✅：
+- M1–M3：今日页改为真实数据聚合和筛选；新增全局搜索、命令面板、快速捕获、OCR 队列与扫描件降级路径。
+- M4–M7：新增统一 toast/确认/通知中心、诊断中心与脱敏诊断包、Provider 失败分类与审计补强、数据完整性体检与修复计划预览。
+- M8–M9 验证与文档收束：`pytest -q` 197 通过，`npm run build`、`cargo check`、`alembic current -> 0010 (head)` 通过；发布 checklist、使用说明、计划书和需求文档已同步第七阶段状态。
+- 详见 `docs/phase7-plan.md` 与 `docs/phase7-requirements.md`。
+
+> 第七阶段当前自动化验证以后端/API smoke、前端构建和发布 checklist 为主；Playwright/Tauri 桌面窗口级 E2E 尚未接入，已作为后续增强边界记录在需求与发布文档中。
+
+**第八阶段（发布级质量与可扩展集成层）已完成 M0–M10** ✅：
+- M1 前端测试与桌面 smoke：Vitest 组件测试（CommandPalette/CapturePanel/NotificationCenter）+ Playwright E2E smoke（Today 首屏 / 后端断开）+ sidecar smoke 脚本（端口协商 / /health / 退出清理）。`npm run test` / `npm run e2e`。
+- M2 发布检查 2.0：`scripts/release-check-full.bat` 串联 pytest/npm build/npm test/npm e2e/cargo check/alembic current/git diff/诊断包脱敏 smoke/latest.json 校验，输出 `dist/release-check-<version>.json+.md`。
+- M4 代码签名：`scripts/sign_installer.py` 接入 signtool sign/verify + 重新生成 .sig（遵循签名顺序）；无证书时不阻塞，写 SmartScreen 说明 + `code_signed: no` 状态。
+- M5 跨平台：修正 macOS 数据目录（`~/Library/Application Support`，config.py + lib.rs）；`generate-latest-json.py` 支持多平台 `--extra-platform`；多平台清单逻辑有测试。macOS/Linux 实机构建仍为「工具就绪，待真实环境执行」。
+- M6 性能基线：`scripts/measure_perf_baseline.py` 生成样本数据 + 测 Today/搜索/诊断/完整性/备份 + JSON/MD 报告 + 阈值；识别 diagnostics/Ollama 热点并给出后续方案。
+- M7 扩展注册表：`core/extensions.py` 统一注册 command/capture/provider/diagnostic/maintenance/notification；`/extensions` API + `ExtensionRegistryPanel.vue`；integrity/diagnostics 改为遍历注册项。
+- M8 本地集成样板：ICS 日历导入 -> 提醒/收件箱（stdlib 解析、trusted paths、隐私预览、来源追踪、可撤销）；`/integrations` API + `IntegrationImportPanel.vue`。
+- M9 备份恢复硬化：`BACKUP_TABLES` 补全 phase6/7/8 表；manifest 增 `app_version`/`schema_head`/`checksum`/`modules`；`/backup/restore/drill` + `/backup/migration-runbook` + `BackupUpgradePanel.vue`。
+- M3 升级 smoke 工具：`scripts/upgrade_smoke.py`（数据快照/保留校验/样本数据/runbook/记录）+ `/testing/runs` + `/testing/upgrade-smoke-runs`；真实 vN->vN+1 标注「待真实环境执行」。
+- M10 文档矩阵收束：README / requirements / usage-guide / release-checklist / cross-platform / signing-and-keys 同步第八阶段状态。
+- 验证：`pytest -q` 256 通过，`npm run build` / `npm run test`(13) / `npm run e2e`(2) / `cargo check` / `alembic current -> 0011 (head)` / `git diff --check` 通过。迁移 `0011_phase8_release_quality_extensions.py`。
+- 详见 `docs/phase8-plan.md` 与 `docs/phase8-requirements.md`。
+
+> 待真实环境执行（工具与文档已就绪）：Windows 真实 vN->vN+1 升级 smoke、代码签名证书实签、macOS/Linux 实机构建 smoke。本机环境（无证书 / 无非 Windows 实机）已交付脚本 + runbook + 逻辑测试，并诚实标注。
+
+## 版本与阶段矩阵
+
+| 项 | 当前值 |
+|---|---|
+| 应用版本 | 0.1.1 |
+| Schema head | 0011（`alembic current`） |
+| 阶段完成度 | 第一~第八阶段已完成（M0–M10） |
+| 发布状态 | Windows NSIS 安装包可复现构建；未代码签名（unsigned 透明策略） |
+| 未完成边界 | 真实升级 smoke / 代码签名实签 / macOS·Linux 实机 smoke（工具就绪，待真实环境执行） |
+| 后端测试 | `pytest -q` 256 通过 |
+| 前端测试 | `npm run test` 13 通过 / `npm run e2e` 2 通过 |
 
 ## 常见问题
 

@@ -21,15 +21,23 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _default_data_dir() -> Path:
-    """数据目录默认值：打包模式用用户数据目录，开发模式用项目 ``./data``。"""
+    """数据目录默认值：打包模式用平台用户数据目录，开发模式用项目 ``./data``。
+
+    - Windows: ``%APPDATA%/personal-assistant``
+    - macOS: ``~/Library/Application Support/personal-assistant``（第八阶段 M5 修正）
+    - Linux: ``$XDG_DATA_HOME/personal-assistant`` 或 ``~/.local/share/personal-assistant``
+    """
     if getattr(sys, "frozen", False):
         # PyInstaller 打包模式
         if sys.platform == "win32":
             base = os.environ.get("APPDATA") or str(Path.home())
-        else:
-            base = os.environ.get("XDG_DATA_HOME") or str(
-                Path.home() / ".local" / "share"
-            )
+            return Path(base) / "personal-assistant"
+        if sys.platform == "darwin":
+            home = os.environ.get("HOME") or str(Path.home())
+            return Path(home) / "Library" / "Application Support" / "personal-assistant"
+        base = os.environ.get("XDG_DATA_HOME") or str(
+            Path.home() / ".local" / "share"
+        )
         return Path(base) / "personal-assistant"
     # 开发模式：项目根 ./data
     return Path("./data")

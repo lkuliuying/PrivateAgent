@@ -104,7 +104,9 @@ struct UpdateInfo {
 
 // ============ 路径 ============
 
-/// 配置目录：dev=项目根（CARGO_MANIFEST_DIR 上溯 3 级），打包=%APPDATA%/personal-assistant。
+/// 配置目录：dev=项目根（CARGO_MANIFEST_DIR 上溯 3 级）；打包模式按平台--
+/// Windows `%APPDATA%/personal-assistant`、macOS `~/Library/Application Support/personal-assistant`、
+/// Linux `$XDG_DATA_HOME/personal-assistant`（或 `~/.local/share/personal-assistant`）。
 fn config_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -120,7 +122,17 @@ fn config_dir() -> PathBuf {
             let base = std::env::var("APPDATA").unwrap_or_default();
             PathBuf::from(base).join("personal-assistant")
         }
-        #[cfg(not(windows))]
+        // macOS：~/Library/Application Support/personal-assistant（第八阶段 M5 修正，
+        // 原先误用 XDG ~/.local/share，不符合 macOS 惯例且跨应用备份会遗漏）。
+        #[cfg(target_os = "macos")]
+        {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("personal-assistant")
+        }
+        #[cfg(target_os = "linux")]
         {
             let base = std::env::var("XDG_DATA_HOME")
                 .ok()

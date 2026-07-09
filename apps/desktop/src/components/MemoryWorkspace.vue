@@ -13,6 +13,9 @@ import type {
   MemoryItem,
   MemoryKind,
 } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const memories = ref<MemoryItem[]>([]);
 const selectedId = ref<number | null>(null);
@@ -201,7 +204,7 @@ async function confirmDraft(m: MemoryItem) {
 }
 
 async function removeMemory(m: MemoryItem) {
-  if (!window.confirm(`确定删除记忆「${m.title}」？此操作不可撤销。`)) return;
+  if (!await notify.confirm({ title: `确定删除记忆「${m.title}」？`, danger: true, impact: "该操作不可撤销，记忆将被永久删除" })) return;
   busy.value = true;
   error.value = "";
   try {

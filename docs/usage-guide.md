@@ -26,6 +26,7 @@
 | 第四阶段 M0–M6 | 长期记忆 + 学习复习 + 文档集合/抽取 + 多文件 patch set + 可编辑任务计划 + Provider 路由 + 备份/恢复预览 | 已完成 |
 | 第五阶段 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA 矩阵 / 体积与启动评估 / 跨平台预研 | 已完成 M0–M6（见下） |
 | 第六阶段 | 今日中枢 / 统一收件箱 / 提醒与例行回顾 / 目标追踪 / 主动简报 / 隐私审计 / 数据体检 | 已完成 M0–M7 |
+| 第七阶段 | 今日页真实数据化 / 全局搜索 / 快速捕获 / OCR 队列 / 通知中心 / 诊断中心 / 数据完整性 / 自动化 smoke | 已完成 M0–M9 |
 
 第五阶段已实现：可复现 Windows 构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。已重新构建 sidecar 并验证 `cryptography` 修复后 MySQL 8 连通。待真实环境执行：部署 GitHub Release 跑通升级 smoke、接入 Windows 代码签名、macOS/Linux 实机构建。
 
@@ -39,6 +40,18 @@
 - **主动简报**：简报区支持生成今日简报和周回顾，历史简报可查看 Markdown 内容并一键转为任务草稿；目标详情可生成目标简报。
 - **隐私与维护**：隐私面板支持请求级上下文预览，敏感记忆不会进入远程上下文；OpenAI/Claude 等远程 Provider 调用会记录审计。维护健康报告展示最近备份、失败活动、草稿记忆、关注任务、收件箱和到期提醒。
 - **验证状态**：`pytest -q` 146 通过，`npm run build`、`cargo check`、`alembic current -> 0009 (head)`、`git diff --check` 通过。
+
+## 第七阶段新增能力（M0–M9）
+
+第七阶段把“主动个人中枢”继续打磨成“可信赖日常操作层”：第一屏只展示真实数据，跨模块内容可以统一搜索，零散信息可以快速捕获，故障可以在诊断中心定位，长期数据可以体检和修复。
+
+- **真实今日页**：Today 聚合不再依赖固定演示内容，支持按类型、优先级、时间和状态筛选；空数据时展示可执行动作，有数据时展示真实提醒、收件箱、目标、简报、维护健康和最近来源。
+- **全局搜索与命令面板**：新增 `/search`、命令注册与前端 `GlobalSearch.vue` / `CommandPalette.vue`，可跨会话、文档、切片、任务、证据、记忆、收件箱、目标和简报检索，并执行新建提醒、收件箱、健康检查、打开诊断等常用动作。
+- **快速捕获与 OCR 队列**：新增 capture 与 OCR job 数据流，支持文本/剪贴板捕获并转为收件箱、提醒或记忆候选；扫描件和 OCR 未配置场景有明确任务状态、失败原因和降级入口。
+- **统一反馈与通知中心**：新增 toast、确认弹窗、inline error、通知中心和后端通知记录，关键导入、删除、备份、任务、Provider 与危险操作不再依赖浏览器原生弹窗。
+- **诊断中心与数据体检**：新增诊断快照、脱敏诊断包、最近错误、迁移状态、Provider 失败、维护健康、数据完整性检查和修复计划预览；诊断包默认不导出 API key、数据库密码、完整聊天、文档原文或敏感记忆。
+- **Provider 治理**：远程 Provider 错误映射到缺 key、认证失败、网络、超时、限流、模型不存在和服务错误；审计记录补齐耗时、token 估算、失败代码和 fallback 信息。
+- **验证状态**：`pytest -q` 256 通过，`npm run build`、`npm run test`(13)、`npm run e2e`(2)、`cargo check`、`alembic current -> 0011 (head)` 通过；第八阶段已接入 Vitest + Playwright 桌面 E2E。
 
 ## 第三阶段新增能力（M0–M6）
 
@@ -845,6 +858,13 @@ sidecar 不打包这些，需用户本机具备：
 | `test_tools.py` | M1 工具调用底座：ToolRegistry、审批状态机、is_trusted_path 越界、/tools/plan、approve/reject、tool_result 注入聊天、活动 started_at |
 | `test_chat_rag_e2e.py` | 聊天 SSE 流式 + RAG 端到端 |
 | `test_phase2.py` | M2/M3/M4：工具注册（summarize_file/import_to_kb）、批量导入、启用禁用、引用片段、禁用文档不参与检索、活动流列表与重试、文件扫描/摘要 |
+| `test_phase7_today.py` | 第七阶段今日页真实数据聚合、空状态、筛选、`/today` 路由 |
+| `test_phase7_search.py` | 全局搜索跨对象、类型过滤、最近搜索、`/search` 与 `/search/recent` |
+| `test_phase7_capture_ocr.py` | 快速捕获 CRUD、转收件箱/提醒/记忆候选、OCR 可用性与 OCR job |
+| `test_phase7_notifications.py` | 通知服务、通知路由、标记已读、敏感字段过滤 |
+| `test_phase7_diagnostics.py` | 诊断快照、脱敏规则、诊断包文件结构 |
+| `test_phase7_integrity.py` | 数据完整性发现项、软引用悬空检测、修复计划预览 |
+| `test_phase7_provider.py` | Provider 失败分类、审计耗时、fallback 与敏感上下文过滤 |
 
 ### 11.2 运行测试
 
@@ -854,18 +874,16 @@ uv run pytest
 
 `pyproject.toml` 中 `asyncio_mode = "auto"`，`pythonpath = ["src"]`，`testpaths = ["tests"]`，无需额外标记即可跑 async 测试。
 
-### 11.3 前端测试建议
+### 11.3 前端测试
 
-前端当前无自动化测试。建议引入 **Vitest** 对 `api.ts`（端口协商、SSE 解析）与各 Vue 组件（ChatView 发送/停止、KnowledgeView 状态展示、SettingsView 轮询）做单元/组件测试。
+第八阶段 M1 已接入 **Vitest**（组件测试覆盖 CommandPalette、CapturePanel、NotificationCenter，13 测试）与 **Playwright** 浏览器模式 smoke（Today 首屏、后端断开，2 测试），并新增 `scripts/sidecar_smoke.py`（端口协商 / /health / 退出清理）。命令：`npm run test` / `npm run e2e`。`api.ts` 端口协商/SSE 解析单测与 Tauri 窗口级 E2E 仍为后续增强。
 
 ### 11.4 覆盖缺口
 
 当前未覆盖的关键路径（后续补全）：
 
-- **chat SSE 流式**：`/chat/stream` 端到端流式输出与事件类型（token/done/title/error）。
-- **导入状态机**：`import_document` 全流程（pending→processing→ready/failed）与重试。
-- **删除一致性**：删除文档后 MySQL（documents/doc_chunks）与 ChromaDB 同步清理。
 - **sidecar 端口协商**：Tauri 分配端口 → sidecar 监听 → `get_api_port` 返回值的集成验证。
+- **桌面 E2E**：Playwright/Tauri 模式下的真实窗口、截图和打包后 smoke。
 
 ---
 
@@ -906,6 +924,8 @@ uv run pytest
 | 第四阶段 | 多 Agent 与高级编排 | 研究 Agent、执行 Agent、总结 Agent 协作 |
 | 第五阶段 | 安装包与发布工程化 | 可复现构建 / updater 发布源工具 / 签名与密钥治理 / 发布 QA / 体积评估 / 跨平台预研（M0–M6 完成；代码签名与升级 smoke 待真实环境执行） |
 | 第六阶段 | 主动个人中枢 | 今日入口 / 统一收件箱 / 提醒与例行回顾 / 目标追踪 / 主动简报 / 隐私审计 / 数据体检（M0–M7 完成） |
+| 第七阶段 | 可信赖日常操作层 | 今日页真实数据化 / 全局搜索与命令面板 / 快速捕获与 OCR 队列 / 统一反馈与通知中心 / 诊断中心 / Provider 治理 / 数据完整性 / 自动化 smoke（M0–M9 完成） |
+| 第八阶段 | 发布级质量与可扩展集成层 | 桌面 E2E（Vitest + Playwright）/ release-check-full / 代码签名策略 / 跨平台配置 / 性能基线 / 扩展注册表 / 本地集成 / 备份恢复硬化（M0–M10 完成；真实升级 smoke / 签名实签 / macOS·Linux 实机构建待真实环境执行） |
 
 ---
 
@@ -1124,7 +1144,21 @@ uv run pytest
 | 版本 | 日期 | 内容 |
 |---|---|---|
 | v0.1 | 2026-07-04 | 第一阶段初始说明书。对应 requirements.md v0.1 与 phase1-plan.md v0.3。覆盖 M0–M3 已完成功能、M4 打包预研结论；第五阶段 NSIS 安装包/依赖检测向导/配置 UI 已实现，自动更新接线完成（发布源待部署）。 |
+| v0.2 | 2026-07-08 | 补充第六阶段主动个人中枢与第七阶段可信赖日常操作层状态；记录第七阶段自动化验证与剩余桌面 E2E 增强边界。 |
+| v0.3 | 2026-07-09 | 补充第八阶段发布级质量与可扩展集成层：桌面 E2E（Vitest+Playwright）、release-check-full、代码签名策略、跨平台配置、性能基线、扩展注册表、本地集成（ICS）、备份恢复硬化。 |
 
 ---
 
-> 本说明书基于项目实际代码与文档编写，不包含未实现功能的虚假承诺。第五阶段尚未完成的部分（代码签名、updater 发布源部署、跨平台、体积优化）以「（第五阶段规划，尚未实现）」明确标注。如发现描述与实际行为不符，以代码为准并以本文档版本为基准进行修订。
+## 第八阶段：发布级质量与可扩展集成层
+
+- 测试：`cd apps/desktop && npm run test`（Vitest 组件）/ `npm run e2e`（Playwright smoke）/ `uv run python scripts/sidecar_smoke.py`（sidecar 端口协商+健康+清理）。
+- 发布检查：`scripts/release-check.bat`（快速）/ `scripts/release-check-full.bat`（完整证据，输出 `dist/release-check-<version>.json+.md`）/ `uv run python scripts/measure_perf_baseline.py`（性能基线）。
+- 代码签名：`scripts/sign_installer.py`（有证书走 signtool+重签 .sig；无证书写 SmartScreen 说明 + `code_signed: no`，不阻塞）。
+- 扩展注册表：导航「扩展」页 / `GET /extensions` / `PATCH /extensions/{id}`（command/diagnostic/maintenance 等统一注册）。
+- 本地集成：导航「集成」页，ICS 日历导入 -> 提醒/收件箱，预览+来源追踪+可撤销 / `POST /integrations/preview|import` / `DELETE /integrations/imports/{id}`。
+- 备份恢复：导航「备份」页，导出（增强 manifest）/ 恢复演练 / 迁移 runbook / `POST /backup/restore/drill` / `GET /backup/migration-runbook`。
+- 升级 smoke：`uv run python scripts/upgrade_smoke.py --runbook`（真实 vN->vN+1 待真实环境执行）。
+
+---
+
+> 本说明书基于项目实际代码与文档编写，不包含未实现功能的虚假承诺。第八阶段中真实 Windows 升级 smoke、代码签名证书实签、macOS/Linux 实机构建 smoke 均已标注「工具就绪，待真实环境执行」，与第五阶段同款处理。如发现描述与实际行为不符，以代码为准并以本文档版本为基准进行修订。

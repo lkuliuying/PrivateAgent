@@ -1,37 +1,40 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import {
   PhArrowClockwise,
   PhArrowRight,
   PhBell,
-  PhCalendarBlank,
+  PhBooks,
   PhChatCircle,
   PhCheckCircle,
   PhDatabase,
+  PhFileText,
   PhPlus,
-  PhShieldCheck,
   PhSparkle,
   PhSun,
+  PhTarget,
+  PhUploadSimple,
+  PhLightning,
 } from "@phosphor-icons/vue";
-import { createInbox, getSettings, getToday } from "../api";
-import type { InboxItemType, TodayItem, TodaySnapshot } from "../types";
+import { createInbox, createTodayBriefing, getToday } from "../api";
+import type {
+  InboxItemType,
+  TodayFilters,
+  TodayItem,
+  TodayRecentItem,
+  TodaySnapshot,
+  View,
+} from "../types";
+import { useNotifications } from "../stores/notifications";
 import BriefingPanel from "./BriefingPanel.vue";
 import GoalsWorkspace from "./GoalsWorkspace.vue";
 import InboxPanel from "./InboxPanel.vue";
 import PrivacyAuditPanel from "./PrivacyAuditPanel.vue";
 import ReminderPanel from "./ReminderPanel.vue";
-
-type View =
-  | "chat"
-  | "today"
-  | "kb"
-  | "projects"
-  | "learning"
-  | "tasks"
-  | "memory"
-  | "settings";
+import CapturePanel from "./CapturePanel.vue";
 
 const emit = defineEmits<{ navigate: [view: View] }>();
+const notify = useNotifications();
 
 const snap = ref<TodaySnapshot | null>(null);
 const loading = ref(false);
@@ -39,6 +42,43 @@ const busy = ref(false);
 const error = ref("");
 const inboxPanel = ref<InstanceType<typeof InboxPanel> | null>(null);
 const reminderPanel = ref<InstanceType<typeof ReminderPanel> | null>(null);
+const briefingPanel = ref<InstanceType<typeof BriefingPanel> | null>(null);
+const capturePanel = ref<InstanceType<typeof CapturePanel> | null>(null);
+
+const filters = reactive<TodayFilters>({});
+
+const TYPE_OPTIONS: { value: TodayFilters["type"]; label: string }[] = [
+  { value: undefined, label: "全部类型" },
+  { value: "learning", label: "学习" },
+  { value: "task", label: "任务" },
+  { value: "doc", label: "文档" },
+  { value: "memory", label: "记忆" },
+  { value: "reminder", label: "提醒" },
+  { value: "goal", label: "目标" },
+  { value: "inbox", label: "收件箱" },
+  { value: "system", label: "系统" },
+];
+const PRIORITY_OPTIONS: { value: TodayFilters["priority"]; label: string }[] = [
+  { value: undefined, label: "全部优先级" },
+  { value: "urgent", label: "紧急" },
+  { value: "high", label: "高" },
+  { value: "normal", label: "普通" },
+  { value: "low", label: "低" },
+];
+const TIME_OPTIONS: { value: TodayFilters["time"]; label: string }[] = [
+  { value: undefined, label: "全部时间" },
+  { value: "today", label: "今天" },
+  { value: "overdue", label: "逾期" },
+  { value: "this-week", label: "本周" },
+  { value: "future", label: "未来" },
+];
+const STATUS_OPTIONS: { value: TodayFilters["status"]; label: string }[] = [
+  { value: undefined, label: "全部状态" },
+  { value: "open", label: "待处理" },
+  { value: "snoozed", label: "已暂缓" },
+  { value: "done", label: "已完成" },
+  { value: "ignored", label: "已忽略" },
+];
 
 interface SectionDef {
   key: string;
@@ -128,12 +168,15 @@ const weekdayLabel = computed(() =>
   new Intl.DateTimeFormat("zh-CN", { weekday: "long" }).format(new Date())
 );
 
+const hasFilters = computed(
+  () => !!(filters.type || filters.priority || filters.time || filters.status)
+);
+
 async function load() {
   loading.value = true;
   error.value = "";
   try {
-    snap.value = await getToday();
-    void maybeNotify();
+    snap.value = await getToday(hasFilters.value ? { ...filters } : undefined);
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -141,21 +184,46 @@ async function load() {
   }
 }
 
-async function maybeNotify() {
-  if (!snap.value || snap.value.due_reminders.length === 0) return;
+function onFilterChange() {
+  void load();
+}
+
+function clearFilters() {
+  filters.type = undefined;
+  filters.priority = undefined;
+  filters.time = undefined;
+  filters.status = undefined;
+  void load();
+}
+
+async function generateBriefing() {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = "";
   try {
-    const s = await getSettings();
-    if (!s.desktop_notifications_enabled) return;
-    if (!("Notification" in window)) return;
-    let perm = Notification.permission;
-    if (perm === "default") perm = await Notification.requestPermission();
-    if (perm !== "granted") return;
-    new Notification("私人助手：到期提醒", {
-      body: `你有 ${snap.value.due_reminders.length} 条到期提醒，请在今日页处理。`,
-    });
-  } catch {
-    // 今日页已展示到期提醒。
+    await createTodayBriefing();
+    await briefingPanel.value?.load();
+    notify.success("今日简报已生成", "已添加到下方简报列表");
+    await load();
+  } catch (e) {
+    notify.error("生成今日简报失败", String(e));
+  } finally {
+    busy.value = false;
   }
+}
+
+function newReminder() {
+  // 滚动到下方提醒面板的创建表单。
+  reminderPanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function quickCapture() {
+  // 滚动到下方快速捕获面板。
+  capturePanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function importDocument() {
+  emit("navigate", "kb");
 }
 
 function cardTitle(it: TodayItem): string {
@@ -173,9 +241,10 @@ function cardMeta(it: TodayItem): string {
   return parts.join(" · ");
 }
 
-function fmt(s: string | null): string {
+function fmt(s: string | null | undefined): string {
   if (!s) return "";
   const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return "";
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(
     2,
     "0"
@@ -193,11 +262,32 @@ async function saveToInbox(it: TodayItem, itemType: InboxItemType) {
       source_id: it.source_id,
     });
     await inboxPanel.value?.reload();
+    notify.success("已存为收件箱", cardTitle(it));
     await load();
   } catch (e) {
-    error.value = String(e);
+    notify.error("保存收件箱失败", String(e));
   } finally {
     busy.value = false;
+  }
+}
+
+/** 最近来源条目点击跳转。 */
+function onRecentClick(it: TodayRecentItem) {
+  switch (it.source_type) {
+    case "chat_session":
+      emit("navigate", "chat");
+      break;
+    case "document":
+      emit("navigate", "kb");
+      break;
+    case "briefing":
+      briefingPanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      break;
+    case "goal_checkin":
+      emit("navigate", "today");
+      break;
+    default:
+      break;
   }
 }
 
@@ -214,7 +304,7 @@ onMounted(load);
             <h1>今日</h1>
           </div>
           <div class="head-actions">
-            <button class="soft-action" @click="emit('navigate', 'chat')">
+            <button class="soft-action" :disabled="busy" @click="generateBriefing">
               <PhSparkle :size="16" />
               <span>今日简报</span>
             </button>
@@ -225,6 +315,53 @@ onMounted(load);
         </div>
 
         <div v-if="error" class="error-line">{{ error }}</div>
+
+        <!-- 第七阶段 M1：筛选栏（type/priority/time/status） -->
+        <div v-if="snap" class="filter-bar">
+          <select
+            v-model="filters.type"
+            class="filter-select"
+            aria-label="类型筛选"
+            @change="onFilterChange"
+          >
+            <option v-for="o in TYPE_OPTIONS" :key="String(o.value)" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <select
+            v-model="filters.priority"
+            class="filter-select"
+            aria-label="优先级筛选"
+            @change="onFilterChange"
+          >
+            <option v-for="o in PRIORITY_OPTIONS" :key="String(o.value)" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <select
+            v-model="filters.time"
+            class="filter-select"
+            aria-label="时间筛选"
+            @change="onFilterChange"
+          >
+            <option v-for="o in TIME_OPTIONS" :key="String(o.value)" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <select
+            v-model="filters.status"
+            class="filter-select"
+            aria-label="状态筛选"
+            @change="onFilterChange"
+          >
+            <option v-for="o in STATUS_OPTIONS" :key="String(o.value)" :value="o.value">
+              {{ o.label }}
+            </option>
+          </select>
+          <button v-if="hasFilters" class="filter-clear" @click="clearFilters">
+            清除筛选
+          </button>
+        </div>
 
         <div v-if="snap" class="chips">
           <button
@@ -239,11 +376,26 @@ onMounted(load);
           </button>
         </div>
 
-        <div v-if="snap && allEmpty" class="empty-banner">
+        <!-- 空状态：真实可执行动作 -->
+        <div v-if="snap && allEmpty && !hasFilters" class="empty-banner">
           <PhSun :size="34" weight="duotone" />
-          <div>
+          <div class="empty-body">
             <p>今天没有必须处理的事项。</p>
-            <p class="hint">你可以从下方收件箱新建待办，或直接向助手提问。</p>
+            <p class="hint">选择一个动作开始：</p>
+            <div class="empty-actions">
+              <button class="empty-action" @click="newReminder">
+                <PhBell :size="15" /> 新建提醒
+              </button>
+              <button class="empty-action" @click="quickCapture">
+                <PhLightning :size="15" /> 快速捕获
+              </button>
+              <button class="empty-action" @click="importDocument">
+                <PhUploadSimple :size="15" /> 导入文档
+              </button>
+              <button class="empty-action" :disabled="busy" @click="generateBriefing">
+                <PhSparkle :size="15" /> 生成简报
+              </button>
+            </div>
           </div>
         </div>
 
@@ -287,38 +439,28 @@ onMounted(load);
           </div>
         </section>
 
+        <!-- 最近会话（真实数据，替代固定日程） -->
         <section class="schedule-section">
           <div class="section-head">
-            <h3>日程安排</h3>
-            <button class="text-action" @click="emit('navigate', 'tasks')">
-              <span>查看日历</span>
+            <h3>最近会话</h3>
+            <button class="text-action" @click="emit('navigate', 'chat')">
+              <span>查看全部</span>
               <PhArrowRight :size="14" />
             </button>
           </div>
           <div class="schedule-list">
-            <div class="schedule-row active">
-              <span class="time">09:30</span>
-              <span class="schedule-dot" />
-              <strong>整理今日简报与计划</strong>
-              <span>30 分钟</span>
-            </div>
-            <div class="schedule-row">
-              <span class="time">11:00</span>
-              <span class="schedule-dot" />
-              <strong>处理收件箱与任务审批</strong>
-              <span>45 分钟</span>
-            </div>
-            <div class="schedule-row">
-              <span class="time">15:00</span>
-              <span class="schedule-dot" />
-              <strong>复习学习卡片和候选记忆</strong>
-              <span>60 分钟</span>
-            </div>
-            <div class="schedule-row">
-              <span class="time">20:00</span>
-              <span class="schedule-dot" />
-              <strong>个人时间：阅读与回顾</strong>
-              <span>90 分钟</span>
+            <button
+              v-for="s in snap?.recent_sessions ?? []"
+              :key="s.id"
+              class="schedule-row"
+              @click="onRecentClick(s)"
+            >
+              <PhChatCircle :size="15" class="schedule-icon" />
+              <strong>{{ s.title || `会话 #${s.id}` }}</strong>
+              <span>{{ fmt(s.updated_at) }}</span>
+            </button>
+            <div v-if="!snap || snap.recent_sessions.length === 0" class="schedule-empty">
+              暂无会话，点击「查看全部」开始对话。
             </div>
           </div>
         </section>
@@ -326,7 +468,7 @@ onMounted(load);
         <section class="reminder-strip">
           <div class="section-head compact">
             <h3>提醒</h3>
-            <button class="text-action" @click="emit('navigate', 'today')">
+            <button class="text-action" @click="newReminder">
               全部提醒 {{ snap?.summary.due_reminders ?? 0 }}
             </button>
           </div>
@@ -371,72 +513,107 @@ onMounted(load);
           <button @click="emit('navigate', 'tasks')">工具</button>
         </div>
 
+        <!-- 最近目标进展（真实 check-in，替代固定记忆洞察） -->
         <section class="context-card">
           <div class="context-head">
-            <h3>记忆洞察</h3>
-            <button @click="emit('navigate', 'memory')">查看全部</button>
+            <h3>最近目标进展</h3>
+            <button @click="emit('navigate', 'today')">查看全部</button>
           </div>
           <div class="insight-list">
-            <div>
-              <strong>你正在推进个人助手项目</strong>
-              <span>基于最近会话与任务上下文</span>
-            </div>
-            <div>
-              <strong>本周重点偏向发布与 UI</strong>
-              <span>安装包、更新与界面改造</span>
-            </div>
-            <div>
-              <strong>学习复习需要持续跟进</strong>
-              <span>{{ snap?.summary.due_cards ?? 0 }} 张卡片到期</span>
+            <button
+              v-for="c in snap?.recent_checkins ?? []"
+              :key="c.id"
+              class="insight-row"
+              @click="onRecentClick(c)"
+            >
+              <PhTarget :size="15" class="insight-icon" />
+              <div class="insight-copy">
+                <strong>{{ c.goal_title }}</strong>
+                <span>{{ fmt(c.checkin_date) }}{{ c.confidence != null ? ` · 信心 ${Math.round(c.confidence * 100)}%` : "" }}</span>
+                <em v-if="c.progress_note_md">{{ c.progress_note_md }}</em>
+              </div>
+            </button>
+            <div v-if="!snap || snap.recent_checkins.length === 0" class="context-empty">
+              暂无目标回顾。
             </div>
           </div>
-          <button class="wide-action" @click="emit('navigate', 'memory')">
-            <span>更新记忆</span>
-            <PhArrowClockwise :size="14" />
-          </button>
         </section>
 
+        <!-- 最近文档（真实数据，替代固定来源） -->
         <section class="context-card">
           <div class="context-head">
-            <h3>相关来源</h3>
+            <h3>最近文档</h3>
             <button @click="emit('navigate', 'kb')">查看全部</button>
           </div>
           <div class="source-list">
-            <div><PhDatabase :size="14" /> PRD_智能笔记应用_v1.3.md <span>文档</span></div>
-            <div><PhDatabase :size="14" /> 用户反馈汇总_202505.md <span>文档</span></div>
-            <div><PhDatabase :size="14" /> 系统设计_存储模块.md <span>文档</span></div>
+            <button
+              v-for="d in snap?.recent_docs ?? []"
+              :key="d.id"
+              class="source-row"
+              @click="onRecentClick(d)"
+            >
+              <PhDatabase :size="14" />
+              <span class="source-name">{{ d.name }}</span>
+              <span class="source-meta">{{ d.doc_type || "文档" }}</span>
+            </button>
+            <div v-if="!snap || snap.recent_docs.length === 0" class="context-empty">
+              暂无文档，点击「查看全部」导入。
+            </div>
           </div>
-          <p class="hint">基于当前上下文推荐</p>
         </section>
 
+        <!-- 最近简报（真实数据） -->
         <section class="context-card">
           <div class="context-head">
-            <h3>隐私与安全</h3>
-            <button @click="emit('navigate', 'settings')">隐私审计</button>
+            <h3>最近简报</h3>
+            <button @click="generateBriefing" :disabled="busy">生成</button>
           </div>
-          <div class="privacy-list">
-            <div><PhShieldCheck :size="16" weight="fill" /> 本地优先 <span>正常</span></div>
-            <div><PhShieldCheck :size="16" weight="fill" /> 数据未外传 <span>正常</span></div>
-            <div><PhShieldCheck :size="16" weight="fill" /> 模型本地运行 <span>Qwen3 14B</span></div>
+          <div class="source-list">
+            <button
+              v-for="b in snap?.recent_briefings ?? []"
+              :key="b.id"
+              class="source-row"
+              @click="onRecentClick(b)"
+            >
+              <PhFileText :size="14" />
+              <span class="source-name">{{ b.title }}</span>
+              <span class="source-meta">{{ b.kind }}</span>
+            </button>
+            <div v-if="!snap || snap.recent_briefings.length === 0" class="context-empty">
+              暂无简报，点击「生成」创建今日简报。
+            </div>
           </div>
         </section>
 
+        <!-- 系统健康（真实维护摘要） -->
         <section v-if="snap" class="context-card">
           <div class="context-head">
             <h3>系统健康</h3>
-            <button @click="emit('navigate', 'settings')">查看详情</button>
+            <button @click="emit('navigate', 'diagnostics')">查看详情</button>
           </div>
           <div class="health-row">
             <PhDatabase :size="16" />
             <span>最近备份</span>
-            <strong>{{ snap.backup.last_backup_at ? fmt(snap.backup.last_backup_at) : "暂无" }}</strong>
+            <strong>{{ snap.maintenance.last_backup_at ? fmt(snap.maintenance.last_backup_at) : "暂无" }}</strong>
           </div>
           <div class="health-row">
-            <PhCalendarBlank :size="16" />
+            <PhBooks :size="16" />
             <span>备份包</span>
-            <strong>{{ snap.backup.count }} 个</strong>
+            <strong>{{ snap.maintenance.backup_count }} 个</strong>
           </div>
-          <p class="health-ok">服务运行正常</p>
+          <div class="health-row">
+            <PhCheckCircle :size="16" />
+            <span>失败活动</span>
+            <strong :class="{ warn: snap.maintenance.failed_activities > 0 }">{{ snap.maintenance.failed_activities }}</strong>
+          </div>
+          <div class="health-row">
+            <PhTarget :size="16" />
+            <span>孤儿证据</span>
+            <strong :class="{ warn: snap.maintenance.orphan_evidence > 0 }">{{ snap.maintenance.orphan_evidence }}</strong>
+          </div>
+          <p class="health-ok" :class="{ warn: snap.maintenance.failed_activities > 0 || snap.maintenance.orphan_evidence > 0 }">
+            {{ snap.maintenance.failed_activities > 0 || snap.maintenance.orphan_evidence > 0 ? "存在需要关注的项目" : "服务运行正常" }}
+          </p>
         </section>
       </aside>
     </div>
@@ -445,7 +622,8 @@ onMounted(load);
       <ReminderPanel ref="reminderPanel" />
       <InboxPanel ref="inboxPanel" />
       <GoalsWorkspace />
-      <BriefingPanel />
+      <BriefingPanel ref="briefingPanel" />
+      <CapturePanel ref="capturePanel" />
       <PrivacyAuditPanel />
     </div>
   </section>
@@ -515,6 +693,10 @@ onMounted(load);
   gap: var(--space-2);
   padding: 0 var(--space-3);
 }
+.soft-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
 .icon-btn {
   width: 36px;
   display: grid;
@@ -533,6 +715,35 @@ onMounted(load);
   border-radius: var(--radius);
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
+}
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+.filter-select {
+  height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+.filter-select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+.filter-clear {
+  height: 32px;
+  border: none;
+  background: transparent;
+  color: var(--color-danger-fg);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0 var(--space-2);
 }
 .chips {
   display: grid;
@@ -570,7 +781,7 @@ onMounted(load);
 .empty-banner {
   margin-top: var(--space-6);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
   padding: var(--space-4);
   color: var(--color-fg-muted);
@@ -580,6 +791,36 @@ onMounted(load);
 }
 .empty-banner p {
   margin: 0;
+}
+.empty-body {
+  flex: 1;
+}
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.empty-action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 32px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  padding: 0 var(--space-3);
+}
+.empty-action:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
+}
+.empty-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .focus-section,
 .schedule-section,
@@ -687,37 +928,39 @@ onMounted(load);
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  min-height: 54px;
+  min-height: 50px;
   padding: 0 var(--space-4);
+  border: none;
   border-bottom: 1px solid var(--color-border);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
 }
 .schedule-row:last-child {
   border-bottom: none;
 }
-.schedule-row .time {
-  width: 48px;
-  color: var(--color-fg);
-  font-variant-numeric: tabular-nums;
-}
-.schedule-dot {
-  width: 9px;
-  height: 9px;
-  border: 2px solid var(--color-border-strong);
-  border-radius: var(--radius-full);
-  background: var(--color-panel);
+.schedule-icon {
+  color: var(--color-fg-subtle);
   flex-shrink: 0;
-}
-.schedule-row.active .schedule-dot {
-  border-color: var(--color-accent);
-  background: var(--color-accent);
 }
 .schedule-row strong {
   flex: 1;
   min-width: 0;
   font-weight: var(--font-normal);
+  color: var(--color-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.schedule-row > span:last-child {
+.schedule-row > span {
   color: var(--color-fg-subtle);
+  font-size: var(--text-sm);
+  flex-shrink: 0;
+}
+.schedule-empty {
+  padding: var(--space-4);
+  color: var(--color-fg-faint);
   font-size: var(--text-sm);
 }
 .reminder-chips {
@@ -840,61 +1083,97 @@ onMounted(load);
   font-size: var(--text-sm);
 }
 .insight-list,
-.source-list,
-.privacy-list {
+.source-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
-.insight-list div,
-.source-list div,
-.privacy-list div,
-.health-row {
+.insight-row,
+.source-row {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
-}
-.insight-list div {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 2px;
-}
-.insight-list strong,
-.source-list div,
-.privacy-list div,
-.health-row {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  padding: var(--space-1) 0;
+  color: var(--color-fg);
   font-size: var(--text-sm);
 }
-.insight-list span,
-.source-list span,
-.privacy-list span {
-  margin-left: auto;
+.insight-row {
+  flex-direction: row;
+  align-items: flex-start;
+}
+.insight-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.insight-copy strong {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+}
+.insight-copy span {
   color: var(--color-fg-faint);
   font-size: var(--text-xs);
 }
-.wide-action {
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-panel);
-  color: var(--color-fg);
-  cursor: pointer;
+.insight-copy em {
+  color: var(--color-fg-muted);
+  font-size: var(--text-xs);
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.privacy-list svg {
-  color: var(--color-success);
+.insight-icon,
+.source-row :deep(svg) {
+  color: var(--color-fg-subtle);
+  flex-shrink: 0;
+}
+.source-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-meta {
+  margin-left: auto;
+  color: var(--color-fg-faint);
+  font-size: var(--text-xs);
+  flex-shrink: 0;
+}
+.context-empty {
+  color: var(--color-fg-faint);
+  font-size: var(--text-sm);
+  padding: var(--space-1) 0;
+}
+.health-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+}
+.health-row :deep(svg) {
+  color: var(--color-fg-subtle);
 }
 .health-row strong {
   margin-left: auto;
+}
+.health-row strong.warn {
+  color: var(--color-danger-fg);
 }
 .health-ok {
   margin: 0;
   color: var(--color-success-fg);
   font-size: var(--text-sm);
+}
+.health-ok.warn {
+  color: var(--color-warning-fg);
 }
 .workbench-modules {
   max-width: 1180px;

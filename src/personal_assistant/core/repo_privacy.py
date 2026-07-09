@@ -38,6 +38,11 @@ class ProviderCallAuditRepository:
         estimated_output_chars: int | None = None,
         status: str = "planned",
         error_message: str | None = None,
+        started_at=None,
+        estimated_input_tokens: int | None = None,
+        estimated_output_tokens: int | None = None,
+        error_code: str | None = None,
+        fallback_used: bool = False,
     ) -> ProviderCallAudit:
         audit = ProviderCallAudit(
             provider_type=provider_type,
@@ -49,6 +54,11 @@ class ProviderCallAuditRepository:
             estimated_output_chars=estimated_output_chars,
             status=status,
             error_message=error_message,
+            started_at=started_at,
+            estimated_input_tokens=estimated_input_tokens,
+            estimated_output_tokens=estimated_output_tokens,
+            error_code=error_code,
+            fallback_used=fallback_used,
         )
         self.db.add(audit)
         await self.db.commit()
@@ -72,6 +82,24 @@ class ProviderCallAuditRepository:
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 
+    async def transition(
+        self,
+        audit_id: int,
+        *,
+        status: str,
+        started_at=None,
+    ) -> None:
+        """推进审计状态（如 planned -> sent）并补 started_at。"""
+        values: dict = {"status": status}
+        if started_at is not None:
+            values["started_at"] = started_at
+        await self.db.execute(
+            update(ProviderCallAudit)
+            .where(ProviderCallAudit.id == audit_id)
+            .values(**values)
+        )
+        await self.db.commit()
+
     async def finish(
         self,
         audit_id: int,
@@ -79,13 +107,25 @@ class ProviderCallAuditRepository:
         status: str,
         error_message: str | None = None,
         estimated_output_chars: int | None = None,
+        error_code: str | None = None,
+        fallback_used: bool | None = None,
+        duration_ms: int | None = None,
+        estimated_output_tokens: int | None = None,
     ) -> None:
-        """标记调用终态并补 finished_at。"""
+        """标记调用终态并补 finished_at/duration_ms/error_code/fallback_used。"""
         values: dict = {"status": status, "finished_at": utcnow()}
         if error_message is not None:
             values["error_message"] = error_message
         if estimated_output_chars is not None:
             values["estimated_output_chars"] = estimated_output_chars
+        if error_code is not None:
+            values["error_code"] = error_code
+        if fallback_used is not None:
+            values["fallback_used"] = fallback_used
+        if duration_ms is not None:
+            values["duration_ms"] = duration_ms
+        if estimated_output_tokens is not None:
+            values["estimated_output_tokens"] = estimated_output_tokens
         await self.db.execute(
             update(ProviderCallAudit)
             .where(ProviderCallAudit.id == audit_id)

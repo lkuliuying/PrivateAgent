@@ -12,7 +12,18 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. tauri expects a fixed port, fail if that port is not available
+  // 2. code-split vendor libs into a stable chunk（避免单个 574KB chunk）
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ["vue", "@phosphor-icons/vue"],
+          tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
+        },
+      },
+    },
+  },
+  // 3. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,

@@ -100,6 +100,28 @@ def build_manifest() -> str:
     remote = git(["config", "--get", "remote.origin.url"])
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
+    # 代码签名状态（由 sign_installer.py 写入 dist/codesign-status-<version>.json）
+    code_signed = False
+    cert_subject: str | None = None
+    codesign_status_path = DIST / f"codesign-status-{version}.json"
+    if codesign_status_path.exists():
+        try:
+            cs = json.loads(codesign_status_path.read_text(encoding="utf-8"))
+            code_signed = bool(cs.get("code_signed"))
+            cert_subject = cs.get("cert_subject")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # 发布检查摘要（由 run_release_checks.py 写入 dist/release-check-<version>.json）
+    release_check_summary: dict | None = None
+    release_check_path = DIST / f"release-check-{version}.json"
+    if release_check_path.exists():
+        try:
+            rc = json.loads(release_check_path.read_text(encoding="utf-8"))
+            release_check_summary = rc.get("summary")
+        except Exception:  # noqa: BLE001
+            pass
+
     sidecar_hash = sha256(SIDECAR)
     installer, sig = find_installer(version)
     installer_hash = sha256(installer) if installer else None
@@ -116,6 +138,7 @@ def build_manifest() -> str:
         f"- git_commit: {commit or '(unknown)'}",
         f"- branch: {branch or '(detached)'}",
         f"- remote: {remote or '(none)'}",
+        f"- code_signed: {'yes' if code_signed else 'no'}",
         "",
         "## Artifacts",
         "",
@@ -144,6 +167,11 @@ def build_manifest() -> str:
         lines.append("- (no .sig — build with the updater signing key to generate; see docs/signing-and-keys.md)")
     lines += [
         "",
+        "### Code signing (Authenticode)",
+        f"- code_signed: {'yes' if code_signed else 'no'}",
+        f"- cert_subject: {cert_subject or '(unsigned)'}",
+        "- 无证书时安装包未签名，SmartScreen 会拦截首次运行；详见 dist/unsigned-note-<version>.md。",
+        "",
         "## Updater manifest (latest.json)",
         "",
         "- Generate with `scripts/generate-latest-json.py` and upload alongside the installer to the GitHub Release.",
@@ -152,8 +180,10 @@ def build_manifest() -> str:
         "## Validation checklist",
         "",
         "- [ ] `scripts/release-check.bat` (pytest / npm build / cargo check / alembic current)",
+        "- [ ] `scripts/release-check-full.bat` (phase8: + npm test / e2e / 诊断包脱敏 / 清单校验)",
         "- [ ] `/health` all green",
         "- [ ] clean-install smoke (docs/release-checklist.md)",
+        "- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）",
         "- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)",
         "",
         "## Rollback",
@@ -162,6 +192,15 @@ def build_manifest() -> str:
         "- See the rollback section of `docs/release-checklist.md`.",
         "",
     ]
+    if release_check_summary:
+        lines += [
+            "",
+            "## Release check (phase8)",
+            f"- passed: {release_check_summary.get('passed')}",
+            f"- failed: {release_check_summary.get('failed')}",
+            f"- skipped: {release_check_summary.get('skipped')}",
+            "- 详见 dist/release-check-<version>.md（scripts/release-check-full.bat）",
+        ]
     return "\n".join(lines)
 
 

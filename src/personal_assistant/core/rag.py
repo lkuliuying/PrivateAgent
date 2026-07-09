@@ -71,6 +71,10 @@ def is_scanned_pdf(path: str, min_chars_per_page: int = 50) -> bool:
         return False
 
 
+class NeedsOcrError(ValueError):
+    """扫描件 PDF 需 OCR（第七阶段 M3）：importer 捕获后创建 OCR job 而非 hard fail。"""
+
+
 def parse_document(path: str) -> str:
     """根据扩展名解析文档为纯文本。不支持类型或扫描件 PDF 抛 ValueError。"""
     ext = Path(path).suffix.lower()
@@ -78,7 +82,7 @@ def parse_document(path: str) -> str:
     if not parser:
         raise ValueError(f"暂不支持的文件类型: {ext}")
     if ext == ".pdf" and is_scanned_pdf(path):
-        raise ValueError("暂不支持扫描件 PDF（第一阶段未集成 OCR）")
+        raise NeedsOcrError("扫描件 PDF 需 OCR 处理")
     text = parser(path)
     if not text:
         raise ValueError("文档解析结果为空（可能是扫描件或空文档）")

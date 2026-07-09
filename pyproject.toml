@@ -50,6 +50,10 @@ packages = ["src/personal_assistant"]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
+filterwarnings = [
+  # aiomysql 连接在 event loop 关闭后 GC 时 close() 触发的不可抑制警告（teardown 竞态，非失败）。
+  "ignore::pytest.PytestUnraisableExceptionWarning",
+]
 
 [dependency-groups]
 dev = [

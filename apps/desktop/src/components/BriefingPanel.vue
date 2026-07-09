@@ -8,7 +8,9 @@ import {
   listBriefings,
 } from "../api";
 import type { Briefing } from "../types";
+import { useNotifications } from "../stores/notifications";
 
+const notify = useNotifications();
 const briefings = ref<Briefing[]>([]);
 const selected = ref<Briefing | null>(null);
 const loading = ref(false);
@@ -70,13 +72,16 @@ async function toTask() {
   busy.value = true;
   try {
     const res = await briefingToTask(selected.value.id);
-    window.alert(`已生成任务草稿 #${res.task_id}`);
+    notify.success("任务草稿已生成", `#${res.task_id}`);
   } catch (e) {
-    error.value = String(e);
+    notify.error("生成任务草稿失败", String(e));
   } finally {
     busy.value = false;
   }
 }
+
+// 暴露给父组件（今日页「今日简报」按钮调用 load 刷新列表）。
+defineExpose({ load });
 
 onMounted(load);
 </script>

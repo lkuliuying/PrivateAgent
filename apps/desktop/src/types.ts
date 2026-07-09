@@ -1,3 +1,23 @@
+// ============ 第七阶段：可信赖的日常操作层 ============
+
+/**
+ * 工作台视图名。第七阶段从 App.vue/NavRail.vue/TodayView.vue 三处重复定义
+ * 提取到此处统一维护，新增视图只改这一处。diagnostics 为第七阶段 M5 诊断中心。
+ */
+export type View =
+  | "chat"
+  | "today"
+  | "kb"
+  | "projects"
+  | "learning"
+  | "tasks"
+  | "memory"
+  | "settings"
+  | "diagnostics"
+  | "extensions"
+  | "integrations"
+  | "backup";
+
 export interface Session {
   id: number;
   title: string;
@@ -34,7 +54,13 @@ export interface ChatEvent {
   memories?: MemorySource[];
 }
 
-export type DocStatus = "pending" | "processing" | "ready" | "failed" | "deleting";
+export type DocStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  | "deleting"
+  | "needs_ocr";
 
 export interface DocumentItem {
   id: number;
@@ -124,7 +150,12 @@ export interface BatchImportItem {
   error: string | null;
 }
 
-export type ActivityKind = "tool" | "document_import" | "reindex" | "system";
+export type ActivityKind =
+  | "tool"
+  | "document_import"
+  | "reindex"
+  | "system"
+  | "ocr";
 export type ActivityStatus =
   | "pending"
   | "waiting_approval"
@@ -952,6 +983,53 @@ export interface TodaySnapshot {
   due_reminders: TodayItem[];
   open_inbox: TodayItem[];
   backup: { last_backup_at: string | null; count: number };
+  // 第七阶段 M1：最近来源（真实数据，替代静态演示）。
+  recent_checkins: TodayRecentItem[];
+  recent_briefings: TodayRecentItem[];
+  recent_docs: TodayRecentItem[];
+  recent_sessions: TodayRecentItem[];
+  maintenance: {
+    last_backup_at: string | null;
+    backup_count: number;
+    failed_activities: number;
+    draft_memories: number;
+    orphan_evidence: number;
+  };
+}
+
+/** 今日页「最近来源」卡片项（check-in/简报/文档/会话），宽松结构供展示与跳转。 */
+export interface TodayRecentItem {
+  id: number;
+  title?: string;
+  name?: string;
+  kind?: string;
+  status?: string;
+  doc_type?: string | null;
+  goal_id?: number;
+  goal_title?: string;
+  checkin_date?: string | null;
+  progress_note_md?: string | null;
+  confidence?: number | null;
+  created_at?: string;
+  updated_at?: string;
+  source_type: string;
+  source_id: number;
+}
+
+/** 今日页筛选（第七阶段 §5.1）。 */
+export interface TodayFilters {
+  type?:
+    | "learning"
+    | "task"
+    | "doc"
+    | "memory"
+    | "reminder"
+    | "goal"
+    | "inbox"
+    | "system";
+  priority?: "urgent" | "high" | "normal" | "low";
+  time?: "today" | "overdue" | "this-week" | "future";
+  status?: "open" | "snoozed" | "done" | "ignored";
 }
 
 // ============ 第六阶段 M3：提醒 ============
@@ -1112,4 +1190,36 @@ export interface MaintenanceHealthReport {
     due_reminders: number;
   };
   recommendations: string[];
+}
+
+// ============ 第七阶段 M4：统一通知中心 ============
+
+export type NotificationLevel = "info" | "success" | "warning" | "error";
+export type NotificationStatus = "unread" | "read" | "archived";
+
+/** 持久化通知（app_notifications 表），只存摘要，不存敏感正文。 */
+export interface AppNotification {
+  id: number;
+  level: NotificationLevel;
+  kind: string;
+  title: string;
+  message: string | null;
+  status: NotificationStatus;
+  source_type: string | null;
+  source_id: number | null;
+  action_type: string | null;
+  action_payload_json: Record<string, unknown> | null;
+  created_at: string;
+  read_at: string | null;
+}
+
+export interface AppNotificationCreate {
+  level?: NotificationLevel;
+  kind: string;
+  title: string;
+  message?: string;
+  source_type?: string;
+  source_id?: number;
+  action_type?: string;
+  action_payload?: Record<string, unknown>;
 }

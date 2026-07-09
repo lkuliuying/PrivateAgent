@@ -12,6 +12,9 @@ import {
   updateGoal,
 } from "../api";
 import type { GoalDetail, GoalPriority, GoalStatus, PersonalGoal } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const goals = ref<PersonalGoal[]>([]);
 const selected = ref<GoalDetail | null>(null);
@@ -141,7 +144,7 @@ async function makeBriefing() {
   busy.value = true;
   try {
     await createGoalBriefing(selected.value.goal.id);
-    window.alert("目标简报已生成，可在简报区查看。");
+    notify.success("目标简报已生成", "可在简报区查看。");
   } catch (e) {
     error.value = String(e);
   } finally {
@@ -154,7 +157,7 @@ async function makeTaskDraft() {
   busy.value = true;
   try {
     const res = await createGoalTaskDraft(selected.value.goal.id);
-    window.alert(`已生成任务草稿 #${res.task_id}`);
+    notify.success("任务草稿已生成", `任务草稿 #${res.task_id}`);
     await selectGoal(selected.value.goal.id);
   } catch (e) {
     error.value = String(e);

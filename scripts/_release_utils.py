@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from urllib.parse import quote
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TAURI_CONF = PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
@@ -63,3 +64,79 @@ def find_installer(version: str) -> Path:
 def installer_sig(installer: Path) -> Path:
     """Return the .sig path adjacent to an installer (may not exist)."""
     return installer.with_name(installer.name + ".sig")
+
+
+# ============ 跨平台 updater 清单（第八阶段 M5）============
+
+# 平台 -> (bundle 子目录, 安装包 glob)。跨平台 latest.json 按此发现资产。
+PLATFORM_BUNDLES = {
+    "windows-x86_64": ("nsis", "*-setup.exe"),
+    "darwin-aarch64": ("dmg", "*.dmg"),
+    "darwin-x86_64": ("dmg", "*.dmg"),
+    "linux-x86_64": ("appimage", "*.AppImage"),
+}
+
+BUNDLE_ROOT = (
+    PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "target" / "release" / "bundle"
+)
+
+
+def percent_encode_filename(name: str) -> str:
+    """百分号编码文件名：Tauri updater 的 HTTP 客户端要求 ASCII URL。"""
+    return quote(name, safe="")
+
+
+def github_download_url(repo: str, tag: str, filename: str) -> str:
+    return f"https://github.com/{repo}/releases/download/{tag}/{percent_encode_filename(filename)}"
+
+
+def read_signature(sig_path) -> str:
+    """读取 .sig 内容，空则报错（updater 会拒绝空签名）。"""
+    sig = Path(sig_path).read_text(encoding="utf-8").strip()
+    if not sig:
+        raise SystemExit(f"[release] signature file is empty: {sig_path}")
+    return sig
+
+
+def build_platform_entry(installer_path, sig_path, repo: str, tag: str) -> dict:
+    """构造单个平台的 updater 条目：{signature, url}（文件名百分号编码）。"""
+    installer = Path(installer_path)
+    return {
+        "signature": read_signature(sig_path),
+        "url": github_download_url(repo, tag, installer.name),
+    }
+
+
+def assemble_manifest(version: str, notes: str, pub_date: str, platforms: dict) -> dict:
+    """构造 latest.json manifest（platforms: {key: {signature, url}}）。"""
+    return {
+        "version": version,
+        "notes": notes,
+        "pub_date": pub_date,
+        "platforms": platforms,
+    }
+
+
+def find_cross_platform_installers(version: str) -> dict:
+    """扫描 bundle 目录，返回 {platform_key: (installer_path, sig_path)}。
+
+    仅返回实际存在安装包 + .sig 的平台；windows 必须存在，macOS/Linux 可选。
+    darwin-aarch64 / darwin-x86_64 共用 dmg 目录，按文件名架构关键字区分。
+    """
+    found: dict = {}
+    for key, (subdir, glob) in PLATFORM_BUNDLES.items():
+        d = BUNDLE_ROOT / subdir
+        if not d.exists():
+            continue
+        matches = [p for p in d.glob(glob) if version in p.name]
+        if not matches:
+            continue
+        if key.startswith("darwin") and len(matches) > 1:
+            arch = "aarch64" if key.endswith("aarch64") else "x86_64"
+            arch_matches = [p for p in matches if arch in p.name.lower()]
+            matches = arch_matches or matches
+        installer = matches[0]
+        sig = installer_sig(installer)
+        if sig.exists():
+            found[key] = (installer, sig)
+    return found

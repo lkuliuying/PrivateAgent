@@ -9,11 +9,23 @@
 
 | 步骤 | 命令 | 期望 |
 |---|---|---|
-| 后端测试 | `scripts\release-check.bat`（含 pytest / npm build / cargo check / alembic current） | 全部 OK |
+| 快速检查 | `scripts\release-check.bat`（pytest / npm build / cargo check / alembic current） | 全部 OK |
+| 完整证据（phase8） | `scripts\release-check-full.bat`（+ npm test / e2e / 诊断包脱敏 / latest.json 校验） | 输出 `dist\release-check-<version>.json+.md`，无 blocker |
+| 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0008 (head)`） |
+| 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0011 (head)`） |
 
 > `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
+> phase8 `release-check-full.bat` 中 npm test / e2e 在 M1 工具未就绪时 SKIP（不阻断）；sidecar smoke 见 `scripts\sidecar_smoke.py`。
+
+## 1.1 第八阶段发布检查（phase8）
+
+- 桌面 E2E：`cd apps\desktop && npm run test`（Vitest 组件）+ `npm run e2e`（Playwright smoke）。
+- 代码签名：`scripts\sign_installer.py`（有证书走 signtool sign/verify + 重签 .sig；无证书写 unsigned 说明 + `code_signed: no`）。
+- 备份恢复演练：`POST /backup/restore/drill`（manifest 校验 + Chroma/MySQL 一致性）；`GET /backup/migration-runbook`。
+- 升级 smoke：`scripts\upgrade_smoke.py --runbook`（真实 vN->vN+1 待真实环境执行）。
+- 扩展注册表：`GET /extensions`（command/diagnostic/maintenance 三类可见）。
+- 本地集成：`POST /integrations/preview` + `/integrations/import` + `DELETE /integrations/imports/{id}`（可撤销）。
 
 ## 2. 构建 NSIS 安装包
 
@@ -81,6 +93,18 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 - [ ] 普通聊天：流式输出、停止生成、会话历史持久化。
 - [ ] 导入一份小文档（PDF/MD/TXT）：状态 ready，RAG 引用正确。
 
+### 5.5.1 第七阶段可信日常路径 smoke
+- [ ] 今日页：空数据不显示固定演示日程/文档/洞察；有数据时显示真实提醒、收件箱、目标、简报、维护健康和最近来源。
+- [ ] 全局搜索：搜索文档名、任务关键词、记忆关键词能返回对应对象并可跳转。
+- [ ] 命令面板：可创建收件箱项、创建提醒、打开诊断中心、运行健康检查。
+- [ ] 快速捕获：剪贴板或手动文本可转收件箱/提醒/记忆候选。
+- [ ] OCR 队列：OCR 未安装或失败时显示明确原因、任务状态和降级动作。
+- [ ] 通知中心：导入、提醒、任务、备份、Provider 失败等结果可回看，危险操作走统一确认。
+- [ ] 诊断中心：展示 health、版本、迁移 head、最近错误、Provider 失败、维护健康和数据完整性摘要。
+- [ ] 诊断包：导出包包含 `diagnostics.json` / `health.json` / `settings.redacted.json` / `recent-errors.log` / `version.txt` / `migration.txt`，且不含 API key、数据库密码、完整聊天、文档原文或敏感记忆。
+- [ ] 数据完整性：至少能展示软引用悬空和索引不一致检查结果；修复计划先预览再执行。
+- [ ] Provider 治理：缺 key、认证失败、网络、超时、限流、模型不存在和服务错误有明确分类，审计记录包含耗时和失败原因。
+
 ### 5.6 退出与进程清理
 - [ ] 关闭窗口后 `tasklist | findstr personal-assistant-server` 无残留（`RunEvent::Exit` kill sidecar）。
 - [ ] 连续启动/退出 3 次无孤儿进程。
@@ -141,6 +165,7 @@ backend_tests:        release-check.bat 结果
 frontend_build:
 cargo_check:
 alembic_current:
+phase7_smoke:
 health_check:
 
 sidecar_path:
@@ -164,6 +189,7 @@ rollback_plan:
 ## 9. 当前已知限制
 
 - ✅ **打包 sidecar 连 MySQL 8**：旧构建的 sidecar 缺 `cryptography`，连 MySQL 8 默认 `caching_sha2_password` 认证会失败（状态页 MySQL 红）。已在 `personal_assistant.spec` 显式加入 `hiddenimports += ["cryptography"]`，并于 2026-07-08 重新构建 v0.1.1 sidecar 后验证 `/health` API / Ollama / MySQL / ChromaDB 全绿。后续发布仍需按 §5.2 复测。
+- ✅ **第七阶段自动化验证**：2026-07-08 已验证 `pytest -q` 197 通过、`npm run build` 通过、`cargo check` 通过、`alembic current -> 0010 (head)`。桌面窗口级 Playwright/Tauri E2E 尚未接入，发布前按 §5.5.1 做人工 smoke 或补自动化脚本。
 - 安装包未代码签名：SmartScreen 拦截，需手动绕过（见 `docs/signing-and-keys.md` §2）。
 - macOS / Linux 仅有构建脚本与差异清单，未实测（见 `docs/cross-platform.md`）。
 - onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/phase5-plan.md` M5，结论暂不切换。

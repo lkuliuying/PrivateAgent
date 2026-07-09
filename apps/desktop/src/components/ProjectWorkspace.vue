@@ -30,6 +30,9 @@ import type {
   GitStatus,
   GitDiff,
 } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 /**
  * 项目工作区 · 第三阶段 M1。
@@ -146,7 +149,7 @@ async function rescan() {
     await pollTree();
     await loadStats();
   } catch (e) {
-    alert("扫描失败：" + String(e));
+    notify.error("扫描失败", String(e));
   } finally {
     scanning.value = false;
   }

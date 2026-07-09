@@ -421,6 +421,7 @@ class TemplateReportResponse(BaseModel):
 
 class OcrResult(BaseModel):
     doc_id: int
+    job_id: int | None = None
     status: str
     message: str
 
@@ -440,11 +441,32 @@ async def extract_document(
 
 @router.post("/documents/{doc_id}/ocr", response_model=OcrResult)
 async def ocr_document(doc_id: int, db: AsyncSession = Depends(get_session)):
-    """OCR 处理入口（M3 预留：未引入引擎，返回 unavailable，不改文档状态）。"""
-    try:
-        return await DocumentExtractionService(db).ocr_document(doc_id)
-    except ExtractionNotFound as e:
-        raise HTTPException(404, str(e))
+    """创建 OCR 任务并后台执行（第七阶段 M3：取代 unavailable 桩）。
+
+    OCR 引擎可选；未安装时 job 置 unavailable 并写维护通知，不再静默 unavailable。
+    """
+    docs = DocumentRepository(db)
+    doc = await docs.get(doc_id)
+    if doc is None:
+        raise HTTPException(404, f"文档不存在: {doc_id}")
+    file_path = _upload_path(doc_id, doc.name)
+    from ..core.repo_ocr_jobs import OcrJobRepository
+    from ..workers.ocr import run_ocr_job
+
+    job = await OcrJobRepository(db).create(
+        doc_id=doc_id,
+        file_path=str(file_path),
+        source="document_import",
+        source_type="document",
+        source_id=doc_id,
+    )
+    asyncio.create_task(run_ocr_job(job.id, str(file_path)))
+    return OcrResult(
+        doc_id=doc_id,
+        job_id=job.id,
+        status="pending",
+        message=f"OCR 任务 #{job.id} 已创建，可在 OCR 队列查看状态",
+    )
 
 
 @router.post("/documents/template-report", response_model=TemplateReportResponse)

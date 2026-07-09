@@ -20,6 +20,9 @@ import {
   updateInbox,
 } from "../api";
 import type { InboxItem, InboxItemType, InboxPriority, InboxStatus } from "../types";
+import { useNotifications } from "../stores/notifications";
+
+const notify = useNotifications();
 
 const items = ref<InboxItem[]>([]);
 const loading = ref(false);
@@ -151,7 +154,7 @@ async function toReminder(item: InboxItem) {
 }
 
 async function remove(item: InboxItem) {
-  if (!window.confirm(`确定删除收件箱项「${item.title}」？`)) return;
+  if (!await notify.confirm({ title: `确定删除收件箱项「${item.title}」？`, danger: true, impact: "该操作不可撤销，收件箱项将被永久删除" })) return;
   busy.value = true;
   error.value = "";
   try {

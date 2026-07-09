@@ -10,15 +10,17 @@ M1 采用最简链路（ChatOllama.astream），LangGraph 留待后续复杂编�
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
 from .history import MessageRepository, SessionRepository
-from .provider import OllamaProvider, ProviderError, ProviderRouter
+from .provider import OllamaProvider, ProviderError, ProviderRouter, classify_error
 from .repo_privacy import ProviderCallAuditRepository
 from .settings import SettingsService
+from .timeutil import utcnow
 
 logger = get_logger(__name__)
 
@@ -144,6 +146,7 @@ class ChatService:
         msgs.append({"role": "user", "content": user_content})
 
         audit_id: int | None = None
+        input_chars = sum(len(m["content"]) for m in msgs)
         if privacy_scope.get("remote_provider_enabled") and privacy_scope.get(
             "provider_type"
         ) in {"openai", "claude"}:
@@ -162,8 +165,10 @@ class ChatService:
                 ),
                 remote=True,
                 context_types_json=context_types,
-                estimated_input_chars=sum(len(m["content"]) for m in msgs),
+                estimated_input_chars=input_chars,
+                estimated_input_tokens=input_chars // 4,
                 status="sent",
+                started_at=utcnow(),
             )
             audit_id = audit.id
 
@@ -174,6 +179,7 @@ class ChatService:
             kb=knowledge_base,
         )
 
+        t0 = time.monotonic()
         saved = False
         collected: list[str] = []
         try:
@@ -206,22 +212,88 @@ class ChatService:
                     audit_id,
                     status="succeeded",
                     estimated_output_chars=len(assistant_content),
+                    estimated_output_tokens=len(assistant_content) // 4,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
                 )
 
         except ProviderError as e:
-            logger.warning("chat provider error", session_id=session_id, error=str(e))
+            code = classify_error(e)
+            logger.warning(
+                "chat provider error",
+                session_id=session_id,
+                error=str(e),
+                code=code,
+            )
+            # M6 降级：远程失败时回退本地 Ollama（非流式，done 覆盖主调部分 token）。
+            fallback_used = False
+            if privacy_scope.get("remote_provider_enabled"):
+                try:
+                    fallback = router.fallback_provider()
+                    fb_content = await fallback.chat(msgs)
+                    msg = await self.messages.add(
+                        session_id, "assistant", fb_content
+                    )
+                    saved = True
+                    fallback_used = True
+                    yield {
+                        "type": "done",
+                        "message_id": msg.id,
+                        "content": fb_content,
+                        "sources": sources,
+                        "memories": memories_used,
+                        "fallback_used": True,
+                    }
+                    if is_first_turn:
+                        title = await self._generate_title(
+                            session_id, user_content, fb_content, fallback
+                        )
+                        if title:
+                            yield {"type": "title", "title": title}
+                except Exception as fb_e:  # noqa: BLE001
+                    logger.warning(
+                        "ollama fallback failed",
+                        session_id=session_id,
+                        error=str(fb_e),
+                    )
+                    fallback_used = False
             if audit_id is not None:
                 await ProviderCallAuditRepository(self.db).finish(
-                    audit_id, status="failed", error_message=str(e)
+                    audit_id,
+                    status="failed",
+                    error_message=str(e),
+                    error_code=code,
+                    fallback_used=fallback_used,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
                 )
-            yield {"type": "error", "message": str(e)}
+            if not fallback_used:
+                diagnostic = {
+                    "provider_type": privacy_scope.get("provider_type"),
+                    "error_code": code,
+                    "error": str(e),
+                    "audit_id": audit_id,
+                }
+                yield {
+                    "type": "error",
+                    "message": str(e),
+                    "error_code": code,
+                    "diagnostic": diagnostic,
+                }
         except Exception as e:  # noqa: BLE001
+            code = classify_error(e)
             logger.exception("chat stream failed", session_id=session_id)
             if audit_id is not None:
                 await ProviderCallAuditRepository(self.db).finish(
-                    audit_id, status="failed", error_message=str(e)
+                    audit_id,
+                    status="failed",
+                    error_message=str(e),
+                    error_code=code,
+                    duration_ms=int((time.monotonic() - t0) * 1000),
                 )
-            yield {"type": "error", "message": f"生成失败: {e}"}
+            yield {
+                "type": "error",
+                "message": f"生成失败: {e}",
+                "error_code": code,
+            }
         finally:
             if not saved and collected:
                 try:

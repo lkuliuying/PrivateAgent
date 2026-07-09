@@ -87,7 +87,15 @@ class Document(Base):
         INTEGER, nullable=False, default=0, server_default="0"
     )
     status: Mapped[str] = mapped_column(
-        ENUM("pending", "processing", "ready", "failed", "deleting", name="doc_status"),
+        ENUM(
+            "pending",
+            "processing",
+            "ready",
+            "failed",
+            "deleting",
+            "needs_ocr",
+            name="doc_status",
+        ),
         nullable=False,
         default="pending",
         server_default="pending",
@@ -254,6 +262,7 @@ class Activity(Base):
             "document_import",
             "reindex",
             "system",
+            "ocr",
             name="activity_kind",
         ),
         nullable=False,
@@ -1212,6 +1221,15 @@ class ProviderCallAudit(Base):
     context_types_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
     estimated_input_chars: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
     estimated_output_chars: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    # 第七阶段 M6：调用耗时、token 估算、错误分类与回退标记。
+    started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    duration_ms: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    estimated_input_tokens: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    estimated_output_tokens: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    fallback_used: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
     status: Mapped[str] = mapped_column(
         ENUM(
             "planned",
@@ -1235,3 +1253,484 @@ class ProviderCallAudit(Base):
         Index("idx_provider_audit_time", "created_at"),
         Index("idx_provider_audit_remote", "remote", "created_at"),
     )
+
+
+# ============================================================================
+# 第七阶段：可信赖的日常操作层（通知 / 捕获 / OCR / 诊断 / 数据体检 / 搜索历史）
+# ============================================================================
+
+
+class AppNotification(Base):
+    """统一通知中心：异步操作结果与可跳转来源。
+
+    只保存摘要，不保存敏感正文（聊天全文/文档原文/敏感记忆）。
+    source_type/source_id 软引用来源对象供跳转；action_* 描述可重试/可跳转动作。
+    """
+
+    __tablename__ = "app_notifications"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    level: Mapped[str] = mapped_column(
+        ENUM("info", "success", "warning", "error", name="notification_level_enum"),
+        nullable=False,
+        default="info",
+        server_default="info",
+    )
+    kind: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM("unread", "read", "archived", name="notification_status_enum"),
+        nullable=False,
+        default="unread",
+        server_default="unread",
+    )
+    source_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    action_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    action_payload_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    read_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_notification_status_created", "status", "created_at"),
+        Index("idx_notification_kind", "kind"),
+    )
+
+
+class CaptureItem(Base):
+    """快速捕获草稿：剪贴板/手动/聊天/文档抽取/文件，可转 inbox/reminder/memory 等。"""
+
+    __tablename__ = "capture_items"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    title: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    content_md: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    source: Mapped[str] = mapped_column(
+        ENUM(
+            "manual",
+            "clipboard",
+            "chat_message",
+            "document_extraction",
+            "file",
+            "web",
+            name="capture_source_enum",
+        ),
+        nullable=False,
+        default="manual",
+        server_default="manual",
+    )
+    source_ref_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    candidate_type: Mapped[str | None] = mapped_column(
+        ENUM(
+            "inbox",
+            "reminder",
+            "memory",
+            "learning_note",
+            "document_note",
+            "task_draft",
+            name="capture_candidate_enum",
+        ),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM("pending", "handled", "discarded", name="capture_status_enum"),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    target_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    target_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+    handled_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (Index("idx_capture_status_created", "status", "created_at"),)
+
+
+class OcrJob(Base):
+    """OCR 队列：扫描件/图片 OCR 任务，记录状态、引擎、输出与错误。"""
+
+    __tablename__ = "ocr_jobs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    # 跨域软引用：documents 在另一域，不建外键。
+    doc_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    file_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    source: Mapped[str] = mapped_column(
+        ENUM(
+            "document_import",
+            "manual",
+            "capture",
+            name="ocr_source_enum",
+        ),
+        nullable=False,
+        default="manual",
+        server_default="manual",
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "pending",
+            "processing",
+            "succeeded",
+            "failed",
+            "unavailable",
+            "cancelled",
+            name="ocr_status_enum",
+        ),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    engine: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    output_text: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    source_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_ocr_status", "status"),
+        Index("idx_ocr_doc", "doc_id"),
+    )
+
+
+class DiagnosticRun(Base):
+    """诊断包生成记录：路径、状态、脱敏摘要（不含敏感正文）。"""
+
+    __tablename__ = "diagnostic_runs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    status: Mapped[str] = mapped_column(
+        ENUM("pending", "succeeded", "failed", name="diag_run_status_enum"),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    output_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (Index("idx_diag_run_created", "created_at"),)
+
+
+class DataIntegrityFinding(Base):
+    """数据体检发现项：悬空软引用/索引不一致/可归档对象，支持 ignored/resolved。
+
+    只保存摘要（detail_json），不保存敏感正文；支持标记 ignored/resolved 避免重复打扰。
+    """
+
+    __tablename__ = "data_integrity_findings"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    check_name: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    severity: Mapped[str] = mapped_column(
+        ENUM("info", "warning", "error", name="integrity_severity_enum"),
+        nullable=False,
+        default="warning",
+        server_default="warning",
+    )
+    ref_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    ref_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    detail_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    suggested_action: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM("open", "ignored", "resolved", name="integrity_finding_status_enum"),
+        nullable=False,
+        default="open",
+        server_default="open",
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        Index("idx_integrity_status", "status"),
+        Index("idx_integrity_check", "check_name", "status"),
+    )
+
+
+class SearchRecentItem(Base):
+    """最近打开/搜索对象，供全局搜索按最近使用排序。"""
+
+    __tablename__ = "search_recent_items"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    object_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    object_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    title: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    last_opened_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    open_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=1, server_default="1"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("object_type", "object_id", name="uk_search_recent"),
+        Index("idx_search_recent_opened", "last_opened_at"),
+    )
+
+
+# ============================================================================
+# 第八阶段：发布级质量与可扩展集成层
+# （测试运行 / 发布产物 / 升级 smoke / 本地集成 / 扩展注册）
+# ============================================================================
+
+
+class TestRun(Base):
+    """测试运行摘要：发布检查 / E2E / 性能基线 / 升级 smoke / 诊断包脱敏 smoke。
+
+    只保存摘要、状态、路径与 hash，不保存完整日志中的敏感内容。
+    """
+
+    __tablename__ = "test_runs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "release_check",
+            "e2e",
+            "performance",
+            "upgrade_smoke",
+            "diagnostic_smoke",
+            name="test_run_kind_enum",
+        ),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM("running", "passed", "failed", "skipped", name="test_run_status_enum"),
+        nullable=False,
+        default="running",
+        server_default="running",
+    )
+    version: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    git_commit: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    schema_head: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (Index("idx_test_run_kind_created", "kind", "created_at"),)
+
+
+class ReleaseArtifact(Base):
+    """发布产物摘要：安装包 / sidecar / latest.json / 签名 / 清单。
+
+    含 sha256、平台与签名状态；不保存证书或密钥。
+    """
+
+    __tablename__ = "release_artifacts"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    version: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "installer",
+            "sidecar",
+            "latest_json",
+            "signature",
+            "manifest",
+            name="release_artifact_kind_enum",
+        ),
+        nullable=False,
+    )
+    platform: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    code_signed: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_release_artifact_version", "version", "kind"),
+        Index("idx_release_artifact_platform", "platform"),
+    )
+
+
+class UpgradeSmokeRun(Base):
+    """升级 smoke 运行：前后版本、样本数据摘要、数据保留与 schema 检查结果。
+
+    样本数据必须可重建，不依赖用户真实隐私数据。
+    """
+
+    __tablename__ = "upgrade_smoke_runs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    from_version: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    to_version: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    platform: Mapped[str] = mapped_column(
+        VARCHAR(64), nullable=False, default="windows-x86_64", server_default="windows-x86_64"
+    )
+    result: Mapped[str] = mapped_column(
+        ENUM("passed", "failed", "blocked", name="upgrade_smoke_result_enum"),
+        nullable=False,
+        default="blocked",
+        server_default="blocked",
+    )
+    data_preserved: Mapped[bool | None] = mapped_column(BOOLEAN, nullable=True)
+    schema_ok: Mapped[bool | None] = mapped_column(BOOLEAN, nullable=True)
+    sample_summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    notes_md: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    artifact_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (Index("idx_upgrade_smoke_created", "created_at"),)
+
+
+class IntegrationSource(Base):
+    """本地集成源配置与状态。
+
+    第八阶段只做本地文件型集成；config_json 不得保存敏感凭据。
+    """
+
+    __tablename__ = "integration_sources"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "ics_calendar",
+            "bookmarks_html",
+            "eml_mail",
+            "folder_watch",
+            name="integration_source_kind_enum",
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    last_run_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    last_status: Mapped[str | None] = mapped_column(
+        ENUM(
+            "pending",
+            "succeeded",
+            "failed",
+            "reverted",
+            name="integration_source_status_enum",
+        ),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (Index("idx_integration_source_kind", "kind", "enabled"),)
+
+
+class IntegrationImport(Base):
+    """单次集成导入：来源、解析摘要、目标对象引用与可撤销信息。
+
+    reversal_info_json 记录本次导入创建的所有目标对象 id，供撤销使用。
+    """
+
+    __tablename__ = "integration_imports"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    source_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    source_kind: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    summary_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    target_type: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    target_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    reversible: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    reversal_info_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "previewed",
+            "imported",
+            "reverted",
+            "failed",
+            name="integration_import_status_enum",
+        ),
+        nullable=False,
+        default="previewed",
+        server_default="previewed",
+    )
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    reverted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_integration_import_source", "source_id", "status"),
+        Index("idx_integration_import_created", "created_at"),
+    )
+
+
+class ExtensionRegistryItem(Base):
+    """扩展注册项持久化状态：启用开关与缓存展示信息。
+
+    描述符（id/title/kind/risk/permissions/input_schema/output_summary）在内存注册表
+    中定义；本表只持久化用户可配置的 enabled 覆盖与缓存字段，避免每次查表重建描述符。
+    扩展启用/禁用不得绕过现有审批状态机。
+    """
+
+    __tablename__ = "extension_registry_items"
+
+    ext_id: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
+    kind: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    title: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    risk_level: Mapped[str | None] = mapped_column(
+        ENUM("safe", "confirm", "restricted", name="extension_risk_enum"), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (Index("idx_extension_registry_kind", "kind", "enabled"),)
