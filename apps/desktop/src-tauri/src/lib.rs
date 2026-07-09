@@ -431,7 +431,11 @@ async fn start_sidecar(
     };
 
     match app.shell().sidecar(SIDECAR_BIN) {
-        Ok(cmd) => match cmd.env("PA_API_PORT", port.to_string()).spawn() {
+        Ok(cmd) => match cmd
+            .env("PA_API_PORT", port.to_string())
+            .env("PA_PARENT_PID", std::process::id().to_string())
+            .spawn()
+        {
             Ok((mut rx, child)) => {
                 // 转发 sidecar 输出到主进程日志
                 tauri::async_runtime::spawn(async move {

@@ -63,10 +63,11 @@ def _start_parent_watchdog() -> None:
     import threading
     import time
 
-    parent_pid = os.getppid()
-    # 直接运行（无 Tauri 父进程，如手动 python -m）或父为 init，不监控。
+    # PyInstaller onefile：Python 子进程的父是 bootloader（始终活着），不是 Tauri 主程序。
+    # 故优先用 Tauri 注入的 PA_PARENT_PID（主程序 PID），回退 getppid()。
+    parent_pid = int(os.environ.get("PA_PARENT_PID") or os.getppid() or 0)
     if parent_pid <= 1:
-        return
+        return  # 直接运行（无 Tauri 父进程），不监控
 
     if sys.platform == "win32":
         import ctypes

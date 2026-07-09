@@ -193,7 +193,7 @@ async function boot() {
   if (res.ok && res.port) {
     bootState.value = "starting";
     setApiBase(res.port);
-    const ready = await pollApiReady(30);
+    const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
       await loadSessions();
@@ -247,7 +247,7 @@ async function onWizardDone() {
   const res = await cmdStartSidecar().catch(() => null);
   if (res && res.ok && res.port) {
     setApiBase(res.port);
-    const ready = await pollApiReady(30);
+    const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
       await loadSessions();
