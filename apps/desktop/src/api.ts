@@ -161,6 +161,13 @@ export async function getHealth(): Promise<Record<string, unknown>> {
   return r.json();
 }
 
+export async function getApiInfo(): Promise<Record<string, unknown>> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 export async function listSessions(): Promise<Session[]> {
   const base = await ensureApiBase();
   const r = await fetch(`${base}/sessions`);

@@ -26,7 +26,6 @@ import GlobalSearch from "./components/GlobalSearch.vue";
 import { useNotifications } from "./stores/notifications";
 import {
   createSession,
-  getHealth,
   getMessages,
   listSessions,
   setApiBase,
@@ -42,6 +41,7 @@ import {
   isDesktopRuntime,
   candidateMemories,
   createInbox,
+  getApiInfo,
 } from "./api";
 import type { Message, MemorySource, Session, Source, ToolCall, View } from "./types";
 
@@ -193,12 +193,12 @@ async function boot() {
   if (res.ok && res.port) {
     bootState.value = "starting";
     setApiBase(res.port);
-    const ready = await pollHealth(30);
+    const ready = await pollApiReady(30);
     if (ready) {
       bootState.value = "done";
       await loadSessions();
     } else {
-      bootError.value = "后端启动超时，请检查 MySQL / Ollama 是否正在运行。";
+      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
       bootState.value = "error";
     }
     return;
@@ -215,16 +215,13 @@ async function boot() {
   }
 }
 
-/** 轮询 /health 直到成功或超时。仅当 MySQL 与 Ollama 都就绪才算就绪——
- * HTTP 服务绑定但依赖未就绪时 /health 仍返回 200（api.ok=true, mysql.ok=false），
- * 不能仅凭 fetch 不抛错就判定后端可用。 */
-async function pollHealth(seconds: number): Promise<boolean> {
+/** 轮询轻量 API 根路径直到后端 HTTP 服务可用。
+ * 依赖健康（MySQL/Ollama/Chroma）交给状态页展示，不阻塞进入主界面。 */
+async function pollApiReady(seconds: number): Promise<boolean> {
   for (let i = 0; i < seconds * 5; i++) {
     try {
-      const h = await getHealth();
-      const mysql = (h.mysql as { ok?: boolean } | undefined)?.ok;
-      const ollama = (h.ollama as { ok?: boolean } | undefined)?.ok;
-      if (mysql && ollama) return true;
+      await getApiInfo();
+      return true;
     } catch {
       // HTTP 服务尚未绑定
     }
@@ -250,12 +247,12 @@ async function onWizardDone() {
   const res = await cmdStartSidecar().catch(() => null);
   if (res && res.ok && res.port) {
     setApiBase(res.port);
-    const ready = await pollHealth(30);
+    const ready = await pollApiReady(30);
     if (ready) {
       bootState.value = "done";
       await loadSessions();
     } else {
-      bootError.value = "后端启动超时，请检查 MySQL / Ollama。";
+      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
       bootState.value = "error";
     }
   } else {
