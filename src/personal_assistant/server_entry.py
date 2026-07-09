@@ -52,8 +52,57 @@ def _run_migrations() -> None:
     command.upgrade(cfg, "head")
 
 
+def _start_parent_watchdog() -> None:
+    """父进程（Tauri 主程序）消失时立即退出 sidecar。
+
+    NSIS 卸载会 TerminateProcess 强杀 Tauri 主程序，RunEvent::Exit 不触发，
+    lib.rs 的 child.kill() 不执行 -> sidecar 孤儿进程占用 exe，NSIS 删不掉
+    （残留 personal-assistant-server*.exe）。此守护线程检测父进程消失后
+    os._exit 立即退出，释放 exe 文件句柄，让卸载能清理干净。
+    """
+    import threading
+    import time
+
+    parent_pid = os.getppid()
+    # 直接运行（无 Tauri 父进程，如手动 python -m）或父为 init，不监控。
+    if parent_pid <= 1:
+        return
+
+    if sys.platform == "win32":
+        import ctypes
+
+        k32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+        def _alive(pid: int) -> bool:
+            h = k32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if not h:
+                return False
+            k32.CloseHandle(h)
+            return True
+    else:
+        def _alive(pid: int) -> bool:
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
+
+    def _watch() -> None:
+        while True:
+            if not _alive(parent_pid):
+                # 父进程已退出（含被 NSIS 强杀/崩溃），立即退出释放 exe 句柄。
+                os._exit(0)
+            time.sleep(0.3)
+
+    threading.Thread(target=_watch, daemon=True, name="parent-watchdog").start()
+
+
 def main() -> None:
     _ensure_data_dirs()
+    # 父进程守护：Tauri 主程序被强杀（NSIS 卸载/崩溃）时立即退出 sidecar，
+    # 避免孤儿进程占用 exe 导致卸载残留。
+    _start_parent_watchdog()
     # PA_SKIP_MIGRATIONS lets tooling (e.g. scripts/measure_sidecar_baseline.py) spawn
     # the sidecar without running alembic against a real database -- keeps the startup
     # measurement side-effect-free. Normal packaged startup leaves it unset.
