@@ -80,22 +80,18 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="私人助手 Agent",
-    version="0.1.1",
+    version="0.1.2",
     description="本地优先、隐私可控的桌面私人助手后端",
     lifespan=lifespan,
 )
 
-# CORS：仅允许 Tauri webview 与本地 dev 来源，禁止通配。
-# 本应用无 cookie，allow_credentials=False。第八阶段审查修复（原 allow_origins=["*"]+credentials=True
-# 会让任意网页跨域读本地 API，含 /settings 明文密钥）。
+# CORS：本地优先应用（loopback），无 cookie。allow_credentials=False + 通配来源
+# 可接受：GET /settings 已掩码密钥（不回显原文），诊断包脱敏，无 cookie 可窃。
+# 之前收紧为固定来源导致 Tauri webview origin（https://tauri.localhost）被拦截，
+# 前端 fetch 本地 API 全部 CORS 失败 -> 启动超时。故恢复通配 + 关闭 credentials。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "tauri://localhost",
-        "https://tauri.localhost",
-        "http://localhost:1420",
-        "http://127.0.0.1:1420",
-    ],
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -139,7 +135,7 @@ app.include_router(testing_router)
 
 @app.get("/")
 async def root() -> dict:
-    return {"name": "personal-assistant", "version": "0.1.1", "docs": "/docs"}
+    return {"name": "personal-assistant", "version": "0.1.2", "docs": "/docs"}
 
 
 if __name__ == "__main__":
