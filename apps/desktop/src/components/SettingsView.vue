@@ -40,6 +40,7 @@ const msg = ref("");
 const providerMsg = ref("");
 const backupMsg = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
+let msgTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function load() {
   try {
@@ -70,6 +71,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  if (msgTimer) clearTimeout(msgTimer);
 });
 
 async function save() {
@@ -94,7 +96,8 @@ async function save() {
     msg.value = "保存失败：" + String(e);
   } finally {
     saving.value = false;
-    setTimeout(() => (msg.value = ""), 3000);
+    if (msgTimer) clearTimeout(msgTimer);
+    msgTimer = setTimeout(() => (msg.value = ""), 3000);
   }
 }
 

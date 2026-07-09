@@ -66,7 +66,12 @@ async function onExport() {
             <PhDownloadSimple :size="14" />
             {{ exporting ? "导出中…" : "导出 Markdown" }}
           </button>
-          <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="emit('close')">
+          <button
+            class="pa-btn pa-btn--ghost pa-btn--icon"
+            title="关闭文档对比"
+            aria-label="关闭文档对比"
+            @click="emit('close')"
+          >
             <PhX :size="14" />
           </button>
         </div>

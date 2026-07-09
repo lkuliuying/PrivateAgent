@@ -8,12 +8,13 @@ import {
   PhClock,
 } from "@phosphor-icons/vue";
 import type { Activity, ChunkDetail, Session, TrustedPath } from "../types";
-import { isTauri } from "@tauri-apps/api/core";
 import {
   authorizeFile,
   getChunk,
   listActivities,
   listTrustedPaths,
+  pickDirectory,
+  pickFile,
   scanDirectory,
   summarizeFile,
 } from "../api";
@@ -21,7 +22,7 @@ import type { ScanResponse, SummarizeResult } from "../types";
 
 /**
  * 右侧检查器面板。
- * 当前会话上下文 + 引用片段详情（M3）+ 文件授权（M2 文本式，待替换 Tauri 选择器）
+ * 当前会话上下文 + 引用片段详情（M3）+ 文件授权（文本输入 + Tauri 选择器）
  * + 当前会话活动（M4，可展开输入/输出摘要）。
  */
 const props = defineProps<{
@@ -98,21 +99,15 @@ function flash(msg: string) {
 }
 
 async function pickPath() {
-  // Tauri 打包模式用原生文件/目录选择器；浏览器开发模式回退到手动输入。
-  if (!isTauri()) {
-    flash("浏览器开发模式请手动输入路径");
-    return;
-  }
+  // Tauri 打包模式用原生选择器；浏览器开发模式或取消选择时保留手动输入。
   try {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({
-      multiple: false,
-      directory: kind.value === "directory",
-    });
-    if (typeof selected === "string") {
-      pathInput.value = selected;
-      await authorize();
+    const selected = kind.value === "directory" ? await pickDirectory() : await pickFile();
+    if (!selected) {
+      flash("未选择路径；浏览器开发模式请手动输入");
+      return;
     }
+    pathInput.value = selected;
+    await authorize();
   } catch (e) {
     flash("选择器不可用：" + String(e));
   }
@@ -171,6 +166,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (activityTimer) clearInterval(activityTimer);
+  if (msgTimer) window.clearTimeout(msgTimer);
 });
 
 function toggleActivity(id: number) {

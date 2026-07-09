@@ -50,7 +50,15 @@ const patchMsg = ref("");
 
 const newPatchOpen = ref(false);
 const newPatchTitle = ref("");
-const newPatchFiles = ref<Array<PatchFileCreate & { create: boolean }>>([]);
+type PatchFileDraft = PatchFileCreate & { clientId: string };
+let nextPatchFileClientId = 1;
+const createPatchFileDraft = (): PatchFileDraft => ({
+  clientId: `patch-file-${nextPatchFileClientId++}`,
+  rel_path: "",
+  new_content: "",
+  create: false,
+});
+const newPatchFiles = ref<PatchFileDraft[]>([]);
 
 // 命令配置
 const commands = ref<ProjectCommandProfile[]>([]);
@@ -124,11 +132,11 @@ async function selectPatch(id: number) {
 function openNewPatch() {
   newPatchOpen.value = true;
   newPatchTitle.value = "";
-  newPatchFiles.value = [{ rel_path: "", new_content: "", create: false }];
+  newPatchFiles.value = [createPatchFileDraft()];
 }
 
 function addPatchFile() {
-  newPatchFiles.value.push({ rel_path: "", new_content: "", create: false });
+  newPatchFiles.value.push(createPatchFileDraft());
 }
 
 function removePatchFile(i: number) {
@@ -439,7 +447,7 @@ function cmdText(c: ProjectCommandProfile): string {
                 <button class="icon-btn run" :disabled="runBusy" @click="runCmd(c)">
                   <PhPlay :size="12" /> 运行
                 </button>
-                <button class="icon-btn del" @click="removeCmd(c.id)">
+                <button class="icon-btn del" title="删除命令配置" @click="removeCmd(c.id)">
                   <PhTrash :size="12" />
                 </button>
               </div>
@@ -489,17 +497,22 @@ function cmdText(c: ProjectCommandProfile): string {
       <div class="modal-card">
         <div class="modal-head">
           <span>新建补丁集</span>
-          <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="newPatchOpen = false">
+          <button
+            class="pa-btn pa-btn--ghost pa-btn--icon"
+            title="关闭新建补丁集"
+            aria-label="关闭新建补丁集"
+            @click="newPatchOpen = false"
+          >
             <PhX :size="14" />
           </button>
         </div>
         <label class="modal-label">标题</label>
         <input v-model="newPatchTitle" class="pa-input" placeholder="补丁集标题" />
-        <div v-for="(f, i) in newPatchFiles" :key="i" class="patch-file-row">
+        <div v-for="(f, i) in newPatchFiles" :key="f.clientId" class="patch-file-row">
           <input v-model="f.rel_path" class="pa-input pf-path" placeholder="相对路径，如 src/app.py" />
           <label class="pf-create"><input type="checkbox" v-model="f.create" /> 新建</label>
           <textarea v-model="f.new_content" class="pa-input pf-content" placeholder="新内容" rows="3"></textarea>
-          <button class="icon-btn del" @click="removePatchFile(i)"><PhTrash :size="12" /></button>
+          <button class="icon-btn del" title="移除文件行" @click="removePatchFile(i)"><PhTrash :size="12" /></button>
         </div>
         <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="addPatchFile">
           <PhPlus :size="13" /> 添加文件

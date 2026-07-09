@@ -268,7 +268,12 @@ function fmtSize(n: number | null | undefined): string {
     <div v-if="authorizing" class="auth-card">
       <div class="auth-head">
         <span>授权项目目录</span>
-        <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="cancelAuthorize">
+        <button
+          class="pa-btn pa-btn--ghost pa-btn--icon"
+          title="关闭项目授权"
+          aria-label="关闭项目授权"
+          @click="cancelAuthorize"
+        >
           <PhX :size="14" />
         </button>
       </div>
@@ -388,7 +393,12 @@ function fmtSize(n: number | null | undefined): string {
         <div v-if="showGitDiff && gitDiff" class="git-diff-overlay">
           <div class="diff-head">
             <span>git diff</span>
-            <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="showGitDiff = false">
+            <button
+              class="pa-btn pa-btn--ghost pa-btn--icon"
+              title="关闭 git diff"
+              aria-label="关闭 git diff"
+              @click="showGitDiff = false"
+            >
               <PhX :size="12" />
             </button>
           </div>

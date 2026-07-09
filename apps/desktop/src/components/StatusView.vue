@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { getHealth } from "../api";
+import { ensureApiBase, getHealth } from "../api";
 
 interface ComponentHealth {
   ok: boolean;
@@ -18,15 +18,16 @@ interface HealthResult {
   chroma: ComponentHealth & { collections?: number };
 }
 
-const API_BASE = "http://127.0.0.1:8000";
 const health = ref<HealthResult | null>(null);
 const connected = ref(false);
 const errorMsg = ref("");
 const lastUpdated = ref("");
+const apiBase = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
 
 async function fetchHealth() {
   try {
+    apiBase.value = await ensureApiBase();
     health.value = (await getHealth()) as unknown as HealthResult;
     connected.value = true;
     errorMsg.value = "";
@@ -79,7 +80,7 @@ const components = computed(() => {
     <div v-if="!connected" class="banner error">
       <div class="banner-title">⚠ 本地后端未连接</div>
       <div class="banner-detail">
-        无法访问 <code>{{ API_BASE }}</code>。请确认 Python 后端已启动：
+        无法访问 <code>{{ apiBase || "本地 API" }}</code>。请确认 Python 后端已启动：
         <br />
         <code>uv run uvicorn personal_assistant.main_api:app --port 8000</code>
       </div>

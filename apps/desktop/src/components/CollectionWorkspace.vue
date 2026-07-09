@@ -386,7 +386,12 @@ function fmtRefs(ex: DocumentExtraction): string {
       <div class="modal-card">
         <div class="modal-head">
           <span>新建文档集合</span>
-          <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="newOpen = false">
+          <button
+            class="pa-btn pa-btn--ghost pa-btn--icon"
+            title="关闭新建集合"
+            aria-label="关闭新建集合"
+            @click="newOpen = false"
+          >
             <PhX :size="14" />
           </button>
         </div>

@@ -35,6 +35,7 @@ const fileInput = ref<HTMLInputElement | null>(null);
 const batchInput = ref<HTMLInputElement | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let batchResultTimer: ReturnType<typeof setTimeout> | undefined;
 let loadSeq = 0;
 
 // 子视图切换：文档列表 / 文档集合
@@ -82,6 +83,8 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  if (searchTimer) clearTimeout(searchTimer);
+  if (batchResultTimer) clearTimeout(batchResultTimer);
 });
 
 async function onFile(e: Event) {
@@ -119,7 +122,8 @@ async function onBatchFiles(e: Event) {
   } finally {
     batchUploading.value = false;
     if (batchInput.value) batchInput.value.value = "";
-    setTimeout(() => (batchResult.value = null), 8000);
+    if (batchResultTimer) clearTimeout(batchResultTimer);
+    batchResultTimer = setTimeout(() => (batchResult.value = null), 8000);
   }
 }
 
@@ -395,7 +399,12 @@ function fmtSize(b: number | null): string {
       <div class="summary-card">
         <div class="summary-head">
           <span>章节摘要：{{ summaryTitle }}</span>
-          <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="showSummary = false">
+          <button
+            class="pa-btn pa-btn--ghost pa-btn--icon"
+            title="关闭章节摘要"
+            aria-label="关闭章节摘要"
+            @click="showSummary = false"
+          >
             ✕
           </button>
         </div>

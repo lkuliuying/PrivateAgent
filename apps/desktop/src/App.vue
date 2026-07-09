@@ -39,10 +39,10 @@ import {
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
+  isDesktopRuntime,
   candidateMemories,
   createInbox,
 } from "./api";
-import { isTauri } from "@tauri-apps/api/core";
 import type { Message, MemorySource, Session, Source, ToolCall, View } from "./types";
 
 type ChatMessage = Message & {
@@ -155,13 +155,16 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onKeydown);
+  planningCancelled.value = true;
+  controller?.abort();
+  controller = null;
 });
 
 // ============ 启动引导 ============
 
 async function boot() {
   // 浏览器开发：直接用默认端口。
-  if (!isTauri()) {
+  if (!isDesktopRuntime()) {
     setApiBaseDefault();
     bootState.value = "done";
     await loadSessions();
@@ -547,6 +550,7 @@ function stopGenerate() {
   // 标记 planning 取消，阻止 plan 完成后继续回复（plan 阶段 controller 尚未赋值）
   planningCancelled.value = true;
   controller?.abort();
+  controller = null;
   streaming.value = false;
 }
 </script>
@@ -571,7 +575,7 @@ function stopGenerate() {
       <p class="hint">{{ bootError }}</p>
       <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
       <button
-        v-if="isTauri()"
+        v-if="isDesktopRuntime()"
         class="pa-btn pa-btn--ghost"
         @click="reconfigure"
       >

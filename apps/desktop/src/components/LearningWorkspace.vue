@@ -709,7 +709,12 @@ function exportReport() {
       <div class="modal-card">
         <div class="modal-head">
           <span>新建学习主题</span>
-          <button class="pa-btn pa-btn--ghost pa-btn--icon" @click="newOpen = false">
+          <button
+            class="pa-btn pa-btn--ghost pa-btn--icon"
+            title="关闭新建主题"
+            aria-label="关闭新建主题"
+            @click="newOpen = false"
+          >
             <PhX :size="14" />
           </button>
         </div>

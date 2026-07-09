@@ -1,4 +1,4 @@
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { ensureApiBase } from "./api/http";
 import type {
   AgentTask,
   Activity,
@@ -70,8 +70,6 @@ import type {
   ReminderUpdate,
   TodaySnapshot,
   TodayFilters,
-  AppNotification,
-  AppNotificationCreate,
   Briefing,
   GoalCheckin,
   GoalCreate,
@@ -84,45 +82,77 @@ import type {
   ProviderCallAudit,
 } from "./types";
 
-let API_BASE: string | null = null;
-
-/**
- * 获取后端 API base：
- * - Tauri 打包模式：用 Rust sidecar 协商的端口（get_api_port 命令）。
- * - 开发模式 / 浏览器：回退到 http://127.0.0.1:8000（手动启动的后端）。
- * 结果缓存，后续调用直接返回。
- */
-export async function ensureApiBase(): Promise<string> {
-  if (API_BASE) return API_BASE;
-  if (isTauri()) {
-    try {
-      const port = await invoke<number | null>("get_api_port");
-      if (port) {
-        API_BASE = `http://127.0.0.1:${port}`;
-        return API_BASE;
-      }
-    } catch {
-      // 命令失败，回退默认端口
-    }
-  }
-  API_BASE = "http://127.0.0.1:8000";
-  return API_BASE;
-}
-
-/** 直接指定后端端口（start_sidecar 返回端口后用，绕过缓存）。 */
-export function setApiBase(port: number): void {
-  API_BASE = `http://127.0.0.1:${port}`;
-}
-
-/** 回退到默认手动后端 127.0.0.1:8000（dev 模式）。 */
-export function setApiBaseDefault(): void {
-  API_BASE = "http://127.0.0.1:8000";
-}
-
-/** 清除缓存的 base，下次 ensureApiBase 重新解析。 */
-export function resetApiBase(): void {
-  API_BASE = null;
-}
+export {
+  ensureApiBase,
+  resetApiBase,
+  setApiBase,
+  setApiBaseDefault,
+} from "./api/http";
+export {
+  cmdCheckForUpdates,
+  cmdCheckDependencies,
+  cmdConfigExists,
+  cmdDownloadAndInstallUpdate,
+  cmdReadConfig,
+  cmdRelaunchApp,
+  cmdStartSidecar,
+  cmdTestConnections,
+  cmdWriteConfig,
+  isDesktopRuntime,
+  pickDirectory,
+  pickFile,
+} from "./api/tauri";
+export {
+  createNotification,
+  listNotifications,
+  patchNotification,
+  readAllNotifications,
+} from "./api/notifications";
+export { recordRecentOpen, search } from "./api/search";
+export type { SearchResult } from "./api/search";
+export {
+  captureToInbox,
+  captureToMemory,
+  captureToReminder,
+  createCapture,
+  listCapture,
+} from "./api/capture";
+export type { CaptureItem } from "./api/capture";
+export { getOcrAvailability, listOcrJobs, retryOcrJob } from "./api/ocr";
+export type { OcrAvailability, OcrJob } from "./api/ocr";
+export { exportDiagnostics, getDiagnostics } from "./api/diagnostics";
+export type { DiagnosticsSnapshot } from "./api/diagnostics";
+export {
+  applyRepair,
+  listIntegrity,
+  repairPlan,
+  runIntegrity,
+} from "./api/maintenance";
+export type { IntegrityFinding, RepairPlanItem } from "./api/maintenance";
+export { listExtensions, patchExtension } from "./api/extensions";
+export type { ExtensionDescriptor } from "./api/extensions";
+export {
+  createIntegrationSource,
+  listIntegrationImports,
+  listIntegrationSources,
+  previewIntegration,
+  revertIntegrationImport,
+  runIntegrationImport,
+} from "./api/integrations";
+export type {
+  IntegrationImport,
+  IntegrationPreview,
+  IntegrationSource,
+} from "./api/integrations";
+export { getMigrationRunbook, restoreDrillBackup } from "./api/backup";
+export { listTestRuns, listUpgradeSmokeRuns } from "./api/testing";
+export type {
+  ConfigData,
+  ConnResult,
+  DepResult,
+  SidecarStartResult,
+  UpdateInfo,
+} from "./api/tauri";
 
 export async function getHealth(): Promise<Record<string, unknown>> {
   const base = await ensureApiBase();
@@ -754,32 +784,6 @@ export async function retryAgentTaskStep(stepId: number): Promise<AgentTask> {
     throw new Error(d.detail || `HTTP ${r.status}`);
   }
   return r.json();
-}
-
-/** Tauri 目录选择器；浏览器/dev 模式返回 null（调用方回退文本输入）。 */
-export async function pickDirectory(): Promise<string | null> {
-  if (!isTauri()) return null;
-  try {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({ directory: true, multiple: false });
-    return typeof selected === "string" ? selected : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Tauri 文件选择器（单个文件，可带扩展名过滤）；浏览器/dev 模式返回 null。 */
-export async function pickFile(
-  filters?: { name: string; extensions: string[] }[]
-): Promise<string | null> {
-  if (!isTauri()) return null;
-  try {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({ multiple: false, filters });
-    return typeof selected === "string" ? selected : null;
-  } catch {
-    return null;
-  }
 }
 
 // ---- 学习系统（第三阶段 M0 骨架 / M3 实现）----
@@ -2021,565 +2025,4 @@ export function streamChat(
     });
 
   return controller;
-}
-
-// ============ 引导 / 配置 / sidecar / 更新（第五阶段） ============
-// 这些命令只在 Tauri 打包/桌面环境可用；浏览器开发模式 invoke 会抛错，调用方需 try/catch。
-
-/** 连接配置（对应 Rust ConfigData，字段与 .env 的 PA_ 项对齐）。 */
-export interface ConfigData {
-  db_host: string;
-  db_port: number;
-  db_user: string;
-  db_password: string;
-  db_name: string;
-  ollama_base_url: string;
-  llm_model: string;
-  embed_model: string;
-}
-
-export interface DepResult {
-  mysql_reachable: boolean;
-  ollama_reachable: boolean;
-}
-
-export interface ConnResult {
-  mysql_ok: boolean;
-  mysql_error: string | null;
-  ollama_ok: boolean;
-  ollama_error: string | null;
-  ollama_models: string[];
-  llm_model_available: boolean;
-  embed_model_available: boolean;
-}
-
-export interface SidecarStartResult {
-  ok: boolean;
-  dev_mode: boolean;
-  port: number | null;
-  error: string | null;
-}
-
-export interface UpdateInfo {
-  version: string;
-  date: string | null;
-  body: string | null;
-}
-
-/** 是否已存在连接配置（%APPDATA%/personal-assistant/.env）。 */
-export async function cmdConfigExists(): Promise<boolean> {
-  return invoke<boolean>("config_exists");
-}
-
-/** 读取配置；不存在时返回默认值。 */
-export async function cmdReadConfig(): Promise<ConfigData> {
-  return invoke<ConfigData>("read_config");
-}
-
-/** 写入配置（生成 .env）。 */
-export async function cmdWriteConfig(cfg: ConfigData): Promise<void> {
-  return invoke<void>("write_config", { cfg });
-}
-
-/** 默认端口探测 MySQL/Ollama 是否在跑（向导首屏环境提示）。 */
-export async function cmdCheckDependencies(): Promise<DepResult> {
-  return invoke<DepResult>("check_dependencies");
-}
-
-/** 按配置测试 MySQL + Ollama 连接，并校验模型是否已拉取。 */
-export async function cmdTestConnections(cfg: ConfigData): Promise<ConnResult> {
-  return invoke<ConnResult>("test_connections", { cfg });
-}
-
-/** 启动 sidecar；dev 模式返回 dev_mode=true。 */
-export async function cmdStartSidecar(): Promise<SidecarStartResult> {
-  return invoke<SidecarStartResult>("start_sidecar");
-}
-
-/** 检查更新；无更新返回 null。 */
-export async function cmdCheckForUpdates(): Promise<UpdateInfo | null> {
-  return invoke<UpdateInfo | null>("check_for_updates");
-}
-
-/** 下载并安装更新（安装后需 relaunch）。 */
-export async function cmdDownloadAndInstallUpdate(): Promise<void> {
-  return invoke<void>("download_and_install_update");
-}
-
-/** 重启应用以应用更新。 */
-export async function cmdRelaunchApp(): Promise<void> {
-  return invoke<void>("relaunch_app");
-}
-
-// ---- 通知中心（第七阶段 M4）----
-export async function listNotifications(
-  opts?: { status?: string; kind?: string; limit?: number }
-): Promise<AppNotification[]> {
-  const base = await ensureApiBase();
-  const qs = new URLSearchParams();
-  if (opts?.status) qs.set("status", opts.status);
-  if (opts?.kind) qs.set("kind", opts.kind);
-  if (opts?.limit) qs.set("limit", String(opts.limit));
-  const q = qs.toString();
-  const r = await fetch(`${base}/notifications${q ? `?${q}` : ""}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function createNotification(
-  body: AppNotificationCreate
-): Promise<AppNotification> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function patchNotification(
-  id: number,
-  status: "read" | "archived"
-): Promise<AppNotification> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications/${id}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ status }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function readAllNotifications(): Promise<{ marked: number }> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications/read-all`, { method: "POST" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 全局搜索 / 命令面板（第七阶段 M2）----
-export interface SearchResult {
-  type: string;
-  id: number;
-  title: string;
-  snippet: string | null;
-  source: string;
-  updated_at: string | null;
-  action: string;
-  meta: Record<string, unknown> | null;
-}
-
-export async function search(
-  q: string,
-  opts?: { types?: string[]; limit?: number }
-): Promise<SearchResult[]> {
-  const base = await ensureApiBase();
-  const qs = new URLSearchParams({ q });
-  if (opts?.types?.length) qs.set("types", opts.types.join(","));
-  if (opts?.limit) qs.set("limit", String(opts.limit));
-  const r = await fetch(`${base}/search?${qs}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function recordRecentOpen(
-  objectType: string,
-  objectId: number,
-  title?: string
-): Promise<void> {
-  const base = await ensureApiBase();
-  await fetch(`${base}/search/recent`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ object_type: objectType, object_id: objectId, title }),
-  });
-}
-
-// ---- 快速捕获（第七阶段 M3）----
-export interface CaptureItem {
-  id: number;
-  title: string | null;
-  content_md: string;
-  source: string;
-  candidate_type: string | null;
-  status: string;
-  target_type: string | null;
-  target_id: number | null;
-  created_at: string;
-  handled_at: string | null;
-}
-
-export async function listCapture(opts?: { status?: string }): Promise<CaptureItem[]> {
-  const base = await ensureApiBase();
-  const qs = new URLSearchParams();
-  if (opts?.status) qs.set("status", opts.status);
-  const q = qs.toString();
-  const r = await fetch(`${base}/capture${q ? `?${q}` : ""}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function createCapture(body: {
-  content_md: string;
-  source?: string;
-  title?: string;
-  candidate_type?: string;
-}): Promise<CaptureItem> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function captureToInbox(id: number, itemType = "note"): Promise<void> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-inbox`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ item_type: itemType }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-}
-
-export async function captureToReminder(id: number, dueAt?: string): Promise<void> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-reminder`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ due_at: dueAt }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-}
-
-export async function captureToMemory(id: number, kind = "note"): Promise<void> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-memory`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-}
-
-// ---- OCR 队列（第七阶段 M3）----
-export interface OcrAvailability {
-  available: boolean;
-  reason: string;
-  engine: string | null;
-}
-export interface OcrJob {
-  id: number;
-  doc_id: number | null;
-  file_path: string | null;
-  source: string;
-  status: string;
-  engine: string | null;
-  output_text: string | null;
-  error_message: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export async function getOcrAvailability(): Promise<OcrAvailability> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/ocr/availability`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function listOcrJobs(opts?: { status?: string }): Promise<OcrJob[]> {
-  const base = await ensureApiBase();
-  const qs = new URLSearchParams();
-  if (opts?.status) qs.set("status", opts.status);
-  const q = qs.toString();
-  const r = await fetch(`${base}/ocr-jobs${q ? `?${q}` : ""}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function retryOcrJob(id: number): Promise<OcrJob> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/ocr-jobs/${id}/retry`, { method: "POST" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 诊断中心（第七阶段 M5）----
-export interface DiagnosticsSnapshot {
-  generated_at: string;
-  version: string;
-  migration_head: string | null;
-  health: Record<string, unknown>;
-  backup: { last_backup_at: string | null; count: number };
-  failed_activities: Array<Record<string, unknown>>;
-  provider_failures: Array<Record<string, unknown>>;
-  reminder_tick: Record<string, unknown>;
-  import_queue: Record<string, number>;
-  integrity_summary: Record<string, number>;
-  recent_errors: string[];
-  settings_redacted: Record<string, string>;
-  db_url_redacted: string;
-}
-
-export async function getDiagnostics(): Promise<DiagnosticsSnapshot> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/diagnostics`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function exportDiagnostics(
-  outputDir?: string
-): Promise<{ path: string; run_id: number; size_bytes: number }> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/diagnostics/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ output_dir: outputDir ?? null }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 数据完整性体检（第七阶段 M7）----
-export interface IntegrityFinding {
-  id: number;
-  check_name: string;
-  severity: string;
-  ref_type: string | null;
-  ref_id: number | null;
-  detail_json: Record<string, unknown> | null;
-  suggested_action: string | null;
-  status: string;
-  created_at: string;
-  updated_at: string;
-}
-export interface RepairPlanItem {
-  finding_id: number;
-  check_name: string;
-  severity: string;
-  ref_type: string | null;
-  ref_id: number | null;
-  suggested_action: string | null;
-  detail: Record<string, unknown> | null;
-  impact: string;
-  destructive: boolean;
-}
-
-export async function listIntegrity(status?: string): Promise<IntegrityFinding[]> {
-  const base = await ensureApiBase();
-  const qs = status ? `?status=${status}` : "";
-  const r = await fetch(`${base}/maintenance/integrity${qs}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function runIntegrity(): Promise<IntegrityFinding[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/integrity/run`, { method: "POST" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function repairPlan(): Promise<RepairPlanItem[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/repair-plan`, { method: "POST" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function applyRepair(
-  findingId: number
-): Promise<Record<string, unknown>> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/repair-plan/${findingId}/apply`, {
-    method: "POST",
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 扩展注册表（第八阶段 M7）----
-export interface ExtensionDescriptor {
-  id: string;
-  title: string;
-  kind: string;
-  description: string;
-  risk_level: string;
-  permissions: string[];
-  input_schema: Record<string, unknown> | null;
-  output_summary: string | null;
-  ui_entry: Record<string, unknown> | null;
-  enabled: boolean;
-  configurable: boolean;
-}
-
-export async function listExtensions(kind?: string): Promise<ExtensionDescriptor[]> {
-  const base = await ensureApiBase();
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  const r = await fetch(`${base}/extensions${qs}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function patchExtension(
-  extId: string,
-  enabled: boolean
-): Promise<ExtensionDescriptor> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/extensions/${encodeURIComponent(extId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 本地集成（第八阶段 M8）----
-export interface IntegrationSource {
-  id: number;
-  kind: string;
-  title: string;
-  config_json: Record<string, unknown> | null;
-  enabled: boolean;
-  last_run_at: string | null;
-  last_status: string | null;
-}
-export interface IntegrationImport {
-  id: number;
-  source_id: number | null;
-  source_kind: string;
-  summary_json: Record<string, unknown> | null;
-  target_type: string | null;
-  target_id: number | null;
-  reversible: boolean;
-  reversal_info_json: Record<string, unknown> | null;
-  status: string;
-  error_message: string | null;
-  created_at: string;
-  reverted_at: string | null;
-}
-export interface IntegrationPreview {
-  file_path: string;
-  event_count: number;
-  sample_titles: string[];
-  events: Array<Record<string, unknown>>;
-  target: string;
-}
-
-export async function listIntegrationSources(): Promise<IntegrationSource[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/sources`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function createIntegrationSource(data: {
-  kind?: string;
-  title: string;
-  file_path: string;
-  target?: string;
-}): Promise<IntegrationSource> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/sources`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function previewIntegration(
-  sourceId: number
-): Promise<IntegrationPreview> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/preview`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source_id: sourceId }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function runIntegrationImport(
-  sourceId: number,
-  target?: string
-): Promise<IntegrationImport> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/import`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ source_id: sourceId, target }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function listIntegrationImports(): Promise<IntegrationImport[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/imports`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function revertIntegrationImport(importId: number): Promise<IntegrationImport> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/imports/${importId}`, {
-    method: "DELETE",
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-// ---- 备份恢复演练 / 迁移 runbook（第八阶段 M9）----
-export async function restoreDrillBackup(
-  path: string
-): Promise<Record<string, unknown>> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/backup/restore/drill`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function getMigrationRunbook(): Promise<Record<string, string>> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/backup/migration-runbook`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  const d = await r.json();
-  return d.runbook as Record<string, string>;
-}
-
-// ---- 测试 / 发布运行摘要（第八阶段 M3）----
-export async function listTestRuns(
-  kind?: string
-): Promise<Array<Record<string, unknown>>> {
-  const base = await ensureApiBase();
-  const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  const r = await fetch(`${base}/testing/runs${qs}`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function listUpgradeSmokeRuns(): Promise<
-  Array<Record<string, unknown>>
-> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/testing/upgrade-smoke-runs`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
 }

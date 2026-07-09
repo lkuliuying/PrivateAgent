@@ -3,7 +3,7 @@
  * 全局搜索（第七阶段 M2）。跨会话/文档/切片/任务/证据/记忆/收件箱/提醒/目标/简报检索。
  * 结果点击跳转对应视图并记录最近打开（供排序）。
  */
-import { nextTick, onMounted, ref, watch } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { PhMagnifyingGlass, PhX, PhDatabase, PhChatCircle, PhListChecks, PhBrain, PhBell, PhTarget, PhFileText, PhBooks } from "@phosphor-icons/vue";
 import { search, recordRecentOpen, type SearchResult } from "../api";
 import { useNotifications } from "../stores/notifications";
@@ -129,6 +129,9 @@ function onKey(e: KeyboardEvent) {
 defineExpose({ open });
 
 onMounted(open);
+onUnmounted(() => {
+  if (debounce) window.clearTimeout(debounce);
+});
 </script>
 
 <template>
