@@ -5,12 +5,13 @@
 """
 from __future__ import annotations
 
+import importlib
 from collections.abc import AsyncIterator
+from functools import lru_cache
 from typing import Any
 
 import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_ollama import ChatOllama, OllamaEmbeddings
 
 from ..config import settings
 from ..logging_setup import get_logger
@@ -75,6 +76,32 @@ def classify_error(
     return "provider_error"
 
 
+@lru_cache(maxsize=1)
+def _load_ollama_components() -> tuple[type[Any], type[Any]]:
+    """按需加载 Ollama 客户端，避免可选网络依赖阻断后端启动。
+
+    ``langchain_ollama`` 导入时会初始化 ``ollama`` 客户端。若系统设置了
+    SOCKS 代理但未安装 ``socksio``，顶层导入会让整个 FastAPI 应用在尚未
+    使用模型前就启动失败。惰性加载将故障隔离到真正的 Ollama 调用，并保留
+    ProviderError 的统一错误分类。
+    """
+    try:
+        module = importlib.import_module("langchain_ollama")
+        return module.ChatOllama, module.OllamaEmbeddings
+    except Exception as exc:  # noqa: BLE001
+        raise ProviderError(
+            f"Ollama 客户端加载失败: {exc}",
+            error_code=classify_error(exc, provider_type="ollama"),
+        ) from exc
+
+
+def _ollama_error(action: str, exc: Exception) -> ProviderError:
+    return ProviderError(
+        f"Ollama {action} 失败: {exc}",
+        error_code=classify_error(exc, provider_type="ollama"),
+    )
+
+
 def _to_lc_messages(messages: list[dict[str, str]]) -> list[Any]:
     """把 [{"role","content"}] 转为 LangChain 消息对象。"""
     out: list[Any] = []
@@ -113,10 +140,11 @@ class OllamaProvider:
         self.context_length = context_length or settings.llm_context_length
 
     # ---------------- LLM ----------------
-    def _chat_llm(self) -> ChatOllama:
+    def _chat_llm(self) -> Any:
         # client_kwargs.timeout 限制每次 HTTP 读写，避免 Ollama 连接但卡住时
         # ainvoke/astream 无限挂起（ollama 客户端默认 timeout=None）。
-        return ChatOllama(
+        chat_ollama, _ = _load_ollama_components()
+        return chat_ollama(
             model=self.llm_model,
             base_url=self.base_url,
             temperature=self.temperature,
@@ -126,29 +154,33 @@ class OllamaProvider:
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
         """非流式对话。"""
-        llm = self._chat_llm()
         try:
+            llm = self._chat_llm()
             resp = await llm.ainvoke(_to_lc_messages(messages))
             content = resp.content
             return content if isinstance(content, str) else str(content)
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
-            code = classify_error(e, provider_type="ollama")
-            raise ProviderError(f"Ollama chat 失败: {e}", error_code=code) from e
+            raise _ollama_error("chat", e) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         """流式对话，逐 token 产出字符串片段。"""
-        llm = self._chat_llm()
         try:
+            llm = self._chat_llm()
             async for chunk in llm.astream(_to_lc_messages(messages)):
                 content = chunk.content
                 if isinstance(content, str) and content:
                     yield content
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"Ollama 流式对话失败: {e}") from e
+            raise _ollama_error("流式对话", e) from e
 
     # ---------------- Embedding ----------------
-    def _embedder(self) -> OllamaEmbeddings:
-        return OllamaEmbeddings(
+    def _embedder(self) -> Any:
+        _, ollama_embeddings = _load_ollama_components()
+        return ollama_embeddings(
             model=self.embed_model,
             base_url=self.base_url,
             client_kwargs={"timeout": httpx.Timeout(60.0)},
@@ -157,14 +189,18 @@ class OllamaProvider:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:
             return await self._embedder().aembed_documents(texts)
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"Ollama embedding 失败: {e}") from e
+            raise _ollama_error("embedding", e) from e
 
     async def embed_one(self, text: str) -> list[float]:
         try:
             return await self._embedder().aembed_query(text)
+        except ProviderError:
+            raise
         except Exception as e:  # noqa: BLE001
-            raise ProviderError(f"Ollama embedding 失败: {e}") from e
+            raise _ollama_error("embedding", e) from e
 
     # ---------------- 健康 ----------------
     async def health(self) -> dict[str, Any]:

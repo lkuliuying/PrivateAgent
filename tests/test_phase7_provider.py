@@ -10,12 +10,14 @@
 """
 from __future__ import annotations
 
+import httpx
 import pytest
 
+import personal_assistant.core.provider as provider_module
 from personal_assistant.core.provider import (
-    OpenAICompatibleProvider,
     ClaudeProvider,
     OllamaProvider,
+    OpenAICompatibleProvider,
     ProviderError,
     ProviderRouter,
     classify_error,
@@ -45,8 +47,6 @@ def test_classify_missing_api_key():
 
 
 def test_classify_http_status_codes():
-    import httpx
-
     def _err(status: int) -> httpx.HTTPStatusError:
         req = httpx.Request("POST", "https://example.com")
         resp = httpx.Response(status, request=req)
@@ -60,8 +60,6 @@ def test_classify_http_status_codes():
 
 
 def test_classify_timeout_and_network():
-    import httpx
-
     assert classify_error(httpx.TimeoutException("timed out")) == "timeout"
     assert classify_error(httpx.ConnectError("refused")) == "network_error"
 
@@ -150,3 +148,56 @@ def test_fallback_provider_returns_ollama():
     router = ProviderRouter({"provider_type": "openai", "remote_provider_enabled": "true"})
     fb = router.fallback_provider()
     assert isinstance(fb, OllamaProvider)
+
+
+def test_ollama_client_is_loaded_only_when_used(monkeypatch):
+    provider_module._load_ollama_components.cache_clear()
+    imported: list[str] = []
+
+    def fail_import(name: str):
+        imported.append(name)
+        raise ImportError("SOCKS support is not installed")
+
+    monkeypatch.setattr(provider_module.importlib, "import_module", fail_import)
+
+    provider = OllamaProvider(base_url="http://127.0.0.1:11434")
+    assert imported == []
+
+    with pytest.raises(ProviderError) as exc_info:
+        provider._chat_llm()
+
+    assert imported == ["langchain_ollama"]
+    assert exc_info.value.error_code == "provider_error"
+    provider_module._load_ollama_components.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_ollama_stream_error_has_classification(monkeypatch):
+    class FailingChat:
+        async def astream(self, _messages):
+            raise httpx.TimeoutException("timed out")
+            yield  # pragma: no cover
+
+    provider = OllamaProvider()
+    monkeypatch.setattr(provider, "_chat_llm", lambda: FailingChat())
+
+    with pytest.raises(ProviderError) as exc_info:
+        async for _ in provider.chat_stream([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert exc_info.value.error_code == "timeout"
+
+
+@pytest.mark.asyncio
+async def test_ollama_embedding_error_has_classification(monkeypatch):
+    class FailingEmbedder:
+        async def aembed_query(self, _text):
+            raise httpx.ConnectError("connection refused")
+
+    provider = OllamaProvider()
+    monkeypatch.setattr(provider, "_embedder", lambda: FailingEmbedder())
+
+    with pytest.raises(ProviderError) as exc_info:
+        await provider.embed_one("hello")
+
+    assert exc_info.value.error_code == "network_error"
