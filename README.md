@@ -239,7 +239,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 | 项 | 当前值 |
 |---|---|
-| 应用版本 | 0.1.1 |
+| 应用版本 | 0.1.2 |
 | Schema head | 0011（`alembic current`） |
 | 阶段完成度 | 第一~第八阶段已完成（M0–M10） |
 | 发布状态 | Windows NSIS 安装包可复现构建；未代码签名（unsigned 透明策略） |
