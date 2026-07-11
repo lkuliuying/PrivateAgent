@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
 import { PhCpu, PhActivity, PhBell } from "@phosphor-icons/vue";
-import { getHealth, getSettings, type AppSettings } from "../api";
+import { getSettings, type AppSettings } from "../api";
 import { useNotifications } from "../stores/notifications";
+import { useHealth, type HealthSnapshot } from "../stores/health";
 
 /**
  * 底部状态栏。独立轮询 /health（5s）并读取 /settings 显示当前模型。
@@ -12,6 +13,7 @@ import { useNotifications } from "../stores/notifications";
 defineProps<{ taskLabel?: string }>();
 
 const notify = useNotifications();
+const healthStore = useHealth();
 
 type DotState = "ok" | "bad" | "idle";
 
@@ -25,21 +27,20 @@ const settings = ref<AppSettings | null>(null);
 let timer: number | null = null;
 let notifyTimer: number | null = null;
 
-function okOf(h: Record<string, unknown>, key: string): boolean | undefined {
-  const v = h[key] as { ok?: boolean } | undefined;
-  return v?.ok;
+function okOf(h: HealthSnapshot, key: keyof HealthSnapshot): boolean {
+  return h[key].ok;
 }
 
 async function refresh() {
-  try {
-    const h = await getHealth();
+  const h = await healthStore.refresh();
+  if (h && !healthStore.error.value) {
     services.value = {
       api: okOf(h, "api") ? "ok" : "bad",
       ollama: okOf(h, "ollama") ? "ok" : "bad",
       mysql: okOf(h, "mysql") ? "ok" : "bad",
       chroma: okOf(h, "chroma") ? "ok" : "bad",
     };
-  } catch {
+  } else {
     // 后端不可达（启动中/未连接）：全部置 idle
     services.value = { api: "idle", ollama: "idle", mysql: "idle", chroma: "idle" };
   }

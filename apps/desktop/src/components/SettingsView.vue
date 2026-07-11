@@ -2,7 +2,6 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
   exportBackup,
-  getHealth,
   getSettings,
   listBackups,
   listProviders,
@@ -14,23 +13,17 @@ import {
 } from "../api";
 import type { BackupExportResult, BackupRestorePreview, ProviderStatus } from "../types";
 import UpdateChecker from "./UpdateChecker.vue";
+import { useHealth } from "../stores/health";
 
 const emit = defineEmits<{ (e: "reconfigure"): void }>();
 
-interface ComponentHealth {
-  ok: boolean;
-  error?: string;
-  [k: string]: unknown;
-}
-interface HealthResult {
-  api: ComponentHealth;
-  ollama: ComponentHealth & { base_url?: string };
-  mysql: ComponentHealth;
-  chroma: ComponentHealth;
-}
-
 const settings = ref<AppSettings | null>(null);
-const health = ref<HealthResult | null>(null);
+const {
+  health,
+  refreshing: healthLoading,
+  error: healthError,
+  refresh: refreshHealth,
+} = useHealth();
 const providers = ref<ProviderStatus | null>(null);
 const backups = ref<BackupExportResult[]>([]);
 const backupPreview = ref<BackupRestorePreview | null>(null);
@@ -48,11 +41,7 @@ async function load() {
   } catch {
     settings.value = null;
   }
-  try {
-    health.value = (await getHealth()) as unknown as HealthResult;
-  } catch {
-    health.value = null;
-  }
+  await refreshHealth();
   try {
     providers.value = await listProviders();
   } catch {
@@ -179,7 +168,8 @@ const statusItems = computed(() => {
         <span class="dot" />{{ s.label }}{{ s.ok ? " 正常" : " 不可用" }}
       </div>
     </div>
-    <div v-if="!health" class="warn-text">⚠ 本地后端未连接，无法获取状态。</div>
+    <div v-if="healthError" class="warn-text">⚠ 本地后端暂时未连接，当前显示上次状态。</div>
+    <div v-else-if="healthLoading && !health" class="loading-text">正在检查系统状态…</div>
 
     <!-- 模型信息（只读） -->
     <h2 class="section-title">当前模型</h2>
@@ -369,6 +359,11 @@ h1 {
 .warn-text {
   margin-top: 10px;
   color: #b71c1c;
+  font-size: 13px;
+}
+.loading-text {
+  margin-top: 10px;
+  color: #6a6b6e;
   font-size: 13px;
 }
 .info-grid {
