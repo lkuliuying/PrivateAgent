@@ -322,26 +322,30 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
     <aside class="task-list">
       <div class="pane-head">
         <div>
-          <h1>Agent Tasks</h1>
-          <p>Plan, approve, run, and review evidence.</p>
+          <span class="eyebrow">AGENT WORKFLOW</span>
+          <h1>智能任务</h1>
+          <p>从计划、审批到执行证据，全程可控。</p>
         </div>
-        <button class="icon-btn" :disabled="loading" title="Refresh" @click="load">
+        <button class="icon-btn" :disabled="loading" title="刷新任务" @click="load">
           <PhArrowClockwise :size="16" />
         </button>
       </div>
 
       <div class="new-task">
-        <input v-model="title" class="pa-input" placeholder="Task title" />
-        <textarea v-model="goal" class="pa-input" rows="3" placeholder="Goal" />
-        <select v-model="projectId" class="pa-input">
-          <option value="">No project</option>
+        <label class="field-label" for="task-title">任务名称</label>
+        <input id="task-title" v-model="title" class="pa-input" placeholder="例如：验证桌面端发布流程" />
+        <label class="field-label" for="task-goal">预期目标</label>
+        <textarea id="task-goal" v-model="goal" class="pa-input" rows="3" placeholder="描述完成标准与需要保留的证据" />
+        <label class="field-label" for="task-project">关联项目</label>
+        <select id="task-project" v-model="projectId" class="pa-input">
+          <option value="">不关联项目</option>
           <option v-for="p in projects" :key="p.id" :value="p.id">
             {{ p.name }}
           </option>
         </select>
         <button class="pa-btn pa-btn--primary" :disabled="busy" @click="createTask">
           <PhListChecks :size="15" />
-          <span>Generate draft</span>
+          <span>生成任务草案</span>
         </button>
       </div>
 
@@ -364,15 +368,21 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 
     <main class="task-main">
       <div v-if="!selected" class="empty">
-        <PhListChecks :size="44" weight="duotone" />
-        <p>No tasks yet</p>
+        <div class="empty-icon"><PhListChecks :size="38" weight="duotone" /></div>
+        <h2>让复杂工作变得可追踪</h2>
+        <p>在左侧写下目标，PrivateAgent 会先生成计划草案，获得你的批准后再执行。</p>
+        <div class="empty-steps" aria-label="任务执行流程">
+          <span><b>01</b> 生成计划</span>
+          <span><b>02</b> 审批执行</span>
+          <span><b>03</b> 汇总证据</span>
+        </div>
       </div>
 
       <template v-else>
         <div class="detail-head">
           <div>
             <h2>{{ selected.title }}</h2>
-            <p>{{ selected.goal || "No goal" }}</p>
+            <p>{{ selected.goal || "暂未填写目标" }}</p>
           </div>
           <div class="head-actions">
             <span class="task-status" :class="statusClass(selected.status)">
@@ -385,7 +395,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
               @click="approvePlan(selected.id)"
             >
               <PhCheckCircle :size="14" />
-              <span>Approve plan</span>
+              <span>批准计划</span>
             </button>
             <button
               class="pa-btn pa-btn--primary pa-btn--sm"
@@ -399,7 +409,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
               @click="runTask(selected.id)"
             >
               <PhPlay :size="14" />
-              <span>Run</span>
+              <span>执行任务</span>
             </button>
             <button
               v-if="selected.status === 'running' || selected.status === 'waiting_approval'"
@@ -407,7 +417,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
               :disabled="busy"
               @click="pauseTask(selected.id)"
             >
-              Pause
+              暂停
             </button>
             <button
               v-if="selected.status === 'paused' || selected.status === 'failed'"
@@ -415,7 +425,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
               :disabled="busy"
               @click="resumeTask(selected.id)"
             >
-              Resume
+              继续
             </button>
             <button
               v-if="selected.status !== 'succeeded' && selected.status !== 'cancelled'"
@@ -423,7 +433,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
               :disabled="busy"
               @click="cancelTask(selected.id)"
             >
-              Cancel
+              取消
             </button>
           </div>
         </div>
@@ -433,9 +443,9 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
           class="plan-editor"
         >
           <div class="plan-head">
-            <h3>Editable Plan</h3>
+            <h3>可编辑计划</h3>
             <button class="pa-btn pa-btn--subtle pa-btn--sm" :disabled="busy" @click="savePlan">
-              Save plan
+              保存计划
             </button>
           </div>
           <textarea v-model="planText" class="plan-text" spellcheck="false" />
@@ -463,7 +473,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
                 @click="approveStep(step)"
               >
                 <PhCheckCircle :size="14" />
-                <span>Approve</span>
+                <span>批准</span>
               </button>
               <button
                 v-if="step.status === 'failed'"
@@ -472,7 +482,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
                 @click="retryStep(step)"
               >
                 <PhArrowClockwise :size="14" />
-                <span>Retry</span>
+                <span>重试</span>
               </button>
               <button
                 v-if="step.status === 'failed' || step.status === 'cancelled'"
@@ -480,13 +490,13 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
                 :disabled="busy"
                 @click="resumeFromStep(step)"
               >
-                <span>Resume from here</span>
+                <span>从此处继续</span>
               </button>
             </div>
 
             <pre v-if="step.error_message" class="step-error">{{ step.error_message }}</pre>
             <details v-if="step.input_json || step.output_json" class="step-json">
-              <summary>Input and output</summary>
+              <summary>输入与输出</summary>
               <pre>{{ JSON.stringify({ input: step.input_json, output: step.output_json }, null, 2) }}</pre>
             </details>
           </div>
@@ -494,22 +504,22 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 
         <section class="evidence">
           <div class="evidence-head">
-            <h3>Evidence</h3>
+            <h3>执行证据</h3>
             <select v-model="evidenceKind" class="pa-input evidence-filter">
-              <option value="">All kinds</option>
-              <option value="tool_output">Tool output</option>
-              <option value="error">Error</option>
-              <option value="note">Note</option>
-              <option value="report">Report</option>
+              <option value="">全部类型</option>
+              <option value="tool_output">工具输出</option>
+              <option value="error">错误</option>
+              <option value="note">备注</option>
+              <option value="report">报告</option>
             </select>
             <input
               v-model="evidenceText"
               class="pa-input evidence-search"
-              placeholder="Filter evidence"
+              placeholder="筛选证据"
             />
           </div>
           <div v-if="displayedEvidence.length === 0" class="hint">
-            Evidence appears after steps run.
+            执行步骤后，相关输出与异常会沉淀在这里。
           </div>
           <article v-for="ev in displayedEvidence" :key="ev.id" class="evidence-item">
             <div class="evidence-title">
@@ -523,7 +533,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 
         <section v-if="selected.final_report_md" class="report">
           <div class="report-head">
-            <h3>Markdown Report</h3>
+            <h3>任务报告</h3>
             <button
               class="pa-btn pa-btn--subtle pa-btn--sm"
               :disabled="candBusy"
@@ -544,15 +554,15 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 <style scoped>
 .tasks-shell {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
   min-height: 0;
   flex: 1;
 }
 .task-list {
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-bg));
   overflow: auto;
-  padding: var(--space-4);
+  padding: 26px 20px;
 }
 .pane-head,
 .detail-head,
@@ -574,7 +584,9 @@ p {
   margin: 0;
 }
 h1 {
-  font-size: var(--text-xl);
+  margin-top: 3px;
+  font-size: 26px;
+  letter-spacing: -0.035em;
 }
 h2 {
   font-size: var(--text-2xl);
@@ -591,6 +603,19 @@ h3 {
   color: var(--color-fg-faint);
   font-size: var(--text-sm);
 }
+.eyebrow {
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+}
+.field-label {
+  margin: 4px 0 -2px;
+  color: var(--color-fg-muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
 .icon-btn {
   width: 30px;
   height: 30px;
@@ -605,7 +630,12 @@ h3 {
 .new-task {
   display: grid;
   gap: var(--space-2);
-  margin: var(--space-4) 0;
+  margin: 22px 0 18px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
 }
 .new-task textarea {
   resize: vertical;
@@ -623,12 +653,12 @@ h3 {
 .task-row {
   width: 100%;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: 14px;
   background: var(--color-surface);
   color: var(--color-fg);
   display: grid;
   gap: 4px;
-  padding: var(--space-3);
+  padding: 13px 14px;
   margin-bottom: var(--space-2);
   text-align: left;
   cursor: pointer;
@@ -637,6 +667,9 @@ h3 {
 .task-row:hover {
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
+}
+.task-row.active {
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 .task-title {
   font-weight: var(--font-medium);
@@ -659,7 +692,10 @@ h3 {
 }
 .task-main {
   overflow: auto;
-  padding: 28px 32px;
+  padding: 34px clamp(28px, 4vw, 62px);
+  background:
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 28%),
+    var(--color-bg);
 }
 .head-actions {
   gap: var(--space-2);
@@ -692,9 +728,9 @@ h3 {
 .evidence-item,
 .report {
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: 16px;
   background: var(--color-surface);
-  padding: var(--space-3);
+  padding: 16px;
   margin-bottom: var(--space-2);
 }
 .step-top {
@@ -779,10 +815,51 @@ pre {
   font-weight: var(--font-regular);
 }
 .empty {
-  min-height: 420px;
+  min-height: min(620px, calc(100vh - 160px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--color-fg-muted);
+  text-align: center;
+}
+.empty-icon {
+  width: 72px;
+  height: 72px;
   display: grid;
   place-items: center;
-  color: var(--color-fg-faint);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+  border-radius: 24px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: 0 18px 44px rgba(21, 57, 48, 0.1);
+}
+.empty h2 {
+  margin-top: 8px;
+  font-size: 28px;
+  letter-spacing: -0.04em;
+}
+.empty > p {
+  max-width: 510px;
+  line-height: 1.7;
+}
+.empty-steps {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.empty-steps span {
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+  color: var(--color-fg-muted);
+  font-size: 12px;
+}
+.empty-steps b {
+  margin-right: 5px;
+  color: var(--color-accent);
 }
 
 @media (max-width: 900px) {

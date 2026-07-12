@@ -413,7 +413,7 @@ function exportReport() {
     <!-- 左：主题列表 -->
     <aside class="lw-topics">
       <div class="pane-head">
-        <span>学习主题</span>
+        <div><span class="eyebrow">LEARNING SPACE</span><strong>学习主题</strong></div>
         <button class="pa-btn pa-btn--primary pa-btn--icon" title="新建主题" @click="openNew">
           <PhPlus :size="14" />
         </button>
@@ -442,9 +442,10 @@ function exportReport() {
     <!-- 右：详情 -->
     <div class="lw-detail">
       <div v-if="!currentTopic" class="empty">
-        <PhGraduationCap :size="40" weight="duotone" />
-        <p>选择或创建一个学习主题</p>
-        <p class="hint">助手将基于知识库资料生成学习路线、练习与卡片</p>
+        <div class="empty-icon"><PhGraduationCap :size="38" weight="duotone" /></div>
+        <h1>为一个主题建立学习系统</h1>
+        <p class="hint">结合知识库资料生成路线、练习与复习卡片，让每次学习都留下可继续的进度。</p>
+        <button class="pa-btn pa-btn--primary" @click="openNew"><PhPlus :size="15" />创建学习主题</button>
       </div>
       <template v-else>
         <header class="detail-head">
@@ -741,27 +742,31 @@ function exportReport() {
 }
 .lw-topics {
   flex-shrink: 0;
-  width: 260px;
+  width: 300px;
   border-right: 1px solid var(--color-border);
   display: flex;
   flex-direction: column;
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-bg));
 }
 .pane-head {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-2) var(--space-3);
+  min-height: 72px;
+  padding: 14px 16px;
   border-bottom: 1px solid var(--color-border);
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-fg-muted);
 }
+.pane-head > div { display: grid; gap: 3px; }
+.pane-head strong { color: var(--color-fg); font-size: 17px; letter-spacing: -.02em; }
+.eyebrow { color: var(--color-accent); font-size: 9px; font-weight: 700; letter-spacing: .14em; }
 .topic-list {
   flex: 1;
   overflow: auto;
-  padding: var(--space-2);
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -772,7 +777,8 @@ function exportReport() {
   text-align: left;
   cursor: pointer;
   padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius);
+  border: 1px solid transparent;
+  border-radius: 13px;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -783,6 +789,8 @@ function exportReport() {
 }
 .topic-item.active {
   background: var(--color-accent-soft);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, transparent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 .topic-item.archived {
   opacity: 0.5;
@@ -820,18 +828,33 @@ function exportReport() {
   align-items: center;
   justify-content: center;
   height: 100%;
-  color: var(--color-fg-faint);
-  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  gap: 12px;
+  text-align: center;
+  background: radial-gradient(circle at 50% 42%, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent 26%);
 }
+.empty-icon {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+  border-radius: 24px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+}
+.empty h1 { margin: 8px 0 0; font-size: 30px; letter-spacing: -.045em; }
 .empty p {
   margin: 0;
   font-size: var(--text-base);
 }
 .empty .hint {
-  font-size: var(--text-sm);
-  max-width: 320px;
-  text-align: center;
+  max-width: 520px;
+  font-size: 14px;
+  line-height: 1.7;
 }
+.empty > button { margin-top: 8px; }
 .detail-head {
   flex-shrink: 0;
   display: flex;

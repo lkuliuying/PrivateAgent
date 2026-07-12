@@ -28,6 +28,7 @@ SIDECAR = (
     / "personal-assistant-server-x86_64-pc-windows-msvc.exe"
 )
 HEALTH_TIMEOUT_S = 90
+HEALTH_REQUEST_TIMEOUT_S = 25
 
 
 def free_port() -> int:
@@ -97,7 +98,8 @@ def main() -> int:
             while time.time() < deadline:
                 try:
                     with urllib.request.urlopen(
-                        f"http://127.0.0.1:{port}/health", timeout=2
+                        f"http://127.0.0.1:{port}/health",
+                        timeout=HEALTH_REQUEST_TIMEOUT_S,
                     ) as r:
                         if r.status == 200:
                             ok = True

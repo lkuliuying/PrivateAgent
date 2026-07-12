@@ -275,10 +275,14 @@ function fmtSize(b: number | null): string {
 <template>
   <section class="content">
     <div class="kv-head">
-      <h1>知识库</h1>
-      <p class="subtitle">
-        导入本地文档（PDF / Word / Markdown / TXT），启用知识库后助手可基于资料回答并标注来源。
-      </p>
+      <div class="title-row">
+        <div>
+          <span class="eyebrow">LOCAL KNOWLEDGE</span>
+          <h1>知识库</h1>
+          <p class="subtitle">导入本地资料，让回答有据可查、来源可追溯。</p>
+        </div>
+        <div class="library-stat"><strong>{{ docs.length }}</strong><span>当前文档</span></div>
+      </div>
       <nav class="sub-tabs">
         <button :class="{ active: subView === 'docs' }" @click="subView = 'docs'">文档</button>
         <button :class="{ active: subView === 'collections' }" @click="subView = 'collections'">集合</button>
@@ -431,14 +435,20 @@ function fmtSize(b: number | null): string {
 }
 .kv-head {
   flex-shrink: 0;
-  padding: 28px 32px 0;
+  padding: 30px clamp(28px, 3.5vw, 52px) 0;
+  background: radial-gradient(circle at 92% 12%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 28%);
 }
 .docs-view {
   flex: 1;
   min-height: 0;
   overflow: auto;
-  padding: 0 32px 28px;
+  padding: 0 clamp(28px, 3.5vw, 52px) 32px;
 }
+.title-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+.eyebrow { color: var(--color-accent); font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.library-stat { display: grid; min-width: 94px; padding: 11px 14px; border: 1px solid var(--color-border); border-radius: 14px; background: var(--color-surface); }
+.library-stat strong { color: var(--color-accent); font-size: 20px; line-height: 1; }
+.library-stat span { margin-top: 4px; color: var(--color-fg-faint); font-size: 10px; }
 .sub-tabs {
   display: flex;
   gap: 2px;
@@ -462,12 +472,13 @@ function fmtSize(b: number | null): string {
   border-bottom-color: var(--color-accent);
 }
 h1 {
-  margin: 0 0 4px;
-  font-size: var(--text-2xl);
+  margin: 4px 0 5px;
+  font-size: 30px;
   font-weight: var(--font-semibold);
+  letter-spacing: -.045em;
 }
 .subtitle {
-  margin: 0 0 var(--space-5);
+  margin: 0;
   color: var(--color-fg-subtle);
   font-size: var(--text-base);
 }
@@ -475,7 +486,11 @@ h1 {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: var(--space-4);
+  margin: 16px 0;
+  padding: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-surface) 92%, transparent);
 }
 .search-input {
   width: 220px;

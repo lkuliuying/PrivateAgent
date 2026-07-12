@@ -53,7 +53,9 @@ REM (e.g. 0.1.9 vs 0.1.10). tauri build writes the new versioned filename fresh.
 del /q "apps\desktop\src-tauri\target\release\bundle\nsis\*-setup.exe" >nul 2>&1
 del /q "apps\desktop\src-tauri\target\release\bundle\nsis\*-setup.exe.sig" >nul 2>&1
 pushd apps\desktop
-npm run tauri build
+REM npm is a .cmd shim on Windows; CALL is required or this parent batch exits
+REM immediately after npm finishes and skips code-signing/manifest steps.
+call npm run tauri build
 if errorlevel 1 (
     popd
     echo [build-release] tauri build failed

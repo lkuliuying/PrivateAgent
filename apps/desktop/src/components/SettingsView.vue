@@ -158,30 +158,43 @@ const statusItems = computed(() => {
 
 <template>
   <section class="content">
-    <h1>设置 / 状态</h1>
-    <p class="subtitle">查看依赖状态，调整模型参数。</p>
+    <header class="settings-hero">
+      <div>
+        <span class="eyebrow">LOCAL CONTROL CENTER</span>
+        <h1>设置与状态</h1>
+        <p class="subtitle">管理本地模型、隐私边界与数据安全。</p>
+      </div>
+      <span class="privacy-badge">数据默认留在本机</span>
+    </header>
+
+    <div class="settings-grid">
 
     <!-- 状态 -->
-    <h2 class="section-title">运行状态</h2>
-    <div class="status-row">
-      <div v-for="s in statusItems" :key="s.label" class="status-pill" :class="s.ok ? 'ok' : 'bad'">
-        <span class="dot" />{{ s.label }}{{ s.ok ? " 正常" : " 不可用" }}
+    <section class="setting-card wide status-card">
+      <div class="card-heading"><span>01</span><div><h2>运行状态</h2><p>关键依赖与本地服务连通性</p></div></div>
+      <div class="status-row">
+        <div v-for="s in statusItems" :key="s.label" class="status-pill" :class="s.ok ? 'ok' : 'bad'">
+          <span class="dot" />{{ s.label }}{{ s.ok ? " 正常" : " 不可用" }}
+        </div>
       </div>
-    </div>
-    <div v-if="healthError" class="warn-text">⚠ 本地后端暂时未连接，当前显示上次状态。</div>
-    <div v-else-if="healthLoading && !health" class="loading-text">正在检查系统状态…</div>
+      <div v-if="healthError" class="warn-text">⚠ 本地后端暂时未连接，当前显示上次状态。</div>
+      <div v-else-if="healthLoading && !health" class="loading-text">正在检查系统状态…</div>
+    </section>
 
     <!-- 模型信息（只读） -->
-    <h2 class="section-title">当前模型</h2>
-    <div class="info-grid">
-      <div><span class="k">LLM 模型</span><span class="v">{{ settings?.llm_model || "—" }}</span></div>
-      <div><span class="k">嵌入模型</span><span class="v">{{ settings?.embed_model || "—" }}</span></div>
-      <div><span class="k">Ollama 地址</span><span class="v">{{ health?.ollama?.base_url || "—" }}</span></div>
-    </div>
+    <section class="setting-card wide">
+      <div class="card-heading"><span>02</span><div><h2>当前模型</h2><p>正在使用的推理与向量模型</p></div></div>
+      <div class="info-grid">
+        <div><span class="k">LLM 模型</span><span class="v">{{ settings?.llm_model || "—" }}</span></div>
+        <div><span class="k">嵌入模型</span><span class="v">{{ settings?.embed_model || "—" }}</span></div>
+        <div><span class="k">Ollama 地址</span><span class="v">{{ health?.ollama?.base_url || "—" }}</span></div>
+      </div>
+    </section>
 
     <!-- 可调参数 -->
-    <h2 class="section-title">模型参数</h2>
-    <div class="form" v-if="settings">
+    <section class="setting-card">
+      <div class="card-heading"><span>03</span><div><h2>模型参数</h2><p>控制回答发散度与上下文窗口</p></div></div>
+      <div class="form" v-if="settings">
       <div class="field">
         <label>温度（0~1）</label>
         <input type="number" step="0.1" min="0" max="1" v-model.number="settings.llm_temperature" :disabled="!settings" />
@@ -202,11 +215,13 @@ const statusItems = computed(() => {
         </button>
         <span class="msg">{{ msg }}</span>
       </div>
-    </div>
+      </div>
+    </section>
 
     <!-- Provider -->
-    <h2 class="section-title">Provider 与隐私范围</h2>
-    <div class="form provider-form" v-if="settings">
+    <section class="setting-card">
+      <div class="card-heading"><span>04</span><div><h2>Provider 与隐私</h2><p>远程模型仅在明确开启后接收上下文</p></div></div>
+      <div class="form provider-form" v-if="settings">
       <div class="field">
         <label>当前 Provider</label>
         <select v-model="settings.provider_type">
@@ -258,11 +273,13 @@ const statusItems = computed(() => {
         </button>
       </div>
       <pre v-if="providerMsg" class="small-pre">{{ providerMsg }}</pre>
-    </div>
+      </div>
+    </section>
 
     <!-- 备份 -->
-    <h2 class="section-title">备份 / 恢复预览</h2>
-    <div class="form">
+    <section class="setting-card">
+      <div class="card-heading"><span>05</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+      <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
       </div>
@@ -286,42 +303,94 @@ const statusItems = computed(() => {
         </button>
       </div>
       <pre v-if="backupPreview" class="small-pre">{{ JSON.stringify(backupPreview, null, 2) }}</pre>
-    </div>
+      </div>
+    </section>
 
     <!-- 连接配置 -->
-    <h2 class="section-title">连接配置</h2>
-    <p class="hint">
-      修改 MySQL / Ollama 连接信息需重新配置。保存后会重启应用以加载新配置。
-    </p>
-    <button class="save-btn" @click="emit('reconfigure')">重新配置连接</button>
+    <section class="setting-card compact-card">
+      <div class="card-heading"><span>06</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
+      <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
+      <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
+    </section>
 
     <!-- 关于 / 更新 -->
-    <h2 class="section-title">关于 / 更新</h2>
-    <UpdateChecker />
+    <section class="setting-card compact-card">
+      <div class="card-heading"><span>07</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <UpdateChecker />
+    </section>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .content {
-  padding: 28px 32px;
+  padding: 34px clamp(28px, 4vw, 64px) 54px;
   overflow: auto;
   flex: 1;
+  background:
+    radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 24%),
+    var(--color-bg);
+}
+.settings-hero {
+  max-width: 1120px;
+  margin: 0 auto 26px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+}
+.eyebrow {
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
 }
 h1 {
-  margin: 0 0 4px;
-  font-size: 22px;
+  margin: 4px 0 5px;
+  font-size: 32px;
+  letter-spacing: -.045em;
 }
 .subtitle {
-  margin: 0 0 20px;
-  color: #6a6b6e;
-  font-size: 13px;
-}
-.section-title {
+  margin: 0;
+  color: var(--color-fg-muted);
   font-size: 14px;
-  font-weight: 600;
-  margin: 22px 0 10px;
-  color: #3a3b3e;
 }
+.privacy-badge {
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  font-size: 12px;
+}
+.settings-grid {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.setting-card {
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
+  box-shadow: var(--shadow-xs);
+}
+.setting-card.wide { grid-column: 1 / -1; }
+.card-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  margin-bottom: 16px;
+}
+.card-heading > span {
+  padding-top: 3px;
+  color: var(--color-accent);
+  font: 700 10px/1 var(--font-mono);
+}
+.card-heading h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
+.card-heading p { margin: 3px 0 0; color: var(--color-fg-faint); font-size: 12px; }
 .status-row {
   display: flex;
   gap: 10px;
@@ -334,8 +403,8 @@ h1 {
   padding: 6px 12px;
   border-radius: 16px;
   font-size: 13px;
-  border: 1px solid #e5e6e8;
-  background: #fff;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 .status-pill.ok {
   color: #1b5e20;
@@ -372,10 +441,10 @@ h1 {
   gap: 10px;
 }
 .info-grid > div {
-  background: #fff;
-  border: 1px solid #e5e6e8;
-  border-radius: 8px;
-  padding: 12px 14px;
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  padding: 14px;
 }
 .k {
   display: block;
@@ -392,7 +461,7 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 480px;
+  max-width: none;
 }
 .field {
   display: flex;
@@ -410,8 +479,8 @@ h1 {
   border-radius: 8px;
   font-size: 14px;
   outline: none;
-  width: min(420px, 100%);
-  background: #fff;
+  width: 100%;
+  background: var(--color-surface);
 }
 .field input:focus,
 .field select:focus {
@@ -429,7 +498,7 @@ h1 {
   gap: 14px;
 }
 .save-btn {
-  background: #1a1b1e;
+  background: var(--color-accent);
   color: #fff;
   border: none;
   border-radius: 8px;
@@ -442,16 +511,16 @@ h1 {
   cursor: not-allowed;
 }
 .save-btn.secondary {
-  background: #f4f5f6;
-  color: #1a1b1e;
-  border: 1px solid #d8d9da;
+  background: var(--color-surface-sunken);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border);
 }
 .msg {
   font-size: 13px;
   color: #2e7d32;
 }
 .provider-form {
-  max-width: 680px;
+  max-width: none;
 }
 .provider-scope {
   border: 1px solid #e5e6e8;
@@ -500,5 +569,9 @@ h1 {
   font-size: 12px;
   color: #9a9b9e;
   margin-top: 8px;
+}
+@media (max-width: 940px) {
+  .settings-grid { grid-template-columns: 1fr; }
+  .setting-card.wide { grid-column: auto; }
 }
 </style>

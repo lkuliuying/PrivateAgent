@@ -354,6 +354,28 @@ async function newSession() {
   }
 }
 
+type TodayComposerMode = "chat" | "knowledge" | "plan" | "code";
+
+async function onTodaySubmit(text: string, mode: TodayComposerMode) {
+  const value = text.trim();
+  if (!value || streaming.value || hasPendingTool.value) return;
+
+  if (!currentSession.value) {
+    await newSession();
+  }
+  if (!currentSession.value) return;
+
+  const prefixes: Record<TodayComposerMode, string> = {
+    chat: "",
+    knowledge: "请优先结合本地知识库回答：",
+    plan: "请帮我生成一个清晰、可执行的计划：",
+    code: "请作为代码助手协助我：",
+  };
+  knowledgeBase.value = mode === "knowledge";
+  view.value = "chat";
+  sendMessage(`${prefixes[mode]}${value}`);
+}
+
 function sendMessage(text: string) {
   if (!currentSession.value || streaming.value || hasPendingTool.value) return;
   const sid = currentSession.value.id;
@@ -586,14 +608,19 @@ function stopGenerate() {
     v-else
     :title="pageTitle"
     :show-dev-tag="bootState === 'dev'"
-    :show-list="view === 'chat' || view === 'today'"
+    :show-list="view === 'chat'"
     :inspector-open="view === 'chat' && inspectorOpen"
     :inspector-toggleable="inspectorToggleable"
     :show-topbar="view === 'chat'"
+    :show-statusbar="view !== 'today'"
     @toggle-inspector="inspectorOpen = !inspectorOpen"
   >
     <template #rail>
-      <NavRail :active="view" @navigate="onNavigate" />
+      <NavRail
+        :active="view"
+        @navigate="onNavigate"
+        @open-command="commandPaletteOpen = true"
+      />
     </template>
 
     <template #list>
@@ -611,7 +638,12 @@ function stopGenerate() {
     <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
     <IntegrationImportPanel v-else-if="view === 'integrations'" />
     <BackupUpgradePanel v-else-if="view === 'backup'" />
-    <TodayView v-else-if="view === 'today'" @navigate="onNavigate" />
+    <TodayView
+      v-else-if="view === 'today'"
+      @navigate="onNavigate"
+      @submit="onTodaySubmit"
+      @open-command="commandPaletteOpen = true"
+    />
     <KnowledgeView v-else-if="view === 'kb'" />
     <ProjectWorkspace v-else-if="view === 'projects'" />
     <LearningWorkspace v-else-if="view === 'learning'" />

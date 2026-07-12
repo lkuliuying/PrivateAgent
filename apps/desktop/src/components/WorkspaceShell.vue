@@ -17,6 +17,7 @@ withDefaults(
     inspectorOpen?: boolean;
     inspectorToggleable?: boolean;
     showTopbar?: boolean;
+    showStatusbar?: boolean;
   }>(),
   {
     showDevTag: false,
@@ -24,6 +25,7 @@ withDefaults(
     inspectorOpen: false,
     inspectorToggleable: false,
     showTopbar: true,
+    showStatusbar: true,
   }
 );
 
@@ -80,7 +82,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
     </div>
 
     <!-- 底部状态栏 -->
-    <div class="workspace-statusbar">
+    <div v-if="showStatusbar" class="workspace-statusbar">
       <slot name="statusbar" />
     </div>
   </div>
@@ -127,8 +129,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: radial-gradient(circle at 45% 0%, rgba(7, 135, 163, 0.05), transparent 36%),
-    var(--color-bg);
+  background: var(--color-bg);
 }
 
 .workspace-topbar {
@@ -139,7 +140,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   gap: var(--space-3);
   padding: 0 var(--space-6);
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 92%, white);
+  background: color-mix(in srgb, var(--color-bg) 96%, white);
 }
 .topbar-copy {
   display: flex;
@@ -200,12 +201,12 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   flex-shrink: 0;
   height: var(--statusbar-h);
   border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 92%, white);
+  background: color-mix(in srgb, var(--color-bg) 96%, white);
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 1180px) {
   .workspace-rail {
-    width: 72px;
+    width: 76px;
   }
 }
 

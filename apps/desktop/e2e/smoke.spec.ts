@@ -119,4 +119,33 @@ test.describe("E2E smoke", () => {
       timeout: 20_000,
     });
   });
+
+  for (const viewport of [
+    { width: 1280, height: 720 },
+    { width: 1440, height: 900 },
+    { width: 1920, height: 1080 },
+    { width: 960, height: 720 },
+  ]) {
+    test(`Today 布局 ${viewport.width}x${viewport.height} 无横向溢出`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await mockApi(page, (url) => {
+        if (url.includes("/health")) return GREEN_HEALTH;
+        if (url.includes("/today")) return TODAY_SNAPSHOT;
+        return [];
+      });
+      await page.goto("/");
+      await expect(page.getByRole("heading", { name: "今日工作台" })).toBeVisible();
+      const metrics = await page.evaluate(() => ({
+        body: document.body.scrollWidth,
+        root: document.documentElement.scrollWidth,
+        viewport: window.innerWidth,
+      }));
+      expect(metrics.body).toBeLessThanOrEqual(metrics.viewport);
+      expect(metrics.root).toBeLessThanOrEqual(metrics.viewport);
+      await expect(page.locator(".today-composer")).toBeVisible();
+      if (viewport.width === 1440) {
+        await page.screenshot({ path: "test-results/today-workbench-1440x900.png", fullPage: false });
+      }
+    });
+  }
 });

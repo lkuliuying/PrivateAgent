@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import {
   PhChatsCircle,
   PhSun,
@@ -12,26 +13,36 @@ import {
   PhPuzzlePiece,
   PhPlugs,
   PhDatabase,
-  PhCaretDoubleLeft,
+  PhCommand,
+  PhDotsThree,
 } from "@phosphor-icons/vue";
 import type { View } from "../types";
 
 defineProps<{ active: View }>();
-const emit = defineEmits<{ navigate: [view: View] }>();
+const emit = defineEmits<{
+  navigate: [view: View];
+  "open-command": [];
+}>();
+const advancedOpen = ref(false);
 
-const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
+const primaryItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "today", label: "今日", icon: PhSun },
   { key: "chat", label: "对话", icon: PhChatsCircle },
   { key: "kb", label: "知识库", icon: PhBooks },
+];
+
+const workItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
+  { key: "tasks", label: "任务", icon: PhListChecks },
   { key: "projects", label: "项目", icon: PhFolderSimple },
   { key: "learning", label: "学习", icon: PhGraduationCap },
-  { key: "tasks", label: "任务", icon: PhListChecks },
   { key: "memory", label: "记忆", icon: PhBrain },
+];
+
+const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "diagnostics", label: "诊断", icon: PhActivity },
   { key: "extensions", label: "扩展", icon: PhPuzzlePiece },
   { key: "integrations", label: "集成", icon: PhPlugs },
   { key: "backup", label: "备份", icon: PhDatabase },
-  { key: "settings", label: "设置", icon: PhGearSix },
 ];
 </script>
 
@@ -43,11 +54,10 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
         <strong>PrivateAgent</strong>
         <span>本地优先</span>
       </div>
-      <PhCaretDoubleLeft class="brand-collapse" :size="16" />
     </div>
 
-    <ul class="navrail-items">
-      <li v-for="item in items" :key="item.key">
+    <ul class="navrail-items" aria-label="主要功能">
+      <li v-for="item in primaryItems" :key="item.key">
         <button
           class="nav-item"
           :class="{ active: active === item.key }"
@@ -60,6 +70,62 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
         </button>
       </li>
     </ul>
+
+    <ul class="navrail-items navrail-group" aria-label="工作区">
+      <li v-for="item in workItems" :key="item.key">
+        <button
+          class="nav-item"
+          :class="{ active: active === item.key }"
+          :aria-current="active === item.key ? 'page' : undefined"
+          :title="item.label"
+          @click="emit('navigate', item.key)"
+        >
+          <component :is="item.icon" class="nav-icon" :size="20" weight="regular" />
+          <span class="nav-label">{{ item.label }}</span>
+        </button>
+      </li>
+    </ul>
+
+    <div class="navrail-utilities">
+      <button
+        class="nav-item utility-toggle"
+        :class="{ active: advancedOpen || advancedItems.some((item) => item.key === active) }"
+        :aria-expanded="advancedOpen"
+        title="更多工具"
+        @click="advancedOpen = !advancedOpen"
+      >
+        <PhDotsThree class="nav-icon" :size="20" weight="bold" />
+        <span class="nav-label">更多</span>
+      </button>
+
+      <Transition name="nav-more">
+        <ul v-if="advancedOpen" class="navrail-items advanced-items" aria-label="更多工具">
+          <li v-for="item in advancedItems" :key="item.key">
+            <button
+              class="nav-item nav-item--compact"
+              :class="{ active: active === item.key }"
+              :aria-current="active === item.key ? 'page' : undefined"
+              :title="item.label"
+              @click="emit('navigate', item.key)"
+            >
+              <component :is="item.icon" class="nav-icon" :size="18" weight="regular" />
+              <span class="nav-label">{{ item.label }}</span>
+            </button>
+          </li>
+        </ul>
+      </Transition>
+
+      <button
+        class="nav-item"
+        :class="{ active: active === 'settings' }"
+        title="设置"
+        @click="emit('navigate', 'settings')"
+      >
+        <PhGearSix class="nav-icon" :size="20" weight="regular" />
+        <span class="nav-label">设置</span>
+      </button>
+    </div>
+
     <div class="navrail-status">
       <span class="status-dot" />
       <div>
@@ -67,6 +133,12 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
         <span>Qwen3 · 本机向量库</span>
       </div>
     </div>
+
+    <button class="command-shortcut" title="打开快捷命令" @click="emit('open-command')">
+      <PhCommand :size="15" />
+      <span>快捷命令</span>
+      <kbd>Ctrl K</kbd>
+    </button>
   </nav>
 </template>
 
@@ -80,8 +152,9 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   flex-direction: column;
   align-items: stretch;
   color: var(--color-rail-fg);
-  padding: var(--space-5) var(--space-4);
-  gap: var(--space-5);
+  padding: 24px 16px 18px;
+  gap: 18px;
+  box-shadow: inset -1px 0 rgba(255, 255, 255, 0.025);
 }
 
 /* 品牌 */
@@ -93,15 +166,16 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   flex-shrink: 0;
 }
 .brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius);
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #11bfd9, #075f78);
+  background: var(--color-accent);
   color: #fff;
   font-weight: 800;
-  font-size: var(--text-lg);
+  font-family: var(--font-display);
+  font-size: 21px;
   flex-shrink: 0;
 }
 .brand-copy {
@@ -110,7 +184,7 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   min-width: 0;
 }
 .brand-copy strong {
-  font-size: var(--text-md);
+  font-size: var(--text-lg);
   color: var(--color-rail-fg-strong);
   line-height: 1.2;
 }
@@ -118,11 +192,6 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   font-size: var(--text-xs);
   color: var(--color-rail-fg-muted);
 }
-.brand-collapse {
-  margin-left: auto;
-  color: var(--color-rail-fg-muted);
-}
-
 /* 导航项 */
 .navrail-items {
   list-style: none;
@@ -132,10 +201,14 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   flex-direction: column;
   gap: var(--space-1);
 }
+.navrail-group {
+  border-top: 1px solid var(--color-rail-border);
+  padding-top: 14px;
+}
 .nav-item {
   position: relative;
   width: 100%;
-  height: 42px;
+  height: 44px;
   border: none;
   background: transparent;
   color: var(--color-rail-fg-muted);
@@ -145,7 +218,7 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   align-items: center;
   justify-content: flex-start;
   gap: var(--space-3);
-  border-radius: var(--radius-md);
+  border-radius: 10px;
   padding: 0 var(--space-3);
   transition: background var(--duration-fast) var(--ease),
     color var(--duration-fast) var(--ease);
@@ -182,9 +255,25 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   line-height: 1;
   letter-spacing: 0;
 }
+.navrail-utilities {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-top: 1px solid var(--color-rail-border);
+  padding-top: 14px;
+}
+.advanced-items {
+  padding-left: 10px;
+}
+.nav-item--compact {
+  height: 36px;
+}
+.utility-toggle.active:not(:hover) {
+  background: transparent;
+}
 .navrail-status {
   margin-top: auto;
-  padding-top: var(--space-5);
+  padding-top: 16px;
   border-top: 1px solid var(--color-rail-border);
   display: flex;
   align-items: flex-start;
@@ -214,16 +303,62 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   font-size: var(--text-xs);
   line-height: 1.45;
 }
+.command-shortcut {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--color-rail-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--color-rail-fg-muted);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease),
+    background var(--duration-fast) var(--ease),
+    border-color var(--duration-fast) var(--ease);
+}
+.command-shortcut:hover,
+.command-shortcut:focus-visible {
+  color: var(--color-rail-fg-strong);
+  background: var(--color-rail-surface);
+  border-color: rgba(120, 184, 166, 0.34);
+  outline: none;
+}
+.command-shortcut span {
+  font-size: var(--text-sm);
+}
+.command-shortcut kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-rail-fg-muted);
+  border: 1px solid var(--color-rail-border);
+  border-radius: 5px;
+  padding: 2px 5px;
+}
+.nav-more-enter-active,
+.nav-more-leave-active {
+  transition: opacity var(--duration-fast) var(--ease),
+    transform var(--duration-fast) var(--ease-out);
+}
+.nav-more-enter-from,
+.nav-more-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
 
-@media (max-width: 1120px) {
+@media (max-width: 1180px) {
   .navrail {
-    padding: var(--space-4) var(--space-2);
+    padding: 18px 10px;
     align-items: center;
   }
   .brand-copy,
-  .brand-collapse,
-  .nav-label,
-  .navrail-status {
+    .nav-label,
+    .navrail-status,
+    .command-shortcut span,
+    .command-shortcut kbd {
     display: none;
   }
   .nav-item {
@@ -232,7 +367,18 @@ const items: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
     width: 44px;
   }
   .nav-item.active::before {
-    left: -14px;
+    left: -10px;
+  }
+  .navrail-utilities {
+    width: 100%;
+  }
+  .advanced-items {
+    padding-left: 0;
+  }
+  .command-shortcut {
+    width: 44px;
+    justify-content: center;
+    padding: 0;
   }
 }
 </style>

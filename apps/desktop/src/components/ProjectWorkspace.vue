@@ -291,9 +291,14 @@ function fmtSize(n: number | null | undefined): string {
 
     <!-- 空状态 -->
     <div v-if="projects.length === 0 && !authorizing" class="empty">
-      <PhFolderPlus :size="40" weight="duotone" />
-      <p>尚未授权项目</p>
-      <p class="hint">点击「授权项目」选择一个代码目录，助手将扫描结构并支持搜索与 git 查看</p>
+      <span class="eyebrow">PROJECT WORKBENCH</span>
+      <div class="empty-icon"><PhFolderPlus :size="38" weight="duotone" /></div>
+      <h1>把代码项目带进工作台</h1>
+      <p class="hint">授权一个本地目录后，即可浏览结构、搜索代码并查看 Git 状态；任何写入仍需你的逐次批准。</p>
+      <button class="pa-btn pa-btn--primary" @click="startAuthorize">
+        <PhFolderPlus :size="15" />
+        <span>授权第一个项目</span>
+      </button>
     </div>
 
     <!-- 三栏工作区 -->
@@ -420,15 +425,16 @@ function fmtSize(n: number | null | undefined): string {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  background: var(--color-bg);
 }
 .pw-header {
   flex-shrink: 0;
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-4);
+  padding: 11px 18px;
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
 }
 .project-select {
   height: 30px;
@@ -508,20 +514,37 @@ function fmtSize(n: number | null | undefined): string {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 80px 0;
-  color: var(--color-fg-faint);
-  gap: var(--space-2);
+  padding: 80px 24px;
+  color: var(--color-fg-muted);
+  gap: 12px;
   flex: 1;
+  text-align: center;
+  background: radial-gradient(circle at 50% 38%, color-mix(in srgb, var(--color-accent) 8%, transparent), transparent 26%);
 }
+.eyebrow { color: var(--color-accent); font-size: 10px; font-weight: 700; letter-spacing: .16em; }
+.empty-icon {
+  width: 72px;
+  height: 72px;
+  margin: 5px 0 4px;
+  display: grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+  border-radius: 24px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+}
+.empty h1 { margin: 0; font-size: 30px; letter-spacing: -.045em; }
 .empty p {
   margin: 0;
   font-size: var(--text-base);
 }
 .empty .hint {
-  font-size: var(--text-sm);
-  max-width: 360px;
-  text-align: center;
+  max-width: 540px;
+  font-size: 14px;
+  line-height: 1.7;
 }
+.empty > button { margin-top: 8px; }
 
 /* 三栏 */
 .pw-body {

@@ -249,8 +249,9 @@ onMounted(load);
     <aside class="mem-list">
       <div class="pane-head">
         <div>
+          <span class="eyebrow">PERSONAL CONTEXT</span>
           <h1>记忆</h1>
-          <p>长期记忆库：偏好、学习、项目经验。</p>
+          <p>沉淀偏好、经验与长期上下文。</p>
         </div>
         <button class="icon-btn" :disabled="loading" title="刷新" @click="load">
           <PhArrowClockwise :size="16" />
@@ -410,8 +411,10 @@ onMounted(load);
 
       <!-- 空状态 -->
       <div v-else class="empty">
-        <PhBrain :size="44" weight="duotone" />
-        <p>选择左侧记忆查看详情，或新建一条记忆</p>
+        <div class="empty-icon"><PhBrain :size="38" weight="duotone" /></div>
+        <h2>你的长期上下文</h2>
+        <p>确认后的记忆会在合适的对话与任务中提供线索，敏感内容仍由你决定是否启用。</p>
+        <button class="pa-btn pa-btn--primary" @click="startNew">创建第一条记忆</button>
       </div>
     </main>
   </section>
@@ -420,15 +423,15 @@ onMounted(load);
 <style scoped>
 .mem-shell {
   display: grid;
-  grid-template-columns: 340px minmax(0, 1fr);
+  grid-template-columns: 360px minmax(0, 1fr);
   min-height: 0;
   flex: 1;
 }
 .mem-list {
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface);
+  background: color-mix(in srgb, var(--color-surface) 82%, var(--color-bg));
   overflow: auto;
-  padding: var(--space-4);
+  padding: 26px 20px;
 }
 .pane-head,
 .detail-head,
@@ -448,7 +451,9 @@ p {
   margin: 0;
 }
 h1 {
-  font-size: var(--text-xl);
+  margin-top: 3px;
+  font-size: 26px;
+  letter-spacing: -.035em;
 }
 h2 {
   font-size: var(--text-2xl);
@@ -464,6 +469,12 @@ h3 {
   color: var(--color-fg-faint);
   font-size: var(--text-sm);
 }
+.eyebrow {
+  color: var(--color-accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .16em;
+}
 .icon-btn {
   width: 30px;
   height: 30px;
@@ -478,7 +489,12 @@ h3 {
 .filters {
   display: grid;
   gap: var(--space-2);
-  margin-bottom: var(--space-3);
+  margin: 20px 0 16px;
+  padding: 16px;
+  border: 1px solid var(--color-border);
+  border-radius: 18px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-xs);
 }
 .error-line {
   color: var(--color-danger-fg);
@@ -492,12 +508,12 @@ h3 {
 .mem-row {
   width: 100%;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: 14px;
   background: var(--color-surface);
   color: var(--color-fg);
   display: grid;
   gap: 4px;
-  padding: var(--space-3);
+  padding: 13px 14px;
   margin-bottom: var(--space-2);
   text-align: left;
   cursor: pointer;
@@ -507,6 +523,7 @@ h3 {
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
 }
+.mem-row.active { box-shadow: inset 3px 0 0 var(--color-accent); }
 .mem-row.disabled {
   opacity: 0.55;
 }
@@ -539,7 +556,10 @@ h3 {
 }
 .mem-main {
   overflow: auto;
-  padding: 28px 32px;
+  padding: 34px clamp(28px, 4vw, 62px);
+  background:
+    radial-gradient(circle at 92% 4%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 28%),
+    var(--color-bg);
 }
 .detail-head {
   justify-content: space-between;
@@ -616,12 +636,33 @@ pre {
   color: var(--color-fg-faint);
 }
 .empty {
-  min-height: 420px;
+  min-height: min(620px, calc(100vh - 160px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-fg-muted);
+  text-align: center;
+  gap: 12px;
+}
+.empty-icon {
+  width: 72px;
+  height: 72px;
   display: grid;
   place-items: center;
-  color: var(--color-fg-faint);
-  text-align: center;
-  gap: var(--space-3);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+  border-radius: 24px;
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+}
+.empty h2 { margin-top: 8px; font-size: 28px; letter-spacing: -.04em; }
+.empty > p { max-width: 500px; line-height: 1.7; }
+.empty > button { margin-top: 8px; }
+.editor,
+.detail-head,
+.block {
+  max-width: 920px;
 }
 .editor h2 {
   margin-bottom: var(--space-4);
