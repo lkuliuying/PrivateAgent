@@ -26,6 +26,10 @@ const statusFilter = ref("");
 const docTypeFilter = ref("");
 const uploading = ref(false);
 const batchUploading = ref(false);
+const loading = ref(false);
+const loadedOnce = ref(false);
+const loadError = ref("");
+const reindexingAll = ref(false);
 const batchResult = ref<{
   imported: number;
   duplicate: number;
@@ -55,6 +59,7 @@ const summarizing = ref(false);
 
 async function load() {
   const seq = ++loadSeq;
+  if (!loadedOnce.value) loading.value = true;
   try {
     const result = await listDocuments(
       search.value || undefined,
@@ -63,9 +68,22 @@ async function load() {
       docTypeFilter.value || undefined
     );
     // 丢弃过期响应（防抖搜索与 3s 轮询竞态），仅保留最新一次结果
-    if (seq === loadSeq) docs.value = result;
-  } catch {
-    // 后端未连接
+    if (seq === loadSeq) {
+      docs.value = result;
+      loadError.value = "";
+      loadedOnce.value = true;
+      const visibleIds = new Set(result.map((doc) => doc.id));
+      selectedIds.value = new Set(
+        [...selectedIds.value].filter((id) => visibleIds.has(id))
+      );
+    }
+  } catch (error) {
+    if (seq === loadSeq) {
+      loadError.value = error instanceof Error ? error.message : String(error);
+      loadedOnce.value = true;
+    }
+  } finally {
+    if (seq === loadSeq) loading.value = false;
   }
 }
 
@@ -169,13 +187,17 @@ async function reindex(d: DocumentItem) {
 }
 
 async function reindexAll() {
+  if (reindexingAll.value) return;
   if (!await notify.confirm({ title: "确认重建全部文档索引？", message: "此操作会重新解析所有文档。", danger: true, impact: "将重新解析并重建全部文档的向量索引，耗时较长" })) return;
+  reindexingAll.value = true;
   try {
     const res = await reindexAllDocuments();
     notify.success("已触发重建", `触发 ${res.triggered} 个文档重建，跳过 ${res.skipped} 个（文件缺失）`);
     await load();
   } catch (err) {
     notify.error("重建全部失败", String(err));
+  } finally {
+    reindexingAll.value = false;
   }
 }
 
@@ -255,6 +277,7 @@ const STATUS_TEXT: Record<string, string> = {
   ready: "已就绪",
   failed: "失败",
   deleting: "删除中",
+  needs_ocr: "需要 OCR",
 };
 const STATUS_CLASS: Record<string, string> = {
   ready: "ok",
@@ -262,6 +285,7 @@ const STATUS_CLASS: Record<string, string> = {
   processing: "warn",
   pending: "warn",
   deleting: "warn",
+  needs_ocr: "warn",
 };
 
 function fmtSize(b: number | null): string {
@@ -333,7 +357,13 @@ function fmtSize(b: number | null): string {
       <button class="pa-btn pa-btn--primary pa-btn--sm" @click="fileInput?.click()" :disabled="uploading">
         {{ uploading ? "导入中…" : "+ 导入文档" }}
       </button>
-      <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="reindexAll">重建全部</button>
+      <button
+        class="pa-btn pa-btn--subtle pa-btn--sm"
+        :disabled="reindexingAll"
+        @click="reindexAll"
+      >
+        {{ reindexingAll ? "正在重建…" : "重建全部" }}
+      </button>
       <button
         class="pa-btn pa-btn--primary pa-btn--sm"
         :disabled="!canCompare"
@@ -348,7 +378,14 @@ function fmtSize(b: number | null): string {
       批量导入完成：{{ batchResult.imported }} 个导入，{{ batchResult.duplicate }} 个重复跳过<template v-if="batchResult.error">，{{ batchResult.error }} 个失败</template>
     </div>
 
-    <div v-if="docs.length === 0" class="empty">暂无文档，点击上方按钮导入</div>
+    <div v-if="loadError" class="load-error" role="alert">
+      <span>知识库刷新失败：{{ loadError }}</span>
+      <button class="pa-btn pa-btn--ghost pa-btn--sm" @click="load">重试</button>
+    </div>
+    <div v-if="loading && !loadedOnce" class="empty">正在加载文档…</div>
+    <div v-else-if="docs.length === 0 && !loadError" class="empty">
+      暂无文档，点击上方按钮导入
+    </div>
     <div v-else class="doc-list">
       <div v-for="d in docs" :key="d.id" class="doc-item" :class="{ disabled: !d.enabled, selected: selectedIds.has(d.id) }">
         <div class="doc-select">
@@ -485,6 +522,7 @@ h1 {
 .toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: var(--space-2);
   margin: 16px 0;
   padding: 10px;
@@ -494,6 +532,7 @@ h1 {
 }
 .search-input {
   width: 220px;
+  flex: 1 1 220px;
   height: 30px;
   font-size: var(--text-base);
 }
@@ -512,6 +551,19 @@ h1 {
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   margin-bottom: var(--space-4);
+}
+.load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+  padding: var(--space-3);
+  color: var(--color-danger-fg);
+  background: var(--color-danger-soft);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 25%, transparent);
+  border-radius: var(--radius-md);
+  word-break: break-word;
 }
 .empty {
   text-align: center;
@@ -545,6 +597,10 @@ h1 {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+}
+.doc-main {
+  flex: 1;
+  min-width: 0;
 }
 .doc-select input {
   margin: 0;
@@ -656,6 +712,8 @@ h1 {
   align-items: center;
   gap: var(--space-2);
   flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .enable-toggle {
   display: inline-flex;
@@ -686,5 +744,24 @@ h1 {
 }
 .icon-btn.del {
   color: var(--color-danger-fg);
+}
+@media (max-width: 920px) {
+  .kv-head,
+  .docs-view {
+    padding-left: var(--space-5);
+    padding-right: var(--space-5);
+  }
+  .toolbar-spacer {
+    display: none;
+  }
+  .doc-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .doc-actions {
+    width: 100%;
+    padding-left: 28px;
+    justify-content: flex-start;
+  }
 }
 </style>

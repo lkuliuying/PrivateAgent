@@ -158,6 +158,12 @@ class DocChunk(Base):
     __table_args__ = (
         UniqueConstraint("doc_id", "ordinal", name="uk_doc_ordinal"),
         Index("idx_chunk_doc", "doc_id", "ordinal"),
+        Index(
+            "ft_chunk_bm25",
+            "bm25_text",
+            mysql_prefix="FULLTEXT",
+            mysql_with_parser="ngram",
+        ),
     )
 
 

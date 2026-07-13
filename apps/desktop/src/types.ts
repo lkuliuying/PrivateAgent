@@ -40,6 +40,9 @@ export interface Source {
   chunk_id: number;
   heading?: string | null;
   score?: number | null;
+  fusion_score?: number | null;
+  bm25_score?: number | null;
+  rerank_score?: number | null;
   matched_via?: string[];
   matched_keywords?: string[];
 }

@@ -98,20 +98,7 @@ class ChatService:
             chunks = await rag.retrieve(user_content, top_k=5)
             if chunks:
                 sources = rag.format_sources(chunks)
-                context = "\n\n".join(
-                    f"[来源：{c.doc_name}·片段{c.ordinal}]\n{c.content}"
-                    for c in chunks
-                )
-                system_content = (
-                    "你是一个有用的私人助手。请根据下方「参考资料」回答用户问题，"
-                    "只能基于资料作答，不要编造；资料不足时说明「未在知识库中找到相关资料」。\n\n"
-                    "参考资料：\n" + context
-                )
-            else:
-                system_content = (
-                    "你是一个有用的私人助手。提示：未在知识库中找到相关资料，"
-                    "请如实告知用户「未在知识库中找到相关资料」。"
-                )
+            system_content = rag.build_system_prompt(chunks)
         else:
             system_content = SYSTEM_PROMPT
 

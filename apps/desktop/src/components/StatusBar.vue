@@ -6,7 +6,7 @@ import { useNotifications } from "../stores/notifications";
 import { useHealth, type HealthSnapshot } from "../stores/health";
 
 /**
- * 底部状态栏。独立轮询 /health（5s）并读取 /settings 显示当前模型。
+ * 底部状态栏。通过共享 store 轮询 /health（5s）并读取 /settings 显示当前模型。
  * 展示 API/Ollama/MySQL/Chroma 四服务状态点 + 当前模型 + 任务状态。
  * 任务状态由父组件通过 taskLabel 传入（M0：生成中/空闲；M4 接入活动流后扩展）。
  */
@@ -33,7 +33,7 @@ function okOf(h: HealthSnapshot, key: keyof HealthSnapshot): boolean {
 
 async function refresh() {
   const h = await healthStore.refresh();
-  if (h && !healthStore.error.value) {
+  if (h) {
     services.value = {
       api: okOf(h, "api") ? "ok" : "bad",
       ollama: okOf(h, "ollama") ? "ok" : "bad",
@@ -41,7 +41,7 @@ async function refresh() {
       chroma: okOf(h, "chroma") ? "ok" : "bad",
     };
   } else {
-    // 后端不可达（启动中/未连接）：全部置 idle
+    // 首次连接尚未成功时置 idle；已有快照由 store 保留，不因瞬时失败闪灰。
     services.value = { api: "idle", ollama: "idle", mysql: "idle", chroma: "idle" };
   }
 }

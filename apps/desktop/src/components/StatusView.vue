@@ -1,26 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
-import { ensureApiBase, getHealth } from "../api";
+import { ensureApiBase } from "../api";
+import { useHealth } from "../stores/health";
 
-interface ComponentHealth {
-  ok: boolean;
-  error?: string;
-  [k: string]: unknown;
-}
-interface HealthResult {
-  api: ComponentHealth;
-  ollama: ComponentHealth & {
-    models?: string[];
-    llm_model_available?: boolean;
-    embed_model_available?: boolean;
-  };
-  mysql: ComponentHealth;
-  chroma: ComponentHealth & { collections?: number };
-}
-
-const health = ref<HealthResult | null>(null);
-const connected = ref(false);
-const errorMsg = ref("");
+const { health, refreshing, error, refresh } = useHealth();
+const connected = computed(() => health.value !== null);
 const lastUpdated = ref("");
 const apiBase = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
@@ -28,14 +12,10 @@ let timer: ReturnType<typeof setInterval> | undefined;
 async function fetchHealth() {
   try {
     apiBase.value = await ensureApiBase();
-    health.value = (await getHealth()) as unknown as HealthResult;
-    connected.value = true;
-    errorMsg.value = "";
-  } catch (e) {
-    connected.value = false;
-    health.value = null;
-    errorMsg.value = e instanceof Error ? e.message : String(e);
+  } catch {
+    // refresh 会提供统一错误状态；API 地址仅用于诊断展示。
   } finally {
+    await refresh();
     lastUpdated.value = new Date().toLocaleTimeString();
   }
 }
@@ -77,14 +57,18 @@ const components = computed(() => {
     <h1>运行状态</h1>
     <p class="subtitle">确认 Ollama、MySQL、向量库、本地后端是否正常。</p>
 
-    <div v-if="!connected" class="banner error">
+    <div v-if="refreshing && !connected" class="banner neutral">正在检查本地服务…</div>
+    <div v-else-if="!connected" class="banner error">
       <div class="banner-title">⚠ 本地后端未连接</div>
       <div class="banner-detail">
         无法访问 <code>{{ apiBase || "本地 API" }}</code>。请确认 Python 后端已启动：
         <br />
         <code>uv run uvicorn personal_assistant.main_api:app --port 8000</code>
       </div>
-      <div class="banner-err">{{ errorMsg }}</div>
+      <div class="banner-err">{{ error }}</div>
+    </div>
+    <div v-else-if="error" class="banner warning">
+      当前显示最近一次确认状态；本次刷新失败：{{ error }}
     </div>
     <div v-else class="banner success">✓ 本地后端已连接</div>
 
@@ -136,6 +120,16 @@ h1 {
   background: #fdecea;
   color: #b71c1c;
   border: 1px solid #f5c6c2;
+}
+.banner.warning {
+  background: var(--color-warning-soft);
+  color: var(--color-warning-fg);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 35%, transparent);
+}
+.banner.neutral {
+  background: var(--color-surface-sunken);
+  color: var(--color-fg-muted);
+  border: 1px solid var(--color-border);
 }
 .banner-title {
   font-weight: 600;

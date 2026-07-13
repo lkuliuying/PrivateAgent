@@ -15,6 +15,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import run_release_checks as rc  # noqa: E402
 
+CURRENT_VERSION = rc.read_version()
+
 
 def test_assemble_report_ok():
     steps = [
@@ -61,7 +63,7 @@ def test_validate_latest_json_valid(tmp_path):
     (tmp_path / "latest.json").write_text(
         json.dumps(
             {
-                "version": "0.1.1",
+                "version": CURRENT_VERSION,
                 "platforms": {
                     "windows-x86_64": {"signature": "sig", "url": "http://x/y.exe"},
                 },
@@ -77,7 +79,7 @@ def test_validate_latest_json_bad_signature(tmp_path):
     (tmp_path / "latest.json").write_text(
         json.dumps(
             {
-                "version": "0.1.1",
+                "version": CURRENT_VERSION,
                 "platforms": {"windows-x86_64": {"signature": "", "url": "http://x/y.exe"}},
             }
         ),

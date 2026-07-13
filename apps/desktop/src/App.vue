@@ -49,6 +49,7 @@ type ChatMessage = Message & {
   sources?: Source[];
   memories?: MemorySource[];
   tool_call?: ToolCall;
+  clientKey?: string;
 };
 
 // 统一通知/确认/toast store（第七阶段 M4 基建）
@@ -87,6 +88,13 @@ const inspectorToggleable = computed(
   () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
 );
 let controller: AbortController | null = null;
+// 流请求序号：停止后即使旧 reader/onClose 延迟回调，也不能再改写当前会话或新流状态。
+let streamSeq = 0;
+let chatMessageSeq = 0;
+function nextChatKey(kind: "user" | "assistant" | "tool"): string {
+  chatMessageSeq += 1;
+  return `${kind}-${Date.now()}-${chatMessageSeq}`;
+}
 // plan 请求序号：每次 sendMessage 自增，旧 plan 解析回来时若序号不匹配则放弃，
 // 避免「停止 planning 后立即发新消息」时旧 plan 结果交错插入。
 let planSeq = 0;
@@ -156,6 +164,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   window.removeEventListener("keydown", onKeydown);
   planningCancelled.value = true;
+  streamSeq += 1;
   controller?.abort();
   controller = null;
 });
@@ -333,6 +342,7 @@ async function rehydrateToolCalls(sessionId: number) {
           content: "",
           created_at: tc.created_at,
           tool_call: tc,
+          clientKey: `tool-${tc.id}`,
         });
         // 原始用户消息可能未持久化（仅在 /chat/stream 时持久化），留空由批准时用默认提示
         pendingToolText.value.set(tc.id, "");
@@ -380,6 +390,7 @@ function sendMessage(text: string) {
   if (!currentSession.value || streaming.value || hasPendingTool.value) return;
   const sid = currentSession.value.id;
   const now = new Date().toISOString();
+  const kb = knowledgeBase.value;
 
   messages.value.push({
     id: -Date.now(),
@@ -387,6 +398,7 @@ function sendMessage(text: string) {
     role: "user",
     content: text,
     created_at: now,
+    clientKey: nextChatKey("user"),
   });
   streaming.value = true;
   planningCancelled.value = false;
@@ -410,13 +422,14 @@ function sendMessage(text: string) {
           content: "",
           created_at: new Date().toISOString(),
           tool_call: tc,
+          clientKey: `tool-${tc.id}`,
         });
         pendingToolText.value.set(tc.id, text);
         streaming.value = false;
         return;
       }
       // 无工具：普通流式回复
-      streamAssistantReply(sid, text, knowledgeBase.value);
+      streamAssistantReply(sid, text, kb);
     })
     .catch(() => {
       if (planningCancelled.value || mySeq !== planSeq) {
@@ -424,7 +437,7 @@ function sendMessage(text: string) {
         return;
       }
       // plan 失败，降级普通回复
-      streamAssistantReply(sid, text, knowledgeBase.value);
+      streamAssistantReply(sid, text, kb);
     });
 }
 
@@ -435,42 +448,51 @@ function streamAssistantReply(
   kb: boolean,
   toolResult?: { tool_name: string; output: Record<string, unknown> }
 ) {
-  messages.value.push({
+  const streamId = ++streamSeq;
+  const assistantMessage: ChatMessage = {
     id: -2,
     session_id: sid,
     role: "assistant",
     content: "",
     created_at: new Date().toISOString(),
-  });
-  const aiIdx = messages.value.length - 1;
+    clientKey: nextChatKey("assistant"),
+  };
+  messages.value.push(assistantMessage);
   streaming.value = true;
+
+  const isCurrentStream = () =>
+    streamId === streamSeq && currentSessionId.value === sid;
 
   controller = streamChat(
     sid,
     text,
     kb,
     (e) => {
+      if (!isCurrentStream()) return;
       if (e.type === "token" && e.content) {
-        messages.value[aiIdx].content += e.content;
+        assistantMessage.content += e.content;
       } else if (e.type === "done") {
-        if (e.message_id) messages.value[aiIdx].id = e.message_id;
-        if (e.content) messages.value[aiIdx].content = e.content;
-        if (e.sources) messages.value[aiIdx].sources = e.sources;
-        if (e.memories) messages.value[aiIdx].memories = e.memories;
-      } else if (e.type === "title" && e.title && currentSession.value) {
-        currentSession.value.title = e.title;
+        if (e.message_id) assistantMessage.id = e.message_id;
+        if (e.content) assistantMessage.content = e.content;
+        if (e.sources) assistantMessage.sources = e.sources;
+        if (e.memories) assistantMessage.memories = e.memories;
+      } else if (e.type === "title" && e.title) {
         const s = sessions.value.find((x) => x.id === sid);
         if (s) s.title = e.title;
       } else if (e.type === "error" && e.message) {
-        messages.value[aiIdx].content += `\n\n[错误：${e.message}]`;
+        assistantMessage.content += `\n\n[错误：${e.message}]`;
       }
     },
     (err) => {
-      messages.value[aiIdx].content += `\n\n[连接错误：${err}]`;
+      if (!isCurrentStream()) return;
+      assistantMessage.content += `\n\n[连接错误：${err}]`;
       streaming.value = false;
+      controller = null;
     },
     () => {
+      if (!isCurrentStream()) return;
       streaming.value = false;
+      controller = null;
     },
     toolResult
   );
@@ -568,8 +590,10 @@ async function onRejectToolCall(id: number) {
 function stopGenerate() {
   // 标记 planning 取消，阻止 plan 完成后继续回复（plan 阶段 controller 尚未赋值）
   planningCancelled.value = true;
-  controller?.abort();
+  streamSeq += 1;
+  const activeController = controller;
   controller = null;
+  activeController?.abort();
   streaming.value = false;
 }
 </script>

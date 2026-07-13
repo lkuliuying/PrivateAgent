@@ -75,7 +75,7 @@ async def _index_core(doc_id: int, file_path: str) -> int:
                     "content": p,
                     "token_count": None,
                     "heading": extract_heading(p),
-                    "bm25_text": p,  # 预留 FULLTEXT；M2 关键词召回走 content LIKE
+                    "bm25_text": p,  # MySQL FULLTEXT ngram / BM25 召回正文
                     "keywords": None,
                 }
                 for i, p in enumerate(pieces)

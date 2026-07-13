@@ -115,9 +115,53 @@ test.describe("E2E smoke", () => {
     await expect(page.locator(".navrail-brand")).toBeVisible();
     // 进入设置页，应显示后端未连接提示
     await page.locator(".nav-item", { hasText: "设置" }).click();
-    await expect(page.getByText(/本地后端未连接|无法获取状态/).first()).toBeVisible({
+    await expect(page.getByText(/本地后端.*未连接|无法获取状态/).first()).toBeVisible({
       timeout: 20_000,
     });
+  });
+
+  test("知识库窄窗口状态与操作区无横向溢出", async ({ page }) => {
+    await page.setViewportSize({ width: 960, height: 720 });
+    await mockApi(page, (url) => {
+      if (url.includes("/health")) return GREEN_HEALTH;
+      if (url.includes("/documents"))
+        return [
+          {
+            id: 1,
+            name: "一份用于验证超长文档名称在窄窗口中正确换行而不挤出操作区的资料.md",
+            mime_type: "text/markdown",
+            size_bytes: 4096,
+            content_hash: "hash",
+            embedding_model: "test",
+            chunk_count: 8,
+            status: "ready",
+            enabled: true,
+            error_message: null,
+            last_error_at: null,
+            indexed_at: null,
+            doc_type: "markdown",
+            topic: "页面显示",
+            tags_json: ["窄窗口", "长名称"],
+            language: "zh",
+            project_id: null,
+            created_at: "",
+            updated_at: "",
+          },
+        ];
+      return [];
+    });
+
+    await page.goto("/");
+    await page.locator(".nav-item", { hasText: "知识库" }).click();
+    await expect(page.getByRole("heading", { name: "知识库" })).toBeVisible();
+    await expect(page.getByText(/一份用于验证超长文档名称/)).toBeVisible();
+    const metrics = await page.evaluate(() => ({
+      body: document.body.scrollWidth,
+      root: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    }));
+    expect(metrics.body).toBeLessThanOrEqual(metrics.viewport);
+    expect(metrics.root).toBeLessThanOrEqual(metrics.viewport);
   });
 
   for (const viewport of [

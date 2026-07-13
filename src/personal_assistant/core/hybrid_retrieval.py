@@ -1,23 +1,25 @@
-"""混合检索：向量召回 + 关键词召回 + RRF 融合 + 可插拔 rerank + 命中原因。
+"""混合检索：向量召回 + MySQL FULLTEXT/BM25 + RRF + embedding 重排。
 
 设计（docs/phase3-plan.md M2 / requirements §4.5）：
 - 向量召回：embed query → ChromaDB top_n → 回查 MySQL 切片与文档。
-- 关键词召回：按查询切词后在 doc_chunks.content 上 LIKE 匹配（精确命中函数名/报错/配置项）。
+- 词法召回：MySQL FULLTEXT ngram 索引 + 自然语言相关性（BM25）。
 - 融合：RRF（Reciprocal Rank Fusion），score = Σ 1/(k+rank)，k=60。
-- rerank：Reranker 协议，默认 IdentityReranker（no-op）；可插拔交叉编码器等。
-- 命中原因：每条结果记录 matched_via（vector/keyword）与 matched_keywords。
+- rerank：默认复用本地 embedding 模型批量计算 query/chunk 语义相似度。
+- 命中原因：每条结果记录 matched_via（vector/bm25）与 matched_keywords。
 
-易维护优先：关键词召回用 MySQL LIKE（无需 FULLTEXT/ngram parser 依赖），
-精确子串命中满足 M2 验收；FULLTEXT/BM25 可后续替换 _keyword_recall 实现而不改接口。
+FULLTEXT 索引由 Alembic 0012 创建；ngram parser 同时覆盖中文短语、函数名和错误串。
+模型或某一路召回失败时保留另一路结果并记录结构化日志，不让 RAG 整体失效。
 禁用文档（enabled=False）在两路召回均被排除。
 """
 from __future__ import annotations
 
+import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
@@ -29,7 +31,11 @@ logger = get_logger(__name__)
 
 RRF_K = 60  # RRF 常数，标准值
 VECTOR_OVERFETCH = 4  # 向量过取倍数（过滤禁用/元数据后仍够 top_k）
-KEYWORD_CANDIDATE_LIMIT = 200  # 关键词召回候选上限（LIKE 扫描保护）
+BM25_CANDIDATE_LIMIT = 200
+RERANK_CANDIDATE_LIMIT = 64
+RERANK_BATCH_SIZE = 16
+FUSION_WEIGHT = 0.35
+SEMANTIC_WEIGHT = 0.65
 
 
 @dataclass
@@ -41,6 +47,9 @@ class HybridResult:
     content: str
     heading: str | None
     score: float = 0.0
+    fusion_score: float = 0.0
+    bm25_score: float | None = None
+    rerank_score: float | None = None
     matched_via: list[str] = field(default_factory=list)
     matched_keywords: list[str] = field(default_factory=list)
 
@@ -63,11 +72,66 @@ class Reranker(Protocol):
     ) -> list[HybridResult]: ...
 
 
-class IdentityReranker:
-    """默认 no-op 重排器（保持 RRF 顺序）。"""
+class EmbeddingProvider(Protocol):
+    async def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+    async def embed_one(self, text: str) -> list[float]: ...
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or len(left) != len(right):
+        raise ValueError("embedding 维度不一致")
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0 or right_norm == 0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (
+        left_norm * right_norm
+    )
+
+
+class EmbeddingReranker:
+    """使用配置的本地 embedding 模型对 RRF 候选做批量语义重排。"""
+
+    def __init__(
+        self,
+        provider: EmbeddingProvider,
+        query_embedding: list[float],
+        *,
+        batch_size: int = RERANK_BATCH_SIZE,
+    ) -> None:
+        self.provider = provider
+        self.query_embedding = query_embedding
+        self.batch_size = max(1, batch_size)
 
     async def rerank(self, query: str, results: list[HybridResult]) -> list[HybridResult]:
-        return results
+        if len(results) <= 1:
+            return results
+
+        inputs = [
+            "\n".join(part for part in (item.doc_name, item.heading, item.content) if part)[
+                :2000
+            ]
+            for item in results
+        ]
+        embeddings: list[list[float]] = []
+        for start in range(0, len(inputs), self.batch_size):
+            batch = inputs[start : start + self.batch_size]
+            batch_embeddings = await self.provider.embed(batch)
+            if len(batch_embeddings) != len(batch):
+                raise ValueError("重排 embedding 数量与候选数量不一致")
+            embeddings.extend(batch_embeddings)
+
+        fusion_scores = [item.fusion_score for item in results]
+        low, high = min(fusion_scores), max(fusion_scores)
+        for item, embedding in zip(results, embeddings, strict=True):
+            semantic = (_cosine_similarity(self.query_embedding, embedding) + 1.0) / 2.0
+            fusion = (
+                1.0 if high == low else (item.fusion_score - low) / (high - low)
+            )
+            item.rerank_score = semantic
+            item.score = FUSION_WEIGHT * fusion + SEMANTIC_WEIGHT * semantic
+        return sorted(results, key=lambda item: item.score, reverse=True)
 
 
 def extract_terms(query: str) -> list[str]:
@@ -106,9 +170,10 @@ def extract_terms(query: str) -> list[str]:
     return terms
 
 
-def _escape_like(term: str) -> str:
-    """转义 LIKE 元字符（% _ \\），避免用户输入被当通配符。"""
-    return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+def _matched_terms(content: str, terms: list[str]) -> list[str]:
+    """按 Unicode 大小写折叠补充可解释的原词命中信息。"""
+    normalized = content.casefold()
+    return [term for term in terms if term.casefold() in normalized]
 
 
 def _doc_matches_filters(doc: Document, filters: RetrievalFilters) -> bool:
@@ -138,7 +203,7 @@ class HybridRetriever:
     ) -> None:
         self.db = db
         self._provider = provider
-        self.reranker = reranker or IdentityReranker()
+        self.reranker = reranker
         self.docs = DocumentRepository(db)
         self.chunk_repo = DocChunkRepository(db)
 
@@ -160,20 +225,55 @@ class HybridRetriever:
     ) -> list[HybridResult]:
         """混合检索：向量 + 关键词 → RRF → rerank → top_k。"""
         filters = filters or RetrievalFilters()
-        if not query or not query.strip():
+        if not query or not query.strip() or top_k <= 0:
             return []
+        # 防止内部调用方误传超大值，放大向量查询和数据库候选集。
+        top_k = min(top_k, 50)
         terms = extract_terms(query)
 
-        vector_list = await self._vector_recall(query, top_k * VECTOR_OVERFETCH, filters, terms)
-        keyword_list = await self._keyword_recall(terms, KEYWORD_CANDIDATE_LIMIT, filters)
+        provider = None
+        try:
+            provider = await self._get_provider()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("embedding provider unavailable", error=str(exc))
 
-        merged = self._rrf_merge(vector_list, keyword_list, top_k * 3)
+        vector_list: list[HybridResult] = []
+        query_embedding: list[float] | None = None
+        if provider is not None:
+            try:
+                vector_list, query_embedding = await self._vector_recall(
+                    query,
+                    top_k * VECTOR_OVERFETCH,
+                    filters,
+                    terms,
+                    provider,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("vector recall failed", error=str(exc))
+
+        try:
+            bm25_list = await self._bm25_recall(
+                query, terms, BM25_CANDIDATE_LIMIT, filters
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("bm25 recall failed", error=str(exc))
+            bm25_list = []
+
+        candidate_limit = min(max(top_k * 3, top_k), RERANK_CANDIDATE_LIMIT)
+        merged = self._rrf_merge(vector_list, bm25_list, candidate_limit)
         # 为每条结果补 matched_keywords（向量召回也按内容子串判定）
         for r in merged:
             if not r.matched_keywords:
-                r.matched_keywords = [t for t in terms if t in r.content]
-        reranked = await self.reranker.rerank(query, merged)
-        return reranked[:top_k]
+                r.matched_keywords = _matched_terms(r.content, terms)
+        reranker = self.reranker
+        if reranker is None and provider is not None and query_embedding is not None:
+            reranker = EmbeddingReranker(provider, query_embedding)
+        if reranker is not None and len(merged) > 1:
+            try:
+                merged = await reranker.rerank(query, merged)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("embedding rerank failed, keeping rrf order", error=str(exc))
+        return merged[:top_k]
 
     async def _vector_recall(
         self,
@@ -181,16 +281,16 @@ class HybridRetriever:
         top_n: int,
         filters: RetrievalFilters,
         terms: list[str],
-    ) -> list[HybridResult]:
-        provider = await self._get_provider()
+        provider: EmbeddingProvider,
+    ) -> tuple[list[HybridResult], list[float] | None]:
         try:
             qvec = await provider.embed_one(query)
         except Exception as e:  # noqa: BLE001
             logger.warning("vector recall embed failed", error=str(e))
-            return []
+            return [], None
         chunk_ids = await chroma_store.query(qvec, top_k=top_n)
         if not chunk_ids:
-            return []
+            return [], qvec
         chunks_map = await self.chunk_repo.get_by_ids(chunk_ids)
         doc_cache: dict[int, Document | None] = {}
         out: list[HybridResult] = []
@@ -213,24 +313,33 @@ class HybridRetriever:
                     heading=c.heading,
                 )
             )
-        return out
+        return out, qvec
 
-    async def _keyword_recall(
+    async def _bm25_recall(
         self,
+        query: str,
         terms: list[str],
         limit: int,
         filters: RetrievalFilters,
     ) -> list[HybridResult]:
-        if not terms:
+        if not query.strip():
             return []
-        # 在 doc_chunks 上 LIKE 任一词命中（转义元字符），JOIN documents 应用 enabled/元数据过滤。
-        like_conds = [
-            DocChunk.content.like(f"%{_escape_like(t)}%", escape="\\") for t in terms
-        ]
+        if self.db.get_bind().dialect.name not in {
+            "mysql",
+            "mariadb",
+        }:
+            raise RuntimeError("FULLTEXT/BM25 召回仅支持 MySQL/MariaDB")
+
+        bm25_expr = DocChunk.bm25_text.match(
+            query,
+            mysql_boolean_mode=False,
+            mysql_natural_language=True,
+        )
+        bm25_score = bm25_expr.label("bm25_score")
         stmt = (
-            select(DocChunk, Document)
+            select(DocChunk, Document, bm25_score)
             .join(Document, DocChunk.doc_id == Document.id)
-            .where(or_(*like_conds))
+            .where(bm25_expr > 0)
         )
         if filters.enabled is not None:
             stmt = stmt.where(Document.enabled == filters.enabled)
@@ -242,40 +351,39 @@ class HybridRetriever:
             stmt = stmt.where(Document.language == filters.language)
         if filters.project_id is not None:
             stmt = stmt.where(Document.project_id == filters.project_id)
-        stmt = stmt.limit(limit)
+        if filters.tags:
+            for tag in filters.tags:
+                stmt = stmt.where(
+                    func.json_contains(
+                        Document.tags_json, json.dumps(tag, ensure_ascii=False)
+                    )
+                    == 1
+                )
+        stmt = stmt.order_by(bm25_score.desc(), DocChunk.id.asc()).limit(limit)
         result = await self.db.execute(stmt)
         rows = result.all()
 
-        scored: list[tuple[float, HybridResult, list[str]]] = []
-        for chunk, doc in rows:
-            # SQL 已过滤 enabled/doc_type/topic/language/project_id；这里补 tags 过滤，
-            # 与向量召回 _doc_matches_filters 保持一致。
-            if not _doc_matches_filters(doc, filters):
-                continue
-            matched = [t for t in terms if t in chunk.content]
-            if not matched:
-                continue
-            # 完整查询命中加权；命中词数越多分越高
-            full_query = terms[0] if terms else ""
-            score = len(matched) + (3 if full_query in chunk.content else 0)
-            r = HybridResult(
-                chunk_id=chunk.id,
-                doc_id=doc.id,
-                doc_name=doc.name,
-                ordinal=chunk.ordinal,
-                content=chunk.content,
-                heading=chunk.heading,
-                matched_keywords=matched,
+        recalled: list[HybridResult] = []
+        for chunk, doc, raw_score in rows:
+            matched = _matched_terms(chunk.content, terms)
+            recalled.append(
+                HybridResult(
+                    chunk_id=chunk.id,
+                    doc_id=doc.id,
+                    doc_name=doc.name,
+                    ordinal=chunk.ordinal,
+                    content=chunk.content,
+                    heading=chunk.heading,
+                    bm25_score=float(raw_score),
+                    matched_keywords=matched,
+                )
             )
-            scored.append((score, r, matched))
-        # 按分数降序得关键词召回排名
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [r for _, r, _ in scored]
+        return recalled
 
     def _rrf_merge(
         self,
         vector_list: list[HybridResult],
-        keyword_list: list[HybridResult],
+        bm25_list: list[HybridResult],
         top_k: int,
     ) -> list[HybridResult]:
         scores: dict[int, float] = {}
@@ -285,18 +393,20 @@ class HybridRetriever:
             scores[r.chunk_id] = scores.get(r.chunk_id, 0.0) + 1.0 / (RRF_K + rank)
             r.matched_via.append("vector")
             results[r.chunk_id] = r
-        for rank, r in enumerate(keyword_list):
+        for rank, r in enumerate(bm25_list):
             scores[r.chunk_id] = scores.get(r.chunk_id, 0.0) + 1.0 / (RRF_K + rank)
             existing = results.get(r.chunk_id)
             if existing is not None:
-                existing.matched_via.append("keyword")
+                existing.matched_via.append("bm25")
+                existing.bm25_score = r.bm25_score
                 for kw in r.matched_keywords:
                     if kw not in existing.matched_keywords:
                         existing.matched_keywords.append(kw)
             else:
-                r.matched_via.append("keyword")
+                r.matched_via.append("bm25")
                 results[r.chunk_id] = r
         for cid, s in scores.items():
             results[cid].score = s
+            results[cid].fusion_score = s
         ranked = sorted(results.values(), key=lambda r: r.score, reverse=True)
         return ranked[:top_k]

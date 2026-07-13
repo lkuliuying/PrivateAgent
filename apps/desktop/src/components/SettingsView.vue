@@ -56,7 +56,8 @@ async function load() {
 }
 onMounted(() => {
   load();
-  timer = setInterval(load, 5000);
+  // 只轮询健康状态；重复加载整张设置表单会覆盖用户尚未保存的输入。
+  timer = setInterval(() => void refreshHealth(), 5000);
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);

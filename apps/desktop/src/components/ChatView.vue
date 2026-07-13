@@ -15,6 +15,7 @@ type ChatMessage = Message & {
   sources?: Source[];
   memories?: MemorySource[];
   tool_call?: ToolCall;
+  clientKey?: string;
 };
 
 const props = withDefaults(
@@ -62,7 +63,12 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
         <div class="empty-title">把问题、文件或下一步计划交给 PrivateAgent</div>
         <div class="empty-sub">它会结合本地知识库、记忆和当前上下文回答。</div>
       </div>
-      <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+      <div
+        v-for="(m, i) in messages"
+        :key="m.clientKey ?? m.id"
+        class="msg"
+        :class="m.role"
+      >
         <div class="avatar">{{ m.role === "user" ? "我" : "P" }}</div>
         <div class="bubble-wrap">
           <ToolApprovalCard
@@ -91,7 +97,7 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
             >
               <PhPaperclip :size="13" /> 来源：<span
                 v-for="(s, si) in m.sources"
-                :key="si"
+                :key="s.chunk_id"
                 class="source"
                 @click="emit('select-chunk', s.chunk_id)"
                 >{{ s.doc_name }} · 片段{{ s.ordinal
