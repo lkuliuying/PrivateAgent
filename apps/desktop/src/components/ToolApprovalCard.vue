@@ -59,7 +59,7 @@ const readFileOutput = computed(() => {
 </script>
 
 <template>
-  <div class="tool-card" :class="`tone-${status.tone}`">
+  <div class="tool-card" :class="`tone-${status.tone}`" data-agent-card>
     <div class="card-head">
       <div class="head-left">
         <PhFileText class="tool-icon" :size="16" weight="regular" />
@@ -81,7 +81,7 @@ const readFileOutput = computed(() => {
     </div>
 
     <!-- 输入参数 -->
-    <div v-if="toolCall.input_json" class="card-section">
+    <div v-if="toolCall.input_json" class="card-section" data-tool-section>
       <div class="section-label">参数</div>
       <dl class="params">
         <div v-for="(v, k) in toolCall.input_json" :key="k" class="param-row">
@@ -92,19 +92,20 @@ const readFileOutput = computed(() => {
     </div>
 
     <!-- 成功输出 -->
-    <div v-if="readFileOutput" class="card-section">
+    <div v-if="readFileOutput" class="card-section" data-tool-section>
       <div class="section-label">
         结果 · {{ readFileOutput.size }} 字节<template v-if="readFileOutput.truncated">
           · 已截断</template>
       </div>
-      <details class="output-details">
+      <details class="output-details" data-tool-disclosure>
         <summary>查看文件内容</summary>
-        <pre class="output-pre">{{ readFileOutput.full }}</pre>
+        <pre class="output-pre" data-tool-panel>{{ readFileOutput.full }}</pre>
       </details>
     </div>
     <div
       v-else-if="toolCall.output_json && toolCall.status === 'succeeded'"
       class="card-section"
+      data-tool-section
     >
       <div class="section-label">结果</div>
       <pre class="output-pre">{{ JSON.stringify(toolCall.output_json, null, 2) }}</pre>

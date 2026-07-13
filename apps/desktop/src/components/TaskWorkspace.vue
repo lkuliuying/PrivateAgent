@@ -24,6 +24,8 @@ import {
   updateAgentTaskPlan,
 } from "../api";
 import type { AgentTask, AgentTaskStep, Project } from "../types";
+import { mountWorkflowAnimations } from "../animations/workflow";
+import type { AnimationHandle } from "../animations/utils";
 
 const tasks = ref<AgentTask[]>([]);
 const projects = ref<Project[]>([]);
@@ -41,6 +43,8 @@ let timer: ReturnType<typeof setInterval> | undefined;
 
 const candBusy = ref(false);
 const candMsg = ref("");
+const workflowRoot = ref<HTMLElement | null>(null);
+let workflowAnimations: AnimationHandle | null = null;
 
 async function genCandidates(taskId: number) {
   candBusy.value = true;
@@ -308,17 +312,22 @@ function fmt(s: string | null): string {
 }
 
 onMounted(() => {
+  if (workflowRoot.value) {
+    workflowAnimations = mountWorkflowAnimations(workflowRoot.value);
+  }
   load();
   timer = setInterval(load, 5000);
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  workflowAnimations?.destroy();
+  workflowAnimations = null;
 });
 watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 </script>
 
 <template>
-  <section class="tasks-shell">
+  <section ref="workflowRoot" class="tasks-shell">
     <aside class="task-list">
       <div class="pane-head">
         <div>
@@ -380,9 +389,16 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 
       <template v-else>
         <div class="detail-head">
-          <div>
-            <h2>{{ selected.title }}</h2>
-            <p>{{ selected.goal || "暂未填写目标" }}</p>
+          <div class="detail-title-row">
+            <div class="workflow-brain" data-agent-brain aria-hidden="true">
+              <span class="brain-ring ring-a" data-brain-ring />
+              <span class="brain-ring ring-b" data-brain-ring />
+              <PhBrain :size="22" weight="duotone" />
+            </div>
+            <div>
+              <h2>{{ selected.title }}</h2>
+              <p>{{ selected.goal || "暂未填写目标" }}</p>
+            </div>
           </div>
           <div class="head-actions">
             <span class="task-status" :class="statusClass(selected.status)">
@@ -452,10 +468,27 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
           <p class="hint">每个步骤包含 title / tool_name / input_json。保存后需要批准计划才会执行。</p>
         </section>
 
-        <div class="steps">
-          <div v-for="step in selected.steps" :key="step.id" class="step">
+        <div class="steps" data-workflow-root>
+          <div
+            v-for="(step, stepIndex) in selected.steps"
+            :key="step.id"
+            class="step"
+            data-agent-card
+            data-workflow-step
+            :data-workflow-state="step.status"
+          >
             <div class="step-top">
-              <span class="step-num">{{ step.ordinal }}</span>
+              <span class="step-num" data-workflow-node>
+                <svg
+                  v-if="step.status === 'succeeded'"
+                  class="step-check"
+                  viewBox="0 0 16 16"
+                  aria-hidden="true"
+                >
+                  <path data-workflow-check-path d="M3.5 8.25 6.6 11.2 12.7 4.9" />
+                </svg>
+                <template v-else>{{ step.ordinal }}</template>
+              </span>
               <div class="step-main">
                 <div class="step-title">{{ step.title }}</div>
                 <div class="step-sub">
@@ -493,6 +526,17 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
                 <span>从此处继续</span>
               </button>
             </div>
+
+            <svg
+              v-if="stepIndex < selected.steps.length - 1"
+              class="workflow-connector"
+              viewBox="0 0 8 100"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+            >
+              <path data-workflow-path d="M4 0V100" />
+              <circle data-workflow-particle cx="0" cy="0" r="1.7" />
+            </svg>
 
             <pre v-if="step.error_message" class="step-error">{{ step.error_message }}</pre>
             <details v-if="step.input_json || step.output_json" class="step-json">
@@ -566,6 +610,7 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 }
 .pane-head,
 .detail-head,
+.detail-title-row,
 .step-top,
 .evidence-title,
 .head-actions {
@@ -576,6 +621,38 @@ watch(selected, (task) => syncPlanEditor(task), { immediate: true });
 .detail-head {
   justify-content: space-between;
   gap: var(--space-3);
+}
+.detail-title-row {
+  gap: var(--space-3);
+  min-width: 0;
+}
+.workflow-brain {
+  position: relative;
+  width: 42px;
+  height: 42px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--color-accent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-accent-soft) 75%, var(--color-surface));
+  isolation: isolate;
+}
+.workflow-brain svg {
+  position: relative;
+  z-index: 2;
+}
+.brain-ring {
+  position: absolute;
+  inset: -1px;
+  z-index: 0;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 52%, transparent);
+  border-radius: 15px;
+  opacity: 0;
+}
+.ring-b {
+  inset: -4px;
 }
 h1,
 h2,
@@ -733,6 +810,20 @@ h3 {
   padding: 16px;
   margin-bottom: var(--space-2);
 }
+.step {
+  position: relative;
+  overflow: visible;
+  transition: border-color var(--duration) var(--ease),
+    box-shadow var(--duration) var(--ease);
+}
+.step[data-workflow-state="running"],
+.step[data-workflow-state="waiting_approval"],
+.step[data-workflow-state="approved"] {
+  border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border));
+}
+.step[data-workflow-state="succeeded"] {
+  border-color: color-mix(in srgb, var(--color-success) 34%, var(--color-border));
+}
 .step-top {
   gap: var(--space-3);
 }
@@ -745,6 +836,52 @@ h3 {
   background: var(--color-surface-sunken);
   color: var(--color-fg-muted);
   font-size: var(--text-sm);
+  position: relative;
+  z-index: 2;
+}
+.step[data-workflow-state="running"] .step-num,
+.step[data-workflow-state="waiting_approval"] .step-num,
+.step[data-workflow-state="approved"] .step-num {
+  color: var(--color-accent-soft-fg);
+  background: var(--color-accent-soft);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-accent) 9%, transparent);
+}
+.step[data-workflow-state="succeeded"] .step-num {
+  color: var(--color-success-fg);
+  background: var(--color-success-soft);
+}
+.step-check {
+  width: 16px;
+  height: 16px;
+  overflow: visible;
+}
+.step-check path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.workflow-connector {
+  position: absolute;
+  z-index: 1;
+  top: 42px;
+  bottom: -11px;
+  left: 24px;
+  width: 8px;
+  height: auto;
+  overflow: visible;
+  pointer-events: none;
+}
+.workflow-connector path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+  stroke-width: 1.3;
+}
+.workflow-connector circle {
+  fill: var(--color-accent);
+  opacity: 0;
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--color-accent) 65%, transparent));
 }
 .step-main {
   flex: 1;

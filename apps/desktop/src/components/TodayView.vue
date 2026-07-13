@@ -379,7 +379,7 @@ onMounted(load);
   <section class="today-shell" :aria-busy="loading">
     <div class="today-grid">
       <main class="today-main">
-        <header class="today-head">
+        <header class="today-head" data-motion-hero>
           <div class="title-block">
             <h1>今日工作台</h1>
             <p class="eyebrow">{{ todayLabel }} · {{ weekdayLabel }} · 聚焦当前最重要的工作</p>
@@ -404,7 +404,7 @@ onMounted(load);
         <div v-if="error" class="error-line" role="alert">{{ error }}</div>
 
         <section v-if="snap" class="today-overview" aria-label="今日概览">
-          <button v-for="item in overviewItems" :key="item.label" :class="['overview-item', item.tone]" @click="emit('navigate', item.view)">
+          <button v-for="item in overviewItems" :key="item.label" :class="['overview-item', item.tone]" data-agent-card @click="emit('navigate', item.view)">
             <span class="overview-label">{{ item.label }}</span>
             <strong>{{ item.value }}</strong>
             <small>{{ item.hint }}</small>
@@ -587,7 +587,7 @@ onMounted(load);
       </main>
 
       <aside class="today-context" aria-label="上下文中心">
-        <section class="context-card context-center">
+        <section class="context-card context-center" data-agent-card>
           <div class="context-head"><div><span class="context-kicker">CONTEXT</span><h2>上下文中心</h2></div><button class="icon-btn compact" :disabled="loading" title="刷新" @click="load"><PhArrowClockwise :size="15" /></button></div>
           <div class="context-tabs" role="tablist" aria-label="上下文类型">
             <button :class="{ active: contextTab === 'memory' }" role="tab" @click="contextTab = 'memory'">记忆</button>
@@ -1291,9 +1291,6 @@ onMounted(load);
   gap: 36px;
   align-items: start;
 }
-.today-main {
-  animation: today-rise 360ms var(--ease-out) both;
-}
 .today-head {
   min-height: 72px;
   align-items: flex-start;
@@ -1692,7 +1689,6 @@ onMounted(load);
 .today-context {
   gap: 14px;
   padding-top: 92px;
-  animation: today-rise 420ms 70ms var(--ease-out) both;
 }
 .context-card {
   gap: 13px;
@@ -1839,16 +1835,6 @@ onMounted(load);
 .workbench-modules {
   max-width: 1280px;
   gap: 24px;
-}
-@keyframes today-rise {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
 }
 @media (max-width: 1280px) {
   .today-shell {
@@ -1997,10 +1983,6 @@ onMounted(load);
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .today-main,
-  .today-context {
-    animation: none;
-  }
   .soft-action,
   .icon-btn,
   .composer-actions button {

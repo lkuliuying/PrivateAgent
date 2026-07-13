@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from "vue";
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
 import SessionList from "./components/SessionList.vue";
@@ -44,6 +44,8 @@ import {
   getApiInfo,
 } from "./api";
 import type { Message, MemorySource, Session, Source, ToolCall, View } from "./types";
+import { mountPageAnimations } from "./animations/page";
+import type { AnimationHandle } from "./animations/utils";
 
 type ChatMessage = Message & {
   sources?: Source[];
@@ -88,6 +90,7 @@ const inspectorToggleable = computed(
   () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
 );
 let controller: AbortController | null = null;
+let pageAnimations: AnimationHandle | null = null;
 // 流请求序号：停止后即使旧 reader/onClose 延迟回调，也不能再改写当前会话或新流状态。
 let streamSeq = 0;
 let chatMessageSeq = 0;
@@ -167,7 +170,25 @@ onBeforeUnmount(() => {
   streamSeq += 1;
   controller?.abort();
   controller = null;
+  pageAnimations?.destroy();
+  pageAnimations = null;
 });
+
+watch(
+  bootState,
+  async (state) => {
+    if (state !== "done" && state !== "dev") {
+      pageAnimations?.destroy();
+      pageAnimations = null;
+      return;
+    }
+    await nextTick();
+    if (state !== bootState.value || pageAnimations) return;
+    const root = document.querySelector<HTMLElement>("[data-animation-root]");
+    if (root) pageAnimations = mountPageAnimations(root);
+  },
+  { flush: "post" }
+);
 
 // ============ 启动引导 ============
 
@@ -630,6 +651,7 @@ function stopGenerate() {
   <!-- 主应用 · 四区工作台 -->
   <WorkspaceShell
     v-else
+    data-animation-root
     :title="pageTitle"
     :show-dev-tag="bootState === 'dev'"
     :show-list="view === 'chat'"

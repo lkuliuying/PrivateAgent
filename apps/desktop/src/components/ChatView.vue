@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, watch } from "vue";
+import { ref, nextTick, onBeforeUnmount, onMounted, watch } from "vue";
 import {
   PhArrowUp,
   PhBrain,
@@ -10,6 +10,9 @@ import {
 } from "@phosphor-icons/vue";
 import type { MemorySource, Message, Source, ToolCall } from "../types";
 import ToolApprovalCard from "./ToolApprovalCard.vue";
+import { mountAgentAnimations } from "../animations/agent";
+import { mountChatAnimations } from "../animations/chat";
+import type { AnimationHandle } from "../animations/utils";
 
 type ChatMessage = Message & {
   sources?: Source[];
@@ -40,6 +43,32 @@ const emit = defineEmits<{
 
 const input = ref("");
 const listRef = ref<HTMLElement | null>(null);
+const chatRef = ref<HTMLElement | null>(null);
+let chatAnimations: AnimationHandle | null = null;
+let agentAnimations: AnimationHandle | null = null;
+
+function agentStateForMessage(
+  message: ChatMessage,
+  index: number
+): "idle" | "thinking" | "executing" | undefined {
+  if (
+    message.tool_call?.status === "running" ||
+    message.tool_call?.status === "approved"
+  ) {
+    return "executing";
+  }
+  if (
+    message.role === "assistant" &&
+    props.streaming &&
+    index === props.messages.length - 1
+  ) {
+    return "thinking";
+  }
+  const hasNewerAgentMessage = props.messages
+    .slice(index + 1)
+    .some((candidate) => candidate.role !== "user");
+  return hasNewerAgentMessage ? undefined : "idle";
+}
 
 function send() {
   const t = input.value.trim();
@@ -54,10 +83,23 @@ async function scrollBottom() {
 }
 watch(() => props.messages.length, scrollBottom);
 watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
+
+onMounted(() => {
+  if (!chatRef.value) return;
+  chatAnimations = mountChatAnimations(chatRef.value);
+  agentAnimations = mountAgentAnimations(chatRef.value);
+});
+
+onBeforeUnmount(() => {
+  chatAnimations?.destroy();
+  agentAnimations?.destroy();
+  chatAnimations = null;
+  agentAnimations = null;
+});
 </script>
 
 <template>
-  <div class="chat">
+  <div ref="chatRef" class="chat">
     <div class="messages" ref="listRef">
       <div v-if="messages.length === 0" class="empty-chat">
         <div class="empty-title">把问题、文件或下一步计划交给 PrivateAgent</div>
@@ -68,8 +110,21 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
         :key="m.clientKey ?? m.id"
         class="msg"
         :class="m.role"
+        data-chat-message
       >
-        <div class="avatar">{{ m.role === "user" ? "我" : "P" }}</div>
+        <div
+          class="avatar"
+          :data-agent-state="m.role === 'user' ? undefined : agentStateForMessage(m, i)"
+        >
+          <span v-if="m.role !== 'user'" class="agent-halo halo-a" data-agent-halo />
+          <span v-if="m.role !== 'user'" class="agent-halo halo-b" data-agent-halo />
+          <span class="avatar-core" data-agent-core>{{ m.role === "user" ? "我" : "P" }}</span>
+          <span v-if="m.role !== 'user'" class="agent-flow" aria-hidden="true">
+            <i data-agent-flow-dot />
+            <i data-agent-flow-dot />
+            <i data-agent-flow-dot />
+          </span>
+        </div>
         <div class="bubble-wrap">
           <ToolApprovalCard
             v-if="m.tool_call"
@@ -78,7 +133,13 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
             @reject="emit('reject', $event)"
           />
           <template v-else>
-            <div class="bubble">
+            <div
+              class="bubble"
+              :class="{
+                'is-streaming':
+                  m.role === 'assistant' && streaming && i === messages.length - 1,
+              }"
+            >
               {{ m.content
               }}<span
                 v-if="
@@ -228,6 +289,7 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
   flex-direction: row-reverse;
 }
 .avatar {
+  position: relative;
   width: 32px;
   height: 32px;
   border-radius: var(--radius-md);
@@ -237,14 +299,55 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
   justify-content: center;
   font-size: 12px;
   font-weight: 600;
+  isolation: isolate;
+}
+.avatar-core {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
 }
 .msg.user .avatar {
   background: var(--color-surface-sunken);
   color: var(--color-fg);
 }
 .msg.assistant .avatar {
-  background: var(--color-rail-bg);
   color: #fff;
+}
+.msg.assistant .avatar-core,
+.msg.tool .avatar-core {
+  background: var(--color-rail-bg);
+}
+.agent-halo {
+  position: absolute;
+  inset: -2px;
+  z-index: 0;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 72%, transparent);
+  border-radius: 12px;
+  opacity: 0;
+  pointer-events: none;
+}
+.halo-b {
+  inset: -4px;
+}
+.agent-flow {
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  z-index: 3;
+  display: flex;
+  gap: 2px;
+  transform: translateX(-50%);
+}
+.agent-flow i {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  opacity: 0;
 }
 .bubble-wrap {
   min-width: 0;
@@ -273,6 +376,10 @@ watch(() => props.messages[props.messages.length - 1]?.content, scrollBottom);
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-bottom-left-radius: 4px;
+}
+.msg.assistant .bubble.is-streaming {
+  border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-border));
+  box-shadow: inset 2px 0 0 color-mix(in srgb, var(--color-accent) 48%, transparent);
 }
 .sources {
   margin-top: 6px;

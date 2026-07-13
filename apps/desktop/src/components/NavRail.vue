@@ -48,7 +48,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 
 <template>
   <nav class="navrail" aria-label="主导航">
-    <div class="navrail-brand" title="私人助手">
+    <div class="navrail-brand" title="私人助手" data-motion-logo>
       <div class="brand-mark">P</div>
       <div class="brand-copy">
         <strong>PrivateAgent</strong>

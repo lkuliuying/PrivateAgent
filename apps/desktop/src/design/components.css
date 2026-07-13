@@ -219,6 +219,35 @@
   box-shadow: var(--shadow);
 }
 
+/* ============ 动画语义层 ============ */
+[data-agent-card] {
+  transform-origin: center;
+}
+[data-agent-card].is-motion-hovered {
+  will-change: transform, opacity;
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  box-shadow: 0 18px 42px color-mix(in srgb, var(--color-accent) 13%, transparent),
+    0 4px 12px rgba(20, 38, 33, 0.07);
+}
+
+[data-agent-core],
+[data-agent-halo],
+[data-agent-flow-dot],
+[data-workflow-node],
+[data-workflow-particle],
+[data-agent-brain],
+[data-brain-ring] {
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-agent-card],
+  [data-agent-card].is-motion-hovered {
+    transform: none !important;
+    transition: none !important;
+  }
+}
+
 /* ============ 工具类 ============ */
 .pa-muted {
   color: var(--color-fg-muted);
