@@ -147,6 +147,9 @@ jobs:
           Push-Location apps\desktop
           npm ci
           Pop-Location
+          # v0.1.1 tracked no placeholder in this otherwise-empty directory.
+          # Its legacy sidecar script expects the destination to exist.
+          New-Item -ItemType Directory -Path apps\desktop\src-tauri\binaries -Force | Out-Null
           cmd /c scripts\build-release.bat
 
       - name: Build candidate without secrets

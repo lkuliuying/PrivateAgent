@@ -182,6 +182,13 @@ async function mockApi(page: Page, options: MockOptions = {}) {
 }
 
 test.describe("anime.js motion system", () => {
+  test.beforeEach(async ({ page }) => {
+    // Hosted Windows runners may inherit the OS-level animation-off setting.
+    // Motion assertions must explicitly exercise the no-preference branch;
+    // the dedicated reduced-motion test overrides this value below.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+  });
+
   test("Agent card hover uses transform, shadow and border glow", async ({ page }) => {
     await mockApi(page);
     await page.goto("/");

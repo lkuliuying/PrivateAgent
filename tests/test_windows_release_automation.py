@@ -113,6 +113,22 @@ def test_github_hosted_vm_separates_mechanism_and_production_lanes():
     assert "Tampered updater payload unexpectedly verified" in workflow
 
 
+def test_clean_runner_bootstraps_legacy_sidecar_destination():
+    workflow = _read(ROOT / ".github" / "workflows" / "windows-release-assurance.yml")
+    baseline_step = workflow.split("name: Build tagged baseline without secrets", 1)[
+        1
+    ].split("name: Build candidate without secrets", 1)[0]
+    assert "apps\\desktop\\src-tauri\\binaries" in baseline_step
+    assert "New-Item -ItemType Directory" in baseline_step
+
+
+def test_motion_tests_pin_no_preference_on_hosted_windows():
+    animation_spec = _read(ROOT / "apps" / "desktop" / "e2e" / "animation.spec.ts")
+    assert 'test.beforeEach(async ({ page })' in animation_spec
+    assert 'reducedMotion: "no-preference"' in animation_spec
+    assert 'reducedMotion: "reduce"' in animation_spec
+
+
 def test_workflow_never_uploads_private_key_or_certificate_artifacts():
     workflow = _read(ROOT / ".github" / "workflows" / "windows-release-assurance.yml")
     upload = workflow.rsplit("name: Upload lifecycle evidence only", 1)[1]
