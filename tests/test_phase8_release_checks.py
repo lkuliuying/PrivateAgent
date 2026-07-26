@@ -4,7 +4,7 @@
 - assemble_report：passed/failed/skipped 汇总 + ok 判定。
 - write_report：输出 JSON + Markdown。
 - validate_latest_json：合法 / 缺失（skipped）/ 签名空（failed）。
-- npm_script_exists：package.json 脚本探测。
+- npm_script_exists / resolve_executable：脚本探测与跨平台命令解析。
 """
 from __future__ import annotations
 
@@ -108,3 +108,13 @@ def test_validate_latest_json_version_mismatch(tmp_path):
 def test_npm_script_exists():
     assert rc.npm_script_exists("build") is True
     assert rc.npm_script_exists("nonexistent_script_xyz") is False
+
+
+def test_resolve_executable_supports_windows_cmd_shims(monkeypatch):
+    expected = "npm.cmd" if rc.os.name == "nt" else "npm"
+    monkeypatch.setattr(
+        rc.shutil,
+        "which",
+        lambda candidate: f"resolved/{candidate}" if candidate == expected else None,
+    )
+    assert rc.resolve_executable("npm") == f"resolved/{expected}"

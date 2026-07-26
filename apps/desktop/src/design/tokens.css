@@ -22,6 +22,9 @@
   --color-surface-raised: #ffffff; /* 抬升表面 */
   --color-panel: #f9fbfb; /* 次级工作台表面 */
   --color-surface-hover: #f0f5f3;
+  --color-canvas-glow: rgba(91, 151, 136, 0.12);
+  --color-canvas-warm: rgba(219, 178, 126, 0.1);
+  --color-grid-line: rgba(43, 74, 67, 0.035);
 
   /* 文字层 */
   --color-fg: #17211f; /* 主文字 */
@@ -56,7 +59,7 @@
   --color-info-soft: #dbeafe;
 
   /* 导航 rail · 深色（与浅色内容区对照） */
-  --color-rail-bg: #132321;
+  --color-rail-bg: #101d1b;
   --color-rail-surface: rgba(255, 255, 255, 0.08); /* rail 内 hover */
   --color-rail-active: rgba(139, 190, 173, 0.2); /* rail 内选中 */
   --color-rail-border: rgba(255, 255, 255, 0.08);
@@ -107,8 +110,10 @@
   --duration-fast: 120ms;
   --duration: 160ms;
   --duration-slow: 220ms;
+  --duration-gentle: 420ms;
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.2, 1.08);
 
   /* ============ 布局尺寸 ============ */
   --rail-w: 240px;
@@ -155,6 +160,9 @@
   --color-rail-bg: #161719;
   --color-rail-surface: #232428;
   --color-rail-active: #2a2b2e;
+  --color-canvas-glow: rgba(103, 232, 249, 0.08);
+  --color-canvas-warm: rgba(251, 191, 36, 0.05);
+  --color-grid-line: rgba(255, 255, 255, 0.025);
 }
 
 /* ============ 元素重置 ============ */

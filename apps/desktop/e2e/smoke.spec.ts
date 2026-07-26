@@ -188,6 +188,7 @@ test.describe("E2E smoke", () => {
       expect(metrics.root).toBeLessThanOrEqual(metrics.viewport);
       await expect(page.locator(".today-composer")).toBeVisible();
       if (viewport.width === 1440) {
+        await page.waitForTimeout(700);
         await page.screenshot({ path: "test-results/today-workbench-1440x900.png", fullPage: false });
       }
     });

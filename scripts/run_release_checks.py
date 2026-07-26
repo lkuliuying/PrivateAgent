@@ -13,6 +13,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -97,6 +99,16 @@ def npm_script_exists(script: str) -> bool:
         return False
 
 
+def resolve_executable(name: str) -> str:
+    """Resolve command shims explicitly because Windows CreateProcess does not run .cmd."""
+    candidates = [f"{name}.cmd", f"{name}.exe", name] if os.name == "nt" else [name]
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return name
+
+
 # ============ Python 检查 ============
 
 
@@ -106,6 +118,7 @@ def diagnostic_redaction_smoke() -> dict:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
     from personal_assistant.config import settings as cfg
+    from personal_assistant.core.db import engine as app_engine
     from personal_assistant.core.diagnostics import DiagnosticsService
     from personal_assistant.core.models import Setting
     from personal_assistant.core.settings import SettingsService
@@ -130,6 +143,9 @@ def diagnostic_redaction_smoke() -> dict:
                         await db.commit()
         finally:
             await eng.dispose()
+            # HealthService probes through the application engine; one-shot release
+            # checks must close that pool before asyncio.run tears down its loop.
+            await app_engine.dispose()
 
     try:
         ok = asyncio.run(_run())
@@ -242,16 +258,17 @@ def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
 def run_all() -> dict:
     version = read_version()
     desktop = str(PROJECT_ROOT / "apps" / "desktop")
+    npm = resolve_executable("npm")
     steps: list[dict] = []
 
     steps.append(run_shell_step("pytest", ["uv", "run", "pytest", "-q"], cwd=str(PROJECT_ROOT)))
-    steps.append(run_shell_step("npm_build", ["npm", "run", "build"], cwd=desktop))
+    steps.append(run_shell_step("npm_build", [npm, "run", "build"], cwd=desktop))
     if npm_script_exists("test"):
-        steps.append(run_shell_step("npm_test", ["npm", "run", "test"], cwd=desktop))
+        steps.append(run_shell_step("npm_test", [npm, "run", "test"], cwd=desktop))
     else:
         steps.append(skipped_step("npm_test", "package.json 无 test 脚本（M1 未接入）"))
     if npm_script_exists("e2e"):
-        steps.append(run_shell_step("npm_e2e", ["npm", "run", "e2e"], cwd=desktop))
+        steps.append(run_shell_step("npm_e2e", [npm, "run", "e2e"], cwd=desktop))
     else:
         steps.append(skipped_step("npm_e2e", "package.json 无 e2e 脚本（M1 未接入）"))
     steps.append(

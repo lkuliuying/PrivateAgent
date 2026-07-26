@@ -4,7 +4,6 @@ import type {
   Activity,
   BackupExportResult,
   BatchImportItem,
-  ChatEvent,
   ChunkDetail,
   CodeFileContent,
   CompareResult,
@@ -32,7 +31,6 @@ import type {
   MemoryItem,
   MemoryKind,
   MemoryStatus,
-  Message,
   NameSearchResponse,
   ApplyResult,
   CommandProfileCreate,
@@ -52,11 +50,8 @@ import type {
   RunResult,
   ScanResponse,
   SectionSummary,
-  Session,
   SummarizeResult,
-  ToolCall,
   ToolDefinition,
-  ToolPlanResponse,
   TrustedPath,
   WeakPoint,
   WeeklyReport,
@@ -88,6 +83,16 @@ export {
   setApiBase,
   setApiBaseDefault,
 } from "./api/http";
+export {
+  approveToolCall,
+  createSession,
+  getMessages,
+  listSessions,
+  listToolCalls,
+  planTools,
+  rejectToolCall,
+  streamChat,
+} from "./api/chat";
 export {
   cmdCheckForUpdates,
   cmdCheckDependencies,
@@ -164,27 +169,6 @@ export async function getHealth(): Promise<Record<string, unknown>> {
 export async function getApiInfo(): Promise<Record<string, unknown>> {
   const base = await ensureApiBase();
   const r = await fetch(`${base}/`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function listSessions(): Promise<Session[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/sessions`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function createSession(): Promise<Session> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/sessions`, { method: "POST" });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function getMessages(sessionId: number): Promise<Message[]> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/sessions/${sessionId}/messages`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -309,58 +293,6 @@ export async function getChunk(id: number): Promise<ChunkDetail> {
 export async function listTools(): Promise<ToolDefinition[]> {
   const base = await ensureApiBase();
   const r = await fetch(`${base}/tools`);
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
-
-export async function planTools(
-  sessionId: number,
-  message: string
-): Promise<ToolPlanResponse> {
-  const base = await ensureApiBase();
-  // 30s 超时：Ollama 连接但卡住时避免无限挂起（App.vue 的 .catch 会降级为普通回复）
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), 30000);
-  try {
-    const r = await fetch(`${base}/tools/plan`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, message }),
-      signal: controller.signal,
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    return r.json();
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-export async function approveToolCall(id: number): Promise<ToolCall> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/tool-calls/${id}/approve`, { method: "POST" });
-  if (!r.ok) {
-    const d = await r.json().catch(() => ({}));
-    throw new Error(d.detail || `HTTP ${r.status}`);
-  }
-  return r.json();
-}
-
-export async function rejectToolCall(id: number): Promise<ToolCall> {
-  const base = await ensureApiBase();
-  const r = await fetch(`${base}/tool-calls/${id}/reject`, { method: "POST" });
-  if (!r.ok) {
-    const d = await r.json().catch(() => ({}));
-    throw new Error(d.detail || `HTTP ${r.status}`);
-  }
-  return r.json();
-}
-
-export async function listToolCalls(
-  sessionId?: number
-): Promise<ToolCall[]> {
-  const base = await ensureApiBase();
-  const qs = sessionId ? `?session_id=${sessionId}` : "";
-  const r = await fetch(`${base}/tool-calls${qs}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -1967,69 +1899,4 @@ export async function updateSettings(
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
-}
-
-/**
- * SSE 流式对话。fetch + ReadableStream 解析。返回 AbortController 用于停止生成。
- */
-export function streamChat(
-  sessionId: number,
-  message: string,
-  knowledgeBase: boolean,
-  onEvent: (e: ChatEvent) => void,
-  onError: (err: string) => void,
-  onClose?: () => void,
-  toolResult?: { tool_name: string; output: Record<string, unknown> }
-): AbortController {
-  const controller = new AbortController();
-
-  ensureApiBase()
-    .then((base) =>
-      fetch(`${base}/chat/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_id: sessionId,
-          message,
-          knowledge_base: knowledgeBase,
-          ...(toolResult ? { tool_result: toolResult } : {}),
-        }),
-        signal: controller.signal,
-      }).then(async (resp) => {
-        if (!resp.ok || !resp.body) {
-          onError(`HTTP ${resp.status}`);
-          return;
-        }
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let buffer = "";
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let idx: number;
-          while ((idx = buffer.indexOf("\n\n")) >= 0) {
-            const raw = buffer.slice(0, idx);
-            buffer = buffer.slice(idx + 2);
-            const line = raw.split("\n").find((l) => l.startsWith("data:"));
-            if (!line) continue;
-            try {
-              onEvent(JSON.parse(line.slice(5).trim()));
-            } catch {
-              // 忽略解析失败的事件
-            }
-          }
-        }
-        onClose?.();
-      })
-    )
-    .catch((e) => {
-      if (e?.name === "AbortError") {
-        onClose?.();
-      } else {
-        onError(String(e));
-      }
-    });
-
-  return controller;
 }

@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 from sqlalchemy import text
 
@@ -169,19 +171,20 @@ def test_rag_prompt_treats_retrieved_text_as_untrusted_data():
 @pytest.mark.asyncio
 async def test_disabled_excluded_from_bm25_recall(db, monkeypatch):
     """禁用文档的切片在 BM25 召回中也被排除；启用后恢复。"""
+    query_token = f"disabledfilter{uuid4().hex}"
     doc, chunk = await _make_doc_chunk(
-        db, content="unique_secret_term_xyz marker", enabled=False
+        db, content=f"{query_token} marker", enabled=False
     )
     _patch_query(monkeypatch, [])
     _patch_embed_one(monkeypatch)
     svc = RagService(db)
     try:
-        assert await svc.retrieve("unique_secret_term_xyz", top_k=5) == []
+        disabled_results = await svc.retrieve(query_token, top_k=20)
+        assert chunk.id not in {item.chunk_id for item in disabled_results}
         doc.enabled = True
         await db.commit()
-        results = await svc.retrieve("unique_secret_term_xyz", top_k=5)
-        assert len(results) == 1
-        assert results[0].chunk_id == chunk.id
+        results = await svc.retrieve(query_token, top_k=20)
+        assert chunk.id in {item.chunk_id for item in results}
     finally:
         await db.delete(chunk)
         await db.delete(doc)

@@ -144,9 +144,14 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 
 <style scoped>
 .navrail {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 100%;
   height: 100%;
-  background: var(--color-rail-bg);
+  background:
+    radial-gradient(circle at 20% 0%, rgba(120, 184, 166, 0.12), transparent 32%),
+    linear-gradient(180deg, color-mix(in srgb, var(--color-rail-bg) 94%, white), var(--color-rail-bg));
   border-right: 1px solid var(--color-rail-border);
   display: flex;
   flex-direction: column;
@@ -155,6 +160,31 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   padding: 24px 16px 18px;
   gap: 18px;
   box-shadow: inset -1px 0 rgba(255, 255, 255, 0.025);
+}
+.navrail::after {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  opacity: 0.28;
+  pointer-events: none;
+  background-image: linear-gradient(
+    115deg,
+    transparent 0 42%,
+    rgba(255, 255, 255, 0.035) 50%,
+    transparent 58% 100%
+  );
+  background-size: 230% 100%;
+  animation: rail-sheen 14s ease-in-out infinite;
+}
+@keyframes rail-sheen {
+  0%,
+  68% {
+    background-position: 120% 0;
+  }
+  100% {
+    background-position: -80% 0;
+  }
 }
 
 /* 品牌 */
@@ -171,12 +201,23 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   border-radius: 11px;
   display: grid;
   place-items: center;
-  background: var(--color-accent);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.18), transparent 48%),
+    var(--color-accent);
   color: #fff;
   font-weight: 800;
   font-family: var(--font-display);
   font-size: 21px;
   flex-shrink: 0;
+  box-shadow: 0 10px 24px rgba(2, 12, 10, 0.32),
+    inset 0 1px rgba(255, 255, 255, 0.18);
+  transition: transform var(--duration-gentle) var(--ease-spring),
+    box-shadow var(--duration-gentle) var(--ease-out);
+}
+.navrail-brand:hover .brand-mark {
+  transform: rotate(-4deg) scale(1.055);
+  box-shadow: 0 14px 30px rgba(2, 12, 10, 0.42),
+    inset 0 1px rgba(255, 255, 255, 0.24);
 }
 .brand-copy {
   display: flex;
@@ -221,11 +262,13 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   border-radius: 10px;
   padding: 0 var(--space-3);
   transition: background var(--duration-fast) var(--ease),
-    color var(--duration-fast) var(--ease);
+    color var(--duration-fast) var(--ease),
+    transform var(--duration) var(--ease-out);
 }
 .nav-item:hover {
   background: var(--color-rail-surface);
   color: var(--color-rail-fg-strong);
+  transform: translateX(3px);
 }
 .nav-item:focus-visible {
   outline: none;
@@ -234,6 +277,8 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .nav-item.active {
   color: var(--color-rail-fg-strong);
   background: var(--color-rail-active);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035),
+    0 8px 20px rgba(0, 0, 0, 0.12);
 }
 /* 激活指示条 */
 .nav-item.active::before {
@@ -249,6 +294,12 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 }
 .nav-icon {
   flex-shrink: 0;
+  transition: transform var(--duration-gentle) var(--ease-spring),
+    color var(--duration-fast) var(--ease);
+}
+.nav-item:hover .nav-icon,
+.nav-item.active .nav-icon {
+  transform: scale(1.09) rotate(-2deg);
 }
 .nav-label {
   font-size: var(--text-base);
@@ -288,6 +339,16 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
   margin-top: 5px;
   flex-shrink: 0;
+  animation: rail-status-pulse 2.4s var(--ease-out) infinite;
+}
+@keyframes rail-status-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+  }
+  50% {
+    box-shadow: 0 0 0 7px rgba(34, 197, 94, 0);
+  }
 }
 .navrail-status strong,
 .navrail-status span {
@@ -379,6 +440,24 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
     width: 44px;
     justify-content: center;
     padding: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navrail::after,
+  .status-dot {
+    animation: none;
+  }
+  .brand-mark,
+  .nav-item,
+  .nav-icon {
+    transition: none;
+  }
+  .nav-item:hover,
+  .navrail-brand:hover .brand-mark,
+  .nav-item:hover .nav-icon,
+  .nav-item.active .nav-icon {
+    transform: none;
   }
 }
 </style>

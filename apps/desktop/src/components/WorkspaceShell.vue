@@ -34,6 +34,11 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
 <template>
   <div class="workspace">
+    <div class="workspace-ambient" aria-hidden="true">
+      <span class="ambient-orb ambient-orb--cool" />
+      <span class="ambient-orb ambient-orb--warm" />
+      <span class="ambient-grid" />
+    </div>
     <div class="workspace-body">
       <!-- 左侧导航 rail -->
       <div class="workspace-rail">
@@ -90,14 +95,68 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
 <style scoped>
 .workspace {
+  position: relative;
+  isolation: isolate;
   display: flex;
   flex-direction: column;
   height: 100vh;
   width: 100vw;
   overflow: hidden;
-  background: var(--color-bg);
+  background:
+    radial-gradient(circle at 72% -15%, var(--color-canvas-glow), transparent 34%),
+    var(--color-bg);
+}
+.workspace-ambient {
+  position: absolute;
+  inset: 0 0 var(--statusbar-h) var(--rail-w);
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.ambient-orb,
+.ambient-grid {
+  position: absolute;
+  display: block;
+}
+.ambient-orb {
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  filter: blur(72px);
+  opacity: 0.72;
+  animation: ambient-drift 16s ease-in-out infinite alternate;
+}
+.ambient-orb--cool {
+  top: -260px;
+  right: 12%;
+  background: var(--color-canvas-glow);
+}
+.ambient-orb--warm {
+  right: -210px;
+  bottom: -260px;
+  background: var(--color-canvas-warm);
+  animation-delay: -7s;
+  animation-duration: 19s;
+}
+.ambient-grid {
+  inset: 0;
+  opacity: 0.58;
+  background-image: linear-gradient(var(--color-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-grid-line) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.55), transparent 76%);
+}
+@keyframes ambient-drift {
+  from {
+    transform: translate3d(-18px, -8px, 0) scale(0.96);
+  }
+  to {
+    transform: translate3d(26px, 22px, 0) scale(1.06);
+  }
 }
 .workspace-body {
+  position: relative;
+  z-index: 1;
   flex: 1;
   display: flex;
   flex-direction: row;
@@ -129,7 +188,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: var(--color-bg);
+  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
 }
 
 .workspace-topbar {
@@ -140,7 +199,8 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   gap: var(--space-3);
   padding: 0 var(--space-6);
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 96%, white);
+  background: color-mix(in srgb, var(--color-bg) 84%, transparent);
+  backdrop-filter: blur(18px) saturate(1.12);
 }
 .topbar-copy {
   display: flex;
@@ -178,6 +238,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   background: var(--color-accent-soft);
 }
 .workspace-content {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
@@ -198,15 +259,21 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
 /* 状态栏 */
 .workspace-statusbar {
+  position: relative;
+  z-index: 2;
   flex-shrink: 0;
   height: var(--statusbar-h);
   border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 96%, white);
+  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  backdrop-filter: blur(16px) saturate(1.08);
 }
 
 @media (max-width: 1180px) {
   .workspace-rail {
     width: 76px;
+  }
+  .workspace-ambient {
+    left: 76px;
   }
 }
 
@@ -227,5 +294,15 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 .workspace-inspector.pa-zone-enter-from,
 .workspace-inspector.pa-zone-leave-to {
   transform: translateX(8px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ambient-orb {
+    animation: none;
+  }
+  .pa-zone-enter-active,
+  .pa-zone-leave-active {
+    transition: none;
+  }
 }
 </style>

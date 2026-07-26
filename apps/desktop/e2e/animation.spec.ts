@@ -344,6 +344,11 @@ test.describe("anime.js motion system", () => {
     await expect(liveCore).toBeVisible();
     const detachedCore = await liveCore.elementHandle();
     await page.locator(".nav-item", { hasText: "今日" }).click();
+    // Workspace views leave through a short out-in transition; cleanup is asserted
+    // after the visual handoff rather than synchronously with the click.
+    await expect
+      .poll(() => detachedCore!.evaluate((element) => element.isConnected))
+      .toBe(false);
     const cleanupState = await detachedCore!.evaluate((element) => ({
       connected: element.isConnected,
       style: element.getAttribute("style") ?? "",
