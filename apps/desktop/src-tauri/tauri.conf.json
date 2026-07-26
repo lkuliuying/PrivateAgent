@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PrivateAgent",
+  "productName": "私人助手",
   "version": "0.1.2",
   "identifier": "com.personal-assistant.desktop",
   "build": {

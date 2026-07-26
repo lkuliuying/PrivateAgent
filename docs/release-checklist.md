@@ -13,7 +13,7 @@
 | 完整证据（phase8） | `scripts\release-check-full.bat`（+ npm test / e2e / 诊断包脱敏 / latest.json 校验） | 输出 `dist\release-check-<version>.json+.md`，无 blocker |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0011 (head)`） |
+| 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0012 (head)`） |
 
 > `release-check-full.bat` 将 pytest、前端构建、Vitest、Playwright、Cargo、Alembic 与诊断包脱敏都视为发布阻断项；缺失工具也会失败。`latest.json` 在尚未生成发布资产时仍是可选检查。
 
@@ -26,7 +26,12 @@
 ## 1.2 第八阶段发布检查（phase8）
 
 - 桌面 E2E：`cd apps\desktop && npm run test`（Vitest 组件）+ `npm run e2e`（Playwright smoke）。
-- 代码签名：`scripts\sign_installer.py`（有证书走 signtool sign/verify + 重签 .sig；无证书写 unsigned 说明 + `code_signed: no`）。
+- Windows 视觉回归：`cd apps\desktop && npm run e2e:visual`；覆盖 Light/Dark、高对比、
+  900×600 到 1920×1080 响应式、Today/任务/对话关键区，并与受控基线逐像素比较。
+- 生产代码签名：`scripts\build-release.bat --production`；缺证书、证书链/时间戳验证失败或 updater 私钥缺失均阻断。无证书模式仅允许开发构建，不得发布。
+- Windows 生命周期：手动运行 GitHub Actions `Windows release assurance` 的 `production` lane，并保存 `windows-lifecycle.json`；自签名 lane 只证明机制，不代表生产身份。
+- 真实服务发布压力门禁：按 `docs/real-service-stress-testing.md` 运行 15 分钟稳态配置；
+  大文档/夜间配置另行留存 `dist/stress/*.json` 与 `.md`，清理证明必须全部为 true。
 - 备份恢复演练：`POST /backup/restore/drill`（manifest 校验 + Chroma/MySQL 一致性）；`GET /backup/migration-runbook`。
 - 升级 smoke：`scripts\upgrade_smoke.py --runbook`（真实 vN->vN+1 待真实环境执行）。
 - 扩展注册表：`GET /extensions`（command/diagnostic/maintenance 三类可见）。
@@ -43,9 +48,12 @@ scripts\build-release.bat
 
 产出（`apps\desktop\src-tauri\target\release\bundle\nsis\`）：
 
-- `PrivateAgent_<version>_x64-setup.exe`（NSIS 安装包）
-- `PrivateAgent_<version>_x64-setup.exe.sig`（updater 签名；需 `%USERPROFILE%\.tauri\personal-assistant.key`）
+- `私人助手_<version>_x64-setup.exe`（NSIS 安装包）
+- `私人助手_<version>_x64-setup.exe.sig`（updater 签名；需 `%USERPROFILE%\.tauri\personal-assistant.key`）
 - `dist\release-manifest-<version>.md`（自动生成，含 sha256 / git commit / 校验清单）
+
+> 仓库与品牌使用 `PrivateAgent`，但 Windows `productName` 固定为“私人助手”。它同时决定
+> NSIS 卸载注册键、安装目录和快捷方式，是从 v0.1.1 覆盖升级的稳定身份；不得仅为改名而修改。
 
 ## 3. 生成 updater 发布清单
 
@@ -63,8 +71,8 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 1. 在 GitHub 创建 Release，tag = `v<version>`（与 `latest.json` 的 tag 一致）。
 2. 上传**三个**资产：
-   - `PrivateAgent_<version>_x64-setup.exe`
-   - `PrivateAgent_<version>_x64-setup.exe.sig`
+   - `私人助手_<version>_x64-setup.exe`
+   - `私人助手_<version>_x64-setup.exe.sig`
    - `latest.json`
 3. Release 说明写入 changelog 与 SmartScreen 风险提示（未代码签名时）。
 
@@ -74,9 +82,12 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 在干净 Windows 机器（或已重命名 `%APPDATA%\personal-assistant` 的机器）逐项验证：
 
-### 5.1 干净安装
+### 5.1 干净安装（自动化证据）
+- [ ] `windows-release-assurance.yml` 在 GitHub 托管的全新 `windows-2025` VM 通过。
+- [ ] `windows-lifecycle.json` 显示 preflight/install/upgrade/uninstall 全部 passed。
+- [ ] 生产 lane 的两个安装包均为受信 CA Authenticode `Valid` 且包含可信时间戳。
 - [ ] 双击安装包，安装成功（`installMode: currentUser`，无需管理员）。
-- [ ] 开始菜单出现 `PrivateAgent`。
+- [ ] 开始菜单出现“私人助手”。
 - [ ] 首启进入配置向导（`ConfigWizard.vue`）。
 
 ### 5.2 首启配置向导
@@ -195,7 +206,7 @@ rollback_plan:
 ## 9. 当前已知限制
 
 - ✅ **打包 sidecar 连 MySQL 8**：旧构建的 sidecar 缺 `cryptography`，连 MySQL 8 默认 `caching_sha2_password` 认证会失败（状态页 MySQL 红）。已在 `personal_assistant.spec` 显式加入 `hiddenimports += ["cryptography"]`，并于 2026-07-08 重新构建 v0.1.1 sidecar 后验证 `/health` API / Ollama / MySQL / ChromaDB 全绿。后续发布仍需按 §5.2 复测。
-- ✅ **发布级自动化验证**：2026-07-26 的 `release-check-full.bat` 已完成 11/11 门禁：后端 `pytest` 329 项、前端 Vitest 140 项、Playwright Chromium E2E 16 项、Rust 单测 2 项全部通过，生产构建满足包体预算，`alembic current -> 0012 (head)`，诊断包逐成员脱敏与 updater 清单校验通过。证据输出为 `dist/release-check-0.1.2.json` 与 `.md`。
-- 安装包未代码签名：SmartScreen 拦截，需手动绕过（见 `docs/signing-and-keys.md` §2）。
+- ✅ **发布级自动化验证**：2026-07-26 的 `release-check-full.bat` 已完成 11/11 门禁：后端 `pytest` 373 项、前端 Vitest 140 项、Playwright Chromium E2E 27 项、Rust 单测 2 项全部通过，生产构建满足包体预算，`alembic current -> 0012 (head)`，诊断包逐成员脱敏与 updater 清单校验通过。证据输出为 `dist/release-check-0.1.2.json` 与 `.md`。
+- 当前开发机没有生产 Authenticode 私钥证书，也没有 Hyper-V/Windows Sandbox；生产发布必须在配置 Actions secrets 后通过 `windows-release-assurance.yml` 的 `production` lane。自签名 lane 不可作为生产签名证据。
 - macOS / Linux 仅有构建脚本与差异清单，未实测（见 `docs/cross-platform.md`）。
 - onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/phase5-plan.md` M5，结论暂不切换。

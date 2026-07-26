@@ -201,3 +201,41 @@ async def test_ollama_embedding_error_has_classification(monkeypatch):
         await provider.embed_one("hello")
 
     assert exc_info.value.error_code == "network_error"
+
+
+@pytest.mark.asyncio
+async def test_ollama_provider_reuses_and_closes_http_clients(monkeypatch):
+    created: list[object] = []
+    closed: list[str] = []
+
+    class AsyncTransport:
+        async def close(self):
+            closed.append("async")
+
+    class SyncTransport:
+        def close(self):
+            closed.append("sync")
+
+    class FakeComponent:
+        def __init__(self, **_kwargs):
+            self._async_client = AsyncTransport()
+            self._client = SyncTransport()
+            created.append(self)
+
+    monkeypatch.setattr(
+        provider_module,
+        "_load_ollama_components",
+        lambda: (FakeComponent, FakeComponent),
+    )
+    provider = OllamaProvider()
+
+    assert provider._chat_llm() is provider._chat_llm()
+    assert provider._embedder() is provider._embedder()
+    assert len(created) == 2
+
+    await provider.aclose()
+
+    assert closed.count("async") == 2
+    assert closed.count("sync") == 2
+    assert provider._chat_client is None
+    assert provider._embedding_client is None

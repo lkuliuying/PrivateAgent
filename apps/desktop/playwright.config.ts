@@ -4,8 +4,20 @@ import { defineConfig, devices } from "@playwright/test";
 // webServer 自动启动 Vite dev server（1420）。Tauri 桌面窗口级 E2E 见 docs/usage-guide。
 export default defineConfig({
   testDir: "./e2e",
+  snapshotPathTemplate:
+    "{testDir}/visual-baselines/{platform}/{projectName}/{arg}{ext}",
   timeout: 60_000,
-  expect: { timeout: 20_000 },
+  expect: {
+    timeout: 20_000,
+    toHaveScreenshot: {
+      animations: "disabled",
+      caret: "hide",
+      maxDiffPixelRatio: 0.001,
+      scale: "css",
+      stylePath: "./e2e/visual-stability.css",
+      threshold: 0.2,
+    },
+  },
   fullyParallel: false,
   retries: 0,
   workers: 1,
@@ -20,5 +32,16 @@ export default defineConfig({
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    {
+      name: "chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        deviceScaleFactor: 1,
+        locale: "zh-CN",
+        serviceWorkers: "block",
+        timezoneId: "Asia/Shanghai",
+      },
+    },
+  ],
 });

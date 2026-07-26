@@ -1,0 +1,489 @@
+name: Windows release assurance
+
+on:
+  # workflow_dispatch is unavailable until this new workflow reaches the
+  # default branch. This narrowly scoped push trigger bootstraps the first
+  # clean-hosted-VM evidence from the implementation branch.
+  push:
+    branches:
+      - agent/desktop-architecture-motion-refactor
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: "Self-signed validates mechanics only; production requires protected CA secrets"
+        required: true
+        type: choice
+        default: self-signed-mechanism
+        options: [self-signed-mechanism, production]
+      previous_ref:
+        description: "SemVer release tag used as the upgrade baseline (vN.N.N only)"
+        required: true
+        default: v0.1.1
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-release-assurance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  visual-regression:
+    name: Windows visual, theme, responsive, and motion regression
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      CI: "true"
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.14.0"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install locked frontend and browser
+        working-directory: apps/desktop
+        shell: pwsh
+        run: |
+          npm ci
+          npx playwright install chromium
+
+      - name: Compare screenshots and exercise animation behavior
+        working-directory: apps/desktop
+        shell: pwsh
+        run: npm run e2e
+
+      - name: Upload visual diffs and traces on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-visual-regression-diffs
+          path: |
+            apps/desktop/test-results
+            apps/desktop/playwright-report
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-without-secrets:
+    name: Build unsigned inputs without release secrets
+    runs-on: windows-2025
+    timeout-minutes: 90
+    outputs:
+      old_version: ${{ steps.versions.outputs.old_version }}
+      new_version: ${{ steps.versions.outputs.new_version }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: current
+          persist-credentials: false
+
+      - name: Reject arbitrary baseline refs before checkout
+        shell: pwsh
+        env:
+          PREVIOUS_REF: ${{ inputs.previous_ref || 'v0.1.1' }}
+        run: |
+          if ($env:PREVIOUS_REF -notmatch '^v\d+\.\d+\.\d+$') {
+            throw 'previous_ref must be an immutable SemVer tag such as v0.1.1.'
+          }
+
+      - name: Checkout tagged upgrade baseline
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: refs/tags/${{ inputs.previous_ref || 'v0.1.1' }}
+          path: previous
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.13.13"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.14.0"
+          cache: npm
+          cache-dependency-path: |
+            current/apps/desktop/package-lock.json
+            previous/apps/desktop/package-lock.json
+
+      - name: Set up pinned uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.26"
+          enable-cache: true
+
+      - name: Set up pinned Rust
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup default 1.96.1
+
+      - name: Disable updater artifacts for the unsigned build stage
+        shell: pwsh
+        run: |
+          foreach ($root in @('previous', 'current')) {
+            $path = Join-Path $root 'apps\desktop\src-tauri\tauri.conf.json'
+            $config = Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $config.bundle.createUpdaterArtifacts = $false
+            $config | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $path -Encoding UTF8
+          }
+
+      - name: Build tagged baseline without secrets
+        working-directory: previous
+        shell: pwsh
+        env:
+          PA_REQUIRE_CODESIGN: "0"
+        run: |
+          uv sync --group dev
+          Push-Location apps\desktop
+          npm ci
+          Pop-Location
+          cmd /c scripts\build-release.bat
+
+      - name: Build candidate without secrets
+        working-directory: current
+        shell: pwsh
+        env:
+          PA_REQUIRE_CODESIGN: "0"
+        run: |
+          uv sync --group dev
+          Push-Location apps\desktop
+          npm ci
+          Pop-Location
+          cmd /c scripts\build-release.bat
+
+      - name: Stage unsigned lifecycle inputs
+        id: versions
+        shell: pwsh
+        env:
+          PREVIOUS_REF: ${{ inputs.previous_ref || 'v0.1.1' }}
+        run: |
+          $oldConfig = Get-Content previous\apps\desktop\src-tauri\tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $newConfig = Get-Content current\apps\desktop\src-tauri\tauri.conf.json -Raw -Encoding UTF8 | ConvertFrom-Json
+          $old = @(Get-ChildItem previous\apps\desktop\src-tauri\target\release\bundle\nsis\*-setup.exe)
+          $new = @(Get-ChildItem current\apps\desktop\src-tauri\target\release\bundle\nsis\*-setup.exe)
+          if ($old.Count -ne 1 -or $new.Count -ne 1) { throw 'Expected exactly one old and one new installer.' }
+          if ("v$($oldConfig.version)" -ne $env:PREVIOUS_REF) { throw 'Baseline tag and embedded old version do not match.' }
+          if ([version]$oldConfig.version -ge [version]$newConfig.version) { throw 'Candidate version must be newer than the baseline.' }
+          if ($oldConfig.productName -ne $newConfig.productName) {
+            throw 'Windows productName is an upgrade identity and must not change without an explicit migration.'
+          }
+          New-Item -ItemType Directory -Path staging\old, staging\new -Force | Out-Null
+          Copy-Item -LiteralPath $old[0].FullName -Destination staging\old\old-setup.exe
+          Copy-Item -LiteralPath $new[0].FullName -Destination staging\new\new-setup.exe
+          [IO.File]::WriteAllText((Join-Path $PWD 'staging\old\updater-pubkey.txt'), [string]$oldConfig.plugins.updater.pubkey, [Text.UTF8Encoding]::new($false))
+          [IO.File]::WriteAllText((Join-Path $PWD 'staging\new\updater-pubkey.txt'), [string]$newConfig.plugins.updater.pubkey, [Text.UTF8Encoding]::new($false))
+          "old_version=$($oldConfig.version)" >> $env:GITHUB_OUTPUT
+          "new_version=$($newConfig.version)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload unsigned installers for isolated signing job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-windows-lifecycle-inputs
+          path: |
+            staging/old/old-setup.exe
+            staging/old/updater-pubkey.txt
+            staging/new/new-setup.exe
+            staging/new/updater-pubkey.txt
+          if-no-files-found: error
+          retention-days: 1
+
+  sign-and-test-on-clean-vm:
+    name: ${{ inputs.lane || 'self-signed-mechanism' }} / sign and lifecycle on clean Windows VM
+    needs: [build-without-secrets, visual-regression]
+    runs-on: windows-2025
+    timeout-minutes: 60
+    environment: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && 'windows-production-signing' || 'windows-mechanism-test' }}
+    steps:
+      - name: Enforce production ref policy before signing
+        if: (inputs.lane || 'self-signed-mechanism') == 'production'
+        shell: pwsh
+        env:
+          ACTUAL_REF: ${{ github.ref }}
+          EXPECTED_VERSION: ${{ needs.build-without-secrets.outputs.new_version }}
+        run: |
+          $expectedRef = "refs/tags/v$env:EXPECTED_VERSION"
+          if ($env:ACTUAL_REF -ne $expectedRef) {
+            throw "Production signing requires the candidate SemVer tag $expectedRef; actual ref is $env:ACTUAL_REF."
+          }
+
+      - name: Checkout fixed lifecycle verifier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: verifier
+          persist-credentials: false
+
+      - name: Download unsigned installers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: unsigned-windows-lifecycle-inputs
+          path: unsigned
+
+      - name: Set up Node.js for pinned Tauri signer
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24.14.0"
+
+      - name: Install pinned Tauri signer before secrets are available to a process
+        shell: pwsh
+        run: npm install --global --ignore-scripts @tauri-apps/cli@2.11.4
+
+      - name: Authenticode-sign installers with isolated certificate secrets
+        id: authenticode
+        shell: pwsh
+        timeout-minutes: 15
+        env:
+          LANE: ${{ inputs.lane || 'self-signed-mechanism' }}
+          PFX_BASE64: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && secrets.WINDOWS_CODESIGN_PFX_BASE64 || '' }}
+          PFX_PASSWORD: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && secrets.WINDOWS_CODESIGN_PASSWORD || '' }}
+          EXPECTED_SUBJECT: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && secrets.WINDOWS_CODESIGN_EXPECTED_SUBJECT || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $pfx = Join-Path $env:RUNNER_TEMP 'private-agent-signing.pfx'
+          $cleanupThumbprints = @()
+          try {
+            $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -File -Recurse |
+              Where-Object { $_.Directory.Name -eq 'x64' } | Sort-Object FullName -Descending | Select-Object -First 1
+            if (-not $signTool) { throw 'Windows SDK SignTool is unavailable.' }
+
+            if ($env:LANE -eq 'production') {
+              $missing = @()
+              foreach ($item in @{ PFX_BASE64=$env:PFX_BASE64; PFX_PASSWORD=$env:PFX_PASSWORD; EXPECTED_SUBJECT=$env:EXPECTED_SUBJECT }.GetEnumerator()) {
+                if (-not $item.Value) { $missing += $item.Key }
+              }
+              if ($missing.Count) { throw "Protected production secrets missing: $($missing -join ', ')" }
+              [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:PFX_BASE64))
+              $secure = ConvertTo-SecureString $env:PFX_PASSWORD -AsPlainText -Force
+              $collection = [Security.Cryptography.X509Certificates.X509Certificate2Collection]::new()
+              $collection.Import($pfx, $env:PFX_PASSWORD, [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+              $leaf = @($collection | Where-Object {
+                $eku = @($_.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' })
+                $_.HasPrivateKey -and $eku.Count -eq 1 -and
+                  @($eku[0].EnhancedKeyUsages | Where-Object { $_.Value -eq '1.3.6.1.5.5.7.3.3' }).Count -gt 0
+              })
+              if ($leaf.Count -ne 1) { throw 'PFX must contain one private-key Code Signing certificate.' }
+              if (-not [string]::Equals($leaf[0].Subject, $env:EXPECTED_SUBJECT, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Production certificate Subject mismatch.'
+              }
+              if ([string]::Equals($leaf[0].Subject, $leaf[0].Issuer, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Self-signed certificates are forbidden in production.'
+              }
+              $now = Get-Date
+              if ($leaf[0].NotBefore -gt $now -or $leaf[0].NotAfter -le $now) {
+                throw 'Production certificate is not currently valid.'
+              }
+              $before = @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object Thumbprint)
+              $cleanupThumbprints = @($collection.Thumbprint | Where-Object { $_ -notin $before })
+              Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure -Exportable:$false | Out-Null
+              $certificate = Get-Item "Cert:\CurrentUser\My\$($leaf[0].Thumbprint)"
+              $identityClass = 'trusted-ca-production'
+              $productionIdentity = $true
+            } else {
+              $subject = 'CN=PrivateAgent CI SELF-SIGNED TEST ONLY'
+              $certificate = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddDays(2) -KeyExportPolicy NonExportable
+              $cleanupThumbprints = @($certificate.Thumbprint)
+              $identityClass = 'self-signed-mechanism'
+              $productionIdentity = $false
+            }
+
+            $installers = @(Get-ChildItem unsigned -Filter '*-setup.exe' -File -Recurse)
+            if ($installers.Count -ne 2) { throw 'Expected exactly two unsigned installer inputs.' }
+            foreach ($installer in $installers) {
+              & $signTool.FullName sign /fd SHA256 /sha1 $certificate.Thumbprint /tr http://timestamp.digicert.com /td SHA256 /d PrivateAgent $installer.FullName
+              if ($LASTEXITCODE) { throw "SignTool failed for $($installer.Name)." }
+              $verification = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+              if (-not $verification.SignerCertificate -or $verification.SignerCertificate.Thumbprint -ne $certificate.Thumbprint) {
+                throw "Unexpected Authenticode signer for $($installer.Name)."
+              }
+              if (-not $verification.TimeStamperCertificate) { throw "Timestamp is missing for $($installer.Name)." }
+              if ($env:LANE -eq 'production') {
+                & $signTool.FullName verify /pa /all /v $installer.FullName
+                if ($LASTEXITCODE) { throw "SignTool verification failed for $($installer.Name)." }
+                if ($verification.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+                  throw "Production trust verification failed for $($installer.Name): $($verification.Status)."
+                }
+              } else {
+                if ($certificate.Subject -ne $certificate.Issuer -or $verification.Status.ToString() -notin @('UnknownError', 'NotTrusted')) {
+                  throw "Self-signed mechanism verification was misclassified for $($installer.Name): $($verification.Status)."
+                }
+              }
+
+              $tampered = Join-Path $env:RUNNER_TEMP "authenticode-tamper-$([Guid]::NewGuid().ToString('N')).exe"
+              try {
+                Copy-Item -LiteralPath $installer.FullName -Destination $tampered
+                $stream = [IO.File]::Open($tampered, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                try {
+                  $offset = [Math]::Max(1, [Math]::Min(4096, [int]($stream.Length / 2)))
+                  $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
+                  $original = $stream.ReadByte()
+                  if ($original -lt 0) { throw 'Unable to read Authenticode tamper probe byte.' }
+                  $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
+                  $stream.WriteByte($original -bxor 1)
+                  $stream.Flush($true)
+                } finally {
+                  $stream.Dispose()
+                }
+                $tamperedSignature = Get-AuthenticodeSignature -LiteralPath $tampered
+                if ($tamperedSignature.Status -ne [System.Management.Automation.SignatureStatus]::HashMismatch) {
+                  throw "Tampered Authenticode payload was not rejected for $($installer.Name)."
+                }
+              } finally {
+                Remove-Item -LiteralPath $tampered -Force -ErrorAction SilentlyContinue
+              }
+            }
+            "identity_class=$identityClass" >> $env:GITHUB_OUTPUT
+            "production_identity=$($productionIdentity.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          } finally {
+            Remove-Item Env:\PFX_PASSWORD, Env:\PFX_BASE64 -ErrorAction SilentlyContinue
+            foreach ($thumbprint in @($cleanupThumbprints | Select-Object -Unique)) {
+              $path = "Cert:\CurrentUser\My\$thumbprint"
+              if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+              if (Test-Path -LiteralPath $path) { throw 'Temporary signing certificate cleanup failed.' }
+            }
+            Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath $pfx) { throw 'Temporary PFX cleanup failed.' }
+          }
+
+      - name: Generate updater signatures with isolated updater secrets
+        id: updater_signing
+        shell: pwsh
+        timeout-minutes: 10
+        env:
+          LANE: ${{ inputs.lane || 'self-signed-mechanism' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ (inputs.lane || 'self-signed-mechanism') == 'production' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $updaterKey = Join-Path $env:RUNNER_TEMP 'test-only-updater.key'
+          try {
+            $tauri = (Get-Command tauri -ErrorAction Stop).Source
+            if ($env:LANE -eq 'production') {
+              if (-not $env:TAURI_SIGNING_PRIVATE_KEY -or -not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) {
+                throw 'Protected production updater signing secrets are missing.'
+              }
+              $oldPubkey = [IO.File]::ReadAllText((Resolve-Path 'unsigned\old\updater-pubkey.txt')).Trim()
+              $newPubkey = [IO.File]::ReadAllText((Resolve-Path 'unsigned\new\updater-pubkey.txt')).Trim()
+              if (-not $oldPubkey -or $oldPubkey -ne $newPubkey) {
+                throw 'Baseline and candidate embedded Tauri updater public keys must be non-empty and identical.'
+              }
+              $updaterPubkeyPath = (Resolve-Path 'unsigned\new\updater-pubkey.txt').Path
+              $updaterVerificationScope = 'embedded-production'
+            } else {
+              $updaterPassword = [Guid]::NewGuid().ToString('N')
+              & $tauri signer generate --ci --force --password $updaterPassword --write-keys $updaterKey
+              if ($LASTEXITCODE) { throw 'Ephemeral updater key generation failed.' }
+              $env:TAURI_SIGNING_PRIVATE_KEY = [IO.File]::ReadAllText($updaterKey).Trim()
+              $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $updaterPassword
+              $updaterPubkeyPath = Join-Path $PWD 'unsigned\self-signed-updater-pubkey.txt'
+              $publicKey = [IO.File]::ReadAllText("$updaterKey.pub").Trim()
+              [IO.File]::WriteAllText($updaterPubkeyPath, $publicKey, [Text.UTF8Encoding]::new($false))
+              $updaterVerificationScope = 'ephemeral-mechanism'
+            }
+
+            Push-Location $env:RUNNER_TEMP
+            try {
+              foreach ($installer in Get-ChildItem (Join-Path $env:GITHUB_WORKSPACE 'unsigned') -Filter '*-setup.exe' -File -Recurse) {
+                & $tauri signer sign $installer.FullName
+                if ($LASTEXITCODE -or -not (Test-Path "$($installer.FullName).sig")) {
+                  throw "Updater signature failed for $($installer.Name)."
+                }
+              }
+            } finally {
+              Pop-Location
+            }
+            "updater_verification_scope=$updaterVerificationScope" >> $env:GITHUB_OUTPUT
+            "updater_pubkey_file=$updaterPubkeyPath" >> $env:GITHUB_OUTPUT
+          } finally {
+            Remove-Item Env:\TAURI_SIGNING_PRIVATE_KEY, Env:\TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+            Remove-Item $updaterKey, "$updaterKey.pub" -Force -ErrorAction SilentlyContinue
+            if ((Test-Path -LiteralPath $updaterKey) -or (Test-Path -LiteralPath "$updaterKey.pub")) {
+              throw 'Temporary updater key cleanup failed.'
+            }
+          }
+
+      - name: Build pinned updater signature verifier after all secrets are removed
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.96.1 --profile minimal
+          rustup default 1.96.1
+          $env:CARGO_TARGET_DIR = Join-Path $env:RUNNER_TEMP 'updater-verifier-target'
+          cargo build --locked --release --manifest-path verifier\scripts\windows\updater-signature-verifier\Cargo.toml
+
+      - name: Verify updater signatures against the declared public key without secrets
+        shell: pwsh
+        env:
+          UPDATER_PUBKEY_FILE: ${{ steps.updater_signing.outputs.updater_pubkey_file }}
+        run: |
+          $verifier = Join-Path $env:RUNNER_TEMP 'updater-verifier-target\release\private-agent-updater-signature-verifier.exe'
+          if (-not (Test-Path -LiteralPath $verifier)) { throw 'Pinned updater signature verifier is missing.' }
+          $pubkey = $env:UPDATER_PUBKEY_FILE
+          foreach ($installer in Get-ChildItem unsigned -Filter '*-setup.exe' -File -Recurse) {
+            & $verifier $installer.FullName "$($installer.FullName).sig" $pubkey
+            if ($LASTEXITCODE) { throw "Updater signature verification failed for $($installer.Name)." }
+          }
+          $source = (Resolve-Path 'unsigned\new\new-setup.exe').Path
+          $tampered = Join-Path $env:RUNNER_TEMP 'tampered-updater-probe.exe'
+          try {
+            Copy-Item -LiteralPath $source -Destination $tampered
+            $stream = [IO.File]::Open($tampered, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            try {
+              $offset = [Math]::Max(1, [Math]::Min(4096, [int]($stream.Length / 2)))
+              $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
+              $original = $stream.ReadByte()
+              if ($original -lt 0) { throw 'Unable to read updater tamper probe byte.' }
+              $null = $stream.Seek($offset, [IO.SeekOrigin]::Begin)
+              $stream.WriteByte($original -bxor 1)
+              $stream.Flush($true)
+            } finally {
+              $stream.Dispose()
+            }
+            & $verifier $tampered "$source.sig" $pubkey
+            if ($LASTEXITCODE -eq 0) { throw 'Tampered updater payload unexpectedly verified.' }
+            $global:LASTEXITCODE = 0
+          } finally {
+            Remove-Item -LiteralPath $tampered -Force -ErrorAction SilentlyContinue
+          }
+
+      - name: Install, upgrade, and uninstall on the fresh hosted VM
+        shell: pwsh
+        env:
+          EXPECTED_OLD_VERSION: ${{ needs.build-without-secrets.outputs.old_version }}
+          EXPECTED_NEW_VERSION: ${{ needs.build-without-secrets.outputs.new_version }}
+          IDENTITY_CLASS: ${{ steps.authenticode.outputs.identity_class }}
+          PRODUCTION_IDENTITY: ${{ steps.authenticode.outputs.production_identity }}
+          UPDATER_VERIFICATION_SCOPE: ${{ steps.updater_signing.outputs.updater_verification_scope }}
+        run: |
+          $old = (Resolve-Path 'unsigned\old\old-setup.exe').Path
+          $new = (Resolve-Path 'unsigned\new\new-setup.exe').Path
+          $arguments = @{
+            OldInstaller = $old
+            NewInstaller = $new
+            ExpectedOldVersion = $env:EXPECTED_OLD_VERSION
+            ExpectedNewVersion = $env:EXPECTED_NEW_VERSION
+            ResultPath = "$env:RUNNER_TEMP\windows-lifecycle.json"
+            RequireAuthenticode = $true
+            IdentityClass = $env:IDENTITY_CLASS
+            UpdaterVerificationScope = $env:UPDATER_VERIFICATION_SCOPE
+            UpdaterSignatureVerified = $true
+          }
+          if ($env:PRODUCTION_IDENTITY -eq 'true') { $arguments.ProductionIdentity = $true }
+          & verifier\scripts\windows\install-lifecycle.ps1 @arguments
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Upload lifecycle evidence only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-lifecycle-${{ inputs.lane || 'self-signed-mechanism' }}
+          path: ${{ runner.temp }}/windows-lifecycle.json
+          if-no-files-found: warn
+          retention-days: 14

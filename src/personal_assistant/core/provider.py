@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
@@ -138,19 +139,23 @@ class OllamaProvider:
             temperature if temperature is not None else settings.llm_temperature
         )
         self.context_length = context_length or settings.llm_context_length
+        self._chat_client: Any = None
+        self._embedding_client: Any = None
 
     # ---------------- LLM ----------------
     def _chat_llm(self) -> Any:
         # client_kwargs.timeout 限制每次 HTTP 读写，避免 Ollama 连接但卡住时
         # ainvoke/astream 无限挂起（ollama 客户端默认 timeout=None）。
         chat_ollama, _ = _load_ollama_components()
-        return chat_ollama(
-            model=self.llm_model,
-            base_url=self.base_url,
-            temperature=self.temperature,
-            num_ctx=self.context_length,
-            client_kwargs={"timeout": httpx.Timeout(60.0)},
-        )
+        if self._chat_client is None:
+            self._chat_client = chat_ollama(
+                model=self.llm_model,
+                base_url=self.base_url,
+                temperature=self.temperature,
+                num_ctx=self.context_length,
+                client_kwargs={"timeout": httpx.Timeout(60.0)},
+            )
+        return self._chat_client
 
     async def chat(self, messages: list[dict[str, str]]) -> str:
         """非流式对话。"""
@@ -180,11 +185,44 @@ class OllamaProvider:
     # ---------------- Embedding ----------------
     def _embedder(self) -> Any:
         _, ollama_embeddings = _load_ollama_components()
-        return ollama_embeddings(
-            model=self.embed_model,
-            base_url=self.base_url,
-            client_kwargs={"timeout": httpx.Timeout(60.0)},
-        )
+        if self._embedding_client is None:
+            self._embedding_client = ollama_embeddings(
+                model=self.embed_model,
+                base_url=self.base_url,
+                client_kwargs={"timeout": httpx.Timeout(60.0)},
+            )
+        return self._embedding_client
+
+    async def aclose(self) -> None:
+        """Deterministically close cached Ollama HTTP clients."""
+
+        errors: list[BaseException] = []
+        for component in (self._chat_client, self._embedding_client):
+            if component is None:
+                continue
+            for name in ("_async_client", "_client"):
+                client = getattr(component, name, None)
+                close = getattr(client, "close", None)
+                if not callable(close):
+                    continue
+                try:
+                    result = close()
+                    if inspect.isawaitable(result):
+                        await result
+                except BaseException as exc:  # noqa: BLE001 - close every client
+                    errors.append(exc)
+        self._chat_client = None
+        self._embedding_client = None
+        if errors:
+            raise RuntimeError(
+                "failed to close one or more Ollama provider clients"
+            ) from errors[0]
+
+    async def __aenter__(self) -> "OllamaProvider":
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        await self.aclose()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:

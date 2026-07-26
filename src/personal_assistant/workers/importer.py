@@ -24,6 +24,26 @@ from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
 CANCELLED_RETRY_ERROR = "任务因应用关闭而中断，可重试"
+EMBED_BATCH_SIZE = 32
+
+
+async def _purge_partial_index(doc_id: int) -> None:
+    """Best-effort is not enough here: both indexes must agree after failure."""
+
+    failures: list[str] = []
+    try:
+        await chroma_store.delete_by_doc(doc_id)
+    except Exception as exc:  # noqa: BLE001 - aggregate both cleanup targets
+        failures.append(f"chroma:{type(exc).__name__}")
+    try:
+        async with async_session_factory() as db:
+            await DocChunkRepository(db).delete_by_doc(doc_id)
+    except Exception as exc:  # noqa: BLE001 - aggregate both cleanup targets
+        failures.append(f"mysql:{type(exc).__name__}")
+    if failures:
+        raise RuntimeError(
+            "partial document index cleanup failed (" + ", ".join(failures) + ")"
+        )
 
 
 async def _notify(
@@ -60,36 +80,50 @@ async def _index_core(doc_id: int, file_path: str) -> int:
     if not pieces:
         raise ValueError("切分结果为空，文档可能无有效文本")
 
-    embeddings = await provider.embed(pieces)
-    if len(embeddings) != len(pieces):
-        raise ValueError(
-            f"向量化数量({len(embeddings)})与切片数({len(pieces)})不一致"
-        )
+    indexed = 0
+    try:
+        # Ollama processes every input in an embedding request. Sending all
+        # chunks from a multi-megabyte document in one call exceeds the client
+        # timeout and creates an unbounded response. Keep each request and each
+        # MySQL/Chroma write bounded instead.
+        async with provider:
+            for start in range(0, len(pieces), EMBED_BATCH_SIZE):
+                batch = pieces[start : start + EMBED_BATCH_SIZE]
+                embeddings = await provider.embed(batch)
+                if len(embeddings) != len(batch):
+                    raise ValueError(
+                        f"向量化数量({len(embeddings)})与切片数({len(batch)})不一致"
+                    )
 
-    async with async_session_factory() as db:
-        chunks_repo = DocChunkRepository(db)
-        chunk_objs = await chunks_repo.add_many(
-            doc_id,
-            [
-                {
-                    "ordinal": i + 1,
-                    "content": p,
-                    "token_count": None,
-                    "heading": extract_heading(p),
-                    "bm25_text": p,  # MySQL FULLTEXT ngram / BM25 召回正文
-                    "keywords": None,
-                }
-                for i, p in enumerate(pieces)
-            ],
-        )
-        chunk_ids = [c.id for c in chunk_objs]
+                async with async_session_factory() as db:
+                    chunk_objs = await DocChunkRepository(db).add_many(
+                        doc_id,
+                        [
+                            {
+                                "ordinal": start + offset + 1,
+                                "content": piece,
+                                "token_count": None,
+                                "heading": extract_heading(piece),
+                                "bm25_text": piece,
+                                "keywords": None,
+                            }
+                            for offset, piece in enumerate(batch)
+                        ],
+                    )
+                    chunk_ids = [chunk.id for chunk in chunk_objs]
 
-    await chroma_store.add(
-        chunk_ids=chunk_ids,
-        embeddings=embeddings,
-        doc_ids=[doc_id] * len(chunk_ids),
-    )
-    return len(chunk_ids)
+                await chroma_store.add(
+                    chunk_ids=chunk_ids,
+                    embeddings=embeddings,
+                    doc_ids=[doc_id] * len(chunk_ids),
+                )
+                indexed += len(chunk_ids)
+    except BaseException:
+        # Includes cancellation: a stopped import must not leave a document
+        # half-present in MySQL or Chroma.
+        await _purge_partial_index(doc_id)
+        raise
+    return indexed
 
 
 async def _sync_activity(
@@ -235,9 +269,7 @@ async def retry_import(doc_id: int, file_path: str) -> None:
         existing = await chunks_repo.list_by_doc(doc_id)
         if existing:
             await chroma_store.delete_by_doc(doc_id)
-            for c in existing:
-                await db.delete(c)
-            await db.commit()
+            await chunks_repo.delete_by_doc(doc_id)
     await import_document(doc_id, file_path)
 
 
@@ -248,7 +280,5 @@ async def reindex_document(doc_id: int, file_path: str) -> None:
         existing = await chunks_repo.list_by_doc(doc_id)
         if existing:
             await chroma_store.delete_by_doc(doc_id)
-            for c in existing:
-                await db.delete(c)
-            await db.commit()
+            await chunks_repo.delete_by_doc(doc_id)
     await import_document(doc_id, file_path, activity_kind="reindex")

@@ -99,6 +99,82 @@ async def test_batch_import(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_large_import_embeddings_are_bounded_and_incremental(client, monkeypatch):
+    """大文档不得把全部切片塞进一次 Ollama 请求。"""
+    import uuid
+
+    import personal_assistant.workers.importer as importer
+
+    calls: list[int] = []
+
+    async def fake_embed(self, texts):
+        calls.append(len(texts))
+        return [[0.0] * 8 for _ in texts]
+
+    monkeypatch.setattr(importer, "EMBED_BATCH_SIZE", 3)
+    _patch_embed(monkeypatch, fake_embed)
+    content = (f"batch-{uuid.uuid4().hex}\n" + ("bounded embedding content " * 400)).encode()
+    doc = await import_one(client, "bounded-large.md", content)
+
+    for _ in range(100):
+        current = next(
+            item for item in (await client.get("/documents")).json() if item["id"] == doc["id"]
+        )
+        if current["status"] in {"ready", "failed"}:
+            break
+        await asyncio.sleep(0.1)
+
+    assert current["status"] == "ready", current.get("error_message")
+    assert len(calls) > 1
+    assert max(calls) <= 3
+    assert sum(calls) == current["chunk_count"]
+
+
+@pytest.mark.asyncio
+async def test_failed_incremental_import_purges_partial_mysql_and_chroma(
+    client, db, monkeypatch
+):
+    """后续批次失败时，前面已提交的双索引也必须回滚干净。"""
+    import uuid
+
+    from sqlalchemy import func, select
+
+    import personal_assistant.workers.importer as importer
+    from personal_assistant.core.models import DocChunk
+    from personal_assistant.core.store_chroma import chroma_store
+
+    calls = 0
+
+    async def fail_second_batch(self, texts):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second batch failed")
+        return [[0.0] * 8 for _ in texts]
+
+    monkeypatch.setattr(importer, "EMBED_BATCH_SIZE", 2)
+    _patch_embed(monkeypatch, fail_second_batch)
+    before_vectors = await chroma_store.count()
+    content = (f"rollback-{uuid.uuid4().hex}\n" + ("partial cleanup content " * 180)).encode()
+    doc = await import_one(client, "rollback-large.md", content)
+
+    for _ in range(100):
+        current = next(
+            item for item in (await client.get("/documents")).json() if item["id"] == doc["id"]
+        )
+        if current["status"] == "failed":
+            break
+        await asyncio.sleep(0.1)
+
+    assert current["status"] == "failed"
+    chunk_count = await db.scalar(
+        select(func.count(DocChunk.id)).where(DocChunk.doc_id == doc["id"])
+    )
+    assert int(chunk_count or 0) == 0
+    assert await chroma_store.count() == before_vectors
+
+
+@pytest.mark.asyncio
 async def test_patch_document_enabled(client, monkeypatch):
     """PATCH /documents/{id} 切换启用状态，DocumentOut 含 enabled 字段。"""
     async def fake_embed(self, texts):

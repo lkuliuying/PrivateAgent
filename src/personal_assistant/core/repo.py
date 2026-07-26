@@ -177,9 +177,18 @@ class DocChunkRepository:
         ]
         self.db.add_all(objs)
         await self.db.commit()
-        for o in objs:
-            await self.db.refresh(o)
+        # ``expire_on_commit=False`` keeps the auto-increment ids populated by
+        # the flush. Refreshing every row turns a large import into thousands
+        # of avoidable SELECT round trips.
+        if any(item.id is None for item in objs):
+            raise RuntimeError("chunk insert completed without generated ids")
         return objs
+
+    async def delete_by_doc(self, doc_id: int) -> int:
+        """Bulk-delete one document's chunks and return the affected row count."""
+        result = await self.db.execute(delete(DocChunk).where(DocChunk.doc_id == doc_id))
+        await self.db.commit()
+        return int(result.rowcount or 0)
 
     async def list_by_doc(self, doc_id: int) -> list[DocChunk]:
         stmt = (

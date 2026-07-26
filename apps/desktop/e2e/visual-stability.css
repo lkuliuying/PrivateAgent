@@ -1,0 +1,17 @@
+/*
+ * Screenshot assertions exercise the final, reduced-motion UI state. Motion
+ * behaviour itself remains covered by animation.spec.ts so that a frame race
+ * cannot make the visual baselines flaky.
+ */
+html {
+  scroll-behavior: auto !important;
+}
+
+*,
+*::before,
+*::after {
+  animation: none !important;
+  caret-color: transparent !important;
+  scroll-behavior: auto !important;
+  transition: none !important;
+}

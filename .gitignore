@@ -25,6 +25,7 @@ data/
 node_modules/
 apps/desktop/dist/
 apps/desktop/src-tauri/target/
+scripts/windows/updater-signature-verifier/target/
 apps/desktop/src-tauri/gen/
 # 前端测试产物（第八阶段 M1：Vitest / Playwright）
 apps/desktop/test-results/

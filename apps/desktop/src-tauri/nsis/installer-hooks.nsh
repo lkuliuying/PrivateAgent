@@ -4,8 +4,31 @@
 ; so the default NSIS Delete silently fails. Stop every matching current-user
 ; sidecar and confirm the process is gone before files are copied or removed.
 
-!macro PA_STOP_SIDECAR
+!macro PA_STOP_APP_PROCESSES
   !define PA_HOOK_ID ${__LINE__}
+  StrCpy $R8 20
+
+  pa_main_stop_${PA_HOOK_ID}:
+    nsis_tauri_utils::FindProcessCurrentUser "${MAINBINARYNAME}.exe"
+    Pop $R0
+    ${If} $R0 != 0
+      Goto pa_main_stopped_${PA_HOOK_ID}
+    ${EndIf}
+
+    nsis_tauri_utils::KillProcessCurrentUser "${MAINBINARYNAME}.exe"
+    Pop $R0
+    Sleep 250
+    IntOp $R8 $R8 - 1
+    ${If} $R8 > 0
+      Goto pa_main_stop_${PA_HOOK_ID}
+    ${EndIf}
+
+    IfSilent pa_main_abort_${PA_HOOK_ID} 0
+    MessageBox MB_ICONSTOP|MB_OK "PrivateAgent is still running. Please close it and try again.$\r$\n$\r$\nPrivateAgent 仍在运行，请结束该进程后重试。"
+    pa_main_abort_${PA_HOOK_ID}:
+      Abort
+
+  pa_main_stopped_${PA_HOOK_ID}:
   StrCpy $R8 20
 
   pa_sidecar_stop_${PA_HOOK_ID}:
@@ -33,9 +56,9 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
-  !insertmacro PA_STOP_SIDECAR
+  !insertmacro PA_STOP_APP_PROCESSES
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
-  !insertmacro PA_STOP_SIDECAR
+  !insertmacro PA_STOP_APP_PROCESSES
 !macroend

@@ -93,6 +93,38 @@ def rel(p: Path) -> str:
         return str(p)
 
 
+def latest_qualifying_stress_evidence(commit: str) -> tuple[Path, dict] | None:
+    """Return the newest source-bound real-service release stress report."""
+
+    candidates: list[tuple[str, Path, dict]] = []
+    for path in (DIST / "stress").glob("real-services-*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            parameters = payload.get("parameters", {})
+            cleanup = payload.get("cleanup", {})
+            integrity = payload.get("integrity", {})
+            provenance = payload.get("provenance", {})
+            qualified = (
+                payload.get("status") == "passed"
+                and float(parameters.get("duration_seconds", 0)) >= 900
+                and float(parameters.get("document_size_mb", 0)) >= 4
+                and provenance.get("git_commit") == commit
+                and provenance.get("git_dirty") is False
+                and cleanup.get("database_cleanup_verified") is True
+                and cleanup.get("data_removed") is True
+                and integrity.get("chunk_id_sets_equal") is True
+                and integrity.get("all_document_markers_verified") is True
+            )
+            if qualified:
+                candidates.append((str(payload.get("finished_at") or ""), path, payload))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+    if not candidates:
+        return None
+    _finished_at, path, payload = max(candidates, key=lambda item: item[0])
+    return path, payload
+
+
 def build_manifest() -> str:
     version = read_version()
     commit = git(["rev-parse", "HEAD"])
@@ -103,12 +135,14 @@ def build_manifest() -> str:
     # 代码签名状态（由 sign_installer.py 写入 dist/codesign-status-<version>.json）
     code_signed = False
     cert_subject: str | None = None
+    codesign_installer_sha256: str | None = None
     codesign_status_path = DIST / f"codesign-status-{version}.json"
     if codesign_status_path.exists():
         try:
             cs = json.loads(codesign_status_path.read_text(encoding="utf-8"))
             code_signed = bool(cs.get("code_signed"))
             cert_subject = cs.get("cert_subject")
+            codesign_installer_sha256 = cs.get("installer_sha256")
         except Exception:  # noqa: BLE001
             pass
 
@@ -125,10 +159,14 @@ def build_manifest() -> str:
     sidecar_hash = sha256(SIDECAR)
     installer, sig = find_installer(version)
     installer_hash = sha256(installer) if installer else None
+    if code_signed and codesign_installer_sha256 != installer_hash:
+        code_signed = False
+        cert_subject = None
     sig_hash = sha256(sig) if sig else None
 
     sidecar_size = SIDECAR.stat().st_size if SIDECAR.exists() else None
     installer_size = installer.stat().st_size if installer and installer.exists() else None
+    stress_evidence = latest_qualifying_stress_evidence(commit)
 
     lines: list[str] = [
         f"# Release Manifest — v{version}",
@@ -170,7 +208,7 @@ def build_manifest() -> str:
         "### Code signing (Authenticode)",
         f"- code_signed: {'yes' if code_signed else 'no'}",
         f"- cert_subject: {cert_subject or '(unsigned)'}",
-        "- 无证书时安装包未签名，SmartScreen 会拦截首次运行；详见 dist/unsigned-note-<version>.md。",
+        "- code_signed=no 仅允许开发验证，生产发布必须由 scripts/build-release.bat --production 阻断。",
         "",
         "## Updater manifest (latest.json)",
         "",
@@ -182,8 +220,9 @@ def build_manifest() -> str:
         "- [ ] `scripts/release-check.bat` (pytest / npm build / cargo check / alembic current)",
         "- [ ] `scripts/release-check-full.bat` (phase8: + npm test / e2e / 诊断包脱敏 / 清单校验)",
         "- [ ] `/health` all green",
-        "- [ ] clean-install smoke (docs/release-checklist.md)",
-        "- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）",
+        "- [ ] GitHub-hosted clean Windows install/upgrade/uninstall lifecycle evidence is passed",
+        "- [ ] production code_signed=yes, verification_status=Valid, timestamped=true",
+        "- [ ] source-bound real Ollama/MySQL/Chroma stress evidence (>=15 min steady + >=4 MiB document)",
         "- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)",
         "",
         "## Rollback",
@@ -192,6 +231,24 @@ def build_manifest() -> str:
         "- See the rollback section of `docs/release-checklist.md`.",
         "",
     ]
+    if stress_evidence:
+        stress_path, stress_report = stress_evidence
+        lines += [
+            "",
+            "## Real-service stress evidence",
+            f"- status: {stress_report.get('status')}",
+            f"- run_id: {stress_report.get('run_id')}",
+            f"- report: `{rel(stress_path)}`",
+            f"- report_sha256: `{sha256(stress_path)}`",
+            f"- steady_seconds: {stress_report.get('parameters', {}).get('duration_seconds')}",
+            f"- document_size_mib: {stress_report.get('parameters', {}).get('document_size_mb')}",
+        ]
+    else:
+        lines += [
+            "",
+            "## Real-service stress evidence",
+            "- NOT QUALIFIED: run a clean-source >=15 minute / >=4 MiB real-service gate and regenerate this manifest.",
+        ]
     if release_check_summary:
         lines += [
             "",
