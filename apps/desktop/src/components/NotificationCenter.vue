@@ -4,7 +4,7 @@
  * M4 接入 app_notifications 后端后，历史与 DB 合并（此处先消费内存历史）。
  * 由 store.openCenter() 触发，Esc/遮罩/关闭按钮关闭。
  */
-import { computed, onMounted, onBeforeUnmount } from "vue";
+import { computed, ref } from "vue";
 import {
   PhX,
   PhBell,
@@ -16,9 +16,13 @@ import {
   PhTrash,
 } from "@phosphor-icons/vue";
 import { useNotifications } from "../stores/notifications";
+import { useModalFocus } from "../composables/useModalFocus";
 import type { NotificationLevel } from "../types";
 
 const notify = useNotifications();
+const panelEl = ref<HTMLElement | null>(null);
+const closeButton = ref<HTMLButtonElement | null>(null);
+const centerOpen = computed(() => notify.centerOpen.value);
 
 const iconOf: Record<NotificationLevel, typeof PhInfo> = {
   info: PhInfo,
@@ -46,25 +50,30 @@ function relativeTime(iso: string): string {
   return `${Math.floor(diff / 86_400_000)} 天前`;
 }
 
-function onKey(e: KeyboardEvent): void {
-  if (e.key === "Escape" && notify.centerOpen.value) {
-    notify.closeCenter();
-  }
-}
-
-onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+useModalFocus({
+  container: panelEl,
+  initialFocus: closeButton,
+  active: centerOpen,
+  onEscape: notify.closeCenter,
+});
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="nc">
       <div v-if="notify.centerOpen.value" class="nc-scrim" @click.self="notify.closeCenter()">
-        <aside class="nc-panel" role="dialog" aria-modal="true" aria-label="通知中心">
+        <aside
+          ref="panelEl"
+          class="nc-panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="notification-center-title"
+          tabindex="-1"
+        >
           <header class="nc-head">
             <div class="nc-title">
               <PhBell :size="18" weight="regular" />
-              <span>通知中心</span>
+              <span id="notification-center-title">通知中心</span>
               <span v-if="notify.unreadCount.value > 0" class="nc-badge">
                 {{ notify.unreadCount.value }}
               </span>
@@ -73,6 +82,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
               <button
                 class="nc-tool"
                 title="全部标为已读"
+                aria-label="全部标为已读"
                 @click="notify.markAllRead()"
               >
                 <PhChecks :size="15" />
@@ -80,11 +90,18 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
               <button
                 class="nc-tool"
                 title="清空历史"
+                aria-label="清空通知历史"
                 @click="notify.clearHistory()"
               >
                 <PhTrash :size="15" />
               </button>
-              <button class="nc-tool" title="关闭" @click="notify.closeCenter()">
+              <button
+                ref="closeButton"
+                class="nc-tool"
+                title="关闭"
+                aria-label="关闭通知中心"
+                @click="notify.closeCenter()"
+              >
                 <PhX :size="16" weight="bold" />
               </button>
             </div>
@@ -151,7 +168,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 }
 .nc-badge {
   background: var(--color-danger);
-  color: #fff;
+  color: var(--color-danger-on-solid);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   border-radius: var(--radius-full);

@@ -1,8 +1,7 @@
 @echo off
 REM Pre-release verification. Run from anywhere; project root is derived from
-REM this script's location. Runs pytest, frontend build, cargo check, and
+REM this script's location. Runs pytest, frontend build, the full Rust gate, and
 REM alembic current. Exits non-zero if any mandatory step fails.
-REM (cargo check is SKIPPED, not failed, if MSVC is absent.)
 setlocal
 
 set "PROJECT_ROOT=%~dp0.."
@@ -24,20 +23,9 @@ set "NPM_RC=%ERRORLEVEL%"
 popd
 if "%NPM_RC%"=="0" (echo [release-check] OK npm build) else (echo [release-check] FAIL npm build & set "FAIL=1")
 
-echo === [3/4] cargo check (tauri, needs MSVC) ===
-call "%SCRIPTS_DIR%_find-msvc.bat"
-if errorlevel 1 goto :cargo_skip
-call "%VCVARS%" >nul 2>&1
-set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
-pushd apps\desktop\src-tauri
-cargo check --message-format=short
-set "CARGO_RC=%ERRORLEVEL%"
-popd
-if "%CARGO_RC%"=="0" (echo [release-check] OK cargo check) else (echo [release-check] FAIL cargo check & set "FAIL=1")
-goto :cargo_done
-:cargo_skip
-echo [release-check] SKIP cargo check (MSVC not found)
-:cargo_done
+echo === [3/4] Tauri Rust gate (fmt/check/test; needs MSVC) ===
+call "%SCRIPTS_DIR%cargo-check-tauri.bat"
+if errorlevel 1 (echo [release-check] FAIL Tauri Rust gate & set "FAIL=1") else echo [release-check] OK Tauri Rust gate
 
 echo === [4/4] alembic current ===
 "%UV_EXE%" run alembic current

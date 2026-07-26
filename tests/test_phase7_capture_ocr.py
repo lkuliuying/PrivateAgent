@@ -9,13 +9,17 @@
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from personal_assistant.core.capture import CaptureService
+from personal_assistant.core.background import background_tasks
 from personal_assistant.core.models import CaptureItem, Document, OcrJob
 from personal_assistant.core.ocr import ocr_engine_available
 from personal_assistant.core.rag import NeedsOcrError, is_scanned_pdf, parse_document
 from personal_assistant.core.repo_ocr_jobs import OcrJobRepository
+from personal_assistant.core.timeutil import utcnow
 
 
 @pytest.fixture
@@ -167,6 +171,144 @@ async def test_ocr_worker_success(db, client, cleanup, monkeypatch):
     assert fresh["status"] == "succeeded"
     assert fresh["output_text"] == "识别出的中文文本"
     assert fresh["engine"] == "tesseract"
+
+
+@pytest.mark.asyncio
+async def test_ocr_retry_worker_resets_terminal_fields_only_when_started(
+    db,
+    client,
+    cleanup,
+    monkeypatch,
+):
+    import personal_assistant.workers.ocr as ocr_mod
+
+    job = await OcrJobRepository(db).create(
+        doc_id=None,
+        file_path="/tmp/retry.png",
+        source="manual",
+    )
+    cleanup.append(job)
+    now = utcnow()
+    await OcrJobRepository(db).mark(
+        job.id,
+        status="failed",
+        engine="old-engine",
+        output_text="partial",
+        error_message="old failure",
+        started_at=now,
+        finished_at=now,
+    )
+    observed: list[dict] = []
+
+    async def observe_reset(job_id: int, file_path: str | None) -> None:
+        async with ocr_mod.async_session_factory() as session:
+            fresh = await OcrJobRepository(session).get(job_id)
+            observed.append(
+                {
+                    "status": fresh.status,
+                    "engine": fresh.engine,
+                    "output_text": fresh.output_text,
+                    "error_message": fresh.error_message,
+                    "started_at": fresh.started_at,
+                    "finished_at": fresh.finished_at,
+                }
+            )
+
+    monkeypatch.setattr(ocr_mod, "run_ocr_job", observe_reset)
+    await ocr_mod.retry_ocr_job(job.id, job.file_path)
+
+    assert observed == [
+        {
+            "status": "pending",
+            "engine": None,
+            "output_text": None,
+            "error_message": None,
+            "started_at": None,
+            "finished_at": None,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ocr_retry_route_deduplicates_without_regressing_status(
+    db,
+    client,
+    cleanup,
+    monkeypatch,
+):
+    import personal_assistant.workers.ocr as ocr_mod
+
+    job = await OcrJobRepository(db).create(
+        doc_id=None,
+        file_path="/tmp/retry-race.png",
+        source="manual",
+    )
+    cleanup.append(job)
+    await OcrJobRepository(db).mark(
+        job.id,
+        status="failed",
+        error_message="original failure",
+        finished_at=utcnow(),
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def blocked_retry(job_id: int, file_path: str | None) -> None:
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(ocr_mod, "retry_ocr_job", blocked_retry)
+    responses = await asyncio.gather(
+        *(client.post(f"/ocr-jobs/{job.id}/retry") for _ in range(10))
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+
+    statuses = sorted(response.status_code for response in responses)
+    assert statuses == [200, *([409] * 9)]
+    assert all(
+        response.json()["detail"] == "OCR job retry is already in progress"
+        for response in responses
+        if response.status_code == 409
+    )
+    assert calls == 1
+    current = await client.get(f"/ocr-jobs/{job.id}")
+    assert current.json()["status"] == "failed"
+    assert current.json()["error_message"] == "original failure"
+
+    release.set()
+    await background_tasks.drain(timeout=1.0)
+
+
+@pytest.mark.parametrize("status", ["pending", "processing"])
+@pytest.mark.asyncio
+async def test_ocr_retry_route_is_idempotent_for_active_states(
+    status,
+    db,
+    client,
+    cleanup,
+):
+    job = await OcrJobRepository(db).create(doc_id=None, file_path=None, source="manual")
+    cleanup.append(job)
+    await OcrJobRepository(db).mark(job.id, status=status)
+
+    response = await client.post(f"/ocr-jobs/{job.id}/retry")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_ocr_retry_route_rejects_succeeded_job(db, client, cleanup):
+    job = await OcrJobRepository(db).create(doc_id=None, file_path=None, source="manual")
+    cleanup.append(job)
+    await OcrJobRepository(db).mark(job.id, status="succeeded", finished_at=utcnow())
+
+    response = await client.post(f"/ocr-jobs/{job.id}/retry")
+
+    assert response.status_code == 409
 
 
 # ============ NeedsOcrError ============

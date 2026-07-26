@@ -3,6 +3,7 @@ import { ref, computed } from "vue";
 import { PhX, PhDownloadSimple, PhSpinner } from "@phosphor-icons/vue";
 import { exportMarkdown, pickDirectory } from "../api";
 import type { CompareResult } from "../types";
+import { useModalFocus } from "../composables/useModalFocus";
 
 /**
  * 多文档对比面板 · 第三阶段 M4。
@@ -13,6 +14,18 @@ const emit = defineEmits<{ close: [] }>();
 
 const exporting = ref(false);
 const exportMsg = ref("");
+const compareDialog = ref<HTMLElement | null>(null);
+const closeButton = ref<HTMLElement | null>(null);
+
+function closePanel() {
+  emit("close");
+}
+
+useModalFocus({
+  container: compareDialog,
+  initialFocus: closeButton,
+  onEscape: closePanel,
+});
 
 const mdContent = computed(() => {
   const r = props.result;
@@ -53,10 +66,19 @@ async function onExport() {
 </script>
 
 <template>
-  <div class="modal-overlay" @click.self="emit('close')">
-    <div class="compare-card">
+  <Teleport to="body">
+    <div class="modal-overlay" @click.self="closePanel">
+      <div
+        ref="compareDialog"
+        class="compare-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="document-compare-title"
+        :aria-busy="loading"
+        tabindex="-1"
+      >
       <div class="compare-head">
-        <span>文档对比</span>
+        <span id="document-compare-title">文档对比</span>
         <div class="head-actions">
           <button
             class="pa-btn pa-btn--subtle pa-btn--sm"
@@ -67,17 +89,18 @@ async function onExport() {
             {{ exporting ? "导出中…" : "导出 Markdown" }}
           </button>
           <button
+            ref="closeButton"
             class="pa-btn pa-btn--ghost pa-btn--icon"
             title="关闭文档对比"
             aria-label="关闭文档对比"
-            @click="emit('close')"
+            @click="closePanel"
           >
             <PhX :size="14" />
           </button>
         </div>
       </div>
 
-      <div v-if="loading" class="loading">
+      <div v-if="loading" class="loading" role="status">
         <PhSpinner :size="24" weight="bold" class="spin" />
         <p>正在对比文档…</p>
       </div>
@@ -118,21 +141,22 @@ async function onExport() {
           </ol>
         </section>
 
-        <p v-if="exportMsg" class="export-msg">{{ exportMsg }}</p>
+        <p v-if="exportMsg" class="export-msg" role="status">{{ exportMsg }}</p>
+      </div>
       </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-overlay);
 }
 .compare-card {
   width: 640px;
@@ -143,7 +167,7 @@ async function onExport() {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 .compare-head {
   flex-shrink: 0;

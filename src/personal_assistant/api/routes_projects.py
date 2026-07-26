@@ -14,7 +14,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -29,6 +28,7 @@ from ..core.code_tools import (
     read_code_file,
     search_files,
 )
+from ..core.background import background_tasks
 from ..core.db import get_session
 from ..core.permissions import PermissionError_
 from ..core.projects import ProjectNotFound, ProjectService
@@ -150,7 +150,11 @@ async def scan_project_route(project_id: int, db: AsyncSession = Depends(get_ses
         project = await ProjectService(db).get(project_id)
     except ProjectNotFound:
         raise HTTPException(404, "项目不存在")
-    asyncio.create_task(scan_project(project_id))
+    background_tasks.spawn(
+        lambda: scan_project(project_id),
+        name=f"project-scan-{project_id}",
+        key=f"project-scan:{project_id}",
+    )
     return _map_project(project)
 
 

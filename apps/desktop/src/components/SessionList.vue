@@ -149,7 +149,7 @@ function fmt(s: string): string {
     border-color var(--duration-fast) var(--ease);
 }
 .session-item:hover {
-  background: rgba(255, 255, 255, 0.54);
+  background: var(--color-surface-hover);
   border-color: var(--color-border);
 }
 .session-item:focus-visible {

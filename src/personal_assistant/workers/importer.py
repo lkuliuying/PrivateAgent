@@ -23,6 +23,7 @@ from ..core.timeutil import utcnow
 from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
+CANCELLED_RETRY_ERROR = "任务因应用关闭而中断，可重试"
 
 
 async def _notify(
@@ -111,6 +112,33 @@ async def _sync_activity(
             )
 
 
+async def _mark_import_cancelled(
+    activity_kind: str,
+    doc_id: int,
+    doc_name: str,
+) -> None:
+    """Best-effort recovery so shutdown never leaves a document processing forever."""
+    try:
+        async with async_session_factory() as db:
+            await DocumentRepository(db).update_status(
+                doc_id,
+                status="failed",
+                error_message=CANCELLED_RETRY_ERROR,
+            )
+    except Exception:  # noqa: BLE001 - preserve the original cancellation
+        logger.exception("import cancellation status update failed", doc_id=doc_id)
+    try:
+        await _sync_activity(
+            activity_kind,
+            doc_id,
+            doc_name,
+            "failed",
+            error_message=CANCELLED_RETRY_ERROR,
+        )
+    except Exception:  # noqa: BLE001 - preserve the original cancellation
+        logger.exception("import cancellation activity update failed", doc_id=doc_id)
+
+
 async def import_document(
     doc_id: int, file_path: str, *, activity_kind: str = "document_import"
 ) -> None:
@@ -118,15 +146,16 @@ async def import_document(
 
     activity_kind: "document_import"（普通导入）或 "reindex"（重建索引），决定活动流类型。
     """
-    async with async_session_factory() as db:
-        docs = DocumentRepository(db)
-        doc = await docs.get(doc_id)
-        doc_name = doc.name if doc else f"文档#{doc_id}"
-        await docs.update_status(doc_id, status="processing", error_message=None)
-    await _sync_activity(activity_kind, doc_id, doc_name, "processing")
-    logger.info("import start", doc_id=doc_id, file=file_path, kind=activity_kind)
-
+    doc_name = f"文档#{doc_id}"
     try:
+        async with async_session_factory() as db:
+            docs = DocumentRepository(db)
+            doc = await docs.get(doc_id)
+            doc_name = doc.name if doc else doc_name
+            await docs.update_status(doc_id, status="processing", error_message=None)
+        await _sync_activity(activity_kind, doc_id, doc_name, "processing")
+        logger.info("import start", doc_id=doc_id, file=file_path, kind=activity_kind)
+
         chunk_count = await _index_core(doc_id, file_path)
         async with async_session_factory() as db:
             docs = DocumentRepository(db)
@@ -147,6 +176,10 @@ async def import_document(
             source_id=doc_id,
         )
         logger.info("import done", doc_id=doc_id, chunks=chunk_count, kind=activity_kind)
+    except asyncio.CancelledError:
+        logger.warning("import cancelled during shutdown", doc_id=doc_id, kind=activity_kind)
+        await _mark_import_cancelled(activity_kind, doc_id, doc_name)
+        raise
     except NeedsOcrError:
         # 扫描件 PDF：创建 OCR job 并置 needs_ocr，而非 hard fail（第七阶段 M3）。
         logger.info("import needs ocr", doc_id=doc_id, kind=activity_kind)

@@ -124,6 +124,9 @@ onMounted(load);
         <div class="stat-row"><PhDatabase :size="15" /><span>导入队列</span>
           <strong>待{{ snap.import_queue.pending || 0 }} · 处理{{ snap.import_queue.processing || 0 }} · 需OCR{{ snap.import_queue.needs_ocr || 0 }} · 失败{{ snap.import_queue.failed || 0 }}</strong>
         </div>
+        <div class="stat-row"><PhCpu :size="15" /><span>后台任务</span>
+          <strong :class="{ warn: snap.background_tasks.failed > 0 }">排队{{ snap.background_tasks.queued }} · 运行{{ snap.background_tasks.running }} · 去重{{ snap.background_tasks.deduplicated }} · 失败{{ snap.background_tasks.failed }}</strong>
+        </div>
         <div class="stat-row"><PhCpu :size="15" /><span>提醒 tick</span>
           <strong>{{ snap.reminder_tick.enabled ? "已启用" : "已关闭" }}</strong>
         </div>

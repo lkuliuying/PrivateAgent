@@ -9,6 +9,7 @@ ChromaDB 是同步 API，所有调用经 asyncio.to_thread 隔离，避免阻塞
 from __future__ import annotations
 
 import asyncio
+from threading import RLock
 from typing import Any
 
 import chromadb
@@ -21,23 +22,62 @@ logger = get_logger(__name__)
 COLLECTION_NAME = "doc_chunks"
 
 
+def _close_client(client: Any) -> None:
+    """Close supported Chroma clients, with a shutdown-only legacy fallback."""
+    close = getattr(client, "close", None)
+    if callable(close):
+        close()
+        return
+    system = getattr(client, "_system", None)
+    stop = getattr(system, "stop", None)
+    if callable(stop):
+        stop()
+        return
+    raise RuntimeError("installed ChromaDB client exposes no resource cleanup API")
+
+
 class ChromaStore:
     """单 collection 存全部文档切片向量，metadata 含 doc_id 用于按文档删除。"""
 
     def __init__(self) -> None:
         self._client: Any = None
         self._collection: Any = None
+        # PersistentClient has a process-local lifecycle. Serialize creation,
+        # operations, and shutdown so concurrent first use cannot leak a client
+        # and shutdown cannot close it underneath an in-flight operation.
+        self._lifecycle_lock = RLock()
 
     def _ensure(self) -> Any:
-        if self._collection is None:
-            def _init() -> Any:
+        with self._lifecycle_lock:
+            if self._collection is None:
                 settings.chroma_dir.mkdir(parents=True, exist_ok=True)
                 client = chromadb.PersistentClient(path=str(settings.chroma_dir))
-                return client.get_or_create_collection(COLLECTION_NAME)
+                try:
+                    collection = client.get_or_create_collection(COLLECTION_NAME)
+                except Exception:
+                    try:
+                        _close_client(client)
+                    except Exception as close_error:
+                        logger.warning(
+                            "failed to close partially initialized Chroma client",
+                            error=str(close_error),
+                        )
+                    raise
+                self._client = client
+                self._collection = collection
+            return self._collection
 
-            # 首次初始化也走线程隔离（PersistentClient 可能慢）
-            self._collection = _init()
-        return self._collection
+    async def close(self) -> None:
+        """Release Chroma's SQLite resources; safe to call repeatedly at shutdown."""
+        def _close() -> None:
+            with self._lifecycle_lock:
+                client = self._client
+                if client is not None:
+                    _close_client(client)
+                self._client = None
+                self._collection = None
+
+        await asyncio.to_thread(_close)
 
     async def add(
         self,
@@ -50,16 +90,18 @@ class ChromaStore:
         metas = [{"doc_id": d} for d in doc_ids]
 
         def _add() -> None:
-            self._ensure().add(ids=ids, embeddings=embeddings, metadatas=metas)
+            with self._lifecycle_lock:
+                self._ensure().add(ids=ids, embeddings=embeddings, metadatas=metas)
 
         await asyncio.to_thread(_add)
 
     async def query(self, embedding: list[float], top_k: int = 5) -> list[int]:
         """检索 top-k 相似切片，返回 chunk_id 列表（按相似度降序）。"""
         def _q() -> list[int]:
-            res = self._ensure().query(
-                query_embeddings=[embedding], n_results=top_k
-            )
+            with self._lifecycle_lock:
+                res = self._ensure().query(
+                    query_embeddings=[embedding], n_results=top_k
+                )
             ids = res.get("ids", [[]])[0]
             out = []
             for i in ids:
@@ -74,7 +116,8 @@ class ChromaStore:
     async def delete_by_doc(self, doc_id: int) -> None:
         """删除某文档的全部向量（按 metadata.doc_id 过滤）。"""
         def _del() -> None:
-            self._ensure().delete(where={"doc_id": doc_id})
+            with self._lifecycle_lock:
+                self._ensure().delete(where={"doc_id": doc_id})
 
         await asyncio.to_thread(_del)
 
@@ -85,20 +128,23 @@ class ChromaStore:
         必须按 id 删，不能用 delete_by_doc（按 doc_id 元数据删会误删别的文档的向量）。
         """
         def _del() -> None:
-            self._ensure().delete(ids=[str(chunk_id)])
+            with self._lifecycle_lock:
+                self._ensure().delete(ids=[str(chunk_id)])
 
         await asyncio.to_thread(_del)
 
     async def count(self) -> int:
         def _c() -> int:
-            return self._ensure().count()
+            with self._lifecycle_lock:
+                return self._ensure().count()
 
         return await asyncio.to_thread(_c)
 
     async def list_ids(self) -> list[int]:
         """枚举 collection 中全部 chunk_id（M7 与 MySQL doc_chunks 一致性检查用）。"""
         def _l() -> list[int]:
-            res = self._ensure().get(include=[], limit=1_000_000)
+            with self._lifecycle_lock:
+                res = self._ensure().get(include=[], limit=1_000_000)
             out: list[int] = []
             for i in res.get("ids", []):
                 try:

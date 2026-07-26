@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import {
   PhArrowClockwise,
   PhArrowRight,
@@ -65,6 +65,8 @@ const composerText = ref("");
 const composerMode = ref<ComposerMode>("chat");
 const composerModeOpen = ref(false);
 const contextTab = ref<"memory" | "sources" | "status">("memory");
+let loadRequestId = 0;
+let destroyed = false;
 
 const filters = reactive<TodayFilters>({});
 
@@ -232,14 +234,20 @@ const hasFilters = computed(
 );
 
 async function load() {
+  const requestId = ++loadRequestId;
   loading.value = true;
   error.value = "";
   try {
-    snap.value = await getToday(hasFilters.value ? { ...filters } : undefined);
+    const nextSnapshot = await getToday(
+      hasFilters.value ? { ...filters } : undefined
+    );
+    if (destroyed || requestId !== loadRequestId) return;
+    snap.value = nextSnapshot;
   } catch (e) {
+    if (destroyed || requestId !== loadRequestId) return;
     error.value = String(e);
   } finally {
-    loading.value = false;
+    if (!destroyed && requestId === loadRequestId) loading.value = false;
   }
 }
 
@@ -373,6 +381,10 @@ function onRecentClick(it: TodayRecentItem) {
 }
 
 onMounted(load);
+onBeforeUnmount(() => {
+  destroyed = true;
+  loadRequestId += 1;
+});
 </script>
 
 <template>
@@ -842,7 +854,7 @@ onMounted(load);
   color: var(--color-fg-muted);
   border: 1px dashed var(--color-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.46);
+  background: color-mix(in srgb, var(--color-surface) 46%, transparent);
 }
 .empty-banner p {
   margin: 0;
@@ -914,7 +926,7 @@ onMounted(load);
   flex-direction: column;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.62);
+  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
   overflow: hidden;
 }
 .priority-row {
@@ -976,7 +988,7 @@ onMounted(load);
   color: var(--color-success-fg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.62);
+  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
   padding: var(--space-4);
 }
 .schedule-row {
@@ -1030,7 +1042,7 @@ onMounted(load);
   gap: var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.62);
+  background: color-mix(in srgb, var(--color-surface) 62%, transparent);
   color: var(--color-fg-muted);
   padding: 0 var(--space-3);
   font-size: var(--text-sm);
@@ -1043,7 +1055,7 @@ onMounted(load);
   border: 2px solid var(--color-accent);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
-  box-shadow: 0 8px 28px rgba(7, 135, 163, 0.08);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-accent) 8%, transparent);
   overflow: hidden;
 }
 .today-composer textarea {
@@ -1080,7 +1092,7 @@ onMounted(load);
   display: grid;
   place-items: center;
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-fg);
   border-color: var(--color-accent);
 }
 .today-composer p {
@@ -1114,7 +1126,7 @@ onMounted(load);
 .context-card {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.66);
+  background: color-mix(in srgb, var(--color-surface) 66%, transparent);
   padding: var(--space-4);
   display: flex;
   flex-direction: column;
@@ -1370,7 +1382,7 @@ onMounted(load);
   border-color: var(--color-border);
   border-radius: 12px;
   background: color-mix(in srgb, var(--color-surface) 76%, transparent);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.75);
+  box-shadow: inset 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
 }
 .priority-row {
   min-height: 64px;
@@ -1596,11 +1608,12 @@ onMounted(load);
   border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
   border-radius: 16px;
   background: color-mix(in srgb, var(--color-surface) 90%, transparent);
-  box-shadow: 0 14px 38px rgba(48, 42, 32, 0.07), inset 0 1px rgba(255, 255, 255, 0.7);
+  box-shadow: var(--shadow),
+    inset 0 1px color-mix(in srgb, var(--color-fg) 10%, transparent);
 }
 .today-composer:focus-within {
   border-color: var(--color-accent);
-  box-shadow: 0 16px 40px rgba(47, 123, 105, 0.1),
+  box-shadow: 0 16px 40px color-mix(in srgb, var(--color-accent) 10%, transparent),
     0 0 0 3px color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
 }
 .today-composer label {
@@ -1651,7 +1664,7 @@ onMounted(load);
   height: 44px;
   border-radius: 10px;
   background: var(--color-accent);
-  color: white;
+  color: var(--color-accent-fg);
   box-shadow: 0 8px 18px color-mix(in srgb, var(--color-accent) 24%, transparent);
 }
 .composer-actions .send:disabled {
@@ -1696,7 +1709,7 @@ onMounted(load);
   border-color: var(--color-border);
   border-radius: 14px;
   background: color-mix(in srgb, var(--color-surface) 76%, transparent);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.7);
+  box-shadow: inset 0 1px color-mix(in srgb, var(--color-fg) 10%, transparent);
 }
 .context-head h2 {
   font-size: 17px;

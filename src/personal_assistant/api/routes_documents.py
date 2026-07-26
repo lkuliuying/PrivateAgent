@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
+from ..core.background import background_tasks
 from ..core.db import get_session
 from ..core.document_extraction import (
     DocumentExtractionService,
@@ -108,7 +109,7 @@ class BatchImportItem(BaseModel):
 
 
 def _upload_dir() -> Path:
-    d = Path("./data/uploads")
+    d = settings.data_dir / "uploads"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -142,7 +143,11 @@ async def _ingest_one(file: UploadFile, db: AsyncSession) -> BatchImportItem:
     upload_path = _upload_path(doc.id, name)
     await asyncio.to_thread(upload_path.write_bytes, data)
     logger.info("document uploaded", doc_id=doc.id, name=name, path=str(upload_path))
-    asyncio.create_task(import_document(doc.id, str(upload_path)))
+    background_tasks.spawn(
+        lambda: import_document(doc.id, str(upload_path)),
+        name=f"document-import-{doc.id}",
+        key=f"document:{doc.id}",
+    )
     return BatchImportItem(name=name, status="imported", doc_id=doc.id)
 
 
@@ -240,7 +245,11 @@ async def reindex_doc(doc_id: int, db: AsyncSession = Depends(get_session)):
     upload_path = _upload_path(doc.id, doc.name)
     if not upload_path.exists():
         raise HTTPException(400, "原始文件不存在，无法重建索引，请重新导入")
-    asyncio.create_task(reindex_document(doc.id, str(upload_path)))
+    background_tasks.spawn(
+        lambda: reindex_document(doc.id, str(upload_path)),
+        name=f"document-reindex-{doc.id}",
+        key=f"document:{doc.id}",
+    )
     return doc
 
 
@@ -249,15 +258,29 @@ async def reindex_all(db: AsyncSession = Depends(get_session)):
     docs = DocumentRepository(db)
     all_docs = await docs.list()
     triggered = 0
+    deduplicated = 0
     skipped = 0
     for doc in all_docs:
         upload_path = _upload_path(doc.id, doc.name)
         if upload_path.exists():
-            asyncio.create_task(reindex_document(doc.id, str(upload_path)))
-            triggered += 1
+            submission = background_tasks.submit(
+                lambda doc_id=doc.id, path=str(upload_path): reindex_document(
+                    doc_id, path
+                ),
+                name=f"document-reindex-{doc.id}",
+                key=f"document:{doc.id}",
+            )
+            if submission.created:
+                triggered += 1
+            else:
+                deduplicated += 1
         else:
             skipped += 1
-    return {"triggered": triggered, "skipped": skipped}
+    return {
+        "triggered": triggered,
+        "deduplicated": deduplicated,
+        "skipped": skipped,
+    }
 
 
 @router.delete("/documents/{doc_id}")
@@ -296,7 +319,11 @@ async def retry_document(doc_id: int, db: AsyncSession = Depends(get_session)):
     if not upload_path.exists():
         raise HTTPException(400, "原始文件不存在，无法重试，请重新导入")
 
-    asyncio.create_task(retry_import(doc.id, str(upload_path)))
+    background_tasks.spawn(
+        lambda: retry_import(doc.id, str(upload_path)),
+        name=f"document-import-retry-{doc.id}",
+        key=f"document:{doc.id}",
+    )
     return doc
 
 
@@ -460,7 +487,11 @@ async def ocr_document(doc_id: int, db: AsyncSession = Depends(get_session)):
         source_type="document",
         source_id=doc_id,
     )
-    asyncio.create_task(run_ocr_job(job.id, str(file_path)))
+    background_tasks.spawn(
+        lambda: run_ocr_job(job.id, str(file_path)),
+        name=f"ocr-job-{job.id}",
+        key=f"ocr-job:{job.id}",
+    )
     return OcrResult(
         doc_id=doc_id,
         job_id=job.id,

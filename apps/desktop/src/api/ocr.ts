@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 
 export interface OcrAvailability {
   available: boolean;
@@ -22,7 +22,7 @@ export interface OcrJob {
 
 export async function getOcrAvailability(): Promise<OcrAvailability> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/ocr/availability`);
+  const r = await apiFetch(`${base}/ocr/availability`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -32,14 +32,14 @@ export async function listOcrJobs(opts?: { status?: string }): Promise<OcrJob[]>
   const qs = new URLSearchParams();
   if (opts?.status) qs.set("status", opts.status);
   const q = qs.toString();
-  const r = await fetch(`${base}/ocr-jobs${q ? `?${q}` : ""}`);
+  const r = await apiFetch(`${base}/ocr-jobs${q ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 export async function retryOcrJob(id: number): Promise<OcrJob> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/ocr-jobs/${id}/retry`, { method: "POST" });
+  const r = await apiFetch(`${base}/ocr-jobs/${id}/retry`, { method: "POST" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

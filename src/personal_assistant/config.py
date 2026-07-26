@@ -16,7 +16,7 @@ import os
 import sys
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     # === 本地后端 API ===
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    # Tauri 在每次打包 sidecar 启动时注入；仅驻留于进程内存。
+    api_token: SecretStr = Field(default_factory=lambda: SecretStr(""), repr=False)
 
     # === MySQL ===
     db_url: str = (

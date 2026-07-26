@@ -145,7 +145,7 @@ async def test_get_chunk(client, db):
 
 @pytest.mark.asyncio
 async def test_reindex_all(client, monkeypatch):
-    """POST /documents/reindex-all 返回 triggered/skipped 计数。"""
+    """POST /documents/reindex-all 区分新建、去重和跳过计数。"""
     async def fake_embed(self, texts):
         return [[0.0] * 8 for _ in texts]
 
@@ -153,7 +153,58 @@ async def test_reindex_all(client, monkeypatch):
     await import_one(client, "reidx.md", _u())
     res = await client.post("/documents/reindex-all")
     assert res.status_code == 200
-    assert res.json()["triggered"] >= 1
+    assert res.json()["triggered"] + res.json()["deduplicated"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_reindex_all_counts_active_key_as_deduplicated(
+    client,
+    db,
+    monkeypatch,
+):
+    import personal_assistant.api.routes_documents as routes_documents
+    from personal_assistant.core.background import background_tasks
+    from personal_assistant.core.models import Document
+    from personal_assistant.core.repo import DocumentRepository
+
+    doc = Document(name="dedupe.md", status="ready", enabled=True)
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+    upload_path = routes_documents._upload_path(doc.id, doc.name)
+    upload_path.parent.mkdir(parents=True, exist_ok=True)
+    upload_path.write_text("dedupe", encoding="utf-8")
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocker() -> None:
+        started.set()
+        await release.wait()
+
+    async def list_only(self, **kwargs):
+        return [doc]
+
+    monkeypatch.setattr(DocumentRepository, "list", list_only)
+    background_tasks.spawn(
+        blocker,
+        name=f"existing-document-{doc.id}",
+        key=f"document:{doc.id}",
+    )
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    try:
+        response = await client.post("/documents/reindex-all")
+        assert response.status_code == 200
+        assert response.json() == {
+            "triggered": 0,
+            "deduplicated": 1,
+            "skipped": 0,
+        }
+    finally:
+        release.set()
+        await background_tasks.drain(timeout=1.0)
+        upload_path.unlink(missing_ok=True)
+        await db.delete(doc)
+        await db.commit()
 
 
 @pytest.mark.asyncio

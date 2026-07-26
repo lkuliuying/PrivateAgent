@@ -77,3 +77,23 @@ class OcrJobRepository:
             update(OcrJob).where(OcrJob.id == job_id).values(**values)
         )
         await self.db.commit()
+
+    async def reset_for_retry(self, job_id: int) -> bool:
+        """Atomically reset only retryable terminal jobs before a new worker starts."""
+        result = await self.db.execute(
+            update(OcrJob)
+            .where(
+                OcrJob.id == job_id,
+                OcrJob.status.in_(("failed", "unavailable", "cancelled")),
+            )
+            .values(
+                status="pending",
+                engine=None,
+                output_text=None,
+                error_message=None,
+                started_at=None,
+                finished_at=None,
+            )
+        )
+        await self.db.commit()
+        return bool(result.rowcount)

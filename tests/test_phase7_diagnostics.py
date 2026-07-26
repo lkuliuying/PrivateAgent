@@ -72,6 +72,7 @@ async def test_diagnostics_snapshot(db, cleanup):
         "provider_failures",
         "reminder_tick",
         "import_queue",
+        "background_tasks",
         "integrity_summary",
         "recent_errors",
         "settings_redacted",
@@ -79,6 +80,12 @@ async def test_diagnostics_snapshot(db, cleanup):
     ):
         assert key in snap, f"缺少诊断字段 {key}"
     assert snap["version"] == __version__
+    assert set(snap["background_tasks"]) == {
+        "queued",
+        "running",
+        "failed",
+        "deduplicated",
+    }
 
 
 @pytest.mark.asyncio

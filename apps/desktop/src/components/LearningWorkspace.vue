@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onBeforeUnmount, onMounted } from "vue";
 import {
   PhGraduationCap,
   PhPlus,
@@ -47,6 +47,7 @@ import type {
   ReviewRating,
 } from "../types";
 import { useNotifications } from "../stores/notifications";
+import { useModalFocus } from "../composables/useModalFocus";
 
 const notify = useNotifications();
 
@@ -84,6 +85,19 @@ const newOpen = ref(false);
 const newTitle = ref("");
 const newGoal = ref("");
 const newLevel = ref("");
+const newTopicDialog = ref<HTMLElement | null>(null);
+const newTopicTitleInput = ref<HTMLInputElement | null>(null);
+
+function closeNew() {
+  newOpen.value = false;
+}
+
+useModalFocus({
+  container: newTopicDialog,
+  initialFocus: newTopicTitleInput,
+  active: newOpen,
+  onEscape: closeNew,
+});
 
 // 新建笔记
 const noteTitle = ref("");
@@ -95,34 +109,53 @@ const quizResults = ref<Record<number, GradeResult | undefined>>({});
 
 // 卡片翻转
 const flipped = ref<Set<number>>(new Set());
+let topicRequestId = 0;
+let workspaceRequestId = 0;
+let dueRequestId = 0;
+let destroyed = false;
 
 const currentTopic = computed(
   () => topics.value.find((t) => t.id === currentId.value) ?? null
 );
 
 onMounted(load);
+onBeforeUnmount(() => {
+  destroyed = true;
+  topicRequestId += 1;
+  workspaceRequestId += 1;
+  dueRequestId += 1;
+});
 
 async function load() {
+  const requestId = ++workspaceRequestId;
   try {
-    topics.value = await listLearningTopics();
+    const loadedTopics = await listLearningTopics();
+    if (destroyed || requestId !== workspaceRequestId) return;
+    topics.value = loadedTopics;
     await refreshDueByTopic();
+    if (destroyed || requestId !== workspaceRequestId) return;
     if (topics.value.length > 0 && currentId.value === null) {
       await selectTopic(topics.value[0].id);
     }
-  } catch {
+  } catch (e) {
+    if (destroyed || requestId !== workspaceRequestId) return;
     topics.value = [];
+    genError.value = `加载学习主题失败：${String(e)}`;
   }
 }
 
 async function refreshDueByTopic() {
+  const requestId = ++dueRequestId;
   try {
     const due = await listReviewsToday();
+    if (destroyed || requestId !== dueRequestId) return;
     const counts: Record<number, number> = {};
     for (const c of due) {
       counts[c.topic_id] = (counts[c.topic_id] || 0) + 1;
     }
     dueByTopic.value = counts;
   } catch {
+    if (destroyed || requestId !== dueRequestId) return;
     dueByTopic.value = {};
   }
 }
@@ -140,6 +173,8 @@ async function selectTopic(id: number) {
 async function loadAll() {
   if (!currentId.value) return;
   const id = currentId.value;
+  const requestId = ++topicRequestId;
+  genError.value = "";
   try {
     const [n, ns, qs, cs, db, wp, wa] = await Promise.all([
       listLearningNodes(id),
@@ -150,6 +185,7 @@ async function loadAll() {
       weakPoints(id).catch(() => []),
       wrongAnswers(id).catch(() => []),
     ]);
+    if (destroyed || requestId !== topicRequestId || currentId.value !== id) return;
     nodes.value = n;
     notes.value = ns;
     quizzes.value = qs;
@@ -157,8 +193,9 @@ async function loadAll() {
     dashboard.value = db;
     weak.value = wp;
     wrong.value = wa;
-  } catch {
-    // ignore
+  } catch (e) {
+    if (destroyed || requestId !== topicRequestId || currentId.value !== id) return;
+    genError.value = `加载学习内容失败：${String(e)}`;
   }
 }
 
@@ -180,7 +217,7 @@ async function submitNew() {
       level: newLevel.value.trim() || undefined,
     });
     topics.value.unshift(t);
-    newOpen.value = false;
+    closeNew();
     await selectTopic(t.id);
   } catch (e) {
     notify.error("创建失败", String(e));
@@ -444,6 +481,7 @@ function exportReport() {
       <div v-if="!currentTopic" class="empty">
         <div class="empty-icon"><PhGraduationCap :size="38" weight="duotone" /></div>
         <h1>为一个主题建立学习系统</h1>
+        <p v-if="genError" class="err" role="alert">{{ genError }}</p>
         <p class="hint">结合知识库资料生成路线、练习与复习卡片，让每次学习都留下可继续的进度。</p>
         <button class="pa-btn pa-btn--primary" @click="openNew"><PhPlus :size="15" />创建学习主题</button>
       </div>
@@ -483,7 +521,7 @@ function exportReport() {
         </nav>
 
         <div class="tab-body">
-          <p v-if="genError" class="err">{{ genError }}</p>
+          <p v-if="genError" class="err" role="alert">{{ genError }}</p>
 
           <!-- 概览 -->
           <div v-if="tab === 'overview'" class="overview-tab">
@@ -706,31 +744,40 @@ function exportReport() {
     </div>
 
     <!-- 新建主题浮层 -->
-    <div v-if="newOpen" class="modal-overlay" @click.self="newOpen = false">
-      <div class="modal-card">
+    <Teleport to="body">
+      <div v-if="newOpen" class="modal-overlay" @click.self="closeNew">
+        <div
+          ref="newTopicDialog"
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-learning-topic-title"
+          tabindex="-1"
+        >
         <div class="modal-head">
-          <span>新建学习主题</span>
+          <span id="new-learning-topic-title">新建学习主题</span>
           <button
             class="pa-btn pa-btn--ghost pa-btn--icon"
             title="关闭新建主题"
             aria-label="关闭新建主题"
-            @click="newOpen = false"
+            @click="closeNew"
           >
             <PhX :size="14" />
           </button>
         </div>
-        <label class="modal-label">标题</label>
-        <input v-model="newTitle" class="pa-input" placeholder="如：操作系统" />
-        <label class="modal-label">目标</label>
-        <textarea v-model="newGoal" class="pa-input" rows="2" placeholder="想掌握什么"></textarea>
-        <label class="modal-label">阶段</label>
-        <input v-model="newLevel" class="pa-input" placeholder="入门 / 中级 / 进阶" />
+        <label class="modal-label" for="new-learning-topic-name">标题</label>
+        <input id="new-learning-topic-name" ref="newTopicTitleInput" v-model="newTitle" class="pa-input" placeholder="如：操作系统" />
+        <label class="modal-label" for="new-learning-topic-goal">目标</label>
+        <textarea id="new-learning-topic-goal" v-model="newGoal" class="pa-input" rows="2" placeholder="想掌握什么"></textarea>
+        <label class="modal-label" for="new-learning-topic-level">阶段</label>
+        <input id="new-learning-topic-level" v-model="newLevel" class="pa-input" placeholder="入门 / 中级 / 进阶" />
         <div class="modal-actions">
-          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="newOpen = false">取消</button>
+          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="closeNew">取消</button>
           <button class="pa-btn pa-btn--primary pa-btn--sm" :disabled="!newTitle.trim()" @click="submitNew">创建</button>
         </div>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
 
@@ -842,7 +889,7 @@ function exportReport() {
   border-radius: 24px;
   color: var(--color-accent);
   background: var(--color-accent-soft);
-  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+  box-shadow: var(--shadow);
 }
 .empty h1 { margin: 8px 0 0; font-size: 30px; letter-spacing: -.045em; }
 .empty p {
@@ -1147,11 +1194,11 @@ function exportReport() {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-overlay);
 }
 .modal-card {
   width: 420px;
@@ -1163,7 +1210,7 @@ function exportReport() {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 .modal-head {
   display: flex;

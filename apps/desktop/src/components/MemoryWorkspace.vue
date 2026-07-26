@@ -654,7 +654,7 @@ pre {
   border-radius: 24px;
   color: var(--color-accent);
   background: var(--color-accent-soft);
-  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+  box-shadow: var(--shadow);
 }
 .empty h2 { margin-top: 8px; font-size: 28px; letter-spacing: -.04em; }
 .empty > p { max-width: 500px; line-height: 1.7; }

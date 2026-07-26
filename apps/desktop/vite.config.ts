@@ -12,13 +12,27 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // 2. code-split vendor libs into a stable chunk（避免单个 574KB chunk）
+  // 2. keep framework/runtime chunks stable while feature views split on demand
   build: {
+    manifest: true,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ["vue", "@phosphor-icons/vue"],
-          tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
+        manualChunks(id) {
+          const normalized = id.replace(/\\/g, "/");
+          if (!normalized.includes("/node_modules/")) return undefined;
+          if (
+            normalized.includes("/node_modules/vue/") ||
+            normalized.includes("/node_modules/@vue/")
+          ) {
+            return "vue-core";
+          }
+          if (normalized.includes("/node_modules/@tauri-apps/")) {
+            return "tauri";
+          }
+          if (normalized.includes("/node_modules/animejs/")) {
+            return "motion";
+          }
+          return undefined;
         },
       },
     },

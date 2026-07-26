@@ -34,6 +34,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
 <template>
   <div class="workspace">
+    <a class="workspace-skip-link" href="#workspace-main">跳到主工作区</a>
     <div class="workspace-ambient" aria-hidden="true">
       <span class="ambient-orb ambient-orb--cool" />
       <span class="ambient-orb ambient-orb--warm" />
@@ -47,17 +48,23 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 
       <!-- 列表区（仅 chat） -->
       <Transition name="pa-zone">
-        <div v-if="showList" class="workspace-list">
+        <aside v-if="showList" class="workspace-list" aria-label="会话列表">
           <slot name="list" />
-        </div>
+        </aside>
       </Transition>
 
       <!-- 主工作区 -->
-      <div class="workspace-main">
+      <main
+        id="workspace-main"
+        class="workspace-main"
+        tabindex="-1"
+        :aria-labelledby="showTopbar ? 'workspace-title' : undefined"
+        :aria-label="showTopbar ? undefined : title"
+      >
         <header v-if="showTopbar" class="workspace-topbar">
           <div class="topbar-copy">
             <span class="topbar-kicker">PrivateAgent</span>
-            <span class="topbar-title">{{ title }}</span>
+            <h1 id="workspace-title" class="topbar-title">{{ title }}</h1>
           </div>
           <span v-if="showDevTag" class="topbar-dev">DEV · 手动后端 8000</span>
           <div class="topbar-spacer" />
@@ -66,6 +73,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
             class="pa-btn pa-btn--subtle pa-btn--icon pa-btn--sm inspector-toggle"
             :class="{ active: inspectorOpen }"
             :aria-pressed="inspectorOpen"
+            aria-controls="workspace-inspector"
             aria-label="切换检查器面板"
             title="检查器面板"
             @click="emit('toggle-inspector')"
@@ -76,20 +84,25 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
         <div class="workspace-content">
           <slot />
         </div>
-      </div>
+      </main>
 
       <!-- 右侧检查器 -->
       <Transition name="pa-zone">
-        <div v-if="inspectorOpen" class="workspace-inspector">
+        <aside
+          v-if="inspectorOpen"
+          id="workspace-inspector"
+          class="workspace-inspector"
+          aria-label="检查器"
+        >
           <slot name="inspector" />
-        </div>
+        </aside>
       </Transition>
     </div>
 
     <!-- 底部状态栏 -->
-    <div v-if="showStatusbar" class="workspace-statusbar">
+    <footer v-if="showStatusbar" class="workspace-statusbar" aria-label="应用状态">
       <slot name="statusbar" />
-    </div>
+    </footer>
   </div>
 </template>
 
@@ -105,6 +118,25 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   background:
     radial-gradient(circle at 72% -15%, var(--color-canvas-glow), transparent 34%),
     var(--color-bg);
+}
+.workspace-skip-link {
+  position: fixed;
+  z-index: var(--z-toast);
+  top: var(--space-3);
+  left: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+  box-shadow: var(--shadow);
+  transform: translateY(calc(-100% - var(--space-6)));
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+.workspace-skip-link:focus {
+  color: var(--color-accent-fg);
+  transform: translateY(0);
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .workspace-ambient {
   position: absolute;
@@ -176,7 +208,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   width: var(--list-w);
   min-width: 0;
   border-right: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 88%, white);
+  background: var(--color-panel-glass);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -188,7 +220,11 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   min-width: 0;
   display: flex;
   flex-direction: column;
-  background: color-mix(in srgb, var(--color-bg) 94%, transparent);
+  background: var(--color-workspace-main);
+}
+.workspace-main:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
 }
 
 .workspace-topbar {
@@ -199,7 +235,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   gap: var(--space-3);
   padding: 0 var(--space-6);
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 84%, transparent);
+  background: var(--color-chrome-glass);
   backdrop-filter: blur(18px) saturate(1.12);
 }
 .topbar-copy {
@@ -214,6 +250,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   letter-spacing: 0.04em;
 }
 .topbar-title {
+  margin: 0;
   font-size: var(--text-xl);
   font-weight: var(--font-semibold);
   color: var(--color-fg);
@@ -251,7 +288,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   width: var(--inspector-w);
   min-width: 0;
   border-left: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 88%, white);
+  background: var(--color-panel-glass);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -264,7 +301,7 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
   flex-shrink: 0;
   height: var(--statusbar-h);
   border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 88%, transparent);
+  background: var(--color-statusbar-glass);
   backdrop-filter: blur(16px) saturate(1.08);
 }
 
@@ -289,11 +326,11 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
 }
 .workspace-list.pa-zone-enter-from,
 .workspace-list.pa-zone-leave-to {
-  transform: translateX(-8px);
+  transform: translateX(calc(var(--motion-distance-sm) * -1));
 }
 .workspace-inspector.pa-zone-enter-from,
 .workspace-inspector.pa-zone-leave-to {
-  transform: translateX(8px);
+  transform: translateX(var(--motion-distance-sm));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -301,8 +338,22 @@ const emit = defineEmits<{ "toggle-inspector": [] }>();
     animation: none;
   }
   .pa-zone-enter-active,
-  .pa-zone-leave-active {
+  .pa-zone-leave-active,
+  .workspace-skip-link {
     transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .workspace-ambient {
+    display: none;
+  }
+  .workspace-topbar,
+  .workspace-statusbar {
+    backdrop-filter: none;
+  }
+  .workspace-skip-link {
+    border: 1px solid ButtonBorder;
   }
 }
 </style>

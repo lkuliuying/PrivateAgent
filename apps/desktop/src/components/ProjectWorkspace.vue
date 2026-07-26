@@ -474,7 +474,7 @@ function fmtSize(n: number | null | undefined): string {
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
   padding: var(--space-4);
-  box-shadow: var(--shadow-md, 0 8px 24px rgba(0, 0, 0, 0.12));
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
@@ -532,7 +532,7 @@ function fmtSize(n: number | null | undefined): string {
   border-radius: 24px;
   color: var(--color-accent);
   background: var(--color-accent-soft);
-  box-shadow: 0 18px 44px rgba(21, 57, 48, .1);
+  box-shadow: var(--shadow);
 }
 .empty h1 { margin: 0; font-size: 30px; letter-spacing: -.045em; }
 .empty p {

@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 import type { AppNotification, AppNotificationCreate } from "../types";
 
 export async function listNotifications(
@@ -10,7 +10,7 @@ export async function listNotifications(
   if (opts?.kind) qs.set("kind", opts.kind);
   if (opts?.limit) qs.set("limit", String(opts.limit));
   const q = qs.toString();
-  const r = await fetch(`${base}/notifications${q ? `?${q}` : ""}`);
+  const r = await apiFetch(`${base}/notifications${q ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -19,7 +19,7 @@ export async function createNotification(
   body: AppNotificationCreate
 ): Promise<AppNotification> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications`, {
+  const r = await apiFetch(`${base}/notifications`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -33,7 +33,7 @@ export async function patchNotification(
   status: "read" | "archived"
 ): Promise<AppNotification> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications/${id}`, {
+  const r = await apiFetch(`${base}/notifications/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ status }),
@@ -44,7 +44,7 @@ export async function patchNotification(
 
 export async function readAllNotifications(): Promise<{ marked: number }> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/notifications/read-all`, { method: "POST" });
+  const r = await apiFetch(`${base}/notifications/read-all`, { method: "POST" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

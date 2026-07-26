@@ -102,7 +102,7 @@ h1 {
 }
 .subtitle {
   margin: 0 0 20px;
-  color: #6a6b6e;
+  color: var(--color-fg-muted);
   font-size: 13px;
 }
 .banner {
@@ -112,14 +112,14 @@ h1 {
   font-size: 14px;
 }
 .banner.success {
-  background: #e8f5e9;
-  color: #1b5e20;
-  border: 1px solid #c8e6c9;
+  background: var(--color-success-soft);
+  color: var(--color-success-fg);
+  border: 1px solid var(--color-success-border);
 }
 .banner.error {
-  background: #fdecea;
-  color: #b71c1c;
-  border: 1px solid #f5c6c2;
+  background: var(--color-danger-soft);
+  color: var(--color-danger-fg);
+  border: 1px solid var(--color-danger-border);
 }
 .banner.warning {
   background: var(--color-warning-soft);
@@ -140,7 +140,7 @@ h1 {
   line-height: 1.6;
 }
 .banner-detail code {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--color-surface-sunken);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 12px;
@@ -156,8 +156,8 @@ h1 {
   gap: 12px;
 }
 .status-card {
-  background: #fff;
-  border: 1px solid #e5e6e8;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 10px;
   padding: 16px;
   display: flex;
@@ -165,10 +165,10 @@ h1 {
   gap: 12px;
 }
 .status-card.ok {
-  border-left: 4px solid #2e7d32;
+  border-left: 4px solid var(--color-success);
 }
 .status-card.bad {
-  border-left: 4px solid #c62828;
+  border-left: 4px solid var(--color-danger);
 }
 .dot {
   width: 10px;
@@ -177,10 +177,10 @@ h1 {
   flex-shrink: 0;
 }
 .status-card.ok .dot {
-  background: #2e7d32;
+  background: var(--color-success);
 }
 .status-card.bad .dot {
-  background: #c62828;
+  background: var(--color-danger);
 }
 .label {
   font-weight: 500;
@@ -188,12 +188,12 @@ h1 {
 }
 .detail {
   font-size: 12px;
-  color: #6a6b6e;
+  color: var(--color-fg-muted);
   margin-top: 2px;
 }
 .footer {
   margin-top: 20px;
   font-size: 12px;
-  color: #9a9b9e;
+  color: var(--color-fg-faint);
 }
 </style>

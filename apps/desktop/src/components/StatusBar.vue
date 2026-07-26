@@ -186,7 +186,7 @@ const serviceList: { key: string; label: string }[] = [
   height: 14px;
   padding: 0 3px;
   background: var(--color-danger);
-  color: #fff;
+  color: var(--color-danger-on-solid);
   font-size: 9px;
   font-weight: var(--font-semibold);
   line-height: 14px;

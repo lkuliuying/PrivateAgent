@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 
 export interface IntegrityFinding {
   id: number;
@@ -28,21 +28,21 @@ export interface RepairPlanItem {
 export async function listIntegrity(status?: string): Promise<IntegrityFinding[]> {
   const base = await ensureApiBase();
   const qs = status ? `?status=${status}` : "";
-  const r = await fetch(`${base}/maintenance/integrity${qs}`);
+  const r = await apiFetch(`${base}/maintenance/integrity${qs}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 export async function runIntegrity(): Promise<IntegrityFinding[]> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/integrity/run`, { method: "POST" });
+  const r = await apiFetch(`${base}/maintenance/integrity/run`, { method: "POST" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
 export async function repairPlan(): Promise<RepairPlanItem[]> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/repair-plan`, { method: "POST" });
+  const r = await apiFetch(`${base}/maintenance/repair-plan`, { method: "POST" });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -51,7 +51,7 @@ export async function applyRepair(
   findingId: number
 ): Promise<Record<string, unknown>> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/maintenance/repair-plan/${findingId}/apply`, {
+  const r = await apiFetch(`${base}/maintenance/repair-plan/${findingId}/apply`, {
     method: "POST",
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);

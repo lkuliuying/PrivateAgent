@@ -16,6 +16,12 @@ from ..core.timeutil import utcnow
 from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
+CANCELLED_RETRY_ERROR = "任务因应用关闭而中断，可重试"
+
+
+async def _walk_files(root: str) -> list[dict]:
+    """Keep the blocking filesystem boundary explicit and independently testable."""
+    return await asyncio.to_thread(walk_project_files, Path(root))
 
 
 async def scan_project(project_id: int) -> int:
@@ -32,11 +38,10 @@ async def scan_project(project_id: int) -> int:
         logger.warning("scan: project not found", project_id=project_id)
         return 0
 
-    await _sync(project_id, project_name, "running", {"root": root})
-    logger.info("project scan start", project_id=project_id, root=root)
-
     try:
-        files = await asyncio.to_thread(walk_project_files, Path(root))
+        await _sync(project_id, project_name, "running", {"root": root})
+        logger.info("project scan start", project_id=project_id, root=root)
+        files = await _walk_files(root)
         async with async_session_factory() as db:
             file_repo = ProjectFileRepository(db)
             count = await file_repo.replace_all_and_mark(
@@ -45,6 +50,22 @@ async def scan_project(project_id: int) -> int:
         await _sync(project_id, project_name, "succeeded", {"root": root, "files": count})
         logger.info("project scan done", project_id=project_id, files=count)
         return count
+    except asyncio.CancelledError:
+        logger.warning("project scan cancelled during shutdown", project_id=project_id)
+        try:
+            await _sync(
+                project_id,
+                project_name,
+                "failed",
+                {"root": root},
+                error_message=CANCELLED_RETRY_ERROR,
+            )
+        except Exception:  # noqa: BLE001 - preserve the original cancellation
+            logger.exception(
+                "project scan cancellation activity update failed",
+                project_id=project_id,
+            )
+        raise
     except Exception as e:  # noqa: BLE001
         logger.exception("project scan failed", project_id=project_id)
         await _sync(

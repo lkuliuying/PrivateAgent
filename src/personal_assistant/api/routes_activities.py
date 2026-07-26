@@ -6,7 +6,6 @@
 """
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -14,7 +13,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..core.activities import ActivityService
+from ..core.background import background_tasks
 from ..core.db import get_session
 from ..core.repo import DocumentRepository
 from ..workers.importer import reindex_document, retry_import
@@ -40,9 +41,9 @@ class ActivityOut(BaseModel):
 
 
 def _upload_path(doc_id: int, name: str) -> Path:
-    """与 routes_documents._upload_path 一致：data/uploads/{doc_id}{ext}。"""
+    """与 routes_documents._upload_path 一致，始终落在应用数据目录。"""
     ext = Path(name).suffix
-    return Path("./data/uploads") / f"{doc_id}{ext}"
+    return settings.data_dir / "uploads" / f"{doc_id}{ext}"
 
 
 @router.get("/activities", response_model=list[ActivityOut])
@@ -84,7 +85,15 @@ async def retry_activity(activity_id: int, db: AsyncSession = Depends(get_sessio
         raise HTTPException(400, "原始文件不存在，无法重试，请重新导入")
 
     if act.ref_type == "document_reindex":
-        asyncio.create_task(reindex_document(doc.id, str(upload_path)))
+        background_tasks.spawn(
+            lambda: reindex_document(doc.id, str(upload_path)),
+            name=f"document-reindex-{doc.id}",
+            key=f"document:{doc.id}",
+        )
     else:
-        asyncio.create_task(retry_import(doc.id, str(upload_path)))
+        background_tasks.spawn(
+            lambda: retry_import(doc.id, str(upload_path)),
+            name=f"document-import-retry-{doc.id}",
+            key=f"document:{doc.id}",
+        )
     return act

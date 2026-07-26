@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
@@ -36,6 +37,26 @@ def test_assemble_report_failed():
     rep = rc.assemble_report(steps, "0.1.1")
     assert rep["ok"] is False
     assert rep["summary"]["failed"] == 1
+
+
+def test_required_skipped_step_blocks_release():
+    rep = rc.assemble_report(
+        [rc.skipped_step("required_tool", "missing", required=True)],
+        "0.1.1",
+    )
+
+    assert rep["ok"] is False
+    assert rep["blocking_skipped"] == ["required_tool"]
+
+
+def test_optional_skipped_step_does_not_block_release():
+    rep = rc.assemble_report(
+        [rc.skipped_step("optional_artifact", "missing")],
+        "0.1.1",
+    )
+
+    assert rep["ok"] is True
+    assert rep["blocking_skipped"] == []
 
 
 def test_write_report(tmp_path):
@@ -118,3 +139,36 @@ def test_resolve_executable_supports_windows_cmd_shims(monkeypatch):
         lambda candidate: f"resolved/{candidate}" if candidate == expected else None,
     )
     assert rc.resolve_executable("npm") == f"resolved/{expected}"
+
+
+def test_python_module_command_uses_active_interpreter():
+    assert rc.python_module_command("pytest", "-q") == [sys.executable, "-m", "pytest", "-q"]
+
+
+def test_zip_members_containing_scans_decompressed_payloads(tmp_path):
+    archive_path = tmp_path / "diagnostics.zip"
+    with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("safe.json", '{"status":"ok"}')
+        archive.writestr("nested/leak.txt", "prefix sk-unit-test-secret suffix")
+
+    assert rc.zip_members_containing(archive_path, b"sk-unit-test-secret") == [
+        "nested/leak.txt"
+    ]
+
+
+def test_tauri_csp_protects_memory_only_api_credentials():
+    config_path = Path(__file__).resolve().parent.parent / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    security = config["app"]["security"]
+    production_csp = security["csp"]
+    development_csp = security["devCsp"]
+
+    for csp in (production_csp, development_csp):
+        assert "default-src 'self'" in csp
+        assert "script-src 'self'" in csp
+        assert "object-src 'none'" in csp
+        assert "frame-ancestors 'none'" in csp
+        assert "http://127.0.0.1:*" in csp
+        assert "*" not in csp.replace("127.0.0.1:*", "").replace("localhost:*", "")
+
+    assert "unsafe-eval" not in development_csp

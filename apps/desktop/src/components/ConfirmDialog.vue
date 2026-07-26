@@ -6,11 +6,13 @@
  * danger 操作走红色确认按钮，并展示影响范围（impact）。
  * Esc 取消、Enter 确认。
  */
-import { onMounted, onBeforeUnmount, watch, nextTick, ref, computed } from "vue";
+import { watch, ref, computed } from "vue";
 import { PhWarning } from "@phosphor-icons/vue";
+import { useModalFocus } from "../composables/useModalFocus";
 import { useNotifications } from "../stores/notifications";
 
 const notify = useNotifications();
+const dialogEl = ref<HTMLElement | null>(null);
 const confirmBtn = ref<HTMLButtonElement | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
 const inputValue = ref("");
@@ -26,6 +28,9 @@ const opts = computed(() =>
 );
 const isDanger = computed(
   () => !notify.promptState.value.open && !!notify.confirmState.value.opts.danger
+);
+const preferredFocus = computed(() =>
+  isPrompt.value ? inputEl.value : confirmBtn.value
 );
 
 function submit(): void {
@@ -43,51 +48,36 @@ function cancel(): void {
   }
 }
 
-function onKey(e: KeyboardEvent): void {
-  if (!isOpen.value) return;
-  if (e.key === "Escape") {
-    e.preventDefault();
-    cancel();
-  } else if (e.key === "Enter") {
-    e.preventDefault();
-    submit();
-  }
-}
-
 watch(
   () => notify.promptState.value.open,
-  async (open) => {
+  (open) => {
     if (open) {
       inputValue.value = notify.promptState.value.opts.defaultValue ?? "";
-      await nextTick();
-      inputEl.value?.focus();
     }
   }
 );
-watch(
-  () => notify.confirmState.value.open,
-  async (open) => {
-    if (open) {
-      await nextTick();
-      confirmBtn.value?.focus();
-    }
-  }
-);
-
-onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+useModalFocus({
+  container: dialogEl,
+  initialFocus: preferredFocus,
+  active: isOpen,
+  onEscape: cancel,
+});
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="confirm">
       <div v-if="isOpen" class="confirm-scrim" @click.self="cancel">
-        <div
+        <form
+          ref="dialogEl"
           class="confirm-card"
           :class="{ danger: isDanger }"
           role="dialog"
           aria-modal="true"
-          :aria-label="opts.title"
+          aria-labelledby="confirm-dialog-title"
+          :aria-describedby="opts.message ? 'confirm-dialog-message' : undefined"
+          tabindex="-1"
+          @submit.prevent="submit"
         >
           <div class="confirm-head">
             <PhWarning
@@ -96,9 +86,11 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
               :size="20"
               weight="fill"
             />
-            <h3 class="confirm-title">{{ opts.title }}</h3>
+            <h3 id="confirm-dialog-title" class="confirm-title">{{ opts.title }}</h3>
           </div>
-          <p v-if="opts.message" class="confirm-message">{{ opts.message }}</p>
+          <p v-if="opts.message" id="confirm-dialog-message" class="confirm-message">
+            {{ opts.message }}
+          </p>
           <input
             v-if="isPrompt"
             ref="inputEl"
@@ -111,11 +103,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             {{ (opts as any).impact }}
           </p>
           <div class="confirm-actions">
-            <button class="pa-btn pa-btn--ghost" @click="cancel">
+            <button type="button" class="pa-btn pa-btn--ghost" @click="cancel">
               {{ opts.cancelLabel || "取消" }}
             </button>
             <button
               ref="confirmBtn"
+              type="submit"
               class="pa-btn"
               :class="isDanger ? 'pa-btn--danger' : 'pa-btn--primary'"
               @click="submit"
@@ -123,7 +116,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
               {{ opts.confirmLabel || (isPrompt ? "确定" : "确认") }}
             </button>
           </div>
-        </div>
+        </form>
       </div>
     </Transition>
   </Teleport>

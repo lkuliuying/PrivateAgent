@@ -5,10 +5,15 @@ export function isDesktopRuntime(): boolean {
   return isTauri();
 }
 
-/** Read the API port negotiated by the Rust sidecar, if available. */
-export async function getApiPort(): Promise<number | null> {
+export interface SidecarApiInfo {
+  port: number;
+  api_token: string;
+}
+
+/** Read the in-memory sidecar connection negotiated by the Rust shell. */
+export async function getSidecarApiInfo(): Promise<SidecarApiInfo | null> {
   if (!isTauri()) return null;
-  return invoke<number | null>("get_api_port");
+  return invoke<SidecarApiInfo | null>("get_api_info");
 }
 
 /** Tauri directory picker; browser/dev mode returns null so callers can fall back to text input. */
@@ -68,6 +73,7 @@ export interface SidecarStartResult {
   ok: boolean;
   dev_mode: boolean;
   port: number | null;
+  api_token: string | null;
   error: string | null;
 }
 

@@ -1,4 +1,4 @@
-import { shallowMount } from "@vue/test-utils";
+import { flushPromises, shallowMount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { nextTick } from "vue";
 import TodayView from "./TodayView.vue";
@@ -49,6 +49,16 @@ const snapshot = {
   },
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function mountToday() {
   const wrapper = shallowMount(TodayView);
   await Promise.resolve();
@@ -88,6 +98,33 @@ describe("TodayView composer", () => {
     const wrapper = await mountToday();
     await wrapper.get(".send").trigger("click");
     expect(wrapper.emitted("submit")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("筛选请求乱序返回时保留最后一次结果", async () => {
+    const wrapper = await mountToday();
+    const slow = deferred<typeof snapshot>();
+    const fast = deferred<typeof snapshot>();
+    getToday
+      .mockImplementationOnce(() => slow.promise)
+      .mockImplementationOnce(() => fast.promise);
+
+    const filters = wrapper.findAll(".filter-select");
+    await filters[0].setValue("task");
+    await filters[1].setValue("high");
+
+    fast.resolve({
+      ...snapshot,
+      summary: { ...snapshot.summary, attention_tasks: 22 },
+    });
+    await flushPromises();
+    slow.resolve({
+      ...snapshot,
+      summary: { ...snapshot.summary, attention_tasks: 11 },
+    });
+    await flushPromises();
+
+    expect(wrapper.findAll(".overview-item strong")[0].text()).toBe("22");
     wrapper.unmount();
   });
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { nextTick, ref } from "vue";
 import {
   PhChatsCircle,
   PhSun,
@@ -16,6 +16,7 @@ import {
   PhCommand,
   PhDotsThree,
 } from "@phosphor-icons/vue";
+import AppearanceControl from "./AppearanceControl.vue";
 import type { View } from "../types";
 
 defineProps<{ active: View }>();
@@ -24,6 +25,7 @@ const emit = defineEmits<{
   "open-command": [];
 }>();
 const advancedOpen = ref(false);
+const advancedToggle = ref<HTMLButtonElement | null>(null);
 
 const primaryItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "today", label: "今日", icon: PhSun },
@@ -44,6 +46,19 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   { key: "integrations", label: "集成", icon: PhPlugs },
   { key: "backup", label: "备份", icon: PhDatabase },
 ];
+
+async function closeAdvanced(event?: KeyboardEvent): Promise<void> {
+  if (!advancedOpen.value) return;
+  event?.preventDefault();
+  advancedOpen.value = false;
+  await nextTick();
+  advancedToggle.value?.focus();
+}
+
+function navigateAdvanced(view: View): void {
+  advancedOpen.value = false;
+  emit("navigate", view);
+}
 </script>
 
 <template>
@@ -62,6 +77,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
           class="nav-item"
           :class="{ active: active === item.key }"
           :aria-current="active === item.key ? 'page' : undefined"
+          :aria-label="item.label"
           :title="item.label"
           @click="emit('navigate', item.key)"
         >
@@ -77,6 +93,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
           class="nav-item"
           :class="{ active: active === item.key }"
           :aria-current="active === item.key ? 'page' : undefined"
+          :aria-label="item.label"
           :title="item.label"
           @click="emit('navigate', item.key)"
         >
@@ -86,11 +103,14 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
       </li>
     </ul>
 
-    <div class="navrail-utilities">
+    <div class="navrail-utilities" @keydown.esc.stop="closeAdvanced">
       <button
+        ref="advancedToggle"
         class="nav-item utility-toggle"
         :class="{ active: advancedOpen || advancedItems.some((item) => item.key === active) }"
         :aria-expanded="advancedOpen"
+        aria-controls="navrail-advanced-items"
+        aria-label="更多工具"
         title="更多工具"
         @click="advancedOpen = !advancedOpen"
       >
@@ -99,14 +119,20 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
       </button>
 
       <Transition name="nav-more">
-        <ul v-if="advancedOpen" class="navrail-items advanced-items" aria-label="更多工具">
+        <ul
+          v-if="advancedOpen"
+          id="navrail-advanced-items"
+          class="navrail-items advanced-items"
+          aria-label="更多工具"
+        >
           <li v-for="item in advancedItems" :key="item.key">
             <button
               class="nav-item nav-item--compact"
               :class="{ active: active === item.key }"
               :aria-current="active === item.key ? 'page' : undefined"
+              :aria-label="item.label"
               :title="item.label"
-              @click="emit('navigate', item.key)"
+              @click="navigateAdvanced(item.key)"
             >
               <component :is="item.icon" class="nav-icon" :size="18" weight="regular" />
               <span class="nav-label">{{ item.label }}</span>
@@ -115,9 +141,13 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
         </ul>
       </Transition>
 
+      <AppearanceControl />
+
       <button
         class="nav-item"
         :class="{ active: active === 'settings' }"
+        :aria-current="active === 'settings' ? 'page' : undefined"
+        aria-label="设置"
         title="设置"
         @click="emit('navigate', 'settings')"
       >
@@ -127,14 +157,19 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
     </div>
 
     <div class="navrail-status">
-      <span class="status-dot" />
+      <span class="status-dot" aria-hidden="true" />
       <div>
         <strong>本地运行中</strong>
-        <span>Qwen3 · 本机向量库</span>
+        <span>本机模型 · 本机向量库</span>
       </div>
     </div>
 
-    <button class="command-shortcut" title="打开快捷命令" @click="emit('open-command')">
+    <button
+      class="command-shortcut"
+      aria-label="打开快捷命令"
+      title="打开快捷命令"
+      @click="emit('open-command')"
+    >
       <PhCommand :size="15" />
       <span>快捷命令</span>
       <kbd>Ctrl K</kbd>
@@ -146,12 +181,13 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .navrail {
   position: relative;
   isolation: isolate;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   width: 100%;
   height: 100%;
   background:
-    radial-gradient(circle at 20% 0%, rgba(120, 184, 166, 0.12), transparent 32%),
-    linear-gradient(180deg, color-mix(in srgb, var(--color-rail-bg) 94%, white), var(--color-rail-bg));
+    radial-gradient(circle at 20% 0%, var(--color-rail-glow), transparent 32%),
+    linear-gradient(180deg, var(--color-rail-gradient-top), var(--color-rail-bg));
   border-right: 1px solid var(--color-rail-border);
   display: flex;
   flex-direction: column;
@@ -159,7 +195,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   color: var(--color-rail-fg);
   padding: 24px 16px 18px;
   gap: 18px;
-  box-shadow: inset -1px 0 rgba(255, 255, 255, 0.025);
+  box-shadow: inset -1px 0 var(--color-rail-highlight);
 }
 .navrail::after {
   content: "";
@@ -171,7 +207,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   background-image: linear-gradient(
     115deg,
     transparent 0 42%,
-    rgba(255, 255, 255, 0.035) 50%,
+    var(--color-rail-sheen) 50%,
     transparent 58% 100%
   );
   background-size: 230% 100%;
@@ -202,22 +238,20 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   display: grid;
   place-items: center;
   background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.18), transparent 48%),
+    linear-gradient(145deg, var(--color-rail-brand-highlight), transparent 48%),
     var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-fg);
   font-weight: 800;
   font-family: var(--font-display);
   font-size: 21px;
   flex-shrink: 0;
-  box-shadow: 0 10px 24px rgba(2, 12, 10, 0.32),
-    inset 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: var(--shadow-rail-mark);
   transition: transform var(--duration-gentle) var(--ease-spring),
     box-shadow var(--duration-gentle) var(--ease-out);
 }
 .navrail-brand:hover .brand-mark {
   transform: rotate(-4deg) scale(1.055);
-  box-shadow: 0 14px 30px rgba(2, 12, 10, 0.42),
-    inset 0 1px rgba(255, 255, 255, 0.24);
+  box-shadow: var(--shadow-rail-mark-hover);
 }
 .brand-copy {
   display: flex;
@@ -268,7 +302,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .nav-item:hover {
   background: var(--color-rail-surface);
   color: var(--color-rail-fg-strong);
-  transform: translateX(3px);
+  transform: translateX(var(--motion-distance-xs));
 }
 .nav-item:focus-visible {
   outline: none;
@@ -277,8 +311,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .nav-item.active {
   color: var(--color-rail-fg-strong);
   background: var(--color-rail-active);
-  box-shadow: inset 0 1px rgba(255, 255, 255, 0.035),
-    0 8px 20px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-rail-active);
 }
 /* 激活指示条 */
 .nav-item.active::before {
@@ -335,8 +368,8 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   width: 8px;
   height: 8px;
   border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
+  background: var(--color-status-online);
+  box-shadow: 0 0 0 4px var(--color-status-online-soft);
   margin-top: 5px;
   flex-shrink: 0;
   animation: rail-status-pulse 2.4s var(--ease-out) infinite;
@@ -344,10 +377,10 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 @keyframes rail-status-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.1);
+    box-shadow: 0 0 0 3px var(--color-status-online-soft);
   }
   50% {
-    box-shadow: 0 0 0 7px rgba(34, 197, 94, 0);
+    box-shadow: 0 0 0 7px transparent;
   }
 }
 .navrail-status strong,
@@ -373,7 +406,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   padding: 0 10px;
   border: 1px solid var(--color-rail-border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--color-rail-command-bg);
   color: var(--color-rail-fg-muted);
   cursor: pointer;
   transition: color var(--duration-fast) var(--ease),
@@ -384,7 +417,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .command-shortcut:focus-visible {
   color: var(--color-rail-fg-strong);
   background: var(--color-rail-surface);
-  border-color: rgba(120, 184, 166, 0.34);
+  border-color: var(--color-rail-focus-border);
   outline: none;
 }
 .command-shortcut span {
@@ -407,7 +440,7 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
 .nav-more-enter-from,
 .nav-more-leave-to {
   opacity: 0;
-  transform: translateY(-4px);
+  transform: translateY(calc(var(--motion-distance-xs) * -1));
 }
 
 @media (max-width: 1180px) {
@@ -450,7 +483,9 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   }
   .brand-mark,
   .nav-item,
-  .nav-icon {
+  .nav-icon,
+  .nav-more-enter-active,
+  .nav-more-leave-active {
     transition: none;
   }
   .nav-item:hover,
@@ -458,6 +493,23 @@ const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] 
   .nav-item:hover .nav-icon,
   .nav-item.active .nav-icon {
     transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .navrail::after {
+    display: none;
+  }
+  .nav-item.active {
+    color: HighlightText;
+    outline: 2px solid Highlight;
+    outline-offset: -3px;
+  }
+  .nav-item.active::before {
+    background: HighlightText;
+  }
+  .status-dot {
+    border: 1px solid CanvasText;
   }
 }
 </style>

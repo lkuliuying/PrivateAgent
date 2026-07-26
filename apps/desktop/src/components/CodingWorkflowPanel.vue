@@ -34,6 +34,7 @@ import type {
   DiagnoseResult,
 } from "../types";
 import { useNotifications } from "../stores/notifications";
+import { useModalFocus } from "../composables/useModalFocus";
 
 const notify = useNotifications();
 
@@ -50,6 +51,19 @@ const patchMsg = ref("");
 
 const newPatchOpen = ref(false);
 const newPatchTitle = ref("");
+const newPatchDialog = ref<HTMLElement | null>(null);
+const newPatchTitleInput = ref<HTMLInputElement | null>(null);
+
+function closeNewPatch() {
+  newPatchOpen.value = false;
+}
+
+useModalFocus({
+  container: newPatchDialog,
+  initialFocus: newPatchTitleInput,
+  active: newPatchOpen,
+  onEscape: closeNewPatch,
+});
 type PatchFileDraft = PatchFileCreate & { clientId: string };
 let nextPatchFileClientId = 1;
 const createPatchFileDraft = (): PatchFileDraft => ({
@@ -154,7 +168,7 @@ async function submitNewPatch() {
       title: newPatchTitle.value.trim(),
       files: files.map((f) => ({ rel_path: f.rel_path.trim(), new_content: f.new_content, create: f.create })),
     });
-    newPatchOpen.value = false;
+    closeNewPatch();
     await loadPatches();
     await selectPatch(ps.id);
     patchMsg.value = "补丁集已创建";
@@ -493,36 +507,45 @@ function cmdText(c: ProjectCommandProfile): string {
     </div>
 
     <!-- 新建补丁集浮层 -->
-    <div v-if="newPatchOpen" class="modal-overlay" @click.self="newPatchOpen = false">
-      <div class="modal-card">
+    <Teleport to="body">
+      <div v-if="newPatchOpen" class="modal-overlay" @click.self="closeNewPatch">
+        <div
+          ref="newPatchDialog"
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-patch-set-title"
+          tabindex="-1"
+        >
         <div class="modal-head">
-          <span>新建补丁集</span>
+          <span id="new-patch-set-title">新建补丁集</span>
           <button
             class="pa-btn pa-btn--ghost pa-btn--icon"
             title="关闭新建补丁集"
             aria-label="关闭新建补丁集"
-            @click="newPatchOpen = false"
+            @click="closeNewPatch"
           >
             <PhX :size="14" />
           </button>
         </div>
-        <label class="modal-label">标题</label>
-        <input v-model="newPatchTitle" class="pa-input" placeholder="补丁集标题" />
+        <label class="modal-label" for="new-patch-set-name">标题</label>
+        <input id="new-patch-set-name" ref="newPatchTitleInput" v-model="newPatchTitle" class="pa-input" placeholder="补丁集标题" />
         <div v-for="(f, i) in newPatchFiles" :key="f.clientId" class="patch-file-row">
-          <input v-model="f.rel_path" class="pa-input pf-path" placeholder="相对路径，如 src/app.py" />
+          <input v-model="f.rel_path" class="pa-input pf-path" :aria-label="`文件 ${i + 1} 的相对路径`" placeholder="相对路径，如 src/app.py" />
           <label class="pf-create"><input type="checkbox" v-model="f.create" /> 新建</label>
-          <textarea v-model="f.new_content" class="pa-input pf-content" placeholder="新内容" rows="3"></textarea>
-          <button class="icon-btn del" title="移除文件行" @click="removePatchFile(i)"><PhTrash :size="12" /></button>
+          <textarea v-model="f.new_content" class="pa-input pf-content" :aria-label="`文件 ${i + 1} 的新内容`" placeholder="新内容" rows="3"></textarea>
+          <button class="icon-btn del" title="移除文件行" :aria-label="`移除文件 ${i + 1}`" @click="removePatchFile(i)"><PhTrash :size="12" /></button>
         </div>
         <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="addPatchFile">
           <PhPlus :size="13" /> 添加文件
         </button>
         <div class="modal-actions">
-          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="newPatchOpen = false">取消</button>
+          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="closeNewPatch">取消</button>
           <button class="pa-btn pa-btn--primary pa-btn--sm" :disabled="patchBusy || !newPatchTitle.trim()" @click="submitNewPatch">创建</button>
         </div>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
 
@@ -905,11 +928,11 @@ function cmdText(c: ProjectCommandProfile): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-overlay);
 }
 .modal-card {
   width: 560px;
@@ -923,7 +946,7 @@ function cmdText(c: ProjectCommandProfile): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 .modal-head {
   display: flex;

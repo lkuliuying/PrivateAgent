@@ -315,7 +315,7 @@ onBeforeUnmount(() => {
   color: var(--color-fg);
 }
 .msg.assistant .avatar {
-  color: #fff;
+  color: var(--color-accent-fg);
 }
 .msg.assistant .avatar-core,
 .msg.tool .avatar-core {
@@ -369,7 +369,7 @@ onBeforeUnmount(() => {
 }
 .msg.user .bubble {
   background: var(--color-rail-bg);
-  color: #fff;
+  color: var(--color-rail-fg-strong);
   border-bottom-right-radius: 4px;
 }
 .msg.assistant .bubble {
@@ -449,7 +449,7 @@ onBeforeUnmount(() => {
   border: 2px solid var(--color-accent);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
-  box-shadow: 0 8px 28px rgba(7, 135, 163, 0.08);
+  box-shadow: 0 8px 28px color-mix(in srgb, var(--color-accent) 8%, transparent);
   overflow: hidden;
 }
 .tool-chip {
@@ -516,7 +516,7 @@ textarea:focus {
 }
 .send-btn {
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-fg);
 }
 .send-btn:disabled {
   background: var(--color-fg-disabled);
@@ -524,7 +524,7 @@ textarea:focus {
 }
 .stop-btn {
   background: var(--color-danger);
-  color: #fff;
+  color: var(--color-danger-on-solid);
 }
 .composer-note {
   text-align: center;

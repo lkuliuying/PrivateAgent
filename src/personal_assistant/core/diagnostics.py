@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import __version__
 from ..config import settings as cfg
 from .activities import ActivityService
+from .background import background_tasks
 from .backup import BackupService
 from .health import HealthService
 from .models import (
@@ -101,6 +102,7 @@ class DiagnosticsService:
         reminder_tick = await self._reminder_tick_status()
         orphan_evidence = await self._orphan_evidence_count()
         recent_errors = self._recent_log_errors()
+        background = background_tasks.stats()
 
         # 第八阶段 M7：注册的 diagnostic_check 列表（出现在诊断中心 + 诊断包）。
         # 带 runner 的 diagnostic_check 输出自动并入快照（新增检查不需改 snapshot）。
@@ -156,6 +158,12 @@ class DiagnosticsService:
             ],
             "reminder_tick": reminder_tick,
             "import_queue": import_queue,
+            "background_tasks": {
+                "queued": background["queued"],
+                "running": background["running"],
+                "failed": background["failed"],
+                "deduplicated": background["deduplicated"],
+            },
             "integrity_summary": {
                 "orphan_evidence": orphan_evidence,
             },

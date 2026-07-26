@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
+from ..core.background import background_tasks
 from ..core.ocr import ocr_engine_available
 from ..core.repo_ocr_jobs import OcrJobRepository
 
@@ -70,14 +71,31 @@ async def get_ocr_job(job_id: int, db: AsyncSession = Depends(get_session)):
 
 @router.post("/ocr-jobs/{job_id}/retry", response_model=OcrJobOut)
 async def retry_ocr_job(job_id: int, db: AsyncSession = Depends(get_session)):
-    import asyncio
-
-    from ..workers.ocr import run_ocr_job
+    from ..workers.ocr import retry_ocr_job as run_retry_ocr_job
 
     repo = OcrJobRepository(db)
     job = await repo.get(job_id)
     if job is None:
         raise HTTPException(404, "ocr job not found")
-    await repo.mark(job_id, status="pending", error_message=None)
-    asyncio.create_task(run_ocr_job(job_id, job.file_path))
-    return await repo.get(job_id)
+
+    if job.status in {"pending", "processing"}:
+        # Idempotent retry: an existing worker (or accepted queued work) owns the state.
+        return job
+    if job.status == "succeeded":
+        raise HTTPException(409, "succeeded OCR job cannot be retried")
+    if job.status not in {"failed", "unavailable", "cancelled"}:
+        raise HTTPException(409, f"OCR job state is not retryable: {job.status}")
+
+    # The worker resets state only if this submission was actually created.  A second
+    # concurrent request therefore cannot regress processing back to pending.
+    submission = background_tasks.submit(
+        lambda: run_retry_ocr_job(job_id, job.file_path),
+        name=f"ocr-job-{job_id}",
+        key=f"ocr-job:{job_id}",
+    )
+    if not submission.created:
+        # A terminal row paired with an existing task key is an ambiguous edge
+        # (usually shutdown/cancellation cleanup). Do not claim that a new retry
+        # was accepted when the supervisor actually deduplicated it.
+        raise HTTPException(409, "OCR job retry is already in progress")
+    return job

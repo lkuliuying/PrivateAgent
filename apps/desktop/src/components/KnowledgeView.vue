@@ -17,6 +17,7 @@ import type { CompareResult, DocumentItem, SectionSummary } from "../types";
 import DocumentComparePanel from "./DocumentComparePanel.vue";
 import CollectionWorkspace from "./CollectionWorkspace.vue";
 import { useNotifications } from "../stores/notifications";
+import { useModalFocus } from "../composables/useModalFocus";
 
 const notify = useNotifications();
 
@@ -56,6 +57,19 @@ const showSummary = ref(false);
 const summaryTitle = ref("");
 const summarySections = ref<SectionSummary[]>([]);
 const summarizing = ref(false);
+const summaryDialog = ref<HTMLElement | null>(null);
+const summaryCloseButton = ref<HTMLElement | null>(null);
+
+function closeSummary() {
+  showSummary.value = false;
+}
+
+useModalFocus({
+  container: summaryDialog,
+  initialFocus: summaryCloseButton,
+  active: showSummary,
+  onEscape: closeSummary,
+});
 
 async function load() {
   const seq = ++loadSeq;
@@ -256,7 +270,7 @@ async function runSummary(d: DocumentItem) {
     summarySections.value = await summarizeSections(d.id);
   } catch (e) {
     notify.error("摘要失败", String(e));
-    showSummary.value = false;
+    closeSummary();
   } finally {
     summarizing.value = false;
   }
@@ -436,29 +450,40 @@ function fmtSize(b: number | null): string {
     />
 
     <!-- 章节摘要浮层 -->
-    <div v-if="showSummary" class="modal-overlay" @click.self="showSummary = false">
-      <div class="summary-card">
+    <Teleport to="body">
+      <div v-if="showSummary" class="modal-overlay" @click.self="closeSummary">
+        <div
+          ref="summaryDialog"
+          class="summary-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="document-summary-title"
+          :aria-busy="summarizing"
+          tabindex="-1"
+        >
         <div class="summary-head">
-          <span>章节摘要：{{ summaryTitle }}</span>
+          <span id="document-summary-title">章节摘要：{{ summaryTitle }}</span>
           <button
+            ref="summaryCloseButton"
             class="pa-btn pa-btn--ghost pa-btn--icon"
             title="关闭章节摘要"
             aria-label="关闭章节摘要"
-            @click="showSummary = false"
+            @click="closeSummary"
           >
             ✕
           </button>
         </div>
         <div class="summary-body">
-          <p v-if="summarizing" class="muted">生成中…</p>
+          <p v-if="summarizing" class="muted" role="status">生成中…</p>
           <div v-else-if="summarySections.length === 0" class="muted">未生成摘要</div>
           <div v-for="(s, i) in summarySections" :key="i" class="summary-item">
             <div class="summary-heading">{{ s.heading }}</div>
             <div class="summary-text">{{ s.summary }}</div>
           </div>
         </div>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
 
@@ -609,11 +634,11 @@ h1 {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-overlay);
 }
 .summary-card {
   width: 560px;
@@ -624,7 +649,7 @@ h1 {
   background: var(--color-surface-raised);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-md);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 .summary-head {
   flex-shrink: 0;

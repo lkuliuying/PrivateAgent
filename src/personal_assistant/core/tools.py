@@ -24,6 +24,7 @@ from ..config import settings
 from ..logging_setup import get_logger
 from . import approvals
 from .activities import ActivityService
+from .background import background_tasks
 from .code_tools import (
     apply_patch_to_workspace,
     get_git_diff,
@@ -158,9 +159,9 @@ async def _summarize_file_execute(inputs: dict, ctx: ToolContext) -> dict:
 
 
 def _tool_upload_path(doc_id: int, name: str) -> Path:
-    """与 routes_documents._upload_path 一致：data/uploads/{doc_id}{ext}。"""
+    """与 routes_documents._upload_path 一致，始终落在应用数据目录。"""
     ext = Path(name).suffix
-    d = Path("./data/uploads")
+    d = settings.data_dir / "uploads"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{doc_id}{ext}"
 
@@ -450,7 +451,11 @@ async def _import_to_kb_execute(inputs: dict, ctx: ToolContext) -> dict:
     )
     upload_path = _tool_upload_path(doc.id, p.name)
     await asyncio.to_thread(upload_path.write_bytes, data)
-    asyncio.create_task(import_document(doc.id, str(upload_path)))
+    background_tasks.spawn(
+        lambda: import_document(doc.id, str(upload_path)),
+        name=f"document-import-{doc.id}",
+        key=f"document:{doc.id}",
+    )
     return {"doc_id": doc.id, "status": "imported", "name": p.name}
 
 

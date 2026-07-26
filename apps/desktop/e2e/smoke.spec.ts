@@ -164,6 +164,63 @@ test.describe("E2E smoke", () => {
     expect(metrics.root).toBeLessThanOrEqual(metrics.viewport);
   });
 
+  test("冷工作区与命令覆盖层按需加载且保持互斥", async ({ page }) => {
+    await mockApi(page, (url) => {
+      if (url.includes("/health")) return GREEN_HEALTH;
+      if (url.includes("/today")) return TODAY_SNAPSHOT;
+      if (url.includes("/learning/topics")) return [];
+      if (url.includes("/learning/reviews/today")) return [];
+      return [];
+    });
+
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "今日工作台" })).toBeVisible();
+
+    const learningModule = page.waitForResponse((response) =>
+      response.url().includes("/src/components/LearningWorkspace.vue")
+    );
+    await page.locator(".nav-item", { hasText: "学习" }).click();
+    await learningModule;
+    await expect(
+      page.getByRole("heading", { name: "为一个主题建立学习系统" })
+    ).toBeVisible();
+
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "k",
+          ctrlKey: true,
+          repeat: true,
+          bubbles: true,
+        })
+      );
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "k",
+          ctrlKey: true,
+          isComposing: true,
+          bubbles: true,
+        })
+      );
+    });
+    await expect(page.locator(".cp-card")).toHaveCount(0);
+
+    const paletteModule = page.waitForResponse((response) =>
+      response.url().includes("/src/components/CommandPalette.vue")
+    );
+    await page.keyboard.press("Control+K");
+    await paletteModule;
+    await expect(page.locator(".cp-card")).toBeVisible();
+
+    const searchModule = page.waitForResponse((response) =>
+      response.url().includes("/src/components/GlobalSearch.vue")
+    );
+    await page.getByText("全局搜索", { exact: true }).click();
+    await searchModule;
+    await expect(page.locator(".gs-card")).toBeVisible();
+    await expect(page.locator(".cp-card")).toHaveCount(0);
+  });
+
   for (const viewport of [
     { width: 1280, height: 720 },
     { width: 1440, height: 900 },

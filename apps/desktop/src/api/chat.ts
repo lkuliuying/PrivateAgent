@@ -5,7 +5,7 @@ import type {
   ToolCall,
   ToolPlanResponse,
 } from "../types";
-import { ensureApiBase, requestJson } from "./http";
+import { apiFetch, ensureApiBase, requestJson } from "./http";
 
 export function listSessions(): Promise<Session[]> {
   return requestJson<Session[]>("/sessions");
@@ -66,7 +66,7 @@ export function streamChat(
 
   ensureApiBase()
     .then((base) =>
-      fetch(`${base}/chat/stream`, {
+      apiFetch(`${base}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

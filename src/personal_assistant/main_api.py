@@ -9,9 +9,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from secrets import compare_digest
+from time import perf_counter
+from typing import Callable
+from uuid import uuid4
 
-from fastapi import FastAPI
+import structlog
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .api.routes_activities import router as activities_router
 from .api.routes_agent_tasks import router as agent_tasks_router
@@ -48,6 +55,8 @@ from .api.routes_settings import router as settings_router
 from .api.routes_today import router as today_router
 from .api.routes_tools import router as tools_router
 from .config import settings
+from .core.background import background_tasks
+from .core.store_chroma import chroma_store
 from .logging_setup import get_logger, setup_logging
 
 setup_logging()
@@ -67,7 +76,12 @@ async def lifespan(app: FastAPI):
     # 测试用 POST /reminders/tick 手动触发，不依赖此循环（ASGITransport 不运行 lifespan）。
     from .core.reminders import reminder_tick_loop
 
-    tick_task = asyncio.create_task(reminder_tick_loop())
+    tick_task = background_tasks.spawn(
+        reminder_tick_loop,
+        name="reminder-tick",
+        key="service:reminder-tick",
+        limited=False,
+    )
     logger.info("提醒后台 tick 已启动")
     try:
         yield
@@ -75,6 +89,8 @@ async def lifespan(app: FastAPI):
         tick_task.cancel()
         with suppress(asyncio.CancelledError):
             await tick_task
+        await background_tasks.drain(timeout=5.0)
+        await chroma_store.close()
         logger.info("后端关闭")
 
 
@@ -85,16 +101,126 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS：本地优先应用（loopback），无 cookie。allow_credentials=False + 通配来源
-# 可接受：GET /settings 已掩码密钥（不回显原文），诊断包脱敏，无 cookie 可窃。
-# 之前收紧为固定来源导致 Tauri webview origin（https://tauri.localhost）被拦截，
-# 前端 fetch 本地 API 全部 CORS 失败 -> 启动超时。故恢复通配 + 关闭 credentials。
+
+# Tauri 生产 WebView 与浏览器开发服务的明确来源白名单。
+TAURI_ORIGINS = [
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+]
+LOOPBACK_ORIGIN_REGEX = r"^https?://(?:localhost|127\.0\.0\.1)(?::\d{1,5})?$"
+
+
+class ApiTokenAuthMiddleware:
+    """校验桌面进程生成的 Bearer token；空 token 仅用于显式开发模式。"""
+
+    def __init__(self, app: ASGIApp, token_provider: Callable[[], str]) -> None:
+        self.app = app
+        self._token_provider = token_provider
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope.get("method") == "OPTIONS":
+            await self.app(scope, receive, send)
+            return
+
+        expected = self._token_provider()
+        if not expected:
+            await self.app(scope, receive, send)
+            return
+
+        raw_authorization = next(
+            (
+                value
+                for name, value in scope.get("headers", [])
+                if name.lower() == b"authorization"
+            ),
+            b"",
+        )
+        scheme, separator, credential = raw_authorization.partition(b" ")
+        # 缺失或畸形 header 也执行比较；错误响应与日志均不包含令牌。
+        credential_matches = compare_digest(credential, expected.encode("utf-8"))
+        if separator != b" " or scheme.lower() != b"bearer" or not credential_matches:
+            response = JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized"},
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+def _configured_api_token() -> str:
+    return settings.api_token.get_secret_value()
+
+
+# 先注册鉴权，再注册观测与 CORS，最终链路为 CORS(Observability(Auth(router)))。
+app.add_middleware(ApiTokenAuthMiddleware, token_provider=_configured_api_token)
+
+
+def _request_id(value: str | None) -> str:
+    """只接受短且可安全写入日志/响应头的调用方 request id。"""
+    if value and value.isascii() and 1 <= len(value) <= 64 and all(
+        ch.isalnum() or ch in "-_" for ch in value
+    ):
+        return value
+    return uuid4().hex
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next) -> Response:
+    """记录不含正文和查询参数的首字节耗时，并贯穿 request id。"""
+    request_id = _request_id(request.headers.get("x-request-id"))
+    started = perf_counter()
+    structlog.contextvars.bind_contextvars(request_id=request_id)
+    status_code = 500
+    try:
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception:
+            logger.exception(
+                "API 请求异常",
+                method=request.method,
+                route=request.url.path,
+                ttfb_ms=round((perf_counter() - started) * 1000, 2),
+            )
+            # Returning the generic response here (instead of re-raising to Starlette's
+            # outer ServerErrorMiddleware) keeps correlation/timing and CORS headers on
+            # otherwise-unhandled 500 responses without exposing exception details.
+            response = JSONResponse(
+                status_code=500,
+                content={"detail": "Internal Server Error"},
+            )
+        elapsed_ms = (perf_counter() - started) * 1000
+        response.headers["X-Request-ID"] = request_id
+        response.headers["Server-Timing"] = f"ttfb;dur={elapsed_ms:.2f}"
+        return response
+    finally:
+        elapsed_ms = (perf_counter() - started) * 1000
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        log = logger.debug if route_path == "/health" else logger.info
+        log(
+            "API 响应头已生成",
+            method=request.method,
+            route=route_path,
+            status=status_code,
+            ttfb_ms=round(elapsed_ms, 2),
+        )
+        structlog.contextvars.clear_contextvars()
+
+
+# CORS 最外层包裹鉴权与观测中间件，使成功、401 与兜底 500 都携带一致响应头。
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=TAURI_ORIGINS,
+    allow_origin_regex=LOOPBACK_ORIGIN_REGEX,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-ID"],
+    expose_headers=["X-Request-ID", "Server-Timing"],
 )
 
 app.include_router(health_router)

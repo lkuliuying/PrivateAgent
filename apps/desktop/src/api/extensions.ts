@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 
 export interface ExtensionDescriptor {
   id: string;
@@ -19,7 +19,7 @@ export async function listExtensions(
 ): Promise<ExtensionDescriptor[]> {
   const base = await ensureApiBase();
   const qs = kind ? `?kind=${encodeURIComponent(kind)}` : "";
-  const r = await fetch(`${base}/extensions${qs}`);
+  const r = await apiFetch(`${base}/extensions${qs}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -29,7 +29,7 @@ export async function patchExtension(
   enabled: boolean
 ): Promise<ExtensionDescriptor> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/extensions/${encodeURIComponent(extId)}`, {
+  const r = await apiFetch(`${base}/extensions/${encodeURIComponent(extId)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..logging_setup import get_logger
+from .background import background_tasks
 from .learning import parse_json_array, parse_json_object
 from .permissions import PermissionError_, assert_trusted
 from .provider import OllamaProvider, ProviderError
@@ -217,9 +218,13 @@ class ExportService:
             embedding_model=settings.embed_model,
             doc_type="markdown",
         )
-        upload_dir = Path("./data/uploads")
+        upload_dir = settings.data_dir / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
         upload_path = upload_dir / f"{doc.id}.md"
         await asyncio.to_thread(upload_path.write_bytes, content.encode("utf-8"))
-        asyncio.create_task(import_document(doc.id, str(upload_path)))
+        background_tasks.spawn(
+            lambda: import_document(doc.id, str(upload_path)),
+            name=f"document-import-{doc.id}",
+            key=f"document:{doc.id}",
+        )
         return {"doc_id": doc.id, "status": "imported", "name": doc.name}

@@ -9,16 +9,21 @@
 
 | 步骤 | 命令 | 期望 |
 |---|---|---|
-| 快速检查 | `scripts\release-check.bat`（pytest / npm build / cargo check / alembic current） | 全部 OK |
+| 快速检查 | `scripts\release-check.bat`（pytest / npm build / Tauri Rust gate / alembic current） | 全部 OK |
 | 完整证据（phase8） | `scripts\release-check-full.bat`（+ npm test / e2e / 诊断包脱敏 / latest.json 校验） | 输出 `dist\release-check-<version>.json+.md`，无 blocker |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
 | 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0011 (head)`） |
 
-> `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
-> phase8 `release-check-full.bat` 中 npm test / e2e 在 M1 工具未就绪时 SKIP（不阻断）；sidecar smoke 见 `scripts\sidecar_smoke.py`。
+> `release-check-full.bat` 将 pytest、前端构建、Vitest、Playwright、Cargo、Alembic 与诊断包脱敏都视为发布阻断项；缺失工具也会失败。`latest.json` 在尚未生成发布资产时仍是可选检查。
 
-## 1.1 第八阶段发布检查（phase8）
+### 1.1 测试数据隔离
+
+- pytest 与完整发布检查会在当前 MySQL 服务上创建唯一的 `pa_test_*` 数据库，并把运行时文件放到 `.run/pytest/` 或 `.run/release-check/`；不会复用开发库 `personal_assistant`。
+- 自动清理只有在“数据库名、运行令牌、连接 URL”三项同时匹配时才允许执行 `DROP DATABASE`。无法证明归属时会失败关闭，不会回退到开发库。
+- 默认连接账号需要 `CREATE DATABASE` / `DROP DATABASE` 权限。CI 也可显式设置 `PA_TEST_DB_URL`，但数据库名必须严格以 `pa_test_` 开头；显式数据库只验证和使用，不由测试进程删除。
+
+## 1.2 第八阶段发布检查（phase8）
 
 - 桌面 E2E：`cd apps\desktop && npm run test`（Vitest 组件）+ `npm run e2e`（Playwright smoke）。
 - 代码签名：`scripts\sign_installer.py`（有证书走 signtool sign/verify + 重签 .sig；无证书写 unsigned 说明 + `code_signed: no`）。
@@ -80,6 +85,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 - [ ] 模型缺失时提示 `ollama pull <model>`。
 - [ ] 保存并启动后端 -> 轮询 `/health` -> 四项全绿进入主界面。
 - [ ] `.env` 写入 `%APPDATA%\personal-assistant\.env`，字段为 `PA_` 前缀。
+- [ ] `.env`、localStorage 与日志均不含 `PA_API_TOKEN`；无 Bearer token 请求安装版 API 返回通用 401，合法桌面请求正常。
 
 ### 5.3 重新配置
 - [ ] 设置页"重新配置连接"重新打开向导，保存后重启生效。
@@ -189,7 +195,7 @@ rollback_plan:
 ## 9. 当前已知限制
 
 - ✅ **打包 sidecar 连 MySQL 8**：旧构建的 sidecar 缺 `cryptography`，连 MySQL 8 默认 `caching_sha2_password` 认证会失败（状态页 MySQL 红）。已在 `personal_assistant.spec` 显式加入 `hiddenimports += ["cryptography"]`，并于 2026-07-08 重新构建 v0.1.1 sidecar 后验证 `/health` API / Ollama / MySQL / ChromaDB 全绿。后续发布仍需按 §5.2 复测。
-- ✅ **第七阶段自动化验证**：2026-07-08 已验证 `pytest -q` 197 通过、`npm run build` 通过、`cargo check` 通过、`alembic current -> 0010 (head)`。桌面窗口级 Playwright/Tauri E2E 尚未接入，发布前按 §5.5.1 做人工 smoke 或补自动化脚本。
+- ✅ **发布级自动化验证**：2026-07-26 的 `release-check-full.bat` 已完成 11/11 门禁：后端 `pytest` 329 项、前端 Vitest 140 项、Playwright Chromium E2E 16 项、Rust 单测 2 项全部通过，生产构建满足包体预算，`alembic current -> 0012 (head)`，诊断包逐成员脱敏与 updater 清单校验通过。证据输出为 `dist/release-check-0.1.2.json` 与 `.md`。
 - 安装包未代码签名：SmartScreen 拦截，需手动绕过（见 `docs/signing-and-keys.md` §2）。
 - macOS / Linux 仅有构建脚本与差异清单，未实测（见 `docs/cross-platform.md`）。
 - onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/phase5-plan.md` M5，结论暂不切换。

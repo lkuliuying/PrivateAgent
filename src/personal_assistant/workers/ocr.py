@@ -1,6 +1,6 @@
 """OCR 队列后台 worker（第七阶段 M3）。
 
-fire-and-forget：路由 asyncio.create_task(run_ocr_job(...)) 触发。
+fire-and-forget：路由通过受控 background_tasks 启动 run_ocr_job(...)。
 OCR 引擎为同步阻塞，用 asyncio.to_thread 隔离。
 未安装引擎时 job 置 unavailable 并写维护通知；失败入维护报告（phase7 §4.4/§5.3）。
 
@@ -20,6 +20,26 @@ from ..core.timeutil import utcnow
 from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
+CANCELLED_RETRY_ERROR = "任务因应用关闭而中断，可重试"
+
+
+async def _extract_ocr_text(file_path: str) -> str:
+    """Keep the blocking OCR boundary explicit and independently testable."""
+    return await asyncio.to_thread(run_ocr_text, file_path)
+
+
+async def _mark_ocr_cancelled(job_id: int) -> None:
+    """Persist a retryable terminal state using a fresh worker-owned session."""
+    try:
+        async with async_session_factory() as db:
+            await OcrJobRepository(db).mark(
+                job_id,
+                status="failed",
+                error_message=CANCELLED_RETRY_ERROR,
+                finished_at=utcnow(),
+            )
+    except Exception:  # noqa: BLE001 - preserve the original cancellation
+        logger.exception("ocr cancellation status update failed", job_id=job_id)
 
 
 async def run_ocr_job(job_id: int, file_path: str | None) -> None:
@@ -43,14 +63,14 @@ async def run_ocr_job(job_id: int, file_path: str | None) -> None:
             )
             return
 
-        await repo.mark(
-            job_id, status="processing", engine=engine, started_at=utcnow()
-        )
-        logger.info("ocr job start", job_id=job_id, engine=engine)
         try:
+            await repo.mark(
+                job_id, status="processing", engine=engine, started_at=utcnow()
+            )
+            logger.info("ocr job start", job_id=job_id, engine=engine)
             if not file_path:
                 raise RuntimeError("OCR job 缺少文件路径")
-            text = await asyncio.to_thread(run_ocr_text, file_path)
+            text = await _extract_ocr_text(file_path)
             await repo.mark(
                 job_id, status="succeeded", output_text=text, finished_at=utcnow()
             )
@@ -62,6 +82,10 @@ async def run_ocr_job(job_id: int, file_path: str | None) -> None:
                 source_id=job_id,
             )
             logger.info("ocr job done", job_id=job_id, chars=len(text))
+        except asyncio.CancelledError:
+            logger.warning("ocr job cancelled during shutdown", job_id=job_id)
+            await _mark_ocr_cancelled(job_id)
+            raise
         except Exception as e:  # noqa: BLE001
             logger.exception("ocr job failed", job_id=job_id)
             await repo.mark(
@@ -77,6 +101,16 @@ async def run_ocr_job(job_id: int, file_path: str | None) -> None:
                 message=str(e)[:200],
                 source_id=job_id,
             )
+
+
+async def retry_ocr_job(job_id: int, file_path: str | None) -> None:
+    """Reset terminal state only after dedupe created this worker, then rerun it."""
+    async with async_session_factory() as db:
+        reset = await OcrJobRepository(db).reset_for_retry(job_id)
+    if not reset:
+        logger.info("ocr retry skipped after state changed", job_id=job_id)
+        return
+    await run_ocr_job(job_id, file_path)
 
 
 async def _notify(

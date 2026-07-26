@@ -1,49 +1,185 @@
-"""pytest fixtures。"""
+"""Shared pytest fixtures with fail-closed MySQL isolation."""
 from __future__ import annotations
 
 import asyncio
+import atexit
+import logging
+import os
+import sys
+import uuid
+from pathlib import Path
 
+import pytest
 import pytest_asyncio
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from personal_assistant.config import settings as cfg
-from personal_assistant.core.db import get_session
-import personal_assistant.core.db as dbmod
-import personal_assistant.workers.importer as importer_mod
-import personal_assistant.workers.ocr as ocr_mod
-import personal_assistant.workers.project_scanner as scanner_mod
-import personal_assistant.core.reminders as reminders_mod
-from personal_assistant.main_api import app
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SCRIPTS_DIR = PROJECT_ROOT / "scripts"
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
+from _test_database import (  # noqa: E402
+    IsolatedDatabasePlan,
+    activate_test_environment,
+    build_database_plan,
+    drop_database,
+    make_test_data_dir,
+    provision_database,
+    remove_test_data_dir,
+    upgrade_database,
+)
+
+# Reading application configuration is safe here; the global DB engine and FastAPI app
+# must not be imported until PA_DB_URL and PA_DATA_DIR have been replaced below.
+import personal_assistant.config as config_module  # noqa: E402
+
+
+def _bootstrap_isolated_database() -> tuple[IsolatedDatabasePlan, Path]:
+    plan = build_database_plan(
+        config_module.settings.db_url,
+        explicit_test_url=os.environ.get("PA_TEST_DB_URL"),
+    )
+    data_dir = make_test_data_dir(
+        plan.database_name,
+        temp_root=PROJECT_ROOT / ".run" / "pytest",
+    )
+    activate_test_environment(plan, data_dir)
+    # config.py was imported to read the base URL, so update its singleton before any
+    # core module can capture settings or create an engine.
+    config_module.settings.db_url = plan.database_url
+    config_module.settings.data_dir = data_dir
+    try:
+        provision_database(plan)
+        upgrade_database(PROJECT_ROOT)
+    except BaseException:
+        try:
+            if plan.created_by_run:
+                drop_database(plan)
+        finally:
+            remove_test_data_dir(
+                data_dir,
+                temp_root=PROJECT_ROOT / ".run" / "pytest",
+            )
+        raise
+    return plan, data_dir
+
+
+TEST_DATABASE_PLAN, TEST_DATA_DIR = _bootstrap_isolated_database()
+_cleanup_complete = False
+
+
+def _emergency_cleanup() -> None:
+    """Clean isolation even when a later conftest import fails."""
+
+    global _cleanup_complete
+    if _cleanup_complete:
+        return
+    try:
+        if TEST_DATABASE_PLAN.created_by_run:
+            drop_database(TEST_DATABASE_PLAN)
+    finally:
+        remove_test_data_dir(
+            TEST_DATA_DIR,
+            temp_root=PROJECT_ROOT / ".run" / "pytest",
+        )
+    _cleanup_complete = True
+
+
+atexit.register(_emergency_cleanup)
+
+# Application imports are intentionally below the isolation bootstrap.
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine  # noqa: E402
+
+import personal_assistant.core.db as dbmod  # noqa: E402
+import personal_assistant.core.reminders as reminders_mod  # noqa: E402
+import personal_assistant.workers.importer as importer_mod  # noqa: E402
+import personal_assistant.workers.ocr as ocr_mod  # noqa: E402
+import personal_assistant.workers.project_scanner as scanner_mod  # noqa: E402
+from personal_assistant.core.background import background_tasks  # noqa: E402
+from personal_assistant.core.db import get_session  # noqa: E402
+from personal_assistant.core.store_chroma import chroma_store  # noqa: E402
+from personal_assistant.main_api import app  # noqa: E402
+
+cfg = config_module.settings
+
+
+def pytest_report_header() -> str:
+    ownership = "generated/drop-on-exit" if TEST_DATABASE_PLAN.created_by_run else "explicit/preserved"
+    return f"isolated mysql: {TEST_DATABASE_PLAN.database_name} ({ownership})"
+
+
+def _cleanup_isolated_database() -> None:
+    global _cleanup_complete
+    if _cleanup_complete:
+        return
+
+    # Close the application engine before DROP. Per-test engines are disposed by their
+    # fixtures, and logging.shutdown releases the temporary log file on Windows.
+    async def _close_runtime_resources() -> None:
+        await chroma_store.close()
+        await dbmod.engine.dispose()
+
+    try:
+        asyncio.run(_close_runtime_resources())
+    finally:
+        logging.shutdown()
+        try:
+            if TEST_DATABASE_PLAN.created_by_run:
+                drop_database(TEST_DATABASE_PLAN)
+        finally:
+            remove_test_data_dir(
+                TEST_DATA_DIR,
+                temp_root=PROJECT_ROOT / ".run" / "pytest",
+            )
+    _cleanup_complete = True
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    try:
+        _cleanup_isolated_database()
+    except Exception as exc:  # noqa: BLE001 - teardown failures must fail the run
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        message = f"isolated database cleanup failed: {type(exc).__name__}: {exc}"
+        if reporter is not None:
+            reporter.write_line(message, red=True)
+        else:
+            print(message, file=sys.stderr)
 
 
 @pytest_asyncio.fixture
 async def db():
-    """独立 engine 的 db session。
+    """Provide a per-test engine/session connected only to the isolated schema."""
 
-    每个测试用独立 engine，测试结束 dispose，避免跨测试 event loop
-    共享 aiomysql 连接导致的清理错误（Windows proactor）。
-    """
     engine = create_async_engine(
         cfg.db_url,
         pool_pre_ping=True,
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )
     factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-    async with factory() as session:
-        yield session
-    await engine.dispose()
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await dbmod.engine.dispose()
+        await engine.dispose()
+
+
+@pytest.fixture
+def tmp_path() -> Path:
+    """Create test paths with inherited ACLs inside the isolated data directory."""
+
+    root = TEST_DATA_DIR / "pytest-tmp"
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / uuid.uuid4().hex
+    path.mkdir()
+    return path
 
 
 @pytest_asyncio.fixture
 async def client():
-    """FastAPI 测试客户端（ASGITransport，不走真实端口）。
+    """Provide an in-process FastAPI client backed by a per-test DB engine."""
 
-    每个测试用独立 engine，覆盖 get_session 依赖并重绑定
-    dbmod.async_session_factory，使 fire-and-forget 后台任务
-    （scan_project / import_document）也走 per-test engine，
-    避免跨 event loop 泄漏 aiomysql 连接。
-    """
     test_engine = create_async_engine(
         cfg.db_url,
         pool_pre_ping=True,
@@ -58,34 +194,21 @@ async def client():
     app.dependency_overrides[get_session] = _get_test_session
     orig_factory = dbmod.async_session_factory
     dbmod.async_session_factory = test_factory
-    # 后台任务（scan_project / import_document）用 `from ..core.db import async_session_factory`
-    # 直接导入名字，重绑 dbmod 属性对它们无效；需同步重绑这些模块的属性，否则它们仍走全局
-    # engine（import 时绑定到别的 event loop），跨 loop 写入失败 + 连接泄漏警告。
+    # These modules imported the factory name directly. Keep their test binding aligned
+    # until the later dependency-injection refactor removes the import-time globals.
     scanner_mod.async_session_factory = test_factory
     importer_mod.async_session_factory = test_factory
-    # 提醒后台 tick 用 reminders_mod.async_session_factory（lifespan 不在测试运行，
-    # 但若未来测试触发，重绑可避免跨 event loop 泄漏 aiomysql 连接）。
     reminders_mod.async_session_factory = test_factory
-    # OCR 后台 worker 同样直接导入 async_session_factory 名字，须重绑（phase7 M3）。
     ocr_mod.async_session_factory = test_factory
     try:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
             yield c
     finally:
-        # 先排空后台任务（scan/import 等 fire-and-forget，factory 仍指向 test_factory），
-        # 让其 session 关闭、连接归还，再 dispose 测试 engine，避免 GC 终结未归还连接的警告。
-        current = asyncio.current_task()
-        pending = [t for t in asyncio.all_tasks() if t is not current]
-        if pending:
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending, return_exceptions=True),
-                    timeout=10.0,
-                )
-            except asyncio.TimeoutError:
-                for t in pending:
-                    t.cancel()
-                await asyncio.gather(*pending, return_exceptions=True)
+        await background_tasks.drain(timeout=10.0)
+        # HealthService holds the application engine directly. Dispose it in the same
+        # event loop that served the request so aiomysql transports are not finalized
+        # after pytest has already closed that loop.
+        await dbmod.engine.dispose()
         app.dependency_overrides.pop(get_session, None)
         dbmod.async_session_factory = orig_factory
         scanner_mod.async_session_factory = orig_factory
@@ -95,66 +218,18 @@ async def client():
         await test_engine.dispose()
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def _clean_stale_test_data():
-    """session 开始时清理历史测试残留（perf-*/upgrade-smoke-*/integration:ics 等）。
-
-    共享 DB 无事务回滚，跨 session 会积累脏数据（perf 样本、孤儿 trusted_path 等）。
-    此 fixture 仅删测试特征前缀的数据，不影响用户真实数据。第八阶段审查修复。
-    """
-    from sqlalchemy import delete
-
-    from personal_assistant.core.models import (
-        AppNotification,
-        CaptureItem,
-        ChatSession,
-        DataIntegrityFinding,
-        Document,
-        InboxItem,
-        IntegrationImport,
-        IntegrationSource,
-        Message,
-        Reminder,
-        UpgradeSmokeRun,
-    )
-
-    eng = create_async_engine(cfg.db_url, pool_pre_ping=True)
-    try:
-        async with async_sessionmaker(eng, expire_on_commit=False)() as s:
-            await s.execute(delete(Message).where(Message.content.like("perf message%")))
-            await s.execute(delete(ChatSession).where(ChatSession.title.like("perf-session-%")))
-            await s.execute(delete(InboxItem).where(InboxItem.title.like("perf-inbox-%")))
-            await s.execute(delete(Document).where(Document.name.like("perf-doc-%")))
-            await s.execute(delete(AppNotification).where(AppNotification.title.like("perf-notif-%")))
-            await s.execute(
-                delete(DataIntegrityFinding).where(
-                    DataIntegrityFinding.check_name == "perf_test"
-                )
-            )
-            await s.execute(delete(Reminder).where(Reminder.source_type == "integration:ics"))
-            await s.execute(delete(InboxItem).where(InboxItem.source_type == "integration:ics"))
-            await s.execute(delete(IntegrationImport))
-            await s.execute(delete(IntegrationSource))
-            await s.execute(delete(UpgradeSmokeRun))
-            await s.commit()
-    finally:
-        await eng.dispose()
-    yield
-
-
 @pytest_asyncio.fixture
 async def fresh_session():
-    """独立 fresh engine session，用于跨 session 读 client/worker 写入的数据。
+    """Provide a fresh session for cross-session visibility assertions."""
 
-    db fixture 的 session 可能持有旧事务快照（REPEATABLE READ），读不到其它 session
-    提交的行；需要跨 session 验证时用本 fixture。第八阶段审查修复。
-    """
-    eng = create_async_engine(
+    engine = create_async_engine(
         cfg.db_url,
         pool_pre_ping=True,
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )
-    factory = async_sessionmaker(eng, expire_on_commit=False, autoflush=False)
-    async with factory() as session:
-        yield session
-    await eng.dispose()
+    factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        await engine.dispose()

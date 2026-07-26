@@ -1,31 +1,32 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
+import {
+  computed,
+  defineAsyncComponent,
+  defineComponent,
+  h,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+  type Component,
+} from "vue";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
 import SessionList from "./components/SessionList.vue";
 import InspectorPanel from "./components/InspectorPanel.vue";
 import StatusBar from "./components/StatusBar.vue";
-import TaskWorkspace from "./components/TaskWorkspace.vue";
-import ChatView from "./components/ChatView.vue";
-import KnowledgeView from "./components/KnowledgeView.vue";
-import ProjectWorkspace from "./components/ProjectWorkspace.vue";
-import LearningWorkspace from "./components/LearningWorkspace.vue";
-import MemoryWorkspace from "./components/MemoryWorkspace.vue";
 import TodayView from "./components/TodayView.vue";
-import SettingsView from "./components/SettingsView.vue";
-import DiagnosticsView from "./components/DiagnosticsView.vue";
-import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
-import IntegrationImportPanel from "./components/IntegrationImportPanel.vue";
-import BackupUpgradePanel from "./components/BackupUpgradePanel.vue";
 import ConfigWizard from "./components/ConfigWizard.vue";
 import ToastHost from "./components/ToastHost.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
-import CommandPalette from "./components/CommandPalette.vue";
-import GlobalSearch from "./components/GlobalSearch.vue";
+import WorkspaceAsyncState from "./components/WorkspaceAsyncState.vue";
+import OverlayAsyncState from "./components/OverlayAsyncState.vue";
 import { useNotifications } from "./stores/notifications";
 import {
-  setApiBase,
+  resetApiBase,
+  setApiConnection,
   setApiBaseDefault,
   cmdStartSidecar,
   cmdConfigExists,
@@ -37,13 +38,104 @@ import type { View } from "./types";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
 import { useChatWorkspace } from "./composables/useChatWorkspace";
+import { hasActiveModalFocus } from "./composables/useModalFocus";
+
+type AsyncComponentModule = { default: Component };
+
+function lazyComponent(
+  loader: () => Promise<AsyncComponentModule>,
+  stateComponent: Component,
+  delay = 90
+) {
+  return defineAsyncComponent({
+    loader: () => loader().then((module) => module.default),
+    loadingComponent: stateComponent,
+    errorComponent: stateComponent,
+    delay,
+    timeout: 30_000,
+    onError(_error, retry, fail, attempts) {
+      if (attempts === 1) {
+        window.setTimeout(retry, 240);
+        return;
+      }
+      fail();
+    },
+  });
+}
+
+const lazyWorkspace = (loader: () => Promise<AsyncComponentModule>) =>
+  lazyComponent(loader, WorkspaceAsyncState);
+
+function overlayAsyncState(onClose: () => void): Component {
+  return defineComponent({
+    name: "OverlayAsyncBoundary",
+    inheritAttrs: false,
+    props: {
+      error: { type: Error, required: false },
+    },
+    setup(props) {
+      return () =>
+        h(OverlayAsyncState, {
+          error: props.error,
+          onClose,
+        });
+    },
+  });
+}
+
+const lazyOverlay = (
+  loader: () => Promise<AsyncComponentModule>,
+  onClose: () => void
+) => lazyComponent(loader, overlayAsyncState(onClose), 0);
+
+// 浮层开关必须先于异步组件定义创建，加载/失败占位才能直接关闭所属浮层。
+const commandPaletteOpen = ref(false);
+const searchOpen = ref(false);
+
+const TaskWorkspace = lazyWorkspace(() =>
+  import("./components/TaskWorkspace.vue")
+);
+const ChatView = lazyWorkspace(() => import("./components/ChatView.vue"));
+const KnowledgeView = lazyWorkspace(() =>
+  import("./components/KnowledgeView.vue")
+);
+const ProjectWorkspace = lazyWorkspace(() =>
+  import("./components/ProjectWorkspace.vue")
+);
+const LearningWorkspace = lazyWorkspace(() =>
+  import("./components/LearningWorkspace.vue")
+);
+const MemoryWorkspace = lazyWorkspace(() =>
+  import("./components/MemoryWorkspace.vue")
+);
+const SettingsView = lazyWorkspace(() => import("./components/SettingsView.vue"));
+const DiagnosticsView = lazyWorkspace(() =>
+  import("./components/DiagnosticsView.vue")
+);
+const ExtensionRegistryPanel = lazyWorkspace(() =>
+  import("./components/ExtensionRegistryPanel.vue")
+);
+const IntegrationImportPanel = lazyWorkspace(() =>
+  import("./components/IntegrationImportPanel.vue")
+);
+const BackupUpgradePanel = lazyWorkspace(() =>
+  import("./components/BackupUpgradePanel.vue")
+);
+const CommandPalette = lazyOverlay(
+  () => import("./components/CommandPalette.vue"),
+  () => {
+    commandPaletteOpen.value = false;
+  }
+);
+const GlobalSearch = lazyOverlay(
+  () => import("./components/GlobalSearch.vue"),
+  () => {
+    searchOpen.value = false;
+  }
+);
 
 // 统一通知/确认/toast store（第七阶段 M4 基建）
 const notify = useNotifications();
-// 命令面板开关（Ctrl/Cmd+K）；CommandPalette 组件在 M2 接入。
-const commandPaletteOpen = ref(false);
-// 全局搜索开关（命令面板的「全局搜索」命令触发）
-const searchOpen = ref(false);
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -127,9 +219,15 @@ function onResize() {
 
 /** 全局快捷键：Ctrl/Cmd+K 打开命令面板（M2 接入 CommandPalette 组件）。 */
 function onKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+  if (e.isComposing || e.keyCode === 229 || e.repeat) return;
+  if (!e.altKey && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    if (hasActiveModalFocus() && !commandPaletteOpen.value) return;
     e.preventDefault();
-    commandPaletteOpen.value = !commandPaletteOpen.value;
+    if (commandPaletteOpen.value) {
+      commandPaletteOpen.value = false;
+    } else {
+      openCommandPalette();
+    }
   }
 }
 
@@ -174,6 +272,7 @@ async function boot() {
   }
 
   bootState.value = "checking";
+  resetApiBase();
   let res;
   try {
     res = await cmdStartSidecar();
@@ -192,9 +291,9 @@ async function boot() {
   }
 
   // 打包模式：sidecar 已 spawn。
-  if (res.ok && res.port) {
+  if (res.ok && res.port && res.api_token) {
     bootState.value = "starting";
-    setApiBase(res.port);
+    setApiConnection(res.port, res.api_token);
     const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
@@ -212,7 +311,8 @@ async function boot() {
     wizardMode.value = "first";
     bootState.value = "wizard";
   } else {
-    bootError.value = res.error || "后端启动失败";
+    bootError.value =
+      res.error || (res.ok ? "桌面壳未返回安全凭据" : "后端启动失败");
     bootState.value = "error";
   }
 }
@@ -246,9 +346,10 @@ async function onWizardDone() {
   }
   // 首次运行：启动 sidecar。
   bootState.value = "starting";
+  resetApiBase();
   const res = await cmdStartSidecar().catch(() => null);
-  if (res && res.ok && res.port) {
-    setApiBase(res.port);
+  if (res && res.ok && res.port && res.api_token) {
+    setApiConnection(res.port, res.api_token);
     const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
@@ -258,7 +359,8 @@ async function onWizardDone() {
       bootState.value = "error";
     }
   } else {
-    bootError.value = res?.error || "后端启动失败";
+    bootError.value =
+      res?.error || (res?.ok ? "桌面壳未返回安全凭据" : "后端启动失败");
     bootState.value = "error";
   }
 }
@@ -276,7 +378,14 @@ async function retryBoot() {
 // ============ 导航 ============
 
 function onNavigate(v: View) {
+  commandPaletteOpen.value = false;
+  searchOpen.value = false;
   view.value = v;
+}
+
+function openCommandPalette() {
+  searchOpen.value = false;
+  commandPaletteOpen.value = true;
 }
 
 // 命令面板 / 全局搜索 跳转
@@ -341,7 +450,7 @@ function onSearchNavigate(v: View) {
       <NavRail
         :active="view"
         @navigate="onNavigate"
-        @open-command="commandPaletteOpen = true"
+        @open-command="openCommandPalette"
       />
     </template>
 
@@ -366,7 +475,7 @@ function onSearchNavigate(v: View) {
           v-else-if="view === 'today'"
           @navigate="onNavigate"
           @submit="submitFromToday"
-          @open-command="commandPaletteOpen = true"
+          @open-command="openCommandPalette"
         />
         <KnowledgeView v-else-if="view === 'kb'" />
         <ProjectWorkspace v-else-if="view === 'projects'" />

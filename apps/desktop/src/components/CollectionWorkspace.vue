@@ -30,6 +30,7 @@ import type {
   TemplateKind,
 } from "../types";
 import { useNotifications } from "../stores/notifications";
+import { useModalFocus } from "../composables/useModalFocus";
 
 const notify = useNotifications();
 
@@ -48,6 +49,19 @@ const msg = ref("");
 const newOpen = ref(false);
 const newTitle = ref("");
 const newGoal = ref("");
+const newCollectionDialog = ref<HTMLElement | null>(null);
+const newCollectionTitleInput = ref<HTMLInputElement | null>(null);
+
+function closeNew() {
+  newOpen.value = false;
+}
+
+useModalFocus({
+  container: newCollectionDialog,
+  initialFocus: newCollectionTitleInput,
+  active: newOpen,
+  onEscape: closeNew,
+});
 const addDocId = ref<number | null>(null);
 
 const KIND_LABELS: Record<DocExtractionKind, string> = {
@@ -128,7 +142,7 @@ async function submitNew() {
       goal: newGoal.value.trim() || undefined,
     });
     collections.value.unshift(c);
-    newOpen.value = false;
+    closeNew();
     await selectCollection(c.id);
   } catch (e) {
     notify.error("创建失败", String(e));
@@ -382,29 +396,38 @@ function fmtRefs(ex: DocumentExtraction): string {
     </div>
 
     <!-- 新建浮层 -->
-    <div v-if="newOpen" class="modal-overlay" @click.self="newOpen = false">
-      <div class="modal-card">
+    <Teleport to="body">
+      <div v-if="newOpen" class="modal-overlay" @click.self="closeNew">
+        <div
+          ref="newCollectionDialog"
+          class="modal-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="new-document-collection-title"
+          tabindex="-1"
+        >
         <div class="modal-head">
-          <span>新建文档集合</span>
+          <span id="new-document-collection-title">新建文档集合</span>
           <button
             class="pa-btn pa-btn--ghost pa-btn--icon"
             title="关闭新建集合"
             aria-label="关闭新建集合"
-            @click="newOpen = false"
+            @click="closeNew"
           >
             <PhX :size="14" />
           </button>
         </div>
-        <label class="modal-label">标题</label>
-        <input v-model="newTitle" class="pa-input" placeholder="如：操作系统论文集" />
-        <label class="modal-label">目标</label>
-        <textarea v-model="newGoal" class="pa-input" rows="2" placeholder="集合的阅读/研究目标"></textarea>
+        <label class="modal-label" for="new-document-collection-name">标题</label>
+        <input id="new-document-collection-name" ref="newCollectionTitleInput" v-model="newTitle" class="pa-input" placeholder="如：操作系统论文集" />
+        <label class="modal-label" for="new-document-collection-goal">目标</label>
+        <textarea id="new-document-collection-goal" v-model="newGoal" class="pa-input" rows="2" placeholder="集合的阅读/研究目标"></textarea>
         <div class="modal-actions">
-          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="newOpen = false">取消</button>
+          <button class="pa-btn pa-btn--subtle pa-btn--sm" @click="closeNew">取消</button>
           <button class="pa-btn pa-btn--primary pa-btn--sm" :disabled="!newTitle.trim()" @click="submitNew">创建</button>
         </div>
+        </div>
       </div>
-    </div>
+    </Teleport>
   </section>
 </template>
 
@@ -658,11 +681,11 @@ function fmtRefs(ex: DocumentExtraction): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-scrim);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: var(--z-overlay);
 }
 .modal-card {
   width: 420px;
@@ -674,7 +697,7 @@ function fmtRefs(ex: DocumentExtraction): string {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  box-shadow: var(--shadow-lg);
 }
 .modal-head {
   display: flex;

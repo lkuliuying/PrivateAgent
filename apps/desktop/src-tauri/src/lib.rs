@@ -2,7 +2,7 @@
 //
 // 职责：
 // 1. 启动时仅注册状态（不自动 spawn sidecar）；由前端引导流程按需调用 start_sidecar。
-// 2. start_sidecar 分配空闲端口（OS 分配 127.0.0.1:0），通过 PA_API_PORT 传给 sidecar 并拉起进程。
+// 2. start_sidecar 分配空闲端口与单次运行令牌，通过 PA_API_PORT / PA_API_TOKEN 传给 sidecar。
 //    dev 模式（cfg!(debug_assertions)）下不 spawn，返回 dev_mode=true，前端回退到手动后端 127.0.0.1:8000。
 // 3. 配置命令：config_exists / read_config / write_config —— 读写 %APPDATA%/personal-assistant/.env（PA_ 前缀）。
 // 4. 依赖检测：check_dependencies（默认端口探测）/ test_connections（按配置探测 MySQL + Ollama）。
@@ -29,11 +29,19 @@ use tauri_plugin_updater::UpdaterExt;
 /// sidecar 二进制名（对应 tauri.conf.json 的 externalBin，去掉平台后缀）。
 const SIDECAR_BIN: &str = "personal-assistant-server";
 
-/// sidecar 状态：协商端口与子进程句柄。
-/// port 为 None 表示未启动 sidecar（dev 模式手动起后端，或尚未调用 start_sidecar）。
+/// sidecar 状态：协商连接信息与子进程句柄。
+/// connection 为 None 表示未启动 sidecar（dev 模式手动起后端，或尚未调用 start_sidecar）。
 struct SidecarState {
-    port: Mutex<Option<u16>>,
+    connection: Mutex<Option<ApiInfo>>,
     child: Mutex<Option<CommandChild>>,
+}
+
+/// 仅保存在 Tauri 进程内存中的 sidecar 连接信息。
+/// api_token 每次 spawn 都重新生成，绝不写入桌面配置文件或日志。
+#[derive(Serialize, Clone)]
+struct ApiInfo {
+    port: u16,
+    api_token: String,
 }
 
 /// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
@@ -71,6 +79,7 @@ struct SidecarStartResult {
     /// dev 模式未 spawn 真实 sidecar（前端回退到 127.0.0.1:8000）。
     dev_mode: bool,
     port: Option<u16>,
+    api_token: Option<String>,
     error: Option<String>,
 }
 
@@ -136,7 +145,11 @@ fn config_dir() -> PathBuf {
         {
             let base = std::env::var("XDG_DATA_HOME")
                 .ok()
-                .or_else(|| std::env::var("HOME").ok().map(|h| format!("{}/.local/share", h)))
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| format!("{}/.local/share", h))
+                })
                 .unwrap_or_else(|| ".".to_string());
             PathBuf::from(base).join("personal-assistant")
         }
@@ -159,6 +172,16 @@ fn build_db_url(cfg: &ConfigData) -> String {
     format!(
         "mysql+aiomysql://{}:{}@{}:{}/{}?charset=utf8mb4",
         cfg.db_user, cfg.db_password, host, cfg.db_port, cfg.db_name
+    )
+}
+
+fn config_file_content(cfg: &ConfigData) -> String {
+    format!(
+        "PA_DB_URL={}\nPA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\n",
+        build_db_url(cfg),
+        cfg.ollama_base_url,
+        cfg.llm_model,
+        cfg.embed_model
     )
 }
 
@@ -290,6 +313,19 @@ fn pick_free_port() -> Option<u16> {
         .map(|a| a.port())
 }
 
+/// 生成 256-bit、操作系统 CSPRNG 驱动的单次运行令牌。
+fn generate_api_token() -> Result<String, String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|_| "生成 API 安全令牌失败".to_string())?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(token)
+}
+
 /// 比较 Ollama 模型名（去除 :tag 后缀做基名匹配，兼容 qwen2.5:14b... 这类）。
 fn model_base(name: &str) -> &str {
     name.split(':').next().unwrap_or(name)
@@ -328,13 +364,7 @@ fn read_config() -> ConfigData {
 fn write_config(cfg: ConfigData) -> Result<(), String> {
     let dir = config_dir();
     fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {}", e))?;
-    let content = format!(
-        "PA_DB_URL={}\nPA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\n",
-        build_db_url(&cfg),
-        cfg.ollama_base_url,
-        cfg.llm_model,
-        cfg.embed_model
-    );
+    let content = config_file_content(&cfg);
     fs::write(env_path(), content).map_err(|e| format!("写入配置失败: {}", e))?;
     Ok(())
 }
@@ -355,22 +385,24 @@ async fn test_connections(cfg: ConfigData) -> ConnResult {
     let mysql_ok = mysql_res.is_ok();
     let mysql_error = mysql_res.err();
 
-    let (ollama_ok, ollama_error, ollama_models) =
-        match http_get_json(&format!("{}/api/tags", cfg.ollama_base_url.trim_end_matches('/'))) {
-            Ok(v) => {
-                let models: Vec<String> = v
-                    .get("models")
-                    .and_then(|m| m.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|x| x.get("name").and_then(|n| n.as_str()).map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                (true, None, models)
-            }
-            Err(e) => (false, Some(e), Vec::new()),
-        };
+    let (ollama_ok, ollama_error, ollama_models) = match http_get_json(&format!(
+        "{}/api/tags",
+        cfg.ollama_base_url.trim_end_matches('/')
+    )) {
+        Ok(v) => {
+            let models: Vec<String> = v
+                .get("models")
+                .and_then(|m| m.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.get("name").and_then(|n| n.as_str()).map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            (true, None, models)
+        }
+        Err(e) => (false, Some(e), Vec::new()),
+    };
 
     let llm_model_available = ollama_ok && model_available(&ollama_models, &cfg.llm_model);
     let embed_model_available = ollama_ok && model_available(&ollama_models, &cfg.embed_model);
@@ -397,6 +429,7 @@ async fn start_sidecar(
             ok: true,
             dev_mode: true,
             port: None,
+            api_token: None,
             error: None,
         });
     }
@@ -407,6 +440,7 @@ async fn start_sidecar(
             ok: false,
             dev_mode: false,
             port: None,
+            api_token: None,
             error: Some("尚未配置连接，请先完成向导".into()),
         });
     }
@@ -415,8 +449,8 @@ async fn start_sidecar(
     // 不主动 kill 会留下占用端口与 DB 连接的孤儿进程。
     if let Some(prev) = state.child.lock().unwrap().take() {
         let _ = prev.kill();
-        *state.port.lock().unwrap() = None;
     }
+    *state.connection.lock().unwrap() = None;
 
     let port = match pick_free_port() {
         Some(p) => p,
@@ -425,7 +459,21 @@ async fn start_sidecar(
                 ok: false,
                 dev_mode: false,
                 port: None,
+                api_token: None,
                 error: Some("分配空闲端口失败".into()),
+            })
+        }
+    };
+
+    let api_token = match generate_api_token() {
+        Ok(token) => token,
+        Err(error) => {
+            return Ok(SidecarStartResult {
+                ok: false,
+                dev_mode: false,
+                port: None,
+                api_token: None,
+                error: Some(error),
             })
         }
     };
@@ -433,6 +481,7 @@ async fn start_sidecar(
     match app.shell().sidecar(SIDECAR_BIN) {
         Ok(cmd) => match cmd
             .env("PA_API_PORT", port.to_string())
+            .env("PA_API_TOKEN", &api_token)
             .env("PA_PARENT_PID", std::process::id().to_string())
             .spawn()
         {
@@ -456,13 +505,17 @@ async fn start_sidecar(
                     }
                 });
                 // 不在此阻塞等待端口就绪——前端拿到 port 后自行轮询 /health。
-                *state.port.lock().unwrap() = Some(port);
+                *state.connection.lock().unwrap() = Some(ApiInfo {
+                    port,
+                    api_token: api_token.clone(),
+                });
                 *state.child.lock().unwrap() = Some(child);
                 println!("[sidecar] 已启动 port={}", port);
                 Ok(SidecarStartResult {
                     ok: true,
                     dev_mode: false,
                     port: Some(port),
+                    api_token: Some(api_token),
                     error: None,
                 })
             }
@@ -470,6 +523,7 @@ async fn start_sidecar(
                 ok: false,
                 dev_mode: false,
                 port: None,
+                api_token: None,
                 error: Some(format!("spawn 失败: {}", e)),
             }),
         },
@@ -477,15 +531,16 @@ async fn start_sidecar(
             ok: false,
             dev_mode: false,
             port: None,
+            api_token: None,
             error: Some(format!("未找到 sidecar 二进制: {}", e)),
         }),
     }
 }
 
-/// 返回协商好的后端端口；None 时前端应回退到默认 127.0.0.1:8000。
+/// 返回当前 sidecar 的端口与内存令牌；None 时前端应回退到无令牌开发后端。
 #[tauri::command]
-fn get_api_port(state: State<SidecarState>) -> Option<u16> {
-    *state.port.lock().unwrap()
+fn get_api_info(state: State<SidecarState>) -> Option<ApiInfo> {
+    state.connection.lock().unwrap().clone()
 }
 
 // ============ 更新 ============
@@ -518,7 +573,7 @@ async fn download_and_install_update(
     // 因此先手动终止 sidecar，避免更新后留下孤儿进程。
     if let Some(child) = state.child.lock().unwrap().take() {
         let _ = child.kill();
-        *state.port.lock().unwrap() = None;
+        *state.connection.lock().unwrap() = None;
     }
     update
         .download_and_install(|_chunk, _total| {}, || {})
@@ -548,7 +603,7 @@ pub fn run() {
             check_dependencies,
             test_connections,
             start_sidecar,
-            get_api_port,
+            get_api_info,
             check_for_updates,
             download_and_install_update,
             relaunch_app,
@@ -556,7 +611,7 @@ pub fn run() {
         .setup(|app| {
             // 仅注册状态；sidecar 由前端引导流程按需 start_sidecar。
             app.manage(SidecarState {
-                port: Mutex::new(None),
+                connection: Mutex::new(None),
                 child: Mutex::new(None),
             });
             Ok(())
@@ -571,7 +626,32 @@ pub fn run() {
                         let _ = child.kill();
                         println!("[sidecar] 已终止子进程");
                     }
+                    *state.connection.lock().unwrap() = None;
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_tokens_are_high_entropy_hex_and_unique() {
+        let first = generate_api_token().expect("OS CSPRNG should be available");
+        let second = generate_api_token().expect("OS CSPRNG should be available");
+
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn persisted_config_excludes_ephemeral_api_token() {
+        let content = config_file_content(&ConfigData::default());
+
+        assert!(!content
+            .lines()
+            .any(|line| line.starts_with("PA_API_TOKEN=")));
+    }
 }

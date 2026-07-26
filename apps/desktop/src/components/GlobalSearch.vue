@@ -6,6 +6,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { PhMagnifyingGlass, PhX, PhDatabase, PhChatCircle, PhListChecks, PhBrain, PhBell, PhTarget, PhFileText, PhBooks } from "@phosphor-icons/vue";
 import { search, recordRecentOpen, type SearchResult } from "../api";
+import { useModalFocus } from "../composables/useModalFocus";
 import { useNotifications } from "../stores/notifications";
 import type { View } from "../types";
 
@@ -15,8 +16,10 @@ const notify = useNotifications();
 const query = ref("");
 const results = ref<SearchResult[]>([]);
 const loading = ref(false);
+const dialogEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
 let debounce: number | null = null;
+let requestSerial = 0;
 
 const TYPE_FILTERS: { value: string | undefined; label: string }[] = [
   { value: undefined, label: "全部" },
@@ -63,21 +66,24 @@ const iconFor = (type: string) => {
 };
 
 async function runSearch() {
+  const serial = ++requestSerial;
   const q = query.value.trim();
   if (!q) {
     results.value = [];
+    loading.value = false;
     return;
   }
   loading.value = true;
   try {
-    results.value = await search(q, {
+    const nextResults = await search(q, {
       types: activeType.value ? [activeType.value] : undefined,
       limit: 30,
     });
+    if (serial === requestSerial) results.value = nextResults;
   } catch (e) {
-    notify.error("搜索失败", String(e));
+    if (serial === requestSerial) notify.error("搜索失败", String(e));
   } finally {
-    loading.value = false;
+    if (serial === requestSerial) loading.value = false;
   }
 }
 
@@ -122,15 +128,17 @@ function onSelect(r: SearchResult) {
   emit("close");
 }
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === "Escape") emit("close");
-}
-
 defineExpose({ open });
 
 onMounted(open);
 onUnmounted(() => {
+  requestSerial += 1;
   if (debounce) window.clearTimeout(debounce);
+});
+useModalFocus({
+  container: dialogEl,
+  initialFocus: inputEl,
+  onEscape: () => emit("close"),
 });
 </script>
 
@@ -138,15 +146,23 @@ onUnmounted(() => {
   <Teleport to="body">
     <Transition name="gs">
       <div class="gs-scrim" @click.self="emit('close')">
-        <div class="gs-card" role="dialog" aria-modal="true" aria-label="全局搜索">
+        <div
+          ref="dialogEl"
+          class="gs-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="global-search-title"
+          tabindex="-1"
+        >
+          <h2 id="global-search-title" class="gs-sr-only">全局搜索</h2>
           <div class="gs-input-wrap">
             <PhMagnifyingGlass :size="16" class="gs-input-icon" />
             <input
               ref="inputEl"
               v-model="query"
               class="gs-input"
+              aria-label="搜索会话、文档、任务或记忆"
               placeholder="搜索会话、文档、任务、记忆…"
-              @keydown="onKey"
             />
             <button class="gs-close" aria-label="关闭" @click="emit('close')">
               <PhX :size="16" weight="bold" />
@@ -158,6 +174,7 @@ onUnmounted(() => {
               :key="String(f.value)"
               class="gs-filter"
               :class="{ active: activeType === f.value }"
+              :aria-pressed="activeType === f.value"
               @click="activeType = f.value"
             >
               {{ f.label }}
@@ -211,6 +228,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   max-height: 76vh;
+}
+.gs-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .gs-input-wrap {
   display: flex;

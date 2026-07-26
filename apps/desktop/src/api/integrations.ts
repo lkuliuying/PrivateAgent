@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 
 export interface IntegrationSource {
   id: number;
@@ -35,7 +35,7 @@ export interface IntegrationPreview {
 
 export async function listIntegrationSources(): Promise<IntegrationSource[]> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/sources`);
+  const r = await apiFetch(`${base}/integrations/sources`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -47,7 +47,7 @@ export async function createIntegrationSource(data: {
   target?: string;
 }): Promise<IntegrationSource> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/sources`, {
+  const r = await apiFetch(`${base}/integrations/sources`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -60,7 +60,7 @@ export async function previewIntegration(
   sourceId: number
 ): Promise<IntegrationPreview> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/preview`, {
+  const r = await apiFetch(`${base}/integrations/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source_id: sourceId }),
@@ -74,7 +74,7 @@ export async function runIntegrationImport(
   target?: string
 ): Promise<IntegrationImport> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/import`, {
+  const r = await apiFetch(`${base}/integrations/import`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source_id: sourceId, target }),
@@ -85,7 +85,7 @@ export async function runIntegrationImport(
 
 export async function listIntegrationImports(): Promise<IntegrationImport[]> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/imports`);
+  const r = await apiFetch(`${base}/integrations/imports`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -94,7 +94,7 @@ export async function revertIntegrationImport(
   importId: number
 ): Promise<IntegrationImport> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/integrations/imports/${importId}`, {
+  const r = await apiFetch(`${base}/integrations/imports/${importId}`, {
     method: "DELETE",
   });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);

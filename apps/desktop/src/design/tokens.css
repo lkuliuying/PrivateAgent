@@ -7,6 +7,8 @@
  */
 
 :root {
+  color-scheme: light;
+
   /* ============ 字体 ============ */
   --font-sans: "Aptos", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
     sans-serif;
@@ -25,12 +27,16 @@
   --color-canvas-glow: rgba(91, 151, 136, 0.12);
   --color-canvas-warm: rgba(219, 178, 126, 0.1);
   --color-grid-line: rgba(43, 74, 67, 0.035);
+  --color-panel-glass: rgba(249, 251, 251, 0.9);
+  --color-workspace-main: rgba(245, 247, 248, 0.94);
+  --color-chrome-glass: rgba(245, 247, 248, 0.86);
+  --color-statusbar-glass: rgba(245, 247, 248, 0.9);
 
   /* 文字层 */
   --color-fg: #17211f; /* 主文字 */
   --color-fg-muted: #4f5e5a; /* 次级文字 */
   --color-fg-subtle: #66736f; /* 辅助文字 */
-  --color-fg-faint: #8b9793; /* 提示/占位 */
+  --color-fg-faint: #66736f; /* 提示/占位；小字号仍满足 4.5:1 */
   --color-fg-disabled: #bfc1ba; /* 禁用 */
 
   /* 描边 */
@@ -49,14 +55,22 @@
   --color-success: #16a34a;
   --color-success-soft: #dcfce7;
   --color-success-fg: #166534;
+  --color-success-border: #b7ddc1;
+  --color-success-on-solid: #ffffff;
+  --color-status-online: #22c55e;
+  --color-status-online-soft: rgba(34, 197, 94, 0.14);
   --color-warning: #d97706; /* 琥珀 */
   --color-warning-soft: #fef3c7;
   --color-warning-fg: #92400e;
   --color-danger: #dc2626; /* 危险操作 */
+  --color-danger-hover: #b91c1c;
+  --color-danger-on-solid: #ffffff;
   --color-danger-soft: #fee2e2;
   --color-danger-fg: #b91c1c;
+  --color-danger-border: #efb8bb;
   --color-info: #2563eb;
   --color-info-soft: #dbeafe;
+  --color-info-fg: #1e40af;
 
   /* 导航 rail · 深色（与浅色内容区对照） */
   --color-rail-bg: #101d1b;
@@ -67,6 +81,13 @@
   --color-rail-fg-strong: #ffffff;
   --color-rail-fg-muted: #9eaea8;
   --color-rail-accent: #78b8a6; /* rail 内激活指示 */
+  --color-rail-gradient-top: #1b2b28;
+  --color-rail-glow: rgba(120, 184, 166, 0.12);
+  --color-rail-highlight: rgba(255, 255, 255, 0.025);
+  --color-rail-sheen: rgba(255, 255, 255, 0.035);
+  --color-rail-brand-highlight: rgba(255, 255, 255, 0.18);
+  --color-rail-command-bg: rgba(255, 255, 255, 0.025);
+  --color-rail-focus-border: rgba(120, 184, 166, 0.42);
 
   /* ============ 字号 ============ */
   --text-xs: 11px;
@@ -105,6 +126,12 @@
   --shadow-sm: 0 1px 2px rgba(20, 38, 33, 0.04);
   --shadow: 0 8px 24px rgba(20, 38, 33, 0.055);
   --shadow-lg: 0 18px 48px rgba(20, 38, 33, 0.08);
+  --shadow-rail-mark: 0 10px 24px rgba(2, 12, 10, 0.32),
+    inset 0 1px rgba(255, 255, 255, 0.18);
+  --shadow-rail-mark-hover: 0 14px 30px rgba(2, 12, 10, 0.42),
+    inset 0 1px rgba(255, 255, 255, 0.24);
+  --shadow-rail-active: inset 0 1px rgba(255, 255, 255, 0.035),
+    0 8px 20px rgba(0, 0, 0, 0.12);
 
   /* ============ 动效（plan 要求 120–180ms）============ */
   --duration-fast: 120ms;
@@ -114,6 +141,9 @@
   --ease: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-spring: cubic-bezier(0.2, 0.9, 0.2, 1.08);
+  --motion-distance-xs: 4px;
+  --motion-distance-sm: 8px;
+  --motion-scale-hover: 1.02;
 
   /* ============ 布局尺寸 ============ */
   --rail-w: 240px;
@@ -142,27 +172,155 @@
   background-color: var(--color-bg);
 }
 
-/* ============ 深色主题预留（M0 仅 scaffold，未完整适配所有视图）============
- * 通过在 <html data-theme="dark"> 启用。M0 不默认开启，留待后续阶段逐页适配。 */
+/* ============ 深色主题 ============ */
 [data-theme="dark"] {
-  --color-bg: #1a1b1e;
-  --color-surface: #232428;
-  --color-surface-sunken: #1e1f22;
-  --color-surface-raised: #2a2b2e;
-  --color-fg: #e0e1e2;
-  --color-fg-muted: #b0b1b4;
-  --color-fg-subtle: #8a8b8e;
-  --color-fg-faint: #6a6b6e;
-  --color-border: #2d2e31;
-  --color-border-strong: #3a3b3e;
-  --color-accent-soft: #0e3a44;
-  --color-accent-soft-fg: #67e8f9;
-  --color-rail-bg: #161719;
-  --color-rail-surface: #232428;
-  --color-rail-active: #2a2b2e;
-  --color-canvas-glow: rgba(103, 232, 249, 0.08);
-  --color-canvas-warm: rgba(251, 191, 36, 0.05);
-  --color-grid-line: rgba(255, 255, 255, 0.025);
+  color-scheme: dark;
+  --color-bg: #151917;
+  --color-surface: #1e2421;
+  --color-surface-sunken: #171c1a;
+  --color-surface-raised: #252c29;
+  --color-panel: #1b211e;
+  --color-surface-hover: #29332f;
+  --color-panel-glass: rgba(27, 33, 30, 0.92);
+  --color-workspace-main: rgba(21, 25, 23, 0.96);
+  --color-chrome-glass: rgba(21, 25, 23, 0.88);
+  --color-statusbar-glass: rgba(21, 25, 23, 0.92);
+
+  --color-fg: #edf2ef;
+  --color-fg-muted: #bdc8c3;
+  --color-fg-subtle: #9eaaa5;
+  --color-fg-faint: #9eaaa5;
+  --color-fg-disabled: #69736f;
+  --color-border: #323b37;
+  --color-border-strong: #4c5752;
+
+  --color-accent: #78b8a6;
+  --color-accent-hover: #8fc8b8;
+  --color-accent-active: #acd8cc;
+  --color-accent-fg: #0b1714;
+  --color-accent-soft: #19352f;
+  --color-accent-soft-fg: #b6ded3;
+
+  --color-success: #4ade80;
+  --color-success-soft: #143623;
+  --color-success-fg: #a7f3d0;
+  --color-success-border: #3f7650;
+  --color-success-on-solid: #07140d;
+  --color-status-online: #4ade80;
+  --color-status-online-soft: rgba(74, 222, 128, 0.18);
+  --color-warning: #fbbf24;
+  --color-warning-soft: #3c2b12;
+  --color-warning-fg: #fde68a;
+  --color-danger: #fb7185;
+  --color-danger-hover: #fda4af;
+  --color-danger-on-solid: #21070d;
+  --color-danger-soft: #431a20;
+  --color-danger-fg: #fecdd3;
+  --color-danger-border: #8f4550;
+  --color-info: #60a5fa;
+  --color-info-soft: #172b4d;
+  --color-info-fg: #bfdbfe;
+
+  --color-rail-bg: #0c1513;
+  --color-rail-gradient-top: #172522;
+  --color-rail-surface: rgba(255, 255, 255, 0.085);
+  --color-rail-active: rgba(120, 184, 166, 0.2);
+  --color-rail-border: rgba(255, 255, 255, 0.11);
+  --color-rail-command-bg: rgba(255, 255, 255, 0.035);
+  --color-canvas-glow: rgba(120, 184, 166, 0.1);
+  --color-canvas-warm: rgba(219, 178, 126, 0.055);
+  --color-grid-line: rgba(255, 255, 255, 0.03);
+  --color-scrim: rgba(0, 0, 0, 0.68);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow: 0 10px 28px rgba(0, 0, 0, 0.26);
+  --shadow-lg: 0 22px 56px rgba(0, 0, 0, 0.38);
+}
+
+/* ============ 高对比度（与主题轴独立）============ */
+[data-contrast="more"] {
+  --color-bg: #f7faf9;
+  --color-surface: #ffffff;
+  --color-surface-sunken: #e8eeeb;
+  --color-surface-raised: #ffffff;
+  --color-panel: #ffffff;
+  --color-surface-hover: #e2ebe7;
+  --color-panel-glass: #ffffff;
+  --color-workspace-main: #f7faf9;
+  --color-chrome-glass: #f7faf9;
+  --color-statusbar-glass: #f7faf9;
+  --color-fg: #050807;
+  --color-fg-muted: #202a27;
+  --color-fg-subtle: #33413d;
+  --color-fg-faint: #3c4a46;
+  --color-border: #697873;
+  --color-border-strong: #26332f;
+  --color-accent: #075f4a;
+  --color-accent-hover: #044c3b;
+  --color-accent-active: #033a2d;
+  --color-accent-fg: #ffffff;
+  --color-accent-soft: #d8eee7;
+  --color-accent-soft-fg: #103f34;
+  --color-success-border: #166534;
+  --color-success-on-solid: #ffffff;
+  --color-danger-border: #b91c1c;
+  --color-rail-bg: #06100d;
+  --color-rail-gradient-top: #10231e;
+  --color-rail-border: rgba(255, 255, 255, 0.32);
+  --color-rail-fg-muted: #d2dfda;
+  --color-rail-active: rgba(143, 224, 199, 0.3);
+  --color-rail-accent: #a9efda;
+  --color-grid-line: rgba(5, 8, 7, 0.08);
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-lg: none;
+  --shadow-rail-mark: none;
+  --shadow-rail-mark-hover: none;
+  --shadow-rail-active: none;
+  --color-scrim: rgba(0, 0, 0, 0.72);
+  --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-accent);
+}
+
+[data-theme="dark"][data-contrast="more"] {
+  --color-bg: #050807;
+  --color-surface: #0b100e;
+  --color-surface-sunken: #111815;
+  --color-surface-raised: #121a17;
+  --color-panel: #090d0c;
+  --color-surface-hover: #18231f;
+  --color-panel-glass: #090d0c;
+  --color-workspace-main: #050807;
+  --color-chrome-glass: #050807;
+  --color-statusbar-glass: #050807;
+  --color-fg: #ffffff;
+  --color-fg-muted: #dbe5e1;
+  --color-fg-subtle: #b7c7c1;
+  --color-fg-faint: #a7b8b2;
+  --color-border: #81918b;
+  --color-border-strong: #c6d6d0;
+  --color-accent: #8fe0c7;
+  --color-accent-hover: #a7ead6;
+  --color-accent-active: #c2f2e4;
+  --color-accent-fg: #07110e;
+  --color-accent-soft: #173b31;
+  --color-accent-soft-fg: #d0f8ec;
+  --color-success-border: #a7f3d0;
+  --color-success-on-solid: #000000;
+  --color-danger-border: #fecdd3;
+  --color-rail-bg: #000000;
+  --color-rail-gradient-top: #0b1713;
+  --color-rail-fg-muted: #dbe5e1;
+  --color-rail-border: rgba(255, 255, 255, 0.42);
+  --color-rail-active: rgba(143, 224, 199, 0.3);
+  --color-grid-line: rgba(255, 255, 255, 0.1);
+  --shadow-sm: none;
+  --shadow: none;
+  --shadow-lg: none;
+  --shadow-rail-mark: none;
+  --shadow-rail-mark-hover: none;
+  --shadow-rail-active: none;
+  --color-scrim: rgba(0, 0, 0, 0.82);
+  --focus-ring: 0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-accent);
 }
 
 /* ============ 元素重置 ============ */
@@ -223,4 +381,104 @@ a:hover {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-soft-fg);
+}
+
+/* 系统强制色优先于应用配色，确保 Windows 高对比模式保留语义边界。 */
+@media (forced-colors: active) {
+  :root {
+    color-scheme: light dark;
+    --color-bg: Canvas;
+    --color-surface: Canvas;
+    --color-surface-sunken: Canvas;
+    --color-surface-raised: Canvas;
+    --color-panel: Canvas;
+    --color-surface-hover: Canvas;
+    --color-panel-glass: Canvas;
+    --color-workspace-main: Canvas;
+    --color-chrome-glass: Canvas;
+    --color-statusbar-glass: Canvas;
+    --color-fg: CanvasText;
+    --color-fg-muted: CanvasText;
+    --color-fg-subtle: CanvasText;
+    --color-fg-faint: CanvasText;
+    --color-fg-disabled: GrayText;
+    --color-border: GrayText;
+    --color-border-strong: ButtonBorder;
+    --color-accent: Highlight;
+    --color-accent-hover: Highlight;
+    --color-accent-active: Highlight;
+    --color-accent-fg: HighlightText;
+    --color-accent-soft: Canvas;
+    --color-accent-soft-fg: CanvasText;
+    --color-success: Highlight;
+    --color-success-soft: Canvas;
+    --color-success-fg: CanvasText;
+    --color-success-border: Highlight;
+    --color-success-on-solid: HighlightText;
+    --color-warning: Highlight;
+    --color-warning-soft: Canvas;
+    --color-warning-fg: CanvasText;
+    --color-danger: Highlight;
+    --color-danger-hover: Highlight;
+    --color-danger-on-solid: HighlightText;
+    --color-danger-soft: Canvas;
+    --color-danger-fg: CanvasText;
+    --color-danger-border: Highlight;
+    --color-info: Highlight;
+    --color-info-soft: Canvas;
+    --color-info-fg: CanvasText;
+    --color-rail-bg: Canvas;
+    --color-rail-gradient-top: Canvas;
+    --color-rail-surface: Canvas;
+    --color-rail-active: Highlight;
+    --color-rail-border: ButtonBorder;
+    --color-rail-fg: CanvasText;
+    --color-rail-fg-strong: CanvasText;
+    --color-rail-fg-muted: CanvasText;
+    --color-rail-accent: Highlight;
+    --color-rail-command-bg: Canvas;
+    --color-rail-focus-border: Highlight;
+    --color-canvas-glow: transparent;
+    --color-canvas-warm: transparent;
+    --color-grid-line: transparent;
+    --color-scrim: Canvas;
+    --shadow-sm: none;
+    --shadow: none;
+    --shadow-lg: none;
+    --shadow-rail-mark: none;
+    --shadow-rail-mark-hover: none;
+    --shadow-rail-active: none;
+    --focus-ring: 0 0 0 2px Canvas, 0 0 0 4px Highlight;
+  }
+}
+
+/* reduced-motion 是全局能力：CSS 与 anime.js 均从系统偏好降级。 */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 1ms;
+    --duration: 1ms;
+    --duration-slow: 1ms;
+    --duration-gentle: 1ms;
+    --motion-distance-xs: 0px;
+    --motion-distance-sm: 0px;
+    --motion-scale-hover: 1;
+  }
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-delay: 0ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
 }

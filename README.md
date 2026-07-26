@@ -11,7 +11,7 @@ PrivateAgent 是一个本地优先、隐私可控的桌面个人 Agent。它使�
 - 知识与学习：PDF/Word/Markdown/TXT 导入、混合检索、来源引用、文档集合、学习计划、测验、复习卡片和长期记忆。
 - 项目 Agent：授权目录、代码检索、Git 状态、白名单命令、补丁审批、多文件 patch set、回滚及可编辑任务计划。
 - 数据治理：隐私预览、诊断包脱敏、完整性检查、备份/恢复演练、ICS 日历导入和扩展注册表。
-- 桌面发布：Python sidecar、动态端口协商、NSIS 安装包、应用内更新清单、发布检查及可选代码签名。
+- 桌面发布：Python sidecar、动态端口与 256-bit 会话令牌协商、NSIS 安装包、应用内更新清单、发布检查及可选代码签名。
 
 所有文件访问、命令执行和写入能力都受授权路径、风险等级与审批流程约束。
 
@@ -146,7 +146,7 @@ Set-Location ..\..
 uv run alembic current
 ```
 
-需要 Rust/MSVC 的 Tauri 检查：
+需要 Rust/MSVC 的 Tauri 格式、编译与 Rust 单测门禁：
 
 ```powershell
 scripts\cargo-check-tauri.bat
@@ -163,6 +163,8 @@ scripts\release-check.bat
 ```powershell
 scripts\release-check-full.bat
 ```
+
+pytest 和完整证据流水线会自动创建唯一的 `pa_test_*` MySQL 数据库与隔离数据目录，结束后只清理本次运行拥有的目标。测试账号需具备创建/删除测试数据库的权限；也可通过严格命名的 `PA_TEST_DB_URL` 指定由 CI 管理、测试不会删除的数据库。测试流程绝不会回退到开发数据库。
 
 ## 构建 Windows 安装包
 
@@ -226,4 +228,6 @@ dist/codesign-status-<version>.json
 
 ## 安全说明
 
-本项目默认只监听 loopback 地址。请勿把本地 API 直接暴露到公网，也不要提交 `.env`、Tauri updater 私钥、PFX 证书或其他凭据。执行文件写入、命令运行、补丁应用及远程 Provider 调用前，请核对授权范围和审批信息。
+本项目默认只监听 loopback 地址。安装版每次启动由 Tauri 使用系统 CSPRNG 生成 256-bit 临时 Bearer token，只在桌面进程、WebView 内存和 sidecar 环境中传递，不写入 `.env`、localStorage 或日志；API CORS 仅允许 Tauri WebView 与 loopback 开发来源。WebView 同时启用严格 CSP，脚本只允许应用自身来源，并禁用对象、子框架和表单提交。源码开发模式在 `PA_API_TOKEN` 为空时保持兼容，生产部署不应关闭令牌校验。
+
+请勿把本地 API 直接暴露到公网，也不要提交 `.env`、Tauri updater 私钥、PFX 证书或其他凭据。执行文件写入、命令运行、补丁应用及远程 Provider 调用前，请核对授权范围和审批信息。

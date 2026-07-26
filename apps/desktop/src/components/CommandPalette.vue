@@ -18,6 +18,7 @@ import {
   PhPlus,
 } from "@phosphor-icons/vue";
 import { createInbox, createReminder, createTodayBriefing, createSession } from "../api";
+import { useModalFocus } from "../composables/useModalFocus";
 import { useNotifications } from "../stores/notifications";
 import type { View } from "../types";
 
@@ -29,6 +30,7 @@ const emit = defineEmits<{
 const notify = useNotifications();
 
 const query = ref("");
+const dialogEl = ref<HTMLElement | null>(null);
 const inputEl = ref<HTMLInputElement | null>(null);
 const selected = ref(0);
 
@@ -156,6 +158,13 @@ watch(filtered, () => {
   selected.value = 0;
 });
 
+watch(selected, async () => {
+  await nextTick();
+  document
+    .getElementById(`command-option-${filtered.value[selected.value]?.id ?? ""}`)
+    ?.scrollIntoView({ block: "nearest" });
+});
+
 async function open() {
   query.value = "";
   selected.value = 0;
@@ -188,35 +197,62 @@ function onKey(e: KeyboardEvent) {
 defineExpose({ open });
 
 onMounted(open);
+useModalFocus({
+  container: dialogEl,
+  initialFocus: inputEl,
+  onEscape: () => emit("close"),
+});
 </script>
 
 <template>
   <Teleport to="body">
     <Transition name="cp">
       <div class="cp-scrim" @click.self="emit('close')">
-        <div class="cp-card" role="dialog" aria-modal="true" aria-label="命令面板">
+        <div
+          ref="dialogEl"
+          class="cp-card"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="command-palette-title"
+          tabindex="-1"
+        >
+          <h2 id="command-palette-title" class="cp-sr-only">命令面板</h2>
           <div class="cp-input-wrap">
             <PhMagnifyingGlass :size="16" class="cp-input-icon" />
             <input
               ref="inputEl"
               v-model="query"
               class="cp-input"
+              role="combobox"
+              aria-label="筛选命令"
+              aria-autocomplete="list"
+              aria-controls="command-palette-list"
+              aria-expanded="true"
+              :aria-activedescendant="filtered[selected] ? `command-option-${filtered[selected].id}` : undefined"
               placeholder="输入命令或搜索…（↑↓ 选择，回车执行，Esc 关闭）"
               @keydown="onKey"
             />
           </div>
-          <ul class="cp-list">
+          <ul id="command-palette-list" class="cp-list" role="listbox" aria-label="可用命令">
             <li
               v-for="(c, i) in filtered"
               :key="c.id"
-              class="cp-item"
-              :class="{ active: i === selected }"
-              @mouseenter="selected = i"
-              @click="select(i)"
+              role="presentation"
             >
-              <component :is="c.icon" :size="16" class="cp-item-icon" />
-              <span class="cp-item-label">{{ c.label }}</span>
-              <span v-if="c.hint" class="cp-item-hint">{{ c.hint }}</span>
+              <button
+                :id="`command-option-${c.id}`"
+                class="cp-item"
+                :class="{ active: i === selected }"
+                role="option"
+                :aria-selected="i === selected"
+                tabindex="-1"
+                @mouseenter="selected = i"
+                @click="select(i)"
+              >
+                <component :is="c.icon" :size="16" class="cp-item-icon" />
+                <span class="cp-item-label">{{ c.label }}</span>
+                <span v-if="c.hint" class="cp-item-hint">{{ c.hint }}</span>
+              </button>
             </li>
             <li v-if="filtered.length === 0" class="cp-empty">无匹配命令</li>
           </ul>
@@ -246,6 +282,17 @@ onMounted(open);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
 }
+.cp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .cp-input-wrap {
   display: flex;
   align-items: center;
@@ -273,6 +320,7 @@ onMounted(open);
   overflow-y: auto;
 }
 .cp-item {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: var(--space-3);
@@ -280,6 +328,9 @@ onMounted(open);
   border-radius: var(--radius);
   cursor: pointer;
   color: var(--color-fg);
+  border: 0;
+  background: transparent;
+  text-align: left;
 }
 .cp-item.active {
   background: var(--color-accent-soft);

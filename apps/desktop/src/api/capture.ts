@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch, ensureApiBase } from "./http";
 
 export interface CaptureItem {
   id: number;
@@ -18,7 +18,7 @@ export async function listCapture(opts?: { status?: string }): Promise<CaptureIt
   const qs = new URLSearchParams();
   if (opts?.status) qs.set("status", opts.status);
   const q = qs.toString();
-  const r = await fetch(`${base}/capture${q ? `?${q}` : ""}`);
+  const r = await apiFetch(`${base}/capture${q ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -30,7 +30,7 @@ export async function createCapture(body: {
   candidate_type?: string;
 }): Promise<CaptureItem> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture`, {
+  const r = await apiFetch(`${base}/capture`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -41,7 +41,7 @@ export async function createCapture(body: {
 
 export async function captureToInbox(id: number, itemType = "note"): Promise<void> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-inbox`, {
+  const r = await apiFetch(`${base}/capture/${id}/to-inbox`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ item_type: itemType }),
@@ -51,7 +51,7 @@ export async function captureToInbox(id: number, itemType = "note"): Promise<voi
 
 export async function captureToReminder(id: number, dueAt?: string): Promise<void> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-reminder`, {
+  const r = await apiFetch(`${base}/capture/${id}/to-reminder`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ due_at: dueAt }),
@@ -61,7 +61,7 @@ export async function captureToReminder(id: number, dueAt?: string): Promise<voi
 
 export async function captureToMemory(id: number, kind = "note"): Promise<void> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/capture/${id}/to-memory`, {
+  const r = await apiFetch(`${base}/capture/${id}/to-memory`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind }),
