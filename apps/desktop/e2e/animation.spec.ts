@@ -95,21 +95,42 @@ const workflowTask = {
 
 interface MockOptions {
   includePendingTool?: boolean;
-  streamDelayMs?: number;
-  approveDelayMs?: number;
+  streamGate?: Promise<void>;
+  approveGate?: Promise<void>;
+}
+
+interface MockGate {
+  readonly wait: Promise<void>;
+  release: () => void;
+}
+
+function createMockGate(): MockGate {
+  let released = false;
+  let resolve!: () => void;
+  const wait = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return {
+    wait,
+    release: () => {
+      if (released) return;
+      released = true;
+      resolve();
+    },
+  };
 }
 
 async function mockApi(page: Page, options: MockOptions = {}) {
   const {
     includePendingTool = true,
-    streamDelayMs = 0,
-    approveDelayMs = 0,
+    streamGate,
+    approveGate,
   } = options;
   await page.route("**://127.0.0.1:8000/**", async (route) => {
     const url = route.request().url();
     const path = new URL(url).pathname;
     if (path.endsWith("/chat/stream")) {
-      if (streamDelayMs) await new Promise((resolve) => setTimeout(resolve, streamDelayMs));
+      if (streamGate) await streamGate;
       await route.fulfill({
         status: 200,
         contentType: "text/event-stream",
@@ -121,7 +142,7 @@ async function mockApi(page: Page, options: MockOptions = {}) {
     }
 
     if (path.endsWith("/tool-calls/61/approve")) {
-      if (approveDelayMs) await new Promise((resolve) => setTimeout(resolve, approveDelayMs));
+      if (approveGate) await approveGate;
       await route.fulfill({
         json: {
           id: 61,
@@ -197,7 +218,13 @@ test.describe("anime.js motion system", () => {
     await expect(card).toBeVisible();
     const before = await card.boundingBox();
     await card.hover();
-    await page.waitForTimeout(320);
+    await expect(card).toHaveClass(/is-motion-hovered/);
+    await expect
+      .poll(async () => (await card.boundingBox())?.y ?? Number.POSITIVE_INFINITY)
+      .toBeLessThan(before!.y - 4);
+    await expect
+      .poll(async () => (await card.boundingBox())?.width ?? Number.NEGATIVE_INFINITY)
+      .toBeGreaterThan(before!.width);
     const after = await card.boundingBox();
     const style = await card.evaluate((element) => {
       const computed = getComputedStyle(element);
@@ -226,7 +253,7 @@ test.describe("anime.js motion system", () => {
     await expect(card).toBeVisible();
     const before = await card.boundingBox();
     await card.hover();
-    await page.waitForTimeout(320);
+    await expect(card).not.toHaveClass(/is-motion-hovered/);
     const after = await card.boundingBox();
 
     expect(after?.x).toBeCloseTo(before!.x, 1);
@@ -241,25 +268,32 @@ test.describe("anime.js motion system", () => {
 
     const steps = page.locator("[data-workflow-step]");
     await expect(steps).toHaveCount(3);
-    await page.waitForTimeout(700);
     await expect(steps.nth(0).locator("[data-workflow-check-path]")).toBeVisible();
     await expect(steps.nth(1)).toHaveAttribute("data-workflow-state", "running");
 
-    const activeNodeTransform = await steps
-      .nth(1)
-      .locator("[data-workflow-node]")
-      .evaluate((element) => getComputedStyle(element).transform);
-    const pathDash = await steps
-      .nth(0)
-      .locator("[data-workflow-path]")
-      .evaluate((element) => getComputedStyle(element).strokeDasharray);
-    const brainTransform = await page
-      .locator("[data-agent-brain]")
-      .evaluate((element) => getComputedStyle(element).transform);
-
-    expect(activeNodeTransform).not.toBe("none");
-    expect(pathDash).not.toBe("none");
-    expect(brainTransform).not.toBe("none");
+    await expect
+      .poll(() =>
+        steps
+          .nth(1)
+          .locator("[data-workflow-node]")
+          .evaluate((element) => getComputedStyle(element).transform)
+      )
+      .not.toBe("none");
+    await expect
+      .poll(() =>
+        steps
+          .nth(0)
+          .locator("[data-workflow-path]")
+          .evaluate((element) => getComputedStyle(element).strokeDasharray)
+      )
+      .not.toBe("none");
+    await expect
+      .poll(() =>
+        page
+          .locator("[data-agent-brain]")
+          .evaluate((element) => getComputedStyle(element).transform)
+      )
+      .not.toBe("none");
   });
 
   test("chat messages and tool calls mount through the isolated animation layer", async ({ page }) => {
@@ -276,92 +310,119 @@ test.describe("anime.js motion system", () => {
     );
 
     const assistantBubble = page.locator(".msg.assistant .bubble").first();
+    const streamRevision = Number(
+      (await assistantBubble.getAttribute("data-stream-motion-revision")) ?? "0"
+    );
     await assistantBubble.evaluate((element) => {
       element.classList.add("is-streaming");
       const text = element.firstChild;
       if (text) text.textContent = `${text.textContent} 正在渐进更新`;
     });
-    await page.waitForFunction(
-      (element) => Number(getComputedStyle(element).opacity) < 0.999,
-      await assistantBubble.elementHandle()
-    );
-    await page.waitForTimeout(180);
+    await expect
+      .poll(async () =>
+        Number((await assistantBubble.getAttribute("data-stream-motion-revision")) ?? "0")
+      )
+      .toBeGreaterThan(streamRevision);
     await expect
       .poll(() => assistantBubble.evaluate((element) => Number(getComputedStyle(element).opacity)))
       .toBeCloseTo(1, 2);
   });
 
   test("Thinking state transitions through a real chat action", async ({ page }) => {
-    await mockApi(page, {
-      includePendingTool: false,
-      streamDelayMs: 650,
-    });
-    await page.goto("/");
-    await page.locator(".nav-item", { hasText: "对话" }).click();
-
-    await page.locator(".composer textarea").fill("触发 Thinking 状态");
-    await page.locator(".send-btn").click();
-
+    const streamGate = createMockGate();
     const thinkingAvatar = page.locator('[data-agent-state="thinking"]');
-    await expect(thinkingAvatar).toBeVisible();
-    await page.waitForTimeout(120);
-    const thinkingStyles = await thinkingAvatar.evaluate((element) => ({
-      core: getComputedStyle(element.querySelector("[data-agent-core]")!).transform,
-      halo: getComputedStyle(element.querySelector("[data-agent-halo]")!).transform,
-    }));
-    expect(thinkingStyles.core).not.toBe("none");
-    expect(thinkingStyles.halo).not.toBe("none");
+    try {
+      await mockApi(page, {
+        includePendingTool: false,
+        streamGate: streamGate.wait,
+      });
+      await page.goto("/");
+      await page.locator(".nav-item", { hasText: "对话" }).click();
 
-    await expect(thinkingAvatar).toHaveCount(0, { timeout: 2_000 });
+      await page.locator(".composer textarea").fill("触发 Thinking 状态");
+      await page.locator(".send-btn").click();
+
+      await expect(thinkingAvatar).toBeVisible();
+      await expect
+        .poll(() =>
+          thinkingAvatar.evaluate(
+            (element) => getComputedStyle(element.querySelector("[data-agent-core]")!).transform
+          )
+        )
+        .not.toBe("none");
+      await expect
+        .poll(() =>
+          thinkingAvatar.evaluate(
+            (element) => getComputedStyle(element.querySelector("[data-agent-halo]")!).transform
+          )
+        )
+        .not.toBe("none");
+    } finally {
+      streamGate.release();
+    }
+    await expect(thinkingAvatar).toHaveCount(0);
     await expect(page.locator('[data-agent-state="idle"]').last()).toBeVisible();
   });
 
   test("Tool approval drives Executing flow, disclosure motion and cleanup", async ({ page }) => {
-    await mockApi(page, {
-      approveDelayMs: 650,
-      streamDelayMs: 1_200,
-    });
-    await page.goto("/");
-    await page.locator(".nav-item", { hasText: "对话" }).click();
-    await page.getByRole("button", { name: "批准执行" }).click();
+    const approveGate = createMockGate();
+    const streamGate = createMockGate();
+    try {
+      await mockApi(page, {
+        approveGate: approveGate.wait,
+        streamGate: streamGate.wait,
+      });
+      await page.goto("/");
+      await page.locator(".nav-item", { hasText: "对话" }).click();
+      await page.getByRole("button", { name: "批准执行" }).click();
 
-    const executingAvatar = page.locator('[data-agent-state="executing"]');
-    await expect(executingAvatar).toBeVisible();
-    await page.waitForTimeout(180);
-    const flowTransform = await executingAvatar
-      .locator("[data-agent-flow-dot]")
-      .first()
-      .evaluate((element) => getComputedStyle(element).transform);
-    expect(flowTransform).not.toBe("none");
+      const executingAvatar = page.locator('[data-agent-state="executing"]');
+      await expect(executingAvatar).toBeVisible();
+      await expect
+        .poll(() =>
+          executingAvatar
+            .locator("[data-agent-flow-dot]")
+            .first()
+            .evaluate((element) => getComputedStyle(element).transform)
+        )
+        .not.toBe("none");
 
-    const disclosure = page.locator("[data-tool-disclosure]");
-    await expect(disclosure).toBeVisible({ timeout: 2_000 });
-    await disclosure.locator("summary").click();
-    const panel = disclosure.locator("[data-tool-panel]");
-    await page.waitForFunction(
-      (element) => Number(getComputedStyle(element).opacity) < 0.999,
-      await panel.elementHandle()
-    );
-    await page.waitForTimeout(300);
-    await expect
-      .poll(() => panel.evaluate((element) => Number(getComputedStyle(element).opacity)))
-      .toBeCloseTo(1, 2);
+      approveGate.release();
+      const disclosure = page.locator("[data-tool-disclosure]");
+      await expect(disclosure).toBeVisible();
+      const panel = disclosure.locator("[data-tool-panel]");
+      const disclosureRevision = Number(
+        (await panel.getAttribute("data-disclosure-motion-revision")) ?? "0"
+      );
+      await disclosure.locator("summary").click();
+      await expect
+        .poll(async () =>
+          Number((await panel.getAttribute("data-disclosure-motion-revision")) ?? "0")
+        )
+        .toBeGreaterThan(disclosureRevision);
+      await expect
+        .poll(() => panel.evaluate((element) => Number(getComputedStyle(element).opacity)))
+        .toBeCloseTo(1, 2);
 
-    const liveCore = page.locator('[data-agent-state="thinking"] [data-agent-core]');
-    await expect(liveCore).toBeVisible();
-    const detachedCore = await liveCore.elementHandle();
-    await page.locator(".nav-item", { hasText: "今日" }).click();
-    // Workspace views leave through a short out-in transition; cleanup is asserted
-    // after the visual handoff rather than synchronously with the click.
-    await expect
-      .poll(() => detachedCore!.evaluate((element) => element.isConnected))
-      .toBe(false);
-    const cleanupState = await detachedCore!.evaluate((element) => ({
-      connected: element.isConnected,
-      style: element.getAttribute("style") ?? "",
-    }));
-    expect(cleanupState.connected).toBe(false);
-    expect(cleanupState.style).not.toContain("transform");
-    expect(cleanupState.style).not.toContain("opacity");
+      const liveCore = page.locator('[data-agent-state="thinking"] [data-agent-core]');
+      await expect(liveCore).toBeVisible();
+      const detachedCore = await liveCore.elementHandle();
+      await page.locator(".nav-item", { hasText: "今日" }).click();
+      // Workspace views leave through a short out-in transition; cleanup is asserted
+      // after the visual handoff rather than synchronously with the click.
+      await expect
+        .poll(() => detachedCore!.evaluate((element) => element.isConnected))
+        .toBe(false);
+      const cleanupState = await detachedCore!.evaluate((element) => ({
+        connected: element.isConnected,
+        style: element.getAttribute("style") ?? "",
+      }));
+      expect(cleanupState.connected).toBe(false);
+      expect(cleanupState.style).not.toContain("transform");
+      expect(cleanupState.style).not.toContain("opacity");
+    } finally {
+      approveGate.release();
+      streamGate.release();
+    }
   });
 });
