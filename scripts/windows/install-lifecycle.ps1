@@ -95,6 +95,17 @@ function Assert-Authenticode([string]$File, [string]$Label) {
     }
 }
 
+function Get-RegistrationValue($Registration, [string]$Name) {
+    if ($null -eq $Registration) {
+        return $null
+    }
+    $property = $Registration.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
 function Get-AppRegistration {
     $roots = @(
         'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*',
@@ -103,7 +114,10 @@ function Get-AppRegistration {
     )
     return @($roots | ForEach-Object {
         Get-ItemProperty -Path $_ -ErrorAction SilentlyContinue
-    } | Where-Object { $appDisplayNames -contains [string]$_.DisplayName })
+    } | Where-Object {
+        $displayName = Get-RegistrationValue $_ 'DisplayName'
+        $null -ne $displayName -and $appDisplayNames -contains [string]$displayName
+    })
 }
 
 function Wait-AppRegistration([bool]$Present, [int]$TimeoutSeconds = 60) {
@@ -138,23 +152,24 @@ function Get-ExecutableFromCommand([string]$Command) {
 }
 
 function Get-InstalledExecutable($Registration) {
-    $installLocation = ([string]$Registration.InstallLocation).Trim().Trim('"')
+    $installLocation = ([string](Get-RegistrationValue $Registration 'InstallLocation')).Trim().Trim('"')
     if (-not $installLocation) {
-        $uninstaller = Get-ExecutableFromCommand ([string]$Registration.UninstallString)
+        $uninstaller = Get-ExecutableFromCommand ([string](Get-RegistrationValue $Registration 'UninstallString'))
         $installLocation = Split-Path -Parent $uninstaller
     }
 
     $candidates = [System.Collections.Generic.List[string]]::new()
-    $mainBinaryName = ([string]$Registration.MainBinaryName).Trim().Trim('"')
+    $mainBinaryName = ([string](Get-RegistrationValue $Registration 'MainBinaryName')).Trim().Trim('"')
     if ($mainBinaryName) {
         if ([IO.Path]::GetFileName($mainBinaryName) -ne $mainBinaryName) {
             throw 'Registered MainBinaryName must be a file name, not a path.'
         }
         $candidates.Add((Join-Path $installLocation $mainBinaryName))
     }
-    if ([string]$Registration.DisplayIcon) {
+    $displayIcon = [string](Get-RegistrationValue $Registration 'DisplayIcon')
+    if ($displayIcon) {
         try {
-            $candidates.Add((Get-ExecutableFromCommand ([string]$Registration.DisplayIcon)))
+            $candidates.Add((Get-ExecutableFromCommand $displayIcon))
         } catch {
             # Fall back to the install directory only after both authoritative
             # NSIS registration fields have been considered.
@@ -182,7 +197,7 @@ function Get-InstalledExecutable($Registration) {
 }
 
 function Get-InstalledVersion($Registration, [string]$Executable) {
-    $displayVersion = [string]$Registration.DisplayVersion
+    $displayVersion = [string](Get-RegistrationValue $Registration 'DisplayVersion')
     if ($displayVersion) {
         return $displayVersion
     }
@@ -330,7 +345,7 @@ try {
     $oldRegistration = Wait-AppRegistration $true
     $oldExecutable = Get-InstalledExecutable $oldRegistration
     $result.install_identity['old'] = [ordered]@{
-        display_name = [string]$oldRegistration.DisplayName
+        display_name = [string](Get-RegistrationValue $oldRegistration 'DisplayName')
         main_binary_name = [IO.Path]::GetFileName($oldExecutable)
     }
     $oldVersion = Get-InstalledVersion $oldRegistration $oldExecutable
@@ -360,7 +375,7 @@ PA_EMBED_MODEL=bge-m3
     $newRegistration = Wait-AppRegistration $true
     $newExecutable = Get-InstalledExecutable $newRegistration
     $result.install_identity['new'] = [ordered]@{
-        display_name = [string]$newRegistration.DisplayName
+        display_name = [string](Get-RegistrationValue $newRegistration 'DisplayName')
         main_binary_name = [IO.Path]::GetFileName($newExecutable)
     }
     $newVersion = Get-InstalledVersion $newRegistration $newExecutable
@@ -380,7 +395,7 @@ PA_EMBED_MODEL=bge-m3
     $result.new_runtime_started = $true
     Add-Phase 'new-runtime' 'passed' "Started main PID $($newRuntime.main_pid) and packaged sidecar."
 
-    $uninstaller = Get-ExecutableFromCommand ([string]$newRegistration.UninstallString)
+    $uninstaller = Get-ExecutableFromCommand ([string](Get-RegistrationValue $newRegistration 'UninstallString'))
     $installDirectory = Split-Path -Parent $uninstaller
     Invoke-Nsis $uninstaller 'Uninstaller'
     Wait-NoResidualProcesses

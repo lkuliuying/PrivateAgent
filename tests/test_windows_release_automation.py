@@ -46,6 +46,22 @@ def test_guest_lifecycle_covers_clean_install_upgrade_and_uninstall():
     assert ".Trim('\"')" in script
 
 
+def test_guest_lifecycle_tolerates_sparse_uninstall_registry_entries():
+    script = _read(WINDOWS / "install-lifecycle.ps1")
+    assert "$property = $Registration.PSObject.Properties[$Name]" in script
+    assert "if ($null -eq $property)" in script
+    assert "$displayName = Get-RegistrationValue $_ 'DisplayName'" in script
+    assert "$_.DisplayName" not in script
+    for optional_name in (
+        "InstallLocation",
+        "UninstallString",
+        "MainBinaryName",
+        "DisplayIcon",
+        "DisplayVersion",
+    ):
+        assert f"Get-RegistrationValue $Registration '{optional_name}'" in script
+
+
 def test_windows_upgrade_identity_and_main_binary_are_not_guessed():
     config = json.loads(
         _read(ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json")
