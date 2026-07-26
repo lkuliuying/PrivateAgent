@@ -115,11 +115,17 @@ def test_github_hosted_vm_separates_mechanism_and_production_lanes():
 
 def test_clean_runner_bootstraps_legacy_sidecar_destination():
     workflow = _read(ROOT / ".github" / "workflows" / "windows-release-assurance.yml")
+    sidecar_build = _read(ROOT / "scripts" / "build-sidecar.bat")
     baseline_step = workflow.split("name: Build tagged baseline without secrets", 1)[
         1
     ].split("name: Build candidate without secrets", 1)[0]
     assert "apps\\desktop\\src-tauri\\binaries" in baseline_step
     assert "New-Item -ItemType Directory" in baseline_step
+    assert (
+        'set "BINARY_DIR=%PROJECT_ROOT%\\apps\\desktop\\src-tauri\\binaries"'
+        in sidecar_build
+    )
+    assert 'if not exist "%BINARY_DIR%" mkdir "%BINARY_DIR%"' in sidecar_build
 
 
 def test_motion_tests_pin_no_preference_on_hosted_windows():

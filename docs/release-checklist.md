@@ -206,7 +206,7 @@ rollback_plan:
 ## 9. 当前已知限制
 
 - ✅ **打包 sidecar 连 MySQL 8**：旧构建的 sidecar 缺 `cryptography`，连 MySQL 8 默认 `caching_sha2_password` 认证会失败（状态页 MySQL 红）。已在 `personal_assistant.spec` 显式加入 `hiddenimports += ["cryptography"]`，并于 2026-07-08 重新构建 v0.1.1 sidecar 后验证 `/health` API / Ollama / MySQL / ChromaDB 全绿。后续发布仍需按 §5.2 复测。
-- ✅ **发布级自动化验证**：2026-07-26 的 `release-check-full.bat` 已完成 11/11 门禁：后端 `pytest` 401 项、前端 Vitest 140 项、Playwright Chromium E2E 27 项、Rust 单测 2 项全部通过，生产构建满足包体预算，`alembic current -> 0012 (head)`，诊断包逐成员脱敏与 updater 清单校验通过。证据输出为 `dist/release-check-0.1.2.json` 与 `.md`。
+- ✅ **发布级自动化验证**：2026-07-26 的 `release-check-full.bat` 已完成 11/11 门禁：后端 `pytest` 401 项、前端 Vitest 141 项、Playwright Chromium E2E 27 项、Rust 单测 2 项全部通过，生产构建满足包体预算，`alembic current -> 0012 (head)`，诊断包逐成员脱敏与 updater 清单校验通过。证据输出为 `dist/release-check-0.1.2.json` 与 `.md`。
 - 当前开发机没有生产 Authenticode 私钥证书，也没有 Hyper-V/Windows Sandbox；生产发布必须在配置 Actions secrets 后通过 `windows-release-assurance.yml` 的 `production` lane。自签名 lane 不可作为生产签名证据。
 - macOS / Linux 仅有构建脚本与差异清单，未实测（见 `docs/cross-platform.md`）。
 - onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/phase5-plan.md` M5，结论暂不切换。

@@ -43,10 +43,16 @@ def _bootstrap_isolated_database() -> tuple[IsolatedDatabasePlan, Path]:
         temp_root=PROJECT_ROOT / ".run" / "pytest",
     )
     activate_test_environment(plan, data_dir)
+    # The ordinary suite is hermetic. Real Ollama coverage belongs exclusively to
+    # the explicit stress harness, so an omitted provider mock must fail closed
+    # instead of silently indexing 1024-dimensional vectors from a developer service.
+    test_ollama_url = "http://127.0.0.1:1"
+    os.environ["PA_OLLAMA_BASE_URL"] = test_ollama_url
     # config.py was imported to read the base URL, so update its singleton before any
     # core module can capture settings or create an engine.
     config_module.settings.db_url = plan.database_url
     config_module.settings.data_dir = data_dir
+    config_module.settings.ollama_base_url = test_ollama_url
     try:
         provision_database(plan)
         upgrade_database(PROJECT_ROOT)
@@ -177,8 +183,13 @@ def tmp_path() -> Path:
 
 
 @pytest_asyncio.fixture
-async def client():
+async def client(monkeypatch: pytest.MonkeyPatch):
     """Provide an in-process FastAPI client backed by a per-test DB engine."""
+
+    # Declaring monkeypatch as a dependency guarantees that this fixture drains all
+    # background work before pytest restores provider/Chroma patches from the test.
+    # Without that ordering, a fast test body could finish while an import was queued,
+    # letting teardown switch it back to the developer's real Ollama service.
 
     test_engine = create_async_engine(
         cfg.db_url,

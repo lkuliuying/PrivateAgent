@@ -2,6 +2,7 @@ import { animate, createTimeline, stagger } from "animejs";
 import {
   createAnimationScope,
   createCompositeHandle,
+  markMotionRevision,
   observeElements,
   type AnimationHandle,
   type AnimationRoot,
@@ -93,6 +94,7 @@ function mountCardInteractions(root: AnimationRoot): AnimationHandle {
             ease: "out(4)",
           })
         );
+        markMotionRevision(card, "hover");
       };
       const leave = () => {
         card.classList.remove("is-motion-hovered");

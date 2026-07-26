@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeAgentMotionState } from "./agent";
-import { createCompositeHandle, type AnimationHandle } from "./utils";
+import {
+  createCompositeHandle,
+  markMotionRevision,
+  type AnimationHandle,
+} from "./utils";
 import { workflowVisualState } from "./workflow";
 
 describe("animation state mapping", () => {
@@ -20,6 +24,17 @@ describe("animation state mapping", () => {
   });
 });
 describe("animation lifecycle", () => {
+  it("records motion starts as a monotonic DOM revision", () => {
+    const element = document.createElement("div");
+
+    expect(markMotionRevision(element, "hover")).toBe(1);
+    expect(markMotionRevision(element, "hover")).toBe(2);
+    expect(element.getAttribute("data-hover-motion-revision")).toBe("2");
+
+    element.setAttribute("data-hover-motion-revision", "invalid");
+    expect(markMotionRevision(element, "hover")).toBe(1);
+  });
+
   it("destroys every child handle once", () => {
     const firstDestroy = vi.fn();
     const secondDestroy = vi.fn();

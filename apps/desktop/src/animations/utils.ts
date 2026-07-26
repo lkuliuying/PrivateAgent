@@ -16,6 +16,14 @@ export const motionMediaQueries = {
   reduceMotion: "(prefers-reduced-motion: reduce)",
 } as const;
 
+export function markMotionRevision(element: HTMLElement, motion: string): number {
+  const attribute = `data-${motion}-motion-revision`;
+  const current = Number.parseInt(element.getAttribute(attribute) ?? "0", 10);
+  const next = Number.isSafeInteger(current) && current >= 0 ? current + 1 : 1;
+  element.setAttribute(attribute, String(next));
+  return next;
+}
+
 export function queryAll<T extends Element>(
   root: ParentNode,
   selector: string

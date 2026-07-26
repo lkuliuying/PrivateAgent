@@ -27,12 +27,16 @@ from personal_assistant.core import store_chroma
 
 
 def _patch_embed_one(monkeypatch):
-    """mock OllamaProvider.embed_one 返回固定向量（必须 async，与原方法一致）。"""
+    """Keep query and rerank embeddings deterministic and off the real provider."""
 
     async def fake(self, text):
         return [0.0] * 8
 
+    async def fake_many(self, texts):
+        return [[0.0] * 8 for _ in texts]
+
     monkeypatch.setattr(OllamaProvider, "embed_one", fake)
+    monkeypatch.setattr(OllamaProvider, "embed", fake_many)
 
 
 def _patch_query(monkeypatch, chunk_ids):
@@ -125,15 +129,17 @@ async def test_bm25_recall_exact_match(db, monkeypatch):
 @pytest.mark.asyncio
 async def test_bm25_recall_matches_case_insensitively(db, monkeypatch):
     """FULLTEXT 命中后，解释字段不能因大小写不同丢失原词。"""
+    query_token = f"modelnotfound{uuid4().hex}"
     doc, chunk = await _make_doc_chunk(
-        db, content="RuntimeError: MODEL_NOT_FOUND while loading provider"
+        db, content=f"RuntimeError: {query_token.upper()} while loading provider"
     )
     _patch_query(monkeypatch, [])
     _patch_embed_one(monkeypatch)
     try:
-        results = await RagService(db).retrieve("model_not_found", top_k=5)
-        assert [item.chunk_id for item in results] == [chunk.id]
-        assert "model_not_found" in (results[0].matched_keywords or [])
+        results = await RagService(db).retrieve(query_token, top_k=5)
+        assert results
+        assert results[0].chunk_id == chunk.id
+        assert query_token in (results[0].matched_keywords or [])
     finally:
         await db.delete(chunk)
         await db.delete(doc)

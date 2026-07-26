@@ -1,6 +1,7 @@
 import { animate, createTimeline, stagger } from "animejs";
 import {
   createAnimationScope,
+  markMotionRevision,
   type AnimationHandle,
   type AnimationRoot,
 } from "./utils";
@@ -11,11 +12,6 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
     const disclosures = new Map<HTMLDetailsElement, () => void>();
     const streamAnimations = new WeakMap<HTMLElement, ReturnType<typeof animate>>();
     let streamFrame = 0;
-
-    const incrementMotionRevision = (element: HTMLElement, attribute: string) => {
-      const current = Number.parseInt(element.getAttribute(attribute) ?? "0", 10);
-      element.setAttribute(attribute, String(Number.isFinite(current) ? current + 1 : 1));
-    };
 
     const animateMessage = (message: HTMLElement) => {
       if (animated.has(message)) return;
@@ -65,7 +61,7 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
             ease: "out(4)",
           })
         );
-        incrementMotionRevision(panel, "data-disclosure-motion-revision");
+        markMotionRevision(panel, "disclosure");
       };
       details.addEventListener("toggle", onToggle);
       disclosures.set(details, () => details.removeEventListener("toggle", onToggle));
@@ -108,7 +104,7 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
             })
           );
           streamAnimations.set(bubble, animation);
-          incrementMotionRevision(bubble, "data-stream-motion-revision");
+          markMotionRevision(bubble, "stream");
         });
       });
     };

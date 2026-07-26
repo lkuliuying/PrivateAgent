@@ -211,21 +211,33 @@ test.describe("anime.js motion system", () => {
   });
 
   test("Agent card hover uses transform, shadow and border glow", async ({ page }) => {
+    // The first browser test absorbs Vite and Chromium cold-start cost on hosted
+    // Windows runners. Keep functional polling strict while giving setup headroom.
+    test.setTimeout(120_000);
     await mockApi(page);
     await page.goto("/");
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
-    const before = await card.boundingBox();
+    const hoverRevision = Number(
+      (await card.getAttribute("data-hover-motion-revision")) ?? "0"
+    );
     await card.hover();
     await expect(card).toHaveClass(/is-motion-hovered/);
     await expect
-      .poll(async () => (await card.boundingBox())?.y ?? Number.POSITIVE_INFINITY)
-      .toBeLessThan(before!.y - 4);
+      .poll(async () =>
+        Number((await card.getAttribute("data-hover-motion-revision")) ?? "0")
+      )
+      .toBeGreaterThan(hoverRevision);
     await expect
-      .poll(async () => (await card.boundingBox())?.width ?? Number.NEGATIVE_INFINITY)
-      .toBeGreaterThan(before!.width);
-    const after = await card.boundingBox();
+      .poll(() =>
+        card.evaluate((element) => {
+          const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform);
+          const scale = Math.hypot(matrix.a, matrix.b);
+          return matrix.m42 < -4 && scale > 1.01;
+        })
+      )
+      .toBe(true);
     const style = await card.evaluate((element) => {
       const computed = getComputedStyle(element);
       return {
@@ -235,10 +247,6 @@ test.describe("anime.js motion system", () => {
       };
     });
 
-    expect(before).not.toBeNull();
-    expect(after).not.toBeNull();
-    expect(after!.y).toBeLessThan(before!.y - 4);
-    expect(after!.width).toBeGreaterThan(before!.width);
     expect(style.transform).not.toBe("none");
     expect(style.shadow).not.toBe("none");
     expect(style.border).not.toBe("");
@@ -251,14 +259,12 @@ test.describe("anime.js motion system", () => {
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
-    const before = await card.boundingBox();
     await card.hover();
     await expect(card).not.toHaveClass(/is-motion-hovered/);
-    const after = await card.boundingBox();
-
-    expect(after?.x).toBeCloseTo(before!.x, 1);
-    expect(after?.y).toBeCloseTo(before!.y, 1);
-    expect(after?.width).toBeCloseTo(before!.width, 1);
+    await expect(card).not.toHaveAttribute("data-hover-motion-revision");
+    await expect
+      .poll(() => card.evaluate((element) => getComputedStyle(element).transform))
+      .toBe("none");
   });
 
   test("workflow draws SVG paths, activates a node and reveals checks", async ({ page }) => {

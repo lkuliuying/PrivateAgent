@@ -24,7 +24,13 @@ if errorlevel 1 (
 )
 
 echo === [2/2] Copy artifact to Tauri binaries ===
-set "OUT=%PROJECT_ROOT%\apps\desktop\src-tauri\binaries\personal-assistant-server-x86_64-pc-windows-msvc.exe"
+set "BINARY_DIR=%PROJECT_ROOT%\apps\desktop\src-tauri\binaries"
+if not exist "%BINARY_DIR%" mkdir "%BINARY_DIR%"
+if errorlevel 1 (
+    echo [build-sidecar] failed to create Tauri binaries directory
+    exit /b 1
+)
+set "OUT=%BINARY_DIR%\personal-assistant-server-x86_64-pc-windows-msvc.exe"
 copy /Y "dist\personal-assistant-server.exe" "%OUT%" >nul
 if errorlevel 1 (
     echo [build-sidecar] copy failed
