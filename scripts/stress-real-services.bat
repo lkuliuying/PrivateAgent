@@ -8,5 +8,5 @@ if errorlevel 1 (
     echo [stress] uv not found
     exit /b 1
 )
-"%UV_EXE%" run python "%~dp0stress_real_services.py" %*
+"%UV_EXE%" run python "%~dp0stress_process_supervisor.py" %*
 exit /b %errorlevel%

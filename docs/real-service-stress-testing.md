@@ -1,6 +1,6 @@
 # 真实服务长稳与大文档压力测试
 
-`scripts/stress_real_services.py` 使用生产代码路径测试真实 Ollama、MySQL 与本地持久化 Chroma：
+`scripts\stress-real-services.bat` 通过独立进程 watchdog 调用 `scripts/stress_real_services.py`，使用生产代码路径测试真实 Ollama、MySQL 与本地持久化 Chroma：
 
 ```text
 大文档生成 → 文档解析/切片 → Ollama embedding
@@ -19,9 +19,10 @@
 - 建库后会把随机 ownership nonce 同时写入数据库内的专用表和临时目录 marker；删除前重新校验数据库名、run id、文件 marker 与库内 nonce，任何一项不一致都会失败关闭。
 - 清理授权同时绑定业务 `database_url` 与 `admin_url`：两者的 driver、账号、密码、host、port 和 query 必须完全一致，业务 URL 必须指向本次 `pa_stress_*` 库，admin URL 必须指向同一服务器的 `mysql` 库。替换管理端服务器、端口或数据库都会拒绝清理。
 - Chroma、生成文档和运行文件只写入本次运行独占的 `pa-stress-data-*` 临时目录。
-- 正常或失败退出都会先停止资源采样、关闭 Provider、后台任务、Chroma 和 SQLAlchemy，再删除本次数据库和临时目录。周期资源采样受 `operation-timeout-seconds` 约束；退出时先做有界等待，超时后取消 sampler，无法按清理期限停止会成为 blocker。
+- 正常或失败退出都会先停止资源采样、关闭 Provider、后台任务、Chroma 和 SQLAlchemy，再删除本次数据库和临时目录。资源采样、迁移、完整性检查和每个清理动作都有独立期限；`--cleanup-timeout-seconds` 默认 30 秒，超时会成为 blocker。
+- 批处理入口还提供独立工作进程 watchdog，自动硬截止覆盖导入、稳态、完整性与清理预算，也可用 `--supervisor-timeout-seconds` 显式设置。原生 Chroma/SQLite 线程即使无法协作取消，watchdog 也只终止本次工作进程树；随后从可信 MySQL URL、run id 和临时 marker 重建清理目标，只有文件 marker 与库内 nonce 再次一致才删除隔离库。恢复失败时保留 marker，不扩大清理范围。
 - MySQL 删除失败时保留带所有权标记的临时目录，不扩大清理范围，并把失败记录为 blocker。
-- 凭据只从 `.env` 的现有配置或 `PA_STRESS_MYSQL_URL` 环境变量读取，禁止通过命令行参数传递；JSON/Markdown 报告不会写入凭据。
+- MySQL 凭据只从 `.env` 的现有配置或 `PA_STRESS_MYSQL_URL` 环境变量读取，禁止通过命令行参数传递；JSON/Markdown 报告不会写入凭据。Ollama URL 禁止 userinfo、query 和 fragment，避免认证信息进入 Windows 进程命令行；当前压力入口只支持无 URL 凭据的 Ollama endpoint。
 - 默认只允许 loopback MySQL/Ollama。远程目标必须分别显式增加 `--allow-remote-mysql` 或 `--allow-remote-ollama`。
 - 建库前执行磁盘预检：要求可用空间至少为 512 MiB，且不少于原始测试文档总大小的 4 倍；预检值和实际运行前可用空间都会写入报告。空间不足时不会创建测试数据库。
 
@@ -67,7 +68,8 @@ scripts\stress-real-services.bat `
   --concurrency 1 `
   --document-count 1 `
   --document-size-mb 0.02 `
-  --sample-interval-seconds 1
+  --sample-interval-seconds 1 `
+  --cleanup-timeout-seconds 30
 ```
 
 15 分钟发布候选门禁：
@@ -133,7 +135,7 @@ scripts\stress-real-services.bat `
 
 正式发布证据应来自最终提交，`git_dirty` 应为 `false`，并把 JSON/Markdown 作为受控构建 artifact 留存。`dist/` 默认不入库，因此只保留本机路径不能替代发布证据。
 
-退出码 `0` 表示所有阈值、完整性和清理门禁均通过，`1` 表示压力测试或清理出现 blocker，`2` 表示没有显式授权或安全配置不成立。
+退出码 `0` 表示所有阈值、完整性和清理门禁均通过，`1` 表示压力测试或清理出现 blocker，`2` 表示没有显式授权或安全配置不成立；`124` 表示独立 watchdog 触发硬截止，`125` 表示无法证明工作进程已经终止，`130` 表示操作者中断。硬截止和首次 `Ctrl+C` 都会先终止并确认本次工作进程退出，再尝试所有权验证恢复，并生成失败报告；无法证明进程死亡时禁止并发恢复，避免与仍存活的 worker 竞争清理。
 
 ## 2026-07-26 证据状态
 

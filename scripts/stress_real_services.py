@@ -48,6 +48,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
 from _stress_environment import (  # noqa: E402
+    DatabaseTimeouts,
     StressEnvironment,
     StressProvisionError,
     StressSafetyError,
@@ -78,6 +79,19 @@ _OPERATION_ORDER = (
 
 class StressRunError(RuntimeError):
     """A secret-free, actionable stress-run failure."""
+
+
+async def await_bounded(
+    operation: Awaitable[Any], *, timeout_seconds: float, label: str
+) -> Any:
+    """Await one dependency operation without permitting an unbounded stall."""
+
+    try:
+        return await asyncio.wait_for(operation, timeout=timeout_seconds)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"{label} timed out after {timeout_seconds:g} seconds"
+        ) from exc
 
 
 def utc_now() -> str:
@@ -229,6 +243,18 @@ def validate_http_endpoint(raw_url: str, *, allow_remote: bool) -> str:
     parts = urlsplit(raw_url)
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         raise StressSafetyError("Ollama URL must be an absolute http(s) URL")
+    if parts.username is not None or parts.password is not None:
+        raise StressSafetyError(
+            "Ollama URL credentials are forbidden; use a protected environment setting"
+        )
+    if parts.query or parts.fragment:
+        raise StressSafetyError(
+            "Ollama URL query parameters and fragments are forbidden"
+        )
+    try:
+        parts.port
+    except ValueError as exc:
+        raise StressSafetyError("Ollama URL contains an invalid port") from exc
     loopback = parts.hostname.casefold() == "localhost" or parts.hostname in {
         "127.0.0.1",
         "::1",
@@ -775,9 +801,10 @@ async def run_workload(
             )
 
     async def capture_resource_sample_bounded() -> None:
-        await asyncio.wait_for(
+        await await_bounded(
             capture_resource_sample(),
-            timeout=args.operation_timeout_seconds,
+            timeout_seconds=args.operation_timeout_seconds,
+            label="resource sample",
         )
 
     async def sample_resources() -> None:
@@ -965,58 +992,77 @@ async def run_workload(
 
         await asyncio.gather(*(worker() for _ in range(args.concurrency)))
         steady_elapsed = time.monotonic() - steady_started
-        await capture_resource_sample()
+        await capture_resource_sample_bounded()
         resource_phase = "integrity"
 
-        document_ids = [document_id for document_id, _path, _marker in documents]
-        marker_checks: dict[str, bool] = {}
-        async with async_session_factory() as db:
-            mysql_rows = (
-                await db.execute(
-                    select(DocChunk.id, DocChunk.doc_id).where(
-                        DocChunk.doc_id.in_(document_ids)
-                    )
-                )
-            ).all()
-            mysql_chunk_ids = {int(row.id) for row in mysql_rows}
-            mysql_chunks = len(mysql_chunk_ids)
-            for document_id, _path, marker in documents:
-                marker_count = int(
-                    await db.scalar(
-                        select(func.count(DocChunk.id)).where(
-                            DocChunk.doc_id == document_id,
-                            DocChunk.content.contains(marker),
+        async def verify_integrity() -> dict[str, Any]:
+            document_ids = [document_id for document_id, _path, _marker in documents]
+            marker_checks: dict[str, bool] = {}
+            async with async_session_factory() as db:
+                mysql_rows = (
+                    await db.execute(
+                        select(DocChunk.id, DocChunk.doc_id).where(
+                            DocChunk.doc_id.in_(document_ids)
                         )
                     )
-                    or 0
+                ).all()
+                mysql_chunk_ids = {int(row.id) for row in mysql_rows}
+                for document_id, _path, marker in documents:
+                    marker_count = int(
+                        await db.scalar(
+                            select(func.count(DocChunk.id)).where(
+                                DocChunk.doc_id == document_id,
+                                DocChunk.content.contains(marker),
+                            )
+                        )
+                        or 0
+                    )
+                    marker_checks[str(document_id)] = marker_count > 0
+                selected_database = str(await db.scalar(text("SELECT DATABASE()")))
+            if selected_database != environment.database_name:
+                raise StressSafetyError(
+                    "application connected to an unexpected MySQL schema"
                 )
-                marker_checks[str(document_id)] = marker_count > 0
-            selected_database = str(await db.scalar(text("SELECT DATABASE()")))
-        if selected_database != environment.database_name:
-            raise StressSafetyError(
-                "application connected to an unexpected MySQL schema"
-            )
-        chroma_chunk_ids = set(await chroma_store.list_ids())
-        chroma_vectors = len(chroma_chunk_ids)
-        retrieval_checks: dict[str, bool] = {}
-        for document_id, _path, marker in documents:
-            async with async_session_factory() as db:
-                marker_results = await HybridRetriever(db, provider=provider).retrieve(
-                    f"pa stress retrieval {marker}", top_k=max(5, len(documents))
+            chroma_chunk_ids = set(await chroma_store.list_ids())
+            retrieval_checks: dict[str, bool] = {}
+            for document_id, _path, marker in documents:
+                async with async_session_factory() as db:
+                    marker_results = await HybridRetriever(
+                        db, provider=provider
+                    ).retrieve(
+                        f"pa stress retrieval {marker}",
+                        top_k=max(5, len(documents)),
+                    )
+                retrieval_checks[str(document_id)] = any(
+                    item.doc_id == document_id for item in marker_results
                 )
-            retrieval_checks[str(document_id)] = any(
-                item.doc_id == document_id for item in marker_results
-            )
+            return {
+                "mysql_chunks": len(mysql_chunk_ids),
+                "mysql_chunk_ids": mysql_chunk_ids,
+                "chroma_vectors": len(chroma_chunk_ids),
+                "chroma_chunk_ids": chroma_chunk_ids,
+                "marker_checks": marker_checks,
+                "retrieval_checks": retrieval_checks,
+            }
+
+        integrity = await await_bounded(
+            verify_integrity(),
+            timeout_seconds=args.operation_timeout_seconds * max(1, len(documents)),
+            label="post-run MySQL/Chroma/RAG integrity verification",
+        )
         report["steady_state_elapsed_seconds"] = round(steady_elapsed, 3)
         report["integrity"] = {
             "documents": len(documents),
-            "mysql_chunks": mysql_chunks,
-            "chroma_vectors": chroma_vectors,
-            "chunk_id_sets_equal": mysql_chunk_ids == chroma_chunk_ids,
-            "mysql_marker_checks": marker_checks,
-            "rag_marker_checks": retrieval_checks,
-            "all_document_markers_verified": all(marker_checks.values())
-            and all(retrieval_checks.values()),
+            "mysql_chunks": integrity["mysql_chunks"],
+            "chroma_vectors": integrity["chroma_vectors"],
+            "chunk_id_sets_equal": integrity["mysql_chunk_ids"]
+            == integrity["chroma_chunk_ids"],
+            "mysql_marker_checks": integrity["marker_checks"],
+            "rag_marker_checks": integrity["retrieval_checks"],
+            "all_document_markers_verified": all(
+                integrity["marker_checks"].values()
+            )
+            and all(integrity["retrieval_checks"].values()),
         }
     except BaseException as exc:  # noqa: BLE001 - sample/close before re-raise
         failure = exc
@@ -1042,7 +1088,11 @@ async def run_workload(
         except BaseException as exc:  # noqa: BLE001
             sampler_failure = exc
         try:
-            await provider.aclose()
+            await await_bounded(
+                provider.aclose(),
+                timeout_seconds=args.cleanup_timeout_seconds,
+                label="Ollama provider cleanup",
+            )
         except BaseException as exc:  # noqa: BLE001
             provider_close_failure = exc
         report["resources"] = {
@@ -1140,7 +1190,7 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
     args.llm_model = llm_model
     args.embed_model = embed_model
     thresholds = load_thresholds(args.thresholds_json)
-    run_id = new_run_id()
+    run_id = os.environ.get("PA_STRESS_SUPERVISOR_RUN_ID", "").strip() or new_run_id()
     environment = make_environment(
         stress_url,
         run_id=run_id,
@@ -1170,6 +1220,7 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             "document_size_mb": args.document_size_mb,
             "operation_timeout_seconds": args.operation_timeout_seconds,
             "import_timeout_seconds": args.import_timeout_seconds,
+            "cleanup_timeout_seconds": args.cleanup_timeout_seconds,
             "sample_interval_seconds": args.sample_interval_seconds,
             "max_error_rate": args.max_error_rate,
             "max_rss_mb": args.max_rss_mb,
@@ -1198,6 +1249,16 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
     metrics = Metrics()
     database_created = False
     application_activated = False
+    provision_timeouts = DatabaseTimeouts(
+        connect_seconds=min(30.0, args.operation_timeout_seconds),
+        operation_seconds=args.operation_timeout_seconds,
+        cleanup_seconds=args.cleanup_timeout_seconds,
+    )
+    cleanup_timeouts = DatabaseTimeouts(
+        connect_seconds=min(10.0, args.cleanup_timeout_seconds),
+        operation_seconds=args.cleanup_timeout_seconds,
+        cleanup_seconds=args.cleanup_timeout_seconds,
+    )
     try:
         raw_document_bytes = int(
             args.document_count * args.document_size_mb * 1024 * 1024
@@ -1210,7 +1271,10 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             raise StressSafetyError(
                 "insufficient free disk space for document and index amplification"
             )
-        mysql_version = await provision_database(environment)
+        mysql_version = await provision_database(
+            environment,
+            timeouts=provision_timeouts,
+        )
         database_created = True
         report["cleanup"]["database_created"] = True
         report["services"]["mysql_version"] = mysql_version
@@ -1221,7 +1285,11 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             embed_model=args.embed_model,
         )
         application_activated = True
-        await asyncio.to_thread(migrate_database)
+        await await_bounded(
+            asyncio.to_thread(migrate_database),
+            timeout_seconds=args.import_timeout_seconds,
+            label="Alembic migration",
+        )
         tracemalloc.start()
         await run_workload(args, environment, metrics, report)
     except (StressSafetyError, StressProvisionError, StressRunError) as exc:
@@ -1256,7 +1324,11 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             try:
                 from personal_assistant.core.background import background_tasks
 
-                await background_tasks.cancel_all()
+                await await_bounded(
+                    background_tasks.cancel_all(),
+                    timeout_seconds=args.cleanup_timeout_seconds,
+                    label="background task cleanup",
+                )
                 remaining = background_tasks.stats()
                 if remaining["queued"] or remaining["running"]:
                     raise StressRunError("background tasks remained after cancellation")
@@ -1267,7 +1339,11 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             try:
                 from personal_assistant.core.store_chroma import chroma_store
 
-                await chroma_store.close()
+                await await_bounded(
+                    chroma_store.close(),
+                    timeout_seconds=args.cleanup_timeout_seconds,
+                    label="Chroma cleanup",
+                )
             except Exception as exc:  # noqa: BLE001
                 report["cleanup"]["errors"].append(
                     {"target": "chroma", "reason": type(exc).__name__}
@@ -1275,7 +1351,11 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
             try:
                 from personal_assistant.core.db import engine
 
-                await engine.dispose()
+                await await_bounded(
+                    engine.dispose(),
+                    timeout_seconds=args.cleanup_timeout_seconds,
+                    label="SQLAlchemy cleanup",
+                )
             except Exception as exc:  # noqa: BLE001
                 report["cleanup"]["errors"].append(
                     {"target": "sqlalchemy", "reason": type(exc).__name__}
@@ -1285,7 +1365,10 @@ async def execute(args: argparse.Namespace) -> tuple[dict[str, Any], Path, Path]
         # name collides or was deliberately reserved by another actor.
         if database_created:
             try:
-                dropped = await drop_database(environment)
+                dropped = await drop_database(
+                    environment,
+                    timeouts=cleanup_timeouts,
+                )
                 report["cleanup"]["database_dropped"] = dropped
                 report["cleanup"]["database_cleanup_verified"] = True
             except Exception as exc:  # noqa: BLE001
@@ -1377,6 +1460,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--import-timeout-seconds",
         type=bounded_float(1.0, 7_200.0),
         default=1_800.0,
+    )
+    parser.add_argument(
+        "--cleanup-timeout-seconds",
+        type=bounded_float(1.0, 300.0),
+        default=30.0,
     )
     parser.add_argument(
         "--sample-interval-seconds",

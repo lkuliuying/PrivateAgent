@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from dataclasses import replace
@@ -221,6 +222,34 @@ def test_diagnostic_redaction_removes_url_and_token_secrets() -> None:
     assert "<redacted>" in redacted
 
 
+def test_invalid_ollama_port_is_rejected_during_validation() -> None:
+    with pytest.raises(StressSafetyError, match="invalid port"):
+        stress.validate_http_endpoint(
+            "http://127.0.0.1:99999", allow_remote=False
+        )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://user:password@127.0.0.1:11434",
+        "http://127.0.0.1:11434?token=secret",
+        "http://127.0.0.1:11434#credential",
+    ],
+)
+def test_ollama_endpoint_rejects_command_line_secret_surfaces(url: str) -> None:
+    with pytest.raises(StressSafetyError):
+        stress.validate_http_endpoint(url, allow_remote=False)
+
+
+@pytest.mark.asyncio
+async def test_await_bounded_reports_dependency_timeout() -> None:
+    with pytest.raises(TimeoutError, match="test dependency timed out"):
+        await stress.await_bounded(
+            asyncio.sleep(60), timeout_seconds=0.01, label="test dependency"
+        )
+
+
 @pytest.mark.asyncio
 async def test_execute_requires_explicit_real_service_confirmation() -> None:
     args = stress.parse_args([])
@@ -248,12 +277,12 @@ async def test_execute_never_drops_database_when_provisioning_did_not_complete(
         lambda _args: (MYSQL_URL, "http://127.0.0.1:11434", "qwen2", "bge-m3"),
     )
 
-    async def refuse_provision(_environment):
+    async def refuse_provision(_environment, **_kwargs):
         raise stress.StressProvisionError("schema already exists")
 
     drop_called = False
 
-    async def forbidden_drop(_environment):
+    async def forbidden_drop(_environment, **_kwargs):
         nonlocal drop_called
         drop_called = True
         raise AssertionError("pre-existing schema must not be dropped")
