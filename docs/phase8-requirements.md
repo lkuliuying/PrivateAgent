@@ -554,7 +554,7 @@
 - [x] 前端组件测试覆盖 CommandPalette、CapturePanel、NotificationCenter、DiagnosticsView 中至少三个。
 - [x] 发布检查 2.0 串联后端、前端、Rust、迁移、桌面 smoke、清单校验。
 - [x] release manifest 自动记录测试摘要、schema head、平台、hash 和签名状态。
-- [ ] Windows vN -> vN+1 升级 smoke 至少通过一次。（工具与 runbook 已就绪，待真实环境执行）
+- [x] Windows vN -> vN+1 升级 smoke 至少通过一次。（真实 Windows 执行：2026-08-05，`scripts/upgrade_smoke.py` run #26 `0.1.2 -> 0.2.0 result=passed`，数据保留 `--verify preserved=true`，schema `0020 (head)`；卸载/重装回滚演练通过；updater 清单篡改签名被拒绝）
 - [x] Windows 代码签名接入；若无证书，则 unsigned 状态和 SmartScreen 风险自动写入发布说明。
 - [x] 至少一个非 Windows 平台完成构建与 smoke，或文档明确仍未实测且不宣称支持。
 - [x] 性能基线脚本能输出 Today、搜索、诊断、完整性体检、启动时间结果。
@@ -564,7 +564,7 @@
 - [x] README、`docs/requirements.md`、`docs/usage-guide.md`、`docs/release-checklist.md` 更新第八阶段状态。
 - [x] `uv run pytest -q`、`npm run build`、`cargo check`、`uv run alembic current`、`git diff --check` 通过。
 
-> 13/14 已满足；唯一未勾选项「Windows vN->vN+1 升级 smoke 至少通过一次」需真实 Windows 环境构建两份安装包并运行 updater，工具（`scripts/upgrade_smoke.py`）与 runbook 已就绪，标注「待真实环境执行」，与第五阶段同款处理。
+> 14/14：2026-08-05 在真实 Windows 环境完成 `0.1.2 -> 0.2.0` 升级 smoke（安装包就地升级、数据保留校验、回滚演练、updater 清单正文篡改——rejected——与签名字节篡改——rejected），详见 `docs/remaining-work-plan.md` §6 与 `scripts/upgrade_smoke.py` run #26。
 
 ---
 

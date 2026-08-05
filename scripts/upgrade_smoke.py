@@ -193,6 +193,8 @@ def main() -> int:
     ap.add_argument("--from", dest="from_v")
     ap.add_argument("--to", dest="to_v")
     ap.add_argument("--result", default="blocked")
+    ap.add_argument("--data-preserved", default=None)
+    ap.add_argument("--schema-ok", default=None)
     ap.add_argument("--notes", default=None)
     args = ap.parse_args()
 
@@ -213,13 +215,28 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result["preserved"] else 1
     if args.record:
+        data_preserved = _parse_flag(args.data_preserved)
+        schema_ok = _parse_flag(args.schema_ok)
         rid = asyncio.run(
-            record_run(args.from_v or "?", args.to_v or "?", args.result, None, None, args.notes)
+            record_run(
+                args.from_v or "?",
+                args.to_v or "?",
+                args.result,
+                data_preserved,
+                schema_ok,
+                args.notes,
+            )
         )
         print(f"[upgrade-smoke] recorded run #{rid}: {args.from_v}->{args.to_v} result={args.result}")
         return 0
     ap.print_help()
     return 0
+
+
+def _parse_flag(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "passed"}
 
 
 if __name__ == "__main__":
