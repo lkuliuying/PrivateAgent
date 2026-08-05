@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import socket
@@ -31,7 +32,7 @@ from sqlalchemy import select
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from _release_utils import read_version  # noqa: E402
+from _release_utils import NSIS_DIR, read_version
 
 DIST = PROJECT_ROOT / "dist"
 
@@ -245,7 +246,7 @@ def run_managed_e2e_step(
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
 
     with tempfile.TemporaryFile(mode="w+b") as server_output:
-        server = subprocess.Popen(  # noqa: S603
+        server = subprocess.Popen(
             [
                 "node",
                 str(vite_entry),
@@ -439,13 +440,78 @@ def validate_latest_json(dist: Path | None = None) -> dict:
 # ============ 报告 ============
 
 
+def git_commit_info() -> dict:
+    """返回当前代码 commit 绑定信息（供发布报告审计）。"""
+
+    def _run(cmd: list[str]) -> str | None:
+        try:
+            r = subprocess.run(
+                cmd, cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=30, check=False
+            )
+            return r.stdout.strip() if r.returncode == 0 else None
+        except Exception:  # noqa: BLE001
+            return None
+
+    dirty = _run(["git", "status", "--porcelain"])
+    return {
+        "head": _run(["git", "rev-parse", "HEAD"]),
+        "short": _run(["git", "rev-parse", "--short", "HEAD"]),
+        "describe": _run(["git", "describe", "--tags", "--always"]),
+        "dirty": dirty not in (None, ""),
+    }
+
+
+def signing_status(version: str) -> dict:
+    """报告签名状态：0.x.x 的 Authenticode 证据（可能缺失）+ 安装包是否已构建。
+
+    Authenticode 证据来自 dist/codesign-status-<version>.json（由
+    scripts/sign_installer.py 写入）；缺失即尚无该版本的签名核验结论，
+    报告如实标记 code_signed=None，不伪称已签。安装包未构建时 latest.json
+    校验步骤会失败并留证。
+    """
+    status_file = DIST / f"codesign-status-{version}.json"
+    installer_built = any(p.name for p in NSIS_DIR.glob(f"*_{version}_*-setup.exe"))
+    code_signed: bool | None = None
+    evidence: str | None = None
+    if status_file.exists():
+        try:
+            data = json.loads(status_file.read_text(encoding="utf-8"))
+            code_signed = bool(data.get("code_signed"))
+            evidence = status_file.name
+        except Exception:  # noqa: BLE001
+            code_signed = None
+    return {
+        "version": version,
+        "installer_built": installer_built,
+        "code_signed": code_signed,
+        "evidence": evidence,
+    }
+
+
 def assemble_report(steps: list[dict], version: str) -> dict:
     failed = [s for s in steps if s["status"] == "failed"]
     skipped = [s for s in steps if s["status"] == "skipped"]
     passed = [s for s in steps if s["status"] == "passed"]
+    schema: str | None = None
+    tests: str | None = None
+    for s in steps:
+        if s["name"] == "alembic_current":
+            m = re.search(r"(\d{4})\s*\(head\)", str(s.get("detail", "")))
+            if m:
+                schema = m.group(1)
+        if s["name"] == "pytest":
+            m = re.search(
+                r"(\d+ passed[^\r\n]*?(?: in [\d.]+s)?)", str(s.get("detail", ""))
+            )
+            if m:
+                tests = m.group(1).strip(" =")
     return {
         "version": version,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "commit": git_commit_info(),
+        "database_schema": schema,
+        "pytest_summary": tests,
+        "signing": signing_status(version),
         "summary": {"passed": len(passed), "failed": len(failed), "skipped": len(skipped)},
         "ok": len(failed) == 0,
         "steps": steps,
@@ -463,6 +529,11 @@ def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
         f"# Release Check - v{report['version']}",
         "",
         f"- generated_at: {report['generated_at']}",
+        f"- commit: {report['commit'].get('short')} ({report['commit'].get('describe')})",
+        f"- worktree_dirty: {report['commit'].get('dirty')}",
+        f"- database_schema: {report['database_schema']}",
+        f"- pytest_summary: {report['pytest_summary']}",
+        f"- signing: installer_built={report['signing']['installer_built']}, code_signed={report['signing']['code_signed']}, evidence={report['signing']['evidence']}",
         f"- passed: {report['summary']['passed']}",
         f"- failed: {report['summary']['failed']}",
         f"- skipped: {report['summary']['skipped']}",
