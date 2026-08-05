@@ -99,6 +99,17 @@ interface MockOptions {
   approveDelayMs?: number;
 }
 
+async function navigate(page: Page, view: string) {
+  const target = page.getByTestId(`nav-${view}`);
+  if (await target.count()) {
+    await target.click();
+    return;
+  }
+
+  await page.getByTestId("nav-utilities-toggle").click();
+  await page.getByTestId(`nav-${view}`).click();
+}
+
 async function mockApi(page: Page, options: MockOptions = {}) {
   const {
     includePendingTool = true,
@@ -230,7 +241,7 @@ test.describe("anime.js motion system", () => {
   test("workflow draws SVG paths, activates a node and reveals checks", async ({ page }) => {
     await mockApi(page);
     await page.goto("/");
-    await page.locator(".nav-item", { hasText: "任务" }).click();
+    await navigate(page, "tasks");
 
     const steps = page.locator("[data-workflow-step]");
     await expect(steps).toHaveCount(3);
@@ -258,7 +269,7 @@ test.describe("anime.js motion system", () => {
   test("chat messages and tool calls mount through the isolated animation layer", async ({ page }) => {
     await mockApi(page);
     await page.goto("/");
-    await page.locator(".nav-item", { hasText: "对话" }).click();
+    await navigate(page, "chat");
 
     await expect(page.locator("[data-chat-message]")).toHaveCount(3);
     await expect(page.locator(".tool-card[data-agent-card]")).toBeVisible();
@@ -268,19 +279,19 @@ test.describe("anime.js motion system", () => {
       "idle"
     );
 
-    const assistantBubble = page.locator(".msg.assistant .bubble").first();
-    await assistantBubble.evaluate((element) => {
+    const assistantResponse = page.locator(".agent-response").first();
+    await assistantResponse.evaluate((element) => {
       element.classList.add("is-streaming");
-      const text = element.firstChild;
+      const text = element.querySelector(".response-copy")?.firstChild;
       if (text) text.textContent = `${text.textContent} 正在渐进更新`;
     });
     await page.waitForFunction(
       (element) => Number(getComputedStyle(element).opacity) < 0.999,
-      await assistantBubble.elementHandle()
+      await assistantResponse.elementHandle()
     );
     await page.waitForTimeout(180);
     await expect
-      .poll(() => assistantBubble.evaluate((element) => Number(getComputedStyle(element).opacity)))
+      .poll(() => assistantResponse.evaluate((element) => Number(getComputedStyle(element).opacity)))
       .toBeCloseTo(1, 2);
   });
 
@@ -290,23 +301,21 @@ test.describe("anime.js motion system", () => {
       streamDelayMs: 650,
     });
     await page.goto("/");
-    await page.locator(".nav-item", { hasText: "对话" }).click();
+    await navigate(page, "chat");
 
-    await page.locator(".composer textarea").fill("触发 Thinking 状态");
-    await page.locator(".send-btn").click();
+    await page.getByTestId("task-composer-input").fill("触发 Thinking 状态");
+    await page.getByTestId("task-composer-submit").click();
 
-    const thinkingAvatar = page.locator('[data-agent-state="thinking"]');
-    await expect(thinkingAvatar).toBeVisible();
+    const thinkingMarker = page.locator('[data-agent-state="thinking"]');
+    await expect(thinkingMarker).toBeVisible();
     await page.waitForTimeout(120);
-    const thinkingStyles = await thinkingAvatar.evaluate((element) => ({
-      core: getComputedStyle(element.querySelector("[data-agent-core]")!).transform,
-      halo: getComputedStyle(element.querySelector("[data-agent-halo]")!).transform,
-    }));
-    expect(thinkingStyles.core).not.toBe("none");
-    expect(thinkingStyles.halo).not.toBe("none");
+    const thinkingTransform = await thinkingMarker.evaluate(
+      (element) => getComputedStyle(element).transform
+    );
+    expect(thinkingTransform).not.toBe("none");
 
-    await expect(thinkingAvatar).toHaveCount(0, { timeout: 2_000 });
-    await expect(page.locator('[data-agent-state="idle"]').last()).toBeVisible();
+    await expect(thinkingMarker).toHaveCount(0, { timeout: 2_000 });
+    await expect(page.locator(".agent-response .response-state").last()).toBeVisible();
   });
 
   test("Tool approval drives Executing flow, disclosure motion and cleanup", async ({ page }) => {
@@ -315,22 +324,25 @@ test.describe("anime.js motion system", () => {
       streamDelayMs: 1_200,
     });
     await page.goto("/");
-    await page.locator(".nav-item", { hasText: "对话" }).click();
+    await navigate(page, "chat");
     await page.getByRole("button", { name: "批准执行" }).click();
 
-    const executingAvatar = page.locator('[data-agent-state="executing"]');
-    await expect(executingAvatar).toBeVisible();
+    const executingCard = page.locator('.tool-card[data-agent-state="executing"]');
+    await expect(executingCard).toBeVisible();
     await page.waitForTimeout(180);
-    const flowTransform = await executingAvatar
-      .locator("[data-agent-flow-dot]")
-      .first()
-      .evaluate((element) => getComputedStyle(element).transform);
-    expect(flowTransform).not.toBe("none");
+    const executingTransform = await executingCard.evaluate(
+      (element) => getComputedStyle(element).transform
+    );
+    expect(executingTransform).not.toBe("none");
 
     const disclosure = page.locator("[data-tool-disclosure]");
     await expect(disclosure).toBeVisible({ timeout: 2_000 });
-    await disclosure.locator("summary").click();
     const panel = disclosure.locator("[data-tool-panel]");
+    await expect(panel).toBeAttached({ timeout: 2_000 });
+    if (await disclosure.evaluate((element) => (element as HTMLDetailsElement).open)) {
+      await disclosure.locator("summary").click();
+    }
+    await disclosure.locator("summary").click();
     await page.waitForFunction(
       (element) => Number(getComputedStyle(element).opacity) < 0.999,
       await panel.elementHandle()
@@ -340,16 +352,18 @@ test.describe("anime.js motion system", () => {
       .poll(() => panel.evaluate((element) => Number(getComputedStyle(element).opacity)))
       .toBeCloseTo(1, 2);
 
-    const liveCore = page.locator('[data-agent-state="thinking"] [data-agent-core]');
-    await expect(liveCore).toBeVisible();
-    const detachedCore = await liveCore.elementHandle();
-    await page.locator(".nav-item", { hasText: "今日" }).click();
-    const cleanupState = await detachedCore!.evaluate((element) => ({
-      connected: element.isConnected,
-      style: element.getAttribute("style") ?? "",
-    }));
-    expect(cleanupState.connected).toBe(false);
-    expect(cleanupState.style).not.toContain("transform");
-    expect(cleanupState.style).not.toContain("opacity");
+    const idleCard = page.locator('.tool-card[data-agent-state="idle"]');
+    await expect(idleCard).toBeVisible();
+    const detachedCard = await idleCard.elementHandle();
+    await navigate(page, "today");
+    await expect
+      .poll(() => detachedCard!.evaluate((element) => element.isConnected))
+      .toBe(false);
+    await expect
+      .poll(() => detachedCard!.evaluate((element) => element.getAttribute("style") ?? ""))
+      .not.toContain("transform");
+    await expect
+      .poll(() => detachedCard!.evaluate((element) => element.getAttribute("style") ?? ""))
+      .not.toContain("opacity");
   });
 });

@@ -19,6 +19,7 @@ from ..logging_setup import get_logger
 logger = get_logger(__name__)
 
 COLLECTION_NAME = "doc_chunks"
+VERSIONED_COLLECTION_NAME = "document_index_chunks_v2"
 
 
 class ChromaStore:
@@ -97,18 +98,134 @@ class ChromaStore:
 
     async def list_ids(self) -> list[int]:
         """枚举 collection 中全部 chunk_id（M7 与 MySQL doc_chunks 一致性检查用）。"""
-        def _l() -> list[int]:
-            res = self._ensure().get(include=[], limit=1_000_000)
-            out: list[int] = []
-            for i in res.get("ids", []):
-                try:
-                    out.append(int(i))
-                except (TypeError, ValueError):
-                    continue
-            return out
+        return await asyncio.to_thread(self.list_ids_sync)
 
-        return await asyncio.to_thread(_l)
+    def list_ids_sync(self) -> list[int]:
+        """Synchronous bounded ID listing for offline audit/maintenance tools."""
+        res = self._ensure().get(include=[], limit=1_000_000)
+        out: list[int] = []
+        for i in res.get("ids", []):
+            try:
+                out.append(int(i))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+
+class VersionedChromaStore:
+    """Version-isolated vector store used by side-by-side RAG builds."""
+
+    def __init__(self) -> None:
+        self._collection: Any = None
+
+    def _ensure(self) -> Any:
+        if self._collection is None:
+            settings.chroma_dir.mkdir(parents=True, exist_ok=True)
+            client = chromadb.PersistentClient(path=str(settings.chroma_dir))
+            self._collection = client.get_or_create_collection(
+                VERSIONED_COLLECTION_NAME
+            )
+        return self._collection
+
+    @staticmethod
+    def _vector_id(chunk_id: int) -> str:
+        return f"v2:{chunk_id}"
+
+    @staticmethod
+    def _chunk_id(vector_id: object) -> int | None:
+        value = str(vector_id)
+        if not value.startswith("v2:"):
+            return None
+        try:
+            return int(value[3:])
+        except ValueError:
+            return None
+
+    async def upsert_version(
+        self,
+        *,
+        index_version_id: str,
+        chunk_ids: list[int],
+        embeddings: list[list[float]],
+        doc_id: int,
+    ) -> None:
+        if len(chunk_ids) != len(embeddings):
+            raise ValueError("chunk/vector count mismatch")
+        ids = [self._vector_id(chunk_id) for chunk_id in chunk_ids]
+        metadata = [
+            {
+                "doc_id": doc_id,
+                "index_version_id": index_version_id,
+                "chunk_id": chunk_id,
+            }
+            for chunk_id in chunk_ids
+        ]
+
+        def _upsert() -> None:
+            self._ensure().upsert(
+                ids=ids,
+                embeddings=embeddings,
+                metadatas=metadata,
+            )
+
+        await asyncio.to_thread(_upsert)
+
+    async def list_chunk_ids(self, index_version_id: str) -> list[int]:
+        def _list() -> list[int]:
+            result = self._ensure().get(
+                where={"index_version_id": index_version_id},
+                include=[],
+                limit=1_000_000,
+            )
+            chunk_ids: list[int] = []
+            for vector_id in result.get("ids", []):
+                chunk_id = self._chunk_id(vector_id)
+                if chunk_id is not None:
+                    chunk_ids.append(chunk_id)
+            return chunk_ids
+
+        return await asyncio.to_thread(_list)
+
+    async def count_version(self, index_version_id: str) -> int:
+        return len(await self.list_chunk_ids(index_version_id))
+
+    async def delete_version(self, index_version_id: str) -> None:
+        def _delete() -> None:
+            self._ensure().delete(where={"index_version_id": index_version_id})
+
+        await asyncio.to_thread(_delete)
+
+    async def query_active(
+        self,
+        embedding: list[float],
+        *,
+        active_version_ids: list[str],
+        top_k: int = 5,
+    ) -> list[int]:
+        if not active_version_ids or top_k <= 0:
+            return []
+        where: dict[str, object]
+        if len(active_version_ids) == 1:
+            where = {"index_version_id": active_version_ids[0]}
+        else:
+            where = {"index_version_id": {"$in": active_version_ids}}
+
+        def _query() -> list[int]:
+            result = self._ensure().query(
+                query_embeddings=[embedding],
+                n_results=top_k,
+                where=where,
+            )
+            chunk_ids: list[int] = []
+            for vector_id in result.get("ids", [[]])[0]:
+                chunk_id = self._chunk_id(vector_id)
+                if chunk_id is not None:
+                    chunk_ids.append(chunk_id)
+            return chunk_ids
+
+        return await asyncio.to_thread(_query)
 
 
 # 单例
 chroma_store = ChromaStore()
+versioned_chroma_store = VersionedChromaStore()

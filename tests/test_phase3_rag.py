@@ -13,15 +13,16 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import text
 
+from personal_assistant.core import store_chroma
 from personal_assistant.core.hybrid_retrieval import (
     EmbeddingReranker,
     HybridResult,
     HybridRetriever,
     RetrievalFilters,
+    build_bm25_query,
 )
 from personal_assistant.core.provider import OllamaProvider
 from personal_assistant.core.rag import RagService
-from personal_assistant.core import store_chroma
 
 
 def _patch_embed_one(monkeypatch):
@@ -40,6 +41,14 @@ def _patch_query(monkeypatch, chunk_ids):
         return list(chunk_ids)
 
     monkeypatch.setattr(store_chroma.chroma_store, "query", fake)
+
+
+def test_bm25_query_prefers_explicit_phrases_and_preserves_plain_queries():
+    assert build_bm25_query("哪些资料涉及“原子切换”和“版本化索引”？") == (
+        "原子切换 版本化索引"
+    )
+    assert build_bm25_query('find "approval token" in docs') == "approval token"
+    assert build_bm25_query("普通自然语言查询") == "普通自然语言查询"
 
 
 async def _make_doc_chunk(
@@ -139,6 +148,75 @@ async def test_bm25_recall_matches_case_insensitively(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_collection_filter_isolates_vector_and_bm25_candidates(db, monkeypatch):
+    from personal_assistant.core.models import (
+        DocumentCollection,
+        DocumentCollectionItem,
+    )
+
+    included_doc, included_chunk = await _make_doc_chunk(
+        db, content="collection isolated evidence alpha"
+    )
+    excluded_doc, excluded_chunk = await _make_doc_chunk(
+        db, content="collection isolated evidence beta"
+    )
+    collection = DocumentCollection(title="isolated retrieval")
+    db.add(collection)
+    await db.flush()
+    membership = DocumentCollectionItem(
+        collection_id=collection.id,
+        doc_id=included_doc.id,
+    )
+    db.add(membership)
+    await db.commit()
+    _patch_query(monkeypatch, [excluded_chunk.id, included_chunk.id])
+    _patch_embed_one(monkeypatch)
+    try:
+        results = await RagService(db).retrieve(
+            "collection isolated evidence",
+            top_k=5,
+            filters=RetrievalFilters(collection_id=collection.id),
+        )
+        assert {result.doc_id for result in results} == {included_doc.id}
+        assert all(result.doc_id != excluded_doc.id for result in results)
+    finally:
+        await db.delete(membership)
+        await db.delete(collection)
+        await db.delete(included_chunk)
+        await db.delete(excluded_chunk)
+        await db.delete(included_doc)
+        await db.delete(excluded_doc)
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_empty_collection_returns_before_embedding(db):
+    from personal_assistant.core.models import DocumentCollection
+
+    class ExplodingProvider:
+        async def embed_one(self, text):
+            del text
+            raise AssertionError("empty collection must not call embedding")
+
+    collection = DocumentCollection(title="empty retrieval")
+    db.add(collection)
+    await db.commit()
+    await db.refresh(collection)
+    try:
+        retriever = HybridRetriever(db, provider=ExplodingProvider())
+        assert (
+            await retriever.retrieve(
+                "anything",
+                filters=RetrievalFilters(collection_id=collection.id),
+            )
+            == []
+        )
+    finally:
+        await db.delete(collection)
+        await db.commit()
+
+
+@pytest.mark.asyncio
 async def test_retrieve_non_positive_top_k_skips_providers(db, monkeypatch):
     """无效 top_k 直接返回，不能把 0/负数传给向量库。"""
     _patch_query(monkeypatch, [])
@@ -176,12 +254,12 @@ async def test_disabled_excluded_from_bm25_recall(db, monkeypatch):
     _patch_embed_one(monkeypatch)
     svc = RagService(db)
     try:
-        assert await svc.retrieve("unique_secret_term_xyz", top_k=5) == []
+        disabled_results = await svc.retrieve("unique_secret_term_xyz", top_k=5)
+        assert all(result.doc_id != doc.id for result in disabled_results)
         doc.enabled = True
         await db.commit()
         results = await svc.retrieve("unique_secret_term_xyz", top_k=5)
-        assert len(results) == 1
-        assert results[0].chunk_id == chunk.id
+        assert chunk.id in {result.chunk_id for result in results}
     finally:
         await db.delete(chunk)
         await db.delete(doc)
@@ -388,6 +466,25 @@ async def test_rerank_failure_keeps_rrf_results(db, monkeypatch):
     assert all(item.rerank_score is None for item in results)
 
 
+@pytest.mark.asyncio
+async def test_vector_disabled_mode_never_resolves_embedding_provider(db, monkeypatch):
+    retriever = HybridRetriever(db, enable_vector=False)
+
+    async def provider_must_not_run():
+        raise AssertionError("embedding provider should not be resolved")
+
+    async def fake_bm25(*args, **kwargs):
+        return [HybridResult(1, 1, "lexical.md", 0, "lexical evidence", None)]
+
+    monkeypatch.setattr(retriever, "_get_provider", provider_must_not_run)
+    monkeypatch.setattr(retriever, "_bm25_recall", fake_bm25)
+
+    results = await retriever.retrieve("lexical evidence", top_k=1)
+
+    assert [item.doc_id for item in results] == [1]
+    assert results[0].matched_via == ["bm25"]
+
+
 # ============ 元数据过滤 ============
 
 
@@ -404,8 +501,10 @@ async def test_list_documents_doc_type_filter(client, monkeypatch):
 
     md_name = f"doc_{uuid.uuid4().hex[:6]}.md"
     txt_name = f"doc_{uuid.uuid4().hex[:6]}.txt"
+    code_name = f"doc_{uuid.uuid4().hex[:6]}.py"
     md_content = f"# title\n{uuid.uuid4().hex}".encode()
     txt_content = f"plain {uuid.uuid4().hex}".encode()
+    code_content = f"def value():\n    return '{uuid.uuid4().hex}'\n".encode()
     # 导入 .md
     res_md = await client.post(
         "/documents/import",
@@ -423,12 +522,27 @@ async def test_list_documents_doc_type_filter(client, monkeypatch):
     txt_id = res_txt.json()["id"]
     assert res_txt.json()["doc_type"] == "text"
 
+    # 导入常见代码文件
+    res_code = await client.post(
+        "/documents/import",
+        files={"file": (code_name, code_content, "text/x-python")},
+    )
+    assert res_code.status_code == 201
+    code_id = res_code.json()["id"]
+    assert res_code.json()["doc_type"] == "code"
+
     # 过滤 doc_type=markdown → 只含 md
     res = await client.get("/documents", params={"doc_type": "markdown"})
     assert res.status_code == 200
     ids = [d["id"] for d in res.json()]
     assert md_id in ids
     assert txt_id not in ids
+
+    res = await client.get("/documents", params={"doc_type": "code"})
+    assert res.status_code == 200
+    ids = [d["id"] for d in res.json()]
+    assert code_id in ids
+    assert md_id not in ids
 
 
 @pytest.mark.asyncio

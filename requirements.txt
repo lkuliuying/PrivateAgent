@@ -8,6 +8,10 @@ python-multipart>=0.0.12
 httpx[socks]>=0.27
 pydantic-settings>=2.6
 structlog>=24.4
+jsonschema>=4.26,<5
+mcp==2.0.0
+httpx2==2.9.1
+httpcore2==2.9.1
 
 # Runtime: database and migrations
 sqlalchemy[asyncio]>=2.0.36

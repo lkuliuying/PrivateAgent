@@ -9,6 +9,7 @@ import asyncio
 from typing import Any
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..logging_setup import get_logger
@@ -18,6 +19,16 @@ logger = get_logger(__name__)
 
 
 class HealthService:
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        """Create a health probe.
+
+        Request-level health checks use the application engine by default.
+        Callers that already own an isolated session (diagnostics and release
+        smoke tests) inject it so the probe cannot escape their database
+        boundary or leave a second engine connection behind.
+        """
+        self.db = db
+
     async def check_all(self) -> dict[str, Any]:
         ollama, mysql, chroma = await asyncio.gather(
             self._check_ollama(),
@@ -40,9 +51,12 @@ class HealthService:
     async def _check_mysql(self) -> dict[str, Any]:
         result: dict[str, Any] = {"ok": False}
         try:
-            async with engine.connect() as conn:
-                val = await conn.scalar(text("SELECT 1"))
-                result["ok"] = val == 1
+            if self.db is not None:
+                val = await self.db.scalar(text("SELECT 1"))
+            else:
+                async with engine.connect() as conn:
+                    val = await conn.scalar(text("SELECT 1"))
+            result["ok"] = val == 1
         except Exception as e:  # noqa: BLE001
             result["error"] = f"MySQL 连接失败: {e}"
         return result

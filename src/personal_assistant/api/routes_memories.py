@@ -8,6 +8,10 @@
 - POST   /memories/search            记忆检索（LIKE + 过滤）
 - POST   /memories/candidates        从任务报告/聊天生成候选记忆（落库 draft）
 - POST   /memories/{id}/use          记录记忆被使用的审计事件
+- GET    /memories/{id}/revisions    查询不可变版本历史（含已软删除记忆）
+- GET    /memory-conflicts           查询待处理事实冲突
+- POST   /memory-conflicts           显式登记事实冲突
+- POST   /memory-conflicts/{id}/resolve  显式解决事实冲突
 """
 from __future__ import annotations
 
@@ -15,19 +19,19 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
 from ..core.memory import MemoryService
 from ..core.memory_candidates import MemoryCandidateService
-from ..core.models import MemoryEvent, MemoryItem
 from ..core.provider import ProviderError
 
 router = APIRouter(tags=["memories"])
 
 MemoryKind = Literal["preference", "learning", "project", "document", "workflow", "note"]
 MemoryStatus = Literal["draft", "confirmed", "archived"]
+MemorySensitivity = Literal["normal", "sensitive", "restricted"]
 
 
 # ---- Schemas ----
@@ -45,6 +49,9 @@ class MemoryCreate(BaseModel):
     tags: list[str] | None = None
     confidence: float | None = None
     sensitive: bool = False
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    expires_at: datetime | None = None
+    sensitivity_level: MemorySensitivity | None = None
 
     @field_validator("title")
     @classmethod
@@ -71,6 +78,9 @@ class MemoryUpdate(BaseModel):
     enabled: bool | None = None
     sensitive: bool | None = None
     status: MemoryStatus | None = None
+    importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    expires_at: datetime | None = None
+    sensitivity_level: MemorySensitivity | None = None
 
 
 class MemoryOut(BaseModel):
@@ -90,6 +100,15 @@ class MemoryOut(BaseModel):
     enabled: bool
     sensitive: bool
     status: str
+    stable_key: str
+    memory_version: int
+    content_sha256: str
+    importance: float
+    expires_at: datetime | None
+    sensitivity_level: str
+    confirmed_at: datetime | None
+    last_confirmed_at: datetime | None
+    deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -123,6 +142,47 @@ class MemoryEventOut(BaseModel):
     ref_id: int | None
     detail_json: dict | None
     created_at: datetime
+
+
+class MemoryRevisionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    memory_id: int
+    stable_key: str
+    memory_version: int
+    kind: str
+    title: str
+    content_md: str
+    content_sha256: str
+    summary: str | None
+    state_json: dict | None
+    change_type: str
+    created_at: datetime
+
+
+class MemoryConflictCreate(BaseModel):
+    left_memory_id: int
+    right_memory_id: int
+    reason: str = Field(min_length=1, max_length=4_000)
+
+
+class MemoryConflictResolve(BaseModel):
+    resolution: dict
+
+
+class MemoryConflictOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    left_memory_id: int
+    right_memory_id: int
+    reason: str
+    status: str
+    resolution_json: dict | None
+    resolved_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 
 # ---- Routes ----
@@ -164,6 +224,9 @@ async def create_memory(req: MemoryCreate, db: AsyncSession = Depends(get_sessio
         confidence=req.confidence,
         sensitive=req.sensitive,
         status="confirmed",
+        importance=req.importance,
+        expires_at=req.expires_at,
+        sensitivity_level=req.sensitivity_level,
     )
 
 
@@ -189,6 +252,9 @@ async def update_memory(
         enabled=req.enabled,
         sensitive=req.sensitive,
         status=req.status,
+        importance=req.importance,
+        expires_at=req.expires_at,
+        sensitivity_level=req.sensitivity_level,
     )
     if item is None:
         raise HTTPException(404, "记忆不存在")
@@ -260,3 +326,56 @@ async def list_memory_events(
     if await svc.get(memory_id) is None:
         raise HTTPException(404, "记忆不存在")
     return await svc.list_events(memory_id)
+
+
+@router.get("/memories/{memory_id}/revisions", response_model=list[MemoryRevisionOut])
+async def list_memory_revisions(
+    memory_id: int, db: AsyncSession = Depends(get_session)
+):
+    """返回完整版本链；软删除后仍可审计与恢复内容。"""
+    svc = MemoryService(db)
+    if await svc.get_including_deleted(memory_id) is None:
+        raise HTTPException(404, "记忆不存在")
+    return await svc.list_revisions(memory_id)
+
+
+@router.get("/memory-conflicts", response_model=list[MemoryConflictOut])
+async def list_memory_conflicts(db: AsyncSession = Depends(get_session)):
+    return await MemoryService(db).list_open_conflicts()
+
+
+@router.post("/memory-conflicts", response_model=MemoryConflictOut, status_code=201)
+async def create_memory_conflict(
+    req: MemoryConflictCreate, db: AsyncSession = Depends(get_session)
+):
+    try:
+        return await MemoryService(db).create_conflict(
+            req.left_memory_id,
+            req.right_memory_id,
+            reason=req.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.post(
+    "/memory-conflicts/{conflict_id}/resolve",
+    response_model=MemoryConflictOut,
+)
+async def resolve_memory_conflict(
+    conflict_id: int,
+    req: MemoryConflictResolve,
+    db: AsyncSession = Depends(get_session),
+):
+    try:
+        conflict = await MemoryService(db).resolve_conflict(
+            conflict_id,
+            resolution=req.resolution,
+        )
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if conflict is None:
+        raise HTTPException(404, "记忆冲突不存在")
+    return conflict

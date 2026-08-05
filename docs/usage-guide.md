@@ -61,7 +61,7 @@
 - **混合检索（M2）**：知识库检索同时使用 ChromaDB 向量召回与 MySQL FULLTEXT ngram/BM25 词法召回，RRF 融合后由本地 embedding 模型批量语义重排。引用来源包含 BM25、融合与重排分数；禁用文档在两路召回中均被排除。文档支持 `doc_type`/`topic`/`tags`/`language` 元数据筛选与编辑。
 - **学习系统（M3）**：在「学习」页创建学习主题，助手基于知识库资料生成学习路线、练习题、复习卡片，并批改答题记录掌握程度。四标签页：路线 / 笔记 / 练习 / 卡片（翻卡复习）。
 - **文档工作台（M4）**：知识库页支持文档多选对比（共同点/差异/冲突/阅读顺序）、单文档章节摘要与术语表、对比结果导出 Markdown（须授权目录）、生成笔记重新入库。
-- **编码修改与命令验证（M5）**：`propose_patch` 只生成 diff，不写文件；`apply_patch_to_workspace` 审批后写入授权项目文件，并用 `expected_old_sha256` 防止应用过期补丁；`run_whitelisted_command` 只允许 `pytest`、`python -m pytest`、`npm run build`、`cargo check` 等白名单命令，输出会截断保存。
+- **编码修改与命令验证（M5）**：`propose_patch` 只生成 diff，不写文件，预览超过 200,000 字符会截断并返回 `truncated=true`；`apply_patch_to_workspace` 审批后写入授权项目文件，并用 `expected_old_sha256` 防止应用过期补丁；`run_whitelisted_command` 只允许 `pytest`、`python -m pytest`、`npm run build`、`cargo check` 等白名单命令，输出会截断保存。
 - **多步任务编排（M6）**：任务页支持创建计划、按步骤运行工具、在高风险步骤暂停等待批准、失败步骤重试、查看每步证据，并在完成后生成可复制的 Markdown 报告。
 
 高风险操作（写文件、跑命令、多步任务）已经按 M5/M6 开放，仍坚持审批边界。
@@ -199,15 +199,15 @@ CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode
 
 ### 3.1 配置文件位置对照表
 
-后端通过 `.env` 文件读取配置，开发模式与打包模式位置不同：
+源码后端从 `.env` 读取配置；Windows 打包版由 Tauri 读取非敏感配置，并在启动 sidecar 时从系统凭据库把秘密只注入子进程环境：
 
 | 模式 | 配置文件位置 | 说明 |
 |---|---|---|
 | 开发模式 | 项目根 `.env`（从 `.env.example` 复制） | 便于调试，与代码同目录 |
-| 打包模式 | `%APPDATA%\personal-assistant\.env`（Windows） | 用户数据目录，由首启配置向导自动写入（第五阶段已实现） |
-| 打包模式（类 Unix） | `~/.local/share/personal-assistant/.env` | Linux / macOS |
+| Windows 打包模式 | `%APPDATA%\personal-assistant\.env` | 只含主机、用户、模型和固定 `secret://` 引用；密码/API key 位于 Windows 凭据管理器 |
+| 打包模式（类 Unix，未完成实机交付） | `~/.local/share/personal-assistant/.env` | 配置路径已适配；原生凭据输入当前只实现 Windows |
 
-> 后端通过 `sys.frozen` 判断当前模式：打包模式读用户数据目录下的 `.env`（不存在则用代码默认值），开发模式读项目根 `.env`。
+> 开发模式读项目根 `.env`。Windows 打包模式的 Rust 主进程生成 `PA_DB_URL` 并从凭据库读取 Provider key，只把它们放入当前 sidecar 的进程环境；Vue、配置文件、数据库设置接口和备份都不接收原始秘密。
 
 ### 3.2 配置项逐一说明
 
@@ -217,7 +217,7 @@ CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode
 |---|---|---|
 | `PA_API_HOST` | 后端监听地址 | `127.0.0.1` |
 | `PA_API_PORT` | 后端监听端口（开发模式固定 8000；打包模式由 Tauri 通过 `PA_API_PORT` 注入） | `8000` |
-| `PA_DB_URL` | MySQL 异步连接串，驱动用 `aiomysql`（纯 Python） | `mysql+aiomysql://root:YOUR_PASSWORD@127.0.0.1:3306/personal_assistant?charset=utf8mb4` |
+| `PA_DB_URL` | 源码开发/测试使用的 MySQL 异步连接串；Windows 安装版由 Rust 进程注入 | `mysql+aiomysql://root:YOUR_PASSWORD@127.0.0.1:3306/personal_assistant?charset=utf8mb4` |
 | `PA_OLLAMA_BASE_URL` | Ollama 服务地址 | `http://127.0.0.1:11434` |
 | `PA_LLM_MODEL` | 对话主模型名 | `qwen2.5:14b-instruct-q4_K_M` |
 | `PA_EMBED_MODEL` | 嵌入模型名 | `bge-m3` |
@@ -227,16 +227,16 @@ CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode
 | `PA_DATA_DIR` | 数据目录（chroma/logs 派生于此）。开发默认 `./data`，打包默认用户数据目录；留空用默认，仅在需强制指定时设置 | （留空） |
 | `PA_LOG_LEVEL` | 日志级别 | `INFO` |
 
-**最少必须修改的项**：把 `PA_DB_URL` 中的 `YOUR_PASSWORD` 改为本机 MySQL 的实际密码。
+**源码开发最少必须修改的项**：把 `PA_DB_URL` 中的 `YOUR_PASSWORD` 改为本机 MySQL 的实际密码。Windows 安装版请使用连接向导的系统凭据窗口，不要手工把密码写进用户配置。
 
 ### 3.3 首次启动引导与依赖检测（第五阶段已实现）
 
 打包模式首次启动（或配置缺失时），应用进入连接配置向导，分两步：
 
 1. **环境检测**：探测本机默认端口的 MySQL（127.0.0.1:3306）与 Ollama（127.0.0.1:11434）是否可达，未检测到会提示先启动对应服务。
-2. **填写连接**：录入 MySQL 主机/端口/用户名/密码/库名、Ollama Base URL、LLM 与嵌入模型名。
+2. **填写连接**：录入 MySQL 主机/端口/用户名/库名、Ollama Base URL、LLM 与嵌入模型名；点「输入或更新数据库密码」后由 Windows 原生凭据窗口接收密码，Vue 不会读取该值。
    - 「测试连接」：探测 MySQL TCP 连通 + Ollama `/api/tags`，并校验所填模型是否已 `ollama pull`；模型缺失会提示拉取命令。
-   - 「保存并启动后端」：写入 `%APPDATA%\personal-assistant\.env`，启动 sidecar 并轮询 `/health`，**仅当 MySQL 与 Ollama 都就绪**才进入主界面；否则提示超时，可重试或重新配置。
+   - 「保存并启动后端」：只把非敏感字段和固定凭据引用写入 `%APPDATA%\personal-assistant\.env`，再启动 sidecar 并轮询 `/health`；**仅当 MySQL 与 Ollama 都就绪**才进入主界面。
 
 > 开发模式（`tauri dev`）下不拉起打包 sidecar，自动回退到手动后端 `127.0.0.1:8000`，顶部显示 `DEV · 手动后端 8000` 标记；向导不会出现。
 
@@ -816,11 +816,11 @@ sidecar 不打包这些，需用户本机具备：
 |---|---|
 | Ollama + 模型 | `ollama pull qwen2.5:14b-instruct-q4_K_M` + `ollama pull bge-m3` |
 | MySQL 8 | 建库 `CREATE DATABASE personal_assistant CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;` |
-| 配置文件 | `%APPDATA%\personal-assistant\.env`，至少 `PA_DB_URL=mysql+aiomysql://root:<密码>@127.0.0.1:3306/personal_assistant?charset=utf8mb4` |
+| 配置与凭据 | `%APPDATA%\personal-assistant\.env` 保存非敏感连接字段；数据库密码和 Provider key 由配置界面写入 Windows 凭据管理器 |
 
 ### 10.4 数据目录与自动迁移
 
-打包模式 `sys.frozen` 为真 → 数据目录用 `%APPDATA%\personal-assistant`（Windows），`.env` 也从该目录读取。
+打包模式 `sys.frozen` 为真 → 数据目录用 `%APPDATA%\personal-assistant`（Windows）；sidecar 从 Rust 注入的进程环境读取数据库和 Provider 凭据，不从磁盘恢复明文秘密。
 
 `server_entry.py` 启动前进程内调用 `alembic.command.upgrade(cfg, "head")`：
 
@@ -941,7 +941,7 @@ uv run pytest
 |---|---|---|---|---|
 | `PA_API_HOST` | `127.0.0.1` | 后端监听地址 | 项目根 `.env` | `%APPDATA%\personal-assistant\.env` |
 | `PA_API_PORT` | `8000` | 后端监听端口；打包模式由 Tauri 注入覆盖 | 固定 8000 | Tauri 分配的空闲端口 |
-| `PA_DB_URL` | `mysql+aiomysql://root:@127.0.0.1:3306/personal_assistant?charset=utf8mb4` | MySQL 异步连接串 | 必填密码 | 必填密码 |
+| `PA_DB_URL` | `mysql+aiomysql://root:@127.0.0.1:3306/personal_assistant?charset=utf8mb4` | MySQL 异步连接串 | 项目 `.env` 中填写 | Tauri 从 Windows 凭据管理器组装后仅注入 sidecar 进程 |
 | `PA_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama 服务地址 | — | — |
 | `PA_LLM_MODEL` | `qwen2.5:14b-instruct-q4_K_M` | 对话主模型 | — | — |
 | `PA_EMBED_MODEL` | `bge-m3` | 嵌入模型 | — | — |

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "review_status": "reviewed",
+  "privacy": "local-only; do not commit",
+  "cases": [
+    {
+      "id": "replace-with-stable-case-id",
+      "query": "Replace with a question whose answer is present in the benchmark document.",
+      "relevant_doc_names": [
+        "replace-with-an-imported-benchmark-document.md"
+      ],
+      "evidence_terms": [
+        "exact phrase the cited chunk must contain"
+      ],
+      "relevance_mode": "any",
+      "review_status": "reviewed"
+    },
+    {
+      "id": "no-answer-example",
+      "query": "Replace with a question with no answer in the corpus.",
+      "expect_empty": true,
+      "relevance_mode": "any",
+      "review_status": "reviewed"
+    }
+  ]
+}

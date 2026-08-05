@@ -464,17 +464,33 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "已授权的文件绝对路径"}
+                    "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "description": "已授权的文件绝对路径",
+                    }
                 },
                 "required": ["path"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "content": {"type": "string"},
-                    "size_bytes": {"type": "integer"},
+                    "path": {"type": "string", "maxLength": 2048},
+                    "content": {"type": "string", "maxLength": 50000},
+                    "size_bytes": {"type": "integer", "minimum": 0},
                     "truncated": {"type": "boolean"},
+                    "mime_type": {"type": "string", "maxLength": 128},
                 },
+                "required": [
+                    "path",
+                    "content",
+                    "size_bytes",
+                    "truncated",
+                    "mime_type",
+                ],
+                "additionalProperties": False,
             },
             execute=_read_file_execute,
         )
@@ -534,17 +550,45 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"},
-                    "query": {"type": "string", "description": "文件名或路径片段"},
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "文件名或路径片段",
+                    },
                 },
                 "required": ["project_id", "query"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "results": {"type": "array"},
-                    "count": {"type": "integer"},
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "rel_path": {"type": "string"},
+                                "name": {"type": "string"},
+                                "language": {"type": ["string", "null"]},
+                                "size_bytes": {
+                                    "type": ["integer", "null"],
+                                    "minimum": 0,
+                                },
+                            },
+                            "required": ["rel_path", "name", "language", "size_bytes"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "count": {"type": "integer", "minimum": 0},
                 },
+                "required": ["results", "count"],
+                "additionalProperties": False,
             },
             execute=_search_files_execute,
         )
@@ -557,18 +601,43 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"},
-                    "pattern": {"type": "string", "description": "正则表达式"},
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                        "description": "正则表达式",
+                    },
                 },
                 "required": ["project_id", "pattern"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "results": {"type": "array"},
-                    "count": {"type": "integer"},
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "rel_path": {"type": "string"},
+                                "line": {"type": "integer", "minimum": 1},
+                                "context": {"type": "string"},
+                                "language": {"type": ["string", "null"]},
+                            },
+                            "required": ["rel_path", "line", "context", "language"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "count": {"type": "integer", "minimum": 0},
                     "truncated": {"type": "boolean"},
                 },
+                "required": ["results", "count", "truncated"],
+                "additionalProperties": False,
             },
             execute=_grep_code_execute,
         )
@@ -581,22 +650,53 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"},
-                    "rel_path": {"type": "string", "description": "项目内相对路径"},
-                    "start_line": {"type": "integer", "description": "起始行，默认 1"},
-                    "max_lines": {"type": "integer", "description": "最多读取行数，默认 2000"},
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
+                    "rel_path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "description": "项目内相对路径",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "起始行，默认 1",
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2000,
+                        "description": "最多读取行数，默认 2000",
+                    },
                 },
                 "required": ["project_id", "rel_path"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
-                    "language": {"type": "string"},
-                    "line_count": {"type": "integer"},
+                    "path": {"type": "string", "maxLength": 2048},
+                    "content": {"type": "string", "maxLength": 200000},
+                    "language": {"type": ["string", "null"], "maxLength": 64},
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "line_count": {"type": "integer", "minimum": 0},
+                    "size_bytes": {"type": "integer", "minimum": 0},
                     "truncated": {"type": "boolean"},
                 },
+                "required": [
+                    "path",
+                    "content",
+                    "language",
+                    "start_line",
+                    "line_count",
+                    "size_bytes",
+                    "truncated",
+                ],
+                "additionalProperties": False,
             },
             execute=_read_code_file_execute,
         )
@@ -609,17 +709,45 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"}
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    }
                 },
                 "required": ["project_id"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "branch": {"type": "string"},
+                    "branch": {"type": ["string", "null"]},
+                    "upstream": {"type": ["string", "null"]},
+                    "ahead": {"type": ["integer", "null"]},
+                    "behind": {"type": ["integer", "null"]},
                     "clean": {"type": "boolean"},
-                    "changed": {"type": "array"},
+                    "changed": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "status": {"type": "string"},
+                                "path": {"type": "string"},
+                            },
+                            "required": ["status", "path"],
+                            "additionalProperties": False,
+                        },
+                    },
                 },
+                "required": [
+                    "branch",
+                    "upstream",
+                    "ahead",
+                    "behind",
+                    "clean",
+                    "changed",
+                ],
+                "additionalProperties": False,
             },
             execute=_get_git_status_execute,
         )
@@ -632,17 +760,25 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"},
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
                     "cached": {"type": "boolean", "description": "是否查看已暂存 diff"},
                 },
                 "required": ["project_id"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
+                    "stat": {"type": "string"},
                     "diff": {"type": "string"},
                     "truncated": {"type": "boolean"},
                 },
+                "required": ["stat", "diff", "truncated"],
+                "additionalProperties": False,
             },
             execute=_get_git_diff_execute,
         )
@@ -656,21 +792,56 @@ def build_default_registry() -> ToolRegistry:
             input_schema={
                 "type": "object",
                 "properties": {
-                    "project_id": {"type": "integer", "description": "已授权项目 ID"},
-                    "rel_path": {"type": "string", "description": "项目内相对路径"},
-                    "new_content": {"type": "string", "description": "拟写入的完整新文件内容"},
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
+                    "rel_path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "description": "项目内相对路径",
+                    },
+                    "new_content": {
+                        "type": "string",
+                        "maxLength": 500000,
+                        "description": "拟写入的完整新文件内容",
+                    },
                     "create": {"type": "boolean", "description": "文件不存在时是否按新文件预览"},
                 },
                 "required": ["project_id", "rel_path", "new_content"],
+                "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
-                    "diff": {"type": "string"},
-                    "old_sha256": {"type": "string"},
-                    "new_sha256": {"type": "string"},
+                    "project_id": {"type": "integer", "minimum": 1},
+                    "rel_path": {"type": "string", "maxLength": 2048},
+                    "diff": {"type": "string", "maxLength": 200020},
+                    "old_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                    },
+                    "new_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                    },
+                    "creates_file": {"type": "boolean"},
                     "changed": {"type": "boolean"},
+                    "truncated": {"type": "boolean"},
                 },
+                "required": [
+                    "project_id",
+                    "rel_path",
+                    "diff",
+                    "old_sha256",
+                    "new_sha256",
+                    "creates_file",
+                    "changed",
+                    "truncated",
+                ],
+                "additionalProperties": False,
             },
             execute=_propose_patch_execute,
         )
@@ -699,6 +870,7 @@ def build_default_registry() -> ToolRegistry:
                     "new_sha256": {"type": "string"},
                     "size_bytes": {"type": "integer"},
                     "diff": {"type": "string"},
+                    "truncated": {"type": "boolean"},
                 },
             },
             execute=_apply_patch_to_workspace_execute,

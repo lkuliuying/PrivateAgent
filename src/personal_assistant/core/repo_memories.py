@@ -5,17 +5,62 @@
 """
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import MemoryEvent, MemoryItem
+from .models import MemoryConflict, MemoryEvent, MemoryItem, MemoryRevision
+from .timeutil import utcnow
 
 
 def _escape_like(term: str) -> str:
     """转义 LIKE 元字符（% _ \\），避免用户输入被当通配符。"""
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _content_sha256(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _revision_state(item: MemoryItem) -> dict:
+    return {
+        "source_type": item.source_type,
+        "source_id": item.source_id,
+        "project_id": item.project_id,
+        "topic_id": item.topic_id,
+        "tags": item.tags_json,
+        "confidence": item.confidence,
+        "importance": item.importance,
+        "enabled": item.enabled,
+        "sensitive": item.sensitive,
+        "sensitivity_level": item.sensitivity_level,
+        "status": item.status,
+        "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+        "confirmed_at": item.confirmed_at.isoformat() if item.confirmed_at else None,
+        "last_confirmed_at": (
+            item.last_confirmed_at.isoformat() if item.last_confirmed_at else None
+        ),
+        "deleted_at": item.deleted_at.isoformat() if item.deleted_at else None,
+    }
+
+
+def _revision(item: MemoryItem, *, change_type: str) -> MemoryRevision:
+    return MemoryRevision(
+        memory_id=item.id,
+        stable_key=item.stable_key,
+        memory_version=item.memory_version,
+        kind=item.kind,
+        title=item.title,
+        content_md=item.content_md,
+        content_sha256=item.content_sha256,
+        summary=item.summary,
+        state_json=_revision_state(item),
+        change_type=change_type,
+    )
 
 
 class MemoryRepository:
@@ -38,7 +83,19 @@ class MemoryRepository:
         enabled: bool = True,
         sensitive: bool = False,
         status: str = "confirmed",
+        stable_key: str | None = None,
+        importance: float = 0.5,
+        expires_at: datetime | None = None,
+        sensitivity_level: str | None = None,
     ) -> MemoryItem:
+        if not 0.0 <= importance <= 1.0:
+            raise ValueError("memory importance must be between 0 and 1")
+        level = sensitivity_level or ("sensitive" if sensitive else "normal")
+        if level not in {"normal", "sensitive", "restricted"}:
+            raise ValueError("invalid memory sensitivity level")
+        if sensitive and level == "normal":
+            level = "sensitive"
+        now = utcnow()
         item = MemoryItem(
             kind=kind,
             title=title,
@@ -53,13 +110,32 @@ class MemoryRepository:
             enabled=enabled,
             sensitive=sensitive,
             status=status,
+            stable_key=stable_key or uuid4().hex,
+            memory_version=1,
+            content_sha256=_content_sha256(content_md),
+            importance=importance,
+            expires_at=expires_at,
+            sensitivity_level=level,
+            confirmed_at=now if status == "confirmed" else None,
+            last_confirmed_at=now if status == "confirmed" else None,
         )
         self.db.add(item)
+        await self.db.flush()
+        self.db.add(_revision(item, change_type="created"))
         await self.db.commit()
         await self.db.refresh(item)
         return item
 
     async def get(self, memory_id: int) -> Optional[MemoryItem]:
+        result = await self.db.execute(
+            select(MemoryItem).where(
+                MemoryItem.id == memory_id,
+                MemoryItem.deleted_at.is_(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def get_including_deleted(self, memory_id: int) -> Optional[MemoryItem]:
         return await self.db.get(MemoryItem, memory_id)
 
     async def get_fresh(self, memory_id: int) -> Optional[MemoryItem]:
@@ -70,7 +146,10 @@ class MemoryRepository:
         """
         stmt = (
             select(MemoryItem)
-            .where(MemoryItem.id == memory_id)
+            .where(
+                MemoryItem.id == memory_id,
+                MemoryItem.deleted_at.is_(None),
+            )
             .execution_options(populate_existing=True)
         )
         result = await self.db.execute(stmt)
@@ -87,7 +166,7 @@ class MemoryRepository:
         search: str | None = None,
     ) -> list[MemoryItem]:
         """记忆列表，支持按类型/状态/启用/项目/主题过滤与标题/内容/摘要搜索。"""
-        stmt = select(MemoryItem)
+        stmt = select(MemoryItem).where(MemoryItem.deleted_at.is_(None))
         if kind:
             stmt = stmt.where(MemoryItem.kind == kind)
         if status:
@@ -124,8 +203,24 @@ class MemoryRepository:
         enabled: bool | None = None,
         sensitive: bool | None = None,
         status: str | None = None,
-    ) -> None:
-        values: dict = {}
+        importance: float | None = None,
+        expires_at: datetime | None = None,
+        sensitivity_level: str | None = None,
+    ) -> MemoryItem | None:
+        item = (
+            await self.db.execute(
+                select(MemoryItem)
+                .where(
+                    MemoryItem.id == memory_id,
+                    MemoryItem.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if item is None:
+            await self.db.rollback()
+            return None
+        values: dict[str, object] = {}
         if title is not None:
             values["title"] = title
         if content_md is not None:
@@ -140,21 +235,175 @@ class MemoryRepository:
             values["enabled"] = enabled
         if sensitive is not None:
             values["sensitive"] = sensitive
+            if sensitivity_level is None:
+                values["sensitivity_level"] = (
+                    "sensitive" if sensitive else "normal"
+                )
         if status is not None:
             values["status"] = status
+        if importance is not None:
+            if not 0.0 <= importance <= 1.0:
+                await self.db.rollback()
+                raise ValueError("memory importance must be between 0 and 1")
+            values["importance"] = importance
+        if expires_at is not None:
+            values["expires_at"] = expires_at
+        if sensitivity_level is not None:
+            if sensitivity_level not in {"normal", "sensitive", "restricted"}:
+                await self.db.rollback()
+                raise ValueError("invalid memory sensitivity level")
+            values["sensitivity_level"] = sensitivity_level
+            values["sensitive"] = sensitivity_level != "normal"
         if not values:
-            return
-        await self.db.execute(
-            update(MemoryItem).where(MemoryItem.id == memory_id).values(**values)
+            await self.db.rollback()
+            return await self.get(memory_id)
+        previous_status = item.status
+        for key, value in values.items():
+            setattr(item, key, value)
+        if content_md is not None:
+            item.content_sha256 = _content_sha256(item.content_md)
+        now = utcnow()
+        if item.status == "confirmed" and previous_status != "confirmed":
+            item.confirmed_at = item.confirmed_at or now
+            item.last_confirmed_at = now
+        item.memory_version += 1
+        change_type = (
+            "confirmed"
+            if item.status == "confirmed" and previous_status != "confirmed"
+            else "edited"
         )
+        self.db.add(_revision(item, change_type=change_type))
         await self.db.commit()
+        await self.db.refresh(item)
+        return item
 
-    async def delete(self, memory_id: int) -> None:
-        # memory_events 有 ON DELETE CASCADE，删 memory_item 自动删事件
-        item = await self.get(memory_id)
-        if item:
-            await self.db.delete(item)
+    async def delete(self, memory_id: int) -> bool:
+        """Soft-delete while preserving the item, events and immutable revisions."""
+
+        item = (
+            await self.db.execute(
+                select(MemoryItem)
+                .where(
+                    MemoryItem.id == memory_id,
+                    MemoryItem.deleted_at.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if item is None:
+            await self.db.rollback()
+            return False
+        item.deleted_at = utcnow()
+        item.enabled = False
+        item.status = "archived"
+        item.memory_version += 1
+        self.db.add(_revision(item, change_type="deleted"))
+        self.db.add(MemoryEvent(memory_id=item.id, event_type="deleted"))
+        await self.db.commit()
+        return True
+
+
+class MemoryRevisionRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def list_by_memory(self, memory_id: int) -> list[MemoryRevision]:
+        result = await self.db.execute(
+            select(MemoryRevision)
+            .where(MemoryRevision.memory_id == memory_id)
+            .order_by(MemoryRevision.memory_version.asc())
+        )
+        return list(result.scalars().all())
+
+
+class MemoryConflictRepository:
+    def __init__(self, db: AsyncSession) -> None:
+        self.db = db
+
+    async def create(
+        self,
+        left_memory_id: int,
+        right_memory_id: int,
+        *,
+        reason: str,
+    ) -> MemoryConflict:
+        left, right = sorted((left_memory_id, right_memory_id))
+        if left == right:
+            raise ValueError("a memory cannot conflict with itself")
+        if not reason.strip():
+            raise ValueError("memory conflict reason is required")
+        try:
+            records = (
+                await self.db.execute(
+                    select(MemoryItem)
+                    .where(
+                        MemoryItem.id.in_([left, right]),
+                        MemoryItem.deleted_at.is_(None),
+                    )
+                    .order_by(MemoryItem.id.asc())
+                    .with_for_update()
+                )
+            ).scalars().all()
+            if len(records) != 2:
+                raise LookupError("both active memories are required")
+            existing = (
+                await self.db.execute(
+                    select(MemoryConflict).where(
+                        MemoryConflict.left_memory_id == left,
+                        MemoryConflict.right_memory_id == right,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                await self.db.commit()
+                return existing
+            conflict = MemoryConflict(
+                left_memory_id=left,
+                right_memory_id=right,
+                reason=reason.strip(),
+                status="open",
+            )
+            self.db.add(conflict)
             await self.db.commit()
+            await self.db.refresh(conflict)
+            return conflict
+        except Exception:
+            await self.db.rollback()
+            raise
+
+    async def resolve(
+        self,
+        conflict_id: int,
+        *,
+        resolution: dict,
+    ) -> MemoryConflict | None:
+        conflict = (
+            await self.db.execute(
+                select(MemoryConflict)
+                .where(MemoryConflict.id == conflict_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if conflict is None:
+            await self.db.rollback()
+            return None
+        if conflict.status != "open":
+            await self.db.rollback()
+            raise ValueError(f"memory conflict is already {conflict.status}")
+        conflict.status = "resolved"
+        conflict.resolution_json = resolution
+        conflict.resolved_at = utcnow()
+        await self.db.commit()
+        await self.db.refresh(conflict)
+        return conflict
+
+    async def list_open(self) -> list[MemoryConflict]:
+        result = await self.db.execute(
+            select(MemoryConflict)
+            .where(MemoryConflict.status == "open")
+            .order_by(MemoryConflict.created_at.asc())
+        )
+        return list(result.scalars().all())
 
 
 class MemoryEventRepository:

@@ -182,6 +182,9 @@
 .pa-status-dot--ok {
   --pa-status-color: var(--color-success);
 }
+.pa-status-dot--info {
+  --pa-status-color: var(--color-accent);
+}
 .pa-status-dot--warn {
   --pa-status-color: var(--color-warning);
 }

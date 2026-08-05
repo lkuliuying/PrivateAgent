@@ -1,231 +1,265 @@
 <script setup lang="ts">
-import { PhSidebarSimple } from "@phosphor-icons/vue";
+import type { Component } from "vue";
+import {
+  PhCheckCircle,
+  PhCircle,
+  PhCircleNotch,
+  PhHourglassMedium,
+  PhSidebarSimple,
+  PhWarningCircle,
+} from "@phosphor-icons/vue";
+import type { AgentTaskState } from "../types";
+import { TASK_STATE_META } from "../models/agentWorkspace";
 
-/**
- * 工作台四区布局容器。
- * 结构：导航 rail · 列表区 · 主工作区 · 右侧检查器 · 底部状态栏。
- * 纯布局组件，不持有业务状态；各区内容由具名 slot 注入，App.vue 为组合根。
- *
- * 列表区仅在 chat 视图显示（showList）；检查器可折叠（inspectorOpen）。
- * 900px 起：rail(60) + list(280) + main(flex) + inspector(折叠) 不重叠。
- */
-withDefaults(
+const props = withDefaults(
   defineProps<{
     title: string;
+    taskState?: AgentTaskState;
     showDevTag?: boolean;
-    showList?: boolean;
     inspectorOpen?: boolean;
     inspectorToggleable?: boolean;
     showTopbar?: boolean;
     showStatusbar?: boolean;
+    railCollapsed?: boolean;
   }>(),
   {
+    taskState: "idle",
     showDevTag: false,
-    showList: false,
     inspectorOpen: false,
     inspectorToggleable: false,
     showTopbar: true,
     showStatusbar: true,
+    railCollapsed: false,
   }
 );
 
 const emit = defineEmits<{ "toggle-inspector": [] }>();
+const STATE_ICONS: Record<AgentTaskState, Component> = {
+  idle: PhCircle,
+  running: PhCircleNotch,
+  waiting: PhHourglassMedium,
+  completed: PhCheckCircle,
+  failed: PhWarningCircle,
+  stopped: PhCircle,
+};
 </script>
 
 <template>
-  <div class="workspace">
+  <div class="workspace" :class="{ 'is-rail-collapsed': railCollapsed }">
     <div class="workspace-body">
-      <!-- 左侧导航 rail -->
-      <div class="workspace-rail">
+      <aside class="workspace-rail">
         <slot name="rail" />
-      </div>
+      </aside>
 
-      <!-- 列表区（仅 chat） -->
-      <Transition name="pa-zone">
-        <div v-if="showList" class="workspace-list">
-          <slot name="list" />
-        </div>
-      </Transition>
-
-      <!-- 主工作区 -->
-      <div class="workspace-main">
+      <main class="workspace-main">
         <header v-if="showTopbar" class="workspace-topbar">
           <div class="topbar-copy">
-            <span class="topbar-kicker">PrivateAgent</span>
-            <span class="topbar-title">{{ title }}</span>
+            <div class="topbar-breadcrumb">
+              <span>Agent</span>
+              <span aria-hidden="true">/</span>
+              <span class="breadcrumb-current">{{ title }}</span>
+            </div>
+            <div class="topbar-title-row">
+              <h1 :title="title">{{ title }}</h1>
+              <span v-if="showDevTag" class="topbar-dev">DEV · 8000</span>
+            </div>
           </div>
-          <span v-if="showDevTag" class="topbar-dev">DEV · 手动后端 8000</span>
-          <div class="topbar-spacer" />
-          <button
-            v-if="inspectorToggleable"
-            class="pa-btn pa-btn--subtle pa-btn--icon pa-btn--sm inspector-toggle"
-            :class="{ active: inspectorOpen }"
-            :aria-pressed="inspectorOpen"
-            aria-label="切换检查器面板"
-            title="检查器面板"
-            @click="emit('toggle-inspector')"
-          >
-            <PhSidebarSimple :size="16" weight="regular" />
-          </button>
+
+          <div class="topbar-actions">
+            <span class="task-state" :class="`tone-${TASK_STATE_META[props.taskState].tone}`">
+              <component
+                :is="STATE_ICONS[props.taskState]"
+                :size="15"
+                :weight="props.taskState === 'completed' ? 'fill' : 'regular'"
+                :class="{ spin: props.taskState === 'running' }"
+              />
+              {{ TASK_STATE_META[props.taskState].label }}
+            </span>
+            <button
+              v-if="inspectorToggleable"
+              class="pa-btn pa-btn--ghost pa-btn--icon inspector-toggle"
+              :class="{ active: inspectorOpen }"
+              :aria-pressed="inspectorOpen"
+              aria-label="切换上下文面板"
+              title="切换上下文面板"
+              @click="emit('toggle-inspector')"
+            >
+              <PhSidebarSimple :size="18" />
+            </button>
+          </div>
         </header>
+
         <div class="workspace-content">
           <slot />
         </div>
-      </div>
+      </main>
 
-      <!-- 右侧检查器 -->
       <Transition name="pa-zone">
-        <div v-if="inspectorOpen" class="workspace-inspector">
+        <aside v-if="inspectorOpen" class="workspace-inspector">
           <slot name="inspector" />
-        </div>
+        </aside>
       </Transition>
     </div>
 
-    <!-- 底部状态栏 -->
-    <div v-if="showStatusbar" class="workspace-statusbar">
+    <footer v-if="showStatusbar" class="workspace-statusbar">
       <slot name="statusbar" />
-    </div>
+    </footer>
   </div>
 </template>
 
 <style scoped>
 .workspace {
   display: flex;
-  flex-direction: column;
-  height: 100vh;
   width: 100vw;
+  height: 100vh;
   overflow: hidden;
+  flex-direction: column;
   background: var(--color-bg);
 }
 .workspace-body {
-  flex: 1;
   display: flex;
-  flex-direction: row;
+  flex: 1;
   min-height: 0;
 }
-
-/* 导航 rail */
 .workspace-rail {
-  flex-shrink: 0;
   width: var(--rail-w);
   min-width: 0;
-}
-
-/* 列表区 */
-.workspace-list {
   flex-shrink: 0;
-  width: var(--list-w);
-  min-width: 0;
-  border-right: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 88%, white);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+  transition: width var(--duration-slow) var(--ease);
 }
-
-/* 主工作区 */
+.is-rail-collapsed .workspace-rail {
+  width: var(--rail-collapsed-w);
+}
 .workspace-main {
-  flex: 1;
-  min-width: 0;
   display: flex;
+  min-width: 0;
+  flex: 1;
   flex-direction: column;
   background: var(--color-bg);
 }
-
 .workspace-topbar {
-  flex-shrink: 0;
-  min-height: var(--topbar-h);
   display: flex;
+  min-height: 72px;
+  flex-shrink: 0;
   align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-6);
+  gap: var(--space-4);
+  padding: var(--space-2) var(--space-5);
   border-bottom: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 96%, white);
+  background: var(--color-surface);
 }
 .topbar-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
   min-width: 0;
 }
-.topbar-kicker {
-  font-size: var(--text-xs);
+.topbar-breadcrumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: 3px;
   color: var(--color-fg-faint);
-  letter-spacing: 0.04em;
+  font-size: var(--text-xs);
 }
-.topbar-title {
-  font-size: var(--text-xl);
-  font-weight: var(--font-semibold);
-  color: var(--color-fg);
-  white-space: nowrap;
+.breadcrumb-current {
   overflow: hidden;
+  color: var(--color-fg-subtle);
   text-overflow: ellipsis;
-  max-width: 60%;
+  white-space: nowrap;
+}
+.topbar-title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+.topbar-title-row h1 {
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-fg);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-semibold);
+  line-height: var(--leading-tight);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .topbar-dev {
-  font-size: var(--text-xs);
-  color: var(--color-fg-faint);
+  padding: 2px var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
-  padding: 2px var(--space-2);
+  color: var(--color-fg-faint);
+  font-size: 10px;
   white-space: nowrap;
 }
-.topbar-spacer {
-  flex: 1;
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-left: auto;
 }
-.inspector-toggle.active {
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
+.task-state {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  white-space: nowrap;
 }
+.task-state.tone-info { border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-border)); background: var(--color-accent-soft); color: var(--color-accent-soft-fg); }
+.task-state.tone-success { border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-border)); background: var(--color-success-soft); color: var(--color-success-fg); }
+.task-state.tone-warning { border-color: color-mix(in srgb, var(--color-warning) 28%, var(--color-border)); background: var(--color-warning-soft); color: var(--color-warning-fg); }
+.task-state.tone-danger { border-color: color-mix(in srgb, var(--color-danger) 28%, var(--color-border)); background: var(--color-danger-soft); color: var(--color-danger-fg); }
+.spin { animation: shell-spin .9s linear infinite; }
+@keyframes shell-spin { to { transform: rotate(360deg); } }
+.inspector-toggle.active { border-color: color-mix(in srgb, var(--color-accent) 42%, var(--color-border)); background: var(--color-accent-soft); color: var(--color-accent); }
 .workspace-content {
+  display: flex;
   flex: 1;
   min-height: 0;
-  display: flex;
   flex-direction: column;
 }
-
-/* 检查器 */
 .workspace-inspector {
-  flex-shrink: 0;
+  display: flex;
   width: var(--inspector-w);
   min-width: 0;
-  border-left: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 88%, white);
-  display: flex;
+  flex-shrink: 0;
   flex-direction: column;
   overflow: hidden;
+  border-left: 1px solid var(--color-border);
+  background: var(--color-panel);
 }
-
-/* 状态栏 */
 .workspace-statusbar {
-  flex-shrink: 0;
   height: var(--statusbar-h);
+  flex-shrink: 0;
   border-top: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-bg) 96%, white);
+  background: var(--color-surface);
 }
-
-@media (max-width: 1180px) {
-  .workspace-rail {
-    width: 76px;
-  }
-}
-
-/* 区块进入/离开过渡（短滑入淡入，120–180ms） */
 .pa-zone-enter-active,
 .pa-zone-leave-active {
-  transition: opacity var(--duration) var(--ease),
-    transform var(--duration) var(--ease);
+  transition: opacity var(--duration) var(--ease), transform var(--duration) var(--ease);
 }
 .pa-zone-enter-from,
 .pa-zone-leave-to {
   opacity: 0;
-}
-.workspace-list.pa-zone-enter-from,
-.workspace-list.pa-zone-leave-to {
-  transform: translateX(-8px);
-}
-.workspace-inspector.pa-zone-enter-from,
-.workspace-inspector.pa-zone-leave-to {
   transform: translateX(8px);
+}
+@media (max-width: 1420px) {
+  .workspace-inspector { width: 320px; }
+}
+@media (max-width: 1319px) {
+  .workspace-inspector { display: none; }
+  .inspector-toggle { display: none; }
+}
+@media (max-width: 920px) {
+  .workspace-rail { width: var(--rail-collapsed-w); }
+  .workspace-topbar { padding-inline: var(--space-4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .workspace-rail, .pa-zone-enter-active, .pa-zone-leave-active { transition: none; }
+  .spin { animation: none; }
 }
 </style>

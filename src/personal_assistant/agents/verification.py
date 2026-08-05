@@ -1,0 +1,343 @@
+"""Bounded, evidence-based output verification for AgentRuntime."""
+
+from __future__ import annotations
+
+import json
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any, ClassVar, Protocol
+
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field
+
+from .contracts import ModelOutputFormat
+
+
+class OutputVerification(BaseModel):
+    """One verifier decision; text is bounded before it enters events/prompts."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    passed: bool
+    code: str = Field(pattern=r"^[a-z0-9_]{1,64}$")
+    message: str = Field(min_length=1, max_length=2_000)
+    correction: str | None = Field(default=None, max_length=4_000)
+
+
+class OutputVerifier(Protocol):
+    name: str
+    output_schema: dict[str, Any] | None
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification: ...
+
+
+class NonEmptyOutputVerifier:
+    name = "non_empty"
+    output_schema = None
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        del attempt
+        if output.strip():
+            return OutputVerification(
+                passed=True,
+                code="ok",
+                message="Output is non-empty.",
+            )
+        return OutputVerification(
+            passed=False,
+            code="empty_output",
+            message="The model returned an empty output.",
+            correction="Return a concrete final answer instead of an empty response.",
+        )
+
+
+class JsonSchemaOutputVerifier:
+    """Require the model output to be JSON accepted by a fixed Draft 2020-12 schema."""
+
+    name = "json_schema"
+
+    def __init__(self, schema: dict[str, Any]) -> None:
+        if not isinstance(schema, dict):
+            raise TypeError("JSON output schema must be an object")
+        try:
+            copied = json.loads(
+                json.dumps(
+                    schema,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("JSON output schema must be serializable") from exc
+        try:
+            output_format = ModelOutputFormat(json_schema=copied)
+        except ValueError as exc:
+            raise ValueError("JSON output schema is invalid or unsafe") from exc
+        self.output_schema = output_format.json_schema
+        self._validator = Draft202012Validator(copied)
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        del attempt
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError as exc:
+            return OutputVerification(
+                passed=False,
+                code="invalid_json",
+                message=(
+                    f"Output is not valid JSON at line {exc.lineno}, column {exc.colno}."
+                ),
+                correction=(
+                    "Return only one valid JSON value. Do not wrap it in Markdown fences "
+                    "or add explanatory text."
+                ),
+            )
+        error = next(self._validator.iter_errors(value), None)
+        if error is None:
+            return OutputVerification(
+                passed=True,
+                code="ok",
+                message="Output matches the required JSON Schema.",
+            )
+        path = "$" + "".join(
+            f"[{item}]" if isinstance(item, int) else f".{item}"
+            for item in error.absolute_path
+        )
+        rule = str(error.validator or "schema")[:64]
+        message = f"JSON Schema validation failed at {path} (rule: {rule})."
+        return OutputVerification(
+            passed=False,
+            code="json_schema_mismatch",
+            message=message[:2_000],
+            correction=(
+                "Return only JSON that matches the required schema. Correct the field at "
+                f"{path} and preserve already valid fields."
+            )[:4_000],
+        )
+
+
+class RagCitationSource(BaseModel):
+    """One trusted retrieval result available to citation verification."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    chunk_id: int = Field(gt=0)
+    index_version_id: str | None = Field(default=None, min_length=1, max_length=64)
+    content: str = Field(min_length=1, max_length=1_000_000, repr=False)
+    doc_name: str | None = Field(default=None, min_length=1, max_length=512)
+    ordinal: int | None = Field(default=None, ge=0)
+    heading: str | None = Field(default=None, max_length=512)
+    score: float | None = None
+    fusion_score: float | None = None
+    bm25_score: float | None = None
+    rerank_score: float | None = None
+    matched_via: tuple[str, ...] = Field(default=(), max_length=10)
+    matched_keywords: tuple[str, ...] = Field(default=(), max_length=20)
+
+
+class RagCitationOutputVerifier:
+    """Validate citation identity and verbatim support against retrieved chunks.
+
+    This deliberately verifies traceability, not the truth of every natural-language
+    inference in ``answer``.
+    """
+
+    name = "rag_citations"
+    _schema: ClassVar[dict[str, Any]] = {
+        "type": "object",
+        "properties": {
+            "answer": {"type": "string", "minLength": 1, "maxLength": 100_000},
+            "citations": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "chunk_id": {"type": "integer", "minimum": 1},
+                        "index_version_id": {
+                            "type": ["string", "null"],
+                            "minLength": 1,
+                            "maxLength": 64,
+                        },
+                        "quote": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 2_000,
+                        },
+                    },
+                    "required": ["chunk_id", "index_version_id", "quote"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["answer", "citations"],
+        "additionalProperties": False,
+    }
+    output_schema: ClassVar[dict[str, Any]] = _schema
+
+    def __init__(
+        self,
+        sources: list[RagCitationSource] | tuple[RagCitationSource, ...],
+    ) -> None:
+        if len(sources) > 128:
+            raise ValueError("RAG citation verifier accepts at most 128 sources")
+        if sum(len(source.content) for source in sources) > 2 * 1024 * 1024:
+            raise ValueError("RAG citation verifier source content exceeds 2 MiB")
+        indexed: dict[tuple[str | None, int], RagCitationSource] = {}
+        for source in sources:
+            key = (source.index_version_id, source.chunk_id)
+            if key in indexed:
+                raise ValueError("RAG citation verifier sources must be unique")
+            indexed[key] = source
+        self._sources = indexed
+        self._validator = Draft202012Validator(self._schema)
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        del attempt
+        try:
+            value = json.loads(output)
+        except json.JSONDecodeError as exc:
+            return OutputVerification(
+                passed=False,
+                code="invalid_json",
+                message=(
+                    f"Citation output is not valid JSON at line {exc.lineno}, "
+                    f"column {exc.colno}."
+                ),
+                correction=(
+                    "Return only the required answer/citations JSON object without "
+                    "Markdown fences or explanatory text."
+                ),
+            )
+        error = next(self._validator.iter_errors(value), None)
+        if error is not None:
+            path = "$" + "".join(
+                f"[{item}]" if isinstance(item, int) else f".{item}"
+                for item in error.absolute_path
+            )
+            rule = str(error.validator or "schema")[:64]
+            return OutputVerification(
+                passed=False,
+                code="citation_schema_mismatch",
+                message=f"Citation schema failed at {path} (rule: {rule})."[:2_000],
+                correction=(
+                    "Return an answer string and citations array. Each citation needs "
+                    "chunk_id, index_version_id, and an exact quote."
+                ),
+            )
+
+        citations = value["citations"]
+        if self._sources and not citations:
+            return OutputVerification(
+                passed=False,
+                code="missing_citations",
+                message="Retrieved evidence exists but the answer has no citations.",
+                correction="Cite at least one retrieved chunk with an exact quote.",
+            )
+
+        seen: set[tuple[str | None, int]] = set()
+        for citation in citations:
+            key = (citation["index_version_id"], citation["chunk_id"])
+            if key in seen:
+                return OutputVerification(
+                    passed=False,
+                    code="duplicate_citation",
+                    message="The citation list contains a duplicate source identity.",
+                    correction="Include each source identity at most once.",
+                )
+            seen.add(key)
+            source = self._sources.get(key)
+            if source is None:
+                return OutputVerification(
+                    passed=False,
+                    code="unknown_citation",
+                    message="A citation does not match any retrieved source identity.",
+                    correction=(
+                        "Use only chunk_id/index_version_id pairs supplied by retrieval."
+                    ),
+                )
+            quote = citation["quote"]
+            if quote != quote.strip() or quote not in source.content:
+                return OutputVerification(
+                    passed=False,
+                    code="unsupported_quote",
+                    message="A citation quote is not an exact substring of its source.",
+                    correction=(
+                        "Copy a bounded verbatim quote from the cited chunk without "
+                        "adding or removing characters."
+                    ),
+                )
+        return OutputVerification(
+            passed=True,
+            code="ok",
+            message="Every citation identity and quote matches retrieved evidence.",
+        )
+
+
+RagCitationSourceLoader = Callable[
+    [], Awaitable[Sequence[RagCitationSource]]
+]
+
+
+class ReloadingRagCitationOutputVerifier:
+    """Reload trusted, durable retrieval evidence before each verification."""
+
+    name = "rag_citations"
+    output_schema: ClassVar[dict[str, Any]] = RagCitationOutputVerifier.output_schema
+
+    def __init__(self, source_loader: RagCitationSourceLoader) -> None:
+        if not callable(source_loader):
+            raise TypeError("RAG citation source loader must be callable")
+        self._source_loader = source_loader
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        try:
+            sources = tuple(await self._source_loader())
+            verifier = RagCitationOutputVerifier(sources)
+        except Exception:
+            return OutputVerification(
+                passed=False,
+                code="citation_evidence_unavailable",
+                message="Trusted RAG citation evidence could not be loaded.",
+                correction=(
+                    "Do not invent citations. Retry only after the trusted retrieval "
+                    "evidence is available."
+                ),
+            )
+        return await verifier.verify(output, attempt=attempt)
+
+
+class CompositeOutputVerifier:
+    """Run independent real validators in order and stop on the first failure."""
+
+    name = "composite"
+
+    def __init__(self, verifiers: list[OutputVerifier] | tuple[OutputVerifier, ...]) -> None:
+        if not verifiers:
+            raise ValueError("Composite verifier requires at least one verifier")
+        self._verifiers = tuple(verifiers)
+        schemas = [
+            verifier.output_schema
+            for verifier in self._verifiers
+            if verifier.output_schema is not None
+        ]
+        self.output_schema = (
+            schemas[0]
+            if schemas and all(schema == schemas[0] for schema in schemas[1:])
+            else None
+        )
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        for verifier in self._verifiers:
+            result = await verifier.verify(output, attempt=attempt)
+            if not result.passed:
+                return result.model_copy(
+                    update={
+                        "message": f"{verifier.name}: {result.message}"[:2_000]
+                    }
+                )
+        return OutputVerification(
+            passed=True,
+            code="ok",
+            message="All configured output verifiers passed.",
+        )

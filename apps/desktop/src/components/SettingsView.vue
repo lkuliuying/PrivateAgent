@@ -1,21 +1,32 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
+  cmdClearProviderSecret,
+  cmdPromptProviderSecret,
+  cmdProviderSecretStatus,
+  cmdRelaunchApp,
   exportBackup,
   getSettings,
+  isDesktopRuntime,
   listBackups,
   listProviders,
   previewRestoreBackup,
   testProvider,
   updateProviders,
+  updateProviderSecretReference,
   updateSettings,
   type AppSettings,
+  type ProviderSecretStatus,
 } from "../api";
 import type { BackupExportResult, BackupRestorePreview, ProviderStatus } from "../types";
 import UpdateChecker from "./UpdateChecker.vue";
+import McpServersPanel from "./McpServersPanel.vue";
 import { useHealth } from "../stores/health";
+import { useNotifications } from "../stores/notifications";
 
 const emit = defineEmits<{ (e: "reconfigure"): void }>();
+const notify = useNotifications();
+const desktopRuntime = isDesktopRuntime();
 
 const settings = ref<AppSettings | null>(null);
 const {
@@ -31,6 +42,9 @@ const backupPath = ref("");
 const saving = ref(false);
 const msg = ref("");
 const providerMsg = ref("");
+const providerSecrets = ref<ProviderSecretStatus | null>(null);
+const providerPrompting = ref<"openai" | "claude" | null>(null);
+const providerRestartRequired = ref(false);
 const backupMsg = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
 let msgTimer: ReturnType<typeof setTimeout> | undefined;
@@ -46,6 +60,13 @@ async function load() {
     providers.value = await listProviders();
   } catch {
     providers.value = null;
+  }
+  if (desktopRuntime) {
+    try {
+      providerSecrets.value = await cmdProviderSecretStatus();
+    } catch {
+      providerSecrets.value = null;
+    }
   }
   try {
     backups.value = (await listBackups()).items;
@@ -73,13 +94,6 @@ async function save() {
       llm_temperature: settings.value.llm_temperature,
       llm_context_length: settings.value.llm_context_length,
       kb_enabled_by_default: settings.value.kb_enabled_by_default,
-      provider_type: settings.value.provider_type,
-      remote_provider_enabled: settings.value.remote_provider_enabled,
-      openai_api_key: settings.value.openai_api_key,
-      openai_base_url: settings.value.openai_base_url,
-      openai_model: settings.value.openai_model,
-      claude_api_key: settings.value.claude_api_key,
-      claude_model: settings.value.claude_model,
     });
     msg.value = "✓ 已保存";
   } catch (e) {
@@ -96,21 +110,90 @@ async function saveProvider() {
   saving.value = true;
   providerMsg.value = "";
   try {
-    providers.value = await updateProviders({
+    await updateProviders({
       provider_type: settings.value.provider_type,
       remote_provider_enabled: settings.value.remote_provider_enabled,
-      openai_api_key: settings.value.openai_api_key,
       openai_base_url: settings.value.openai_base_url,
       openai_model: settings.value.openai_model,
-      claude_api_key: settings.value.claude_api_key,
       claude_model: settings.value.claude_model,
     });
-    providerMsg.value = "Provider 已保存";
+
+    let associatedSecret = false;
+    if (providerSecrets.value?.openai_configured && providers.value?.config.openai.storage !== "os_keyring") {
+      const result = await updateProviderSecretReference("openai", true);
+      providerRestartRequired.value ||= result.restart_required;
+      associatedSecret = true;
+    }
+    if (providerSecrets.value?.claude_configured && providers.value?.config.claude.storage !== "os_keyring") {
+      const result = await updateProviderSecretReference("claude", true);
+      providerRestartRequired.value ||= result.restart_required;
+      associatedSecret = true;
+    }
+    providers.value = await listProviders();
+    settings.value = await getSettings();
+    providerMsg.value = associatedSecret
+      ? "Provider 已保存并关联系统凭据；重启后注入本地后端"
+      : "Provider 已保存";
   } catch (e) {
     providerMsg.value = "Provider 保存失败：" + String(e);
   } finally {
     saving.value = false;
   }
+}
+
+async function configureProviderSecret(provider: "openai" | "claude") {
+  providerPrompting.value = provider;
+  providerMsg.value = "";
+  try {
+    const result = await cmdPromptProviderSecret(provider);
+    providerSecrets.value = {
+      openai_configured: result.openai_configured,
+      claude_configured: result.claude_configured,
+    };
+    if (result.cancelled) return;
+
+    const reference = await updateProviderSecretReference(provider, true);
+    providerRestartRequired.value ||= reference.restart_required;
+    providers.value = await listProviders();
+    settings.value = await getSettings();
+    providerMsg.value = `${provider === "openai" ? "OpenAI" : "Claude"} 凭据已保存到 Windows 凭据管理器并完成关联`;
+  } catch (e) {
+    providerMsg.value = "Provider 凭据保存失败：" + String(e);
+  } finally {
+    providerPrompting.value = null;
+  }
+}
+
+async function clearProviderSecret(provider: "openai" | "claude") {
+  const confirmed = await notify.confirm({
+    title: `清除 ${provider === "openai" ? "OpenAI" : "Claude"} 凭据？`,
+    danger: true,
+    impact: "将从系统凭据库删除密钥，并停用对应的凭据引用。",
+  });
+  if (!confirmed) return;
+
+  saving.value = true;
+  providerMsg.value = "";
+  try {
+    providerSecrets.value = await cmdClearProviderSecret(provider);
+    await updateProviderSecretReference(provider, false);
+    providers.value = await listProviders();
+    settings.value = await getSettings();
+    providerRestartRequired.value = true;
+    providerMsg.value = "凭据已清除；请重启应用以清理 sidecar 进程环境";
+  } catch (e) {
+    providerMsg.value = "凭据清除失败：" + String(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function restartForProviderSecrets() {
+  const confirmed = await notify.confirm({
+    title: "立即重启以应用 Provider 凭据？",
+    impact: "当前本地后端会停止并由桌面应用重新启动。",
+  });
+  if (confirmed) await cmdRelaunchApp();
 }
 
 async function runProviderTest() {
@@ -247,7 +330,36 @@ const statusItems = computed(() => {
       </div>
       <div class="field">
         <label>OpenAI API Key</label>
-        <input v-model="settings.openai_api_key" type="password" autocomplete="off" />
+        <button
+          type="button"
+          class="save-btn secondary secret-configure"
+          :disabled="!desktopRuntime || providerPrompting !== null"
+          @click="configureProviderSecret('openai')"
+        >
+          {{ providerPrompting === "openai" ? "等待系统凭据窗口…" : "输入或更新 OpenAI 密钥…" }}
+        </button>
+        <small class="secret-status">
+          {{
+            providers?.config.openai.storage === "legacy"
+              ? "检测到旧明文配置：请重新输入并保存以迁移"
+              : providers?.config.openai.storage === "os_keyring"
+                ? "已使用系统凭据库"
+                : providerSecrets?.openai_configured
+                  ? "系统凭据已存在"
+                  : desktopRuntime
+                    ? "尚未配置"
+                    : "仅桌面应用可写入系统凭据库"
+          }}
+        </small>
+        <button
+          v-if="providers?.config.openai.configured || providerSecrets?.openai_configured"
+          type="button"
+          class="secret-clear"
+          :disabled="saving || !desktopRuntime"
+          @click="clearProviderSecret('openai')"
+        >
+          清除凭据
+        </button>
       </div>
       <div class="field">
         <label>Claude Model</label>
@@ -255,7 +367,36 @@ const statusItems = computed(() => {
       </div>
       <div class="field">
         <label>Claude API Key</label>
-        <input v-model="settings.claude_api_key" type="password" autocomplete="off" />
+        <button
+          type="button"
+          class="save-btn secondary secret-configure"
+          :disabled="!desktopRuntime || providerPrompting !== null"
+          @click="configureProviderSecret('claude')"
+        >
+          {{ providerPrompting === "claude" ? "等待系统凭据窗口…" : "输入或更新 Claude 密钥…" }}
+        </button>
+        <small class="secret-status">
+          {{
+            providers?.config.claude.storage === "legacy"
+              ? "检测到旧明文配置：请重新输入并保存以迁移"
+              : providers?.config.claude.storage === "os_keyring"
+                ? "已使用系统凭据库"
+                : providerSecrets?.claude_configured
+                  ? "系统凭据已存在"
+                  : desktopRuntime
+                    ? "尚未配置"
+                    : "仅桌面应用可写入系统凭据库"
+          }}
+        </small>
+        <button
+          v-if="providers?.config.claude.configured || providerSecrets?.claude_configured"
+          type="button"
+          class="secret-clear"
+          :disabled="saving || !desktopRuntime"
+          @click="clearProviderSecret('claude')"
+        >
+          清除凭据
+        </button>
       </div>
       <div class="provider-scope">
         <span class="k">远程发送范围</span>
@@ -273,13 +414,23 @@ const statusItems = computed(() => {
           测试 Provider
         </button>
       </div>
+      <div v-if="providerRestartRequired" class="provider-restart">
+        <span>Provider 凭据状态已变化，需要重启本地后端后完全生效。</span>
+        <button class="save-btn secondary" @click="restartForProviderSecrets">立即重启</button>
+      </div>
       <pre v-if="providerMsg" class="small-pre">{{ providerMsg }}</pre>
       </div>
     </section>
 
+    <!-- MCP -->
+    <section class="setting-card wide">
+      <div class="card-heading"><span>05</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
+      <McpServersPanel />
+    </section>
+
     <!-- 备份 -->
     <section class="setting-card">
-      <div class="card-heading"><span>05</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+      <div class="card-heading"><span>06</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
       <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
@@ -309,14 +460,14 @@ const statusItems = computed(() => {
 
     <!-- 连接配置 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>06</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
+      <div class="card-heading"><span>07</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
       <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
       <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
     </section>
 
     <!-- 关于 / 更新 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>07</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <div class="card-heading"><span>08</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>
@@ -528,6 +679,37 @@ h1 {
   border-radius: 8px;
   background: #fff;
   padding: 10px 12px;
+}
+.secret-status {
+  color: var(--color-fg-muted);
+  font-size: 11px;
+}
+.secret-configure {
+  align-self: flex-start;
+  text-align: left;
+}
+.secret-clear {
+  align-self: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--color-danger, #b42318);
+  cursor: pointer;
+  padding: 0;
+  font-size: 12px;
+}
+.secret-clear:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.provider-restart {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--color-warning-border, #e4b95d);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
 }
 .backup-list {
   display: grid;

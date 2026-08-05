@@ -1,8 +1,10 @@
 """设置路由：GET / PUT /settings。"""
 from __future__ import annotations
 
+from typing import cast
+
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
@@ -10,14 +12,7 @@ from ..core.settings import SettingsService
 
 router = APIRouter(tags=["settings"])
 
-# 密钥掩码占位：GET 返回此值表示「已配置但不回显原文」；PUT 收到此值时跳过（保留原值）。
-# 空串表示清空，其它值表示更新为新密钥。第八阶段审查修复（原 GET 明文返回 API key）。
-_KEY_MASK = "********"
-
-
-def _mask_key(v: str | None) -> str:
-    return _KEY_MASK if v else ""
-
+SecretStatuses = dict[str, dict[str, object]]
 
 class SettingsOut(BaseModel):
     llm_model: str
@@ -27,10 +22,10 @@ class SettingsOut(BaseModel):
     kb_enabled_by_default: bool
     provider_type: str
     remote_provider_enabled: bool
-    openai_api_key: str
+    openai_api_key_configured: bool
     openai_base_url: str
     openai_model: str
-    claude_api_key: str
+    claude_api_key_configured: bool
     claude_model: str
     reminders_enabled: bool
     reminder_tick_seconds: int
@@ -38,6 +33,8 @@ class SettingsOut(BaseModel):
 
 
 class SettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     llm_model: str | None = None
     embed_model: str | None = None
     llm_temperature: float | None = None
@@ -45,17 +42,17 @@ class SettingsUpdate(BaseModel):
     kb_enabled_by_default: bool | None = None
     provider_type: str | None = None
     remote_provider_enabled: bool | None = None
-    openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
-    claude_api_key: str | None = None
     claude_model: str | None = None
     reminders_enabled: bool | None = None
     reminder_tick_seconds: int | None = None
     desktop_notifications_enabled: bool | None = None
 
 
-def _to_out(d: dict[str, str]) -> SettingsOut:
+def _to_out(
+    d: dict[str, str], secret_statuses: dict[str, dict[str, object]]
+) -> SettingsOut:
     return SettingsOut(
         llm_model=d["llm_model"],
         embed_model=d["embed_model"],
@@ -65,10 +62,10 @@ def _to_out(d: dict[str, str]) -> SettingsOut:
         provider_type=d.get("provider_type", "ollama"),
         remote_provider_enabled=d.get("remote_provider_enabled", "false").lower()
         == "true",
-        openai_api_key=_mask_key(d.get("openai_api_key", "")),
+        openai_api_key_configured=bool(secret_statuses["openai"]["configured"]),
         openai_base_url=d.get("openai_base_url", ""),
         openai_model=d.get("openai_model", "gpt-4o-mini"),
-        claude_api_key=_mask_key(d.get("claude_api_key", "")),
+        claude_api_key_configured=bool(secret_statuses["claude"]["configured"]),
         claude_model=d.get("claude_model", "claude-3-5-sonnet-latest"),
         reminders_enabled=d.get("reminders_enabled", "true").lower() == "true",
         reminder_tick_seconds=int(d.get("reminder_tick_seconds", "60") or 60),
@@ -79,7 +76,10 @@ def _to_out(d: dict[str, str]) -> SettingsOut:
 
 @router.get("/settings", response_model=SettingsOut)
 async def get_settings(db: AsyncSession = Depends(get_session)):
-    return _to_out(await SettingsService(db).get_all())
+    service = SettingsService(db)
+    values = await service.get_all()
+    statuses = cast(SecretStatuses, await service.get_provider_secret_status())
+    return _to_out(values, statuses)
 
 
 @router.put("/settings", response_model=SettingsOut)
@@ -90,8 +90,8 @@ async def update_settings(
     for k, v in updates.model_dump().items():
         if v is None:
             continue
-        # 密钥字段：掩码占位 -> 跳过（保留原值）；空串 -> 清空；其它 -> 更新
-        if k in ("openai_api_key", "claude_api_key") and v == _KEY_MASK:
-            continue
         data[k] = str(v).lower() if isinstance(v, bool) else str(v)
-    return _to_out(await SettingsService(db).update(data))
+    service = SettingsService(db)
+    values = await service.update(data)
+    statuses = cast(SecretStatuses, await service.get_provider_secret_status())
+    return _to_out(values, statuses)

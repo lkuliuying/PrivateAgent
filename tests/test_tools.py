@@ -14,8 +14,13 @@ import json
 from collections.abc import AsyncIterator
 
 import pytest
+from sqlalchemy import delete
 
+from personal_assistant.api import routes_tools
+from personal_assistant.config import settings
 from personal_assistant.core import approvals
+from personal_assistant.core.compatibility import CompatibilityTelemetry
+from personal_assistant.core.models import ChatSession, TrustedPath
 from personal_assistant.core.permissions import is_trusted_path
 from personal_assistant.core.provider import OllamaProvider
 from personal_assistant.core.tools import _parse_plan, default_registry
@@ -100,7 +105,7 @@ def test_is_trusted_path_traversal_blocked(tmp_path):
 # ============ API 测试 ============
 
 @pytest.mark.asyncio
-async def test_tools_plan_proposes_read_file(client, monkeypatch):
+async def test_tools_plan_proposes_read_file(client, db, monkeypatch):
     async def fake_chat(self: OllamaProvider, messages: list[dict]) -> str:
         return json.dumps(
             {
@@ -114,37 +119,116 @@ async def test_tools_plan_proposes_read_file(client, monkeypatch):
 
     monkeypatch.setattr(OllamaProvider, "chat", fake_chat)
     sess = (await client.post("/sessions")).json()
-
-    res = await client.post(
-        "/tools/plan",
-        json={"session_id": sess["id"], "message": "读取 C:/tmp/x.txt"},
-    )
-    assert res.status_code == 200
-    tc = res.json()["tool_call"]
-    assert tc is not None
-    assert tc["tool_name"] == "read_file"
-    assert tc["risk_level"] == "confirm"
-    assert tc["status"] == "pending_approval"
-    assert tc["input_json"]["path"] == "C:/tmp/x.txt"
+    try:
+        res = await client.post(
+            "/tools/plan",
+            json={"session_id": sess["id"], "message": "读取 C:/tmp/x.txt"},
+        )
+        assert res.status_code == 200
+        assert res.headers["Deprecation"] == "true"
+        tc = res.json()["tool_call"]
+        assert tc is not None
+        assert tc["tool_name"] == "read_file"
+        assert tc["risk_level"] == "confirm"
+        assert tc["status"] == "pending_approval"
+        assert tc["input_json"]["path"] == "C:/tmp/x.txt"
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == sess["id"]))
+        await db.commit()
 
 
 @pytest.mark.asyncio
-async def test_tools_plan_no_tool(client, monkeypatch):
+async def test_tools_plan_no_tool(client, db, monkeypatch):
     async def fake_chat(self: OllamaProvider, messages: list[dict]) -> str:
         return '{"use_tool": false}'
 
     monkeypatch.setattr(OllamaProvider, "chat", fake_chat)
+    telemetry = CompatibilityTelemetry()
+    monkeypatch.setattr(routes_tools, "compatibility_telemetry", telemetry)
     sess = (await client.post("/sessions")).json()
+    try:
+        res = await client.post(
+            "/tools/plan", json={"session_id": sess["id"], "message": "你好"}
+        )
+        assert res.status_code == 200
+        assert res.headers["Deprecation"] == "true"
+        assert res.json()["tool_call"] is None
 
-    res = await client.post(
-        "/tools/plan", json={"session_id": sess["id"], "message": "你好"}
-    )
-    assert res.status_code == 200
-    assert res.json()["tool_call"] is None
+        async def unavailable_provider(_db):
+            raise routes_tools.HTTPException(503, "provider unavailable")
+
+        monkeypatch.setattr(routes_tools, "_provider", unavailable_provider)
+        unavailable = await client.post(
+            "/tools/plan", json={"session_id": sess["id"], "message": "你好"}
+        )
+        assert unavailable.status_code == 503
+        assert unavailable.headers["Deprecation"] == "true"
+        metric = telemetry.snapshot()["paths"]["/tools/plan"]
+        assert metric["calls"] == 2
+        assert metric["outcomes"]["not_planned"] == 1
+        assert metric["outcomes"]["error"] == 1
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == sess["id"]))
+        await db.commit()
 
 
 @pytest.mark.asyncio
-async def test_approve_read_file_succeeds(client, monkeypatch, tmp_path):
+async def test_legacy_planner_hides_runtime_owned_read_only_tools(
+    client, db, monkeypatch
+):
+    seen_system_prompts: list[str] = []
+
+    async def fake_chat(self: OllamaProvider, messages: list[dict]) -> str:
+        del self
+        seen_system_prompts.append(messages[0]["content"])
+        return json.dumps(
+            {
+                "use_tool": True,
+                "tool": "read_file",
+                "input": {"path": "C:/tmp/should-not-be-planned.txt"},
+                "reason": "stale planner choice",
+            }
+        )
+
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    monkeypatch.setattr(settings, "agent_run_read_only_tools_enabled", True)
+    monkeypatch.setattr(OllamaProvider, "chat", fake_chat)
+    telemetry = CompatibilityTelemetry()
+    monkeypatch.setattr(routes_tools, "compatibility_telemetry", telemetry)
+    sess = (await client.post("/sessions")).json()
+    try:
+        res = await client.post(
+            "/tools/plan",
+            json={"session_id": sess["id"], "message": "inspect files"},
+        )
+
+        assert res.status_code == 200
+        assert res.headers["Deprecation"] == "true"
+        assert res.json()["tool_call"] is None
+        assert len(seen_system_prompts) == 1
+        prompt = seen_system_prompts[0]
+        for native_tool in (
+            "read_file",
+            "search_files",
+            "grep_code",
+            "read_code_file",
+            "get_git_status",
+            "get_git_diff",
+            "propose_patch",
+        ):
+            assert f'"name": "{native_tool}"' not in prompt
+        assert '"name": "summarize_file"' in prompt
+        metric = telemetry.snapshot()["paths"]["/tools/plan"]
+        assert metric["calls"] == 1
+        assert metric["modes"]["runtime_filtered"] == 1
+        assert metric["outcomes"]["not_planned"] == 1
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == sess["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_approve_read_file_succeeds(client, db, monkeypatch, tmp_path):
     f = tmp_path / "note.txt"
     f.write_text("hello world 文件内容", encoding="utf-8")
 
@@ -165,41 +249,88 @@ async def test_approve_read_file_succeeds(client, monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(OllamaProvider, "chat", fake_chat)
+    telemetry = CompatibilityTelemetry()
+    monkeypatch.setattr(routes_tools, "compatibility_telemetry", telemetry)
     sess = (await client.post("/sessions")).json()
-    plan = await client.post(
-        "/tools/plan", json={"session_id": sess["id"], "message": "读取文件"}
-    )
-    tc = plan.json()["tool_call"]
+    try:
+        plan = await client.post(
+            "/tools/plan", json={"session_id": sess["id"], "message": "读取文件"}
+        )
+        tc = plan.json()["tool_call"]
 
-    res = await client.post(f"/tool-calls/{tc['id']}/approve")
-    assert res.status_code == 200
-    updated = res.json()
-    assert updated["status"] == "succeeded"
-    assert "hello world" in updated["output_json"]["content"]
-    assert updated["output_json"]["size_bytes"] > 0
+        res = await client.post(f"/tool-calls/{tc['id']}/approve")
+        assert res.status_code == 200
+        assert res.headers["Deprecation"] == "true"
+        updated = res.json()
+        assert updated["status"] == "succeeded"
+        assert "hello world" in updated["output_json"]["content"]
+        assert updated["output_json"]["size_bytes"] > 0
+        metric = telemetry.snapshot()["paths"]["/tool-calls/:id/approve"]
+        assert metric["calls"] == 1
+        assert metric["outcomes"]["succeeded"] == 1
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == sess["id"]))
+        await db.execute(delete(TrustedPath).where(TrustedPath.path == str(f)))
+        await db.commit()
 
 
 @pytest.mark.asyncio
-async def test_reject_does_not_execute(client, monkeypatch):
+async def test_reject_does_not_execute(client, db, monkeypatch):
     async def fake_chat(self: OllamaProvider, messages: list[dict]) -> str:
         return json.dumps(
             {"use_tool": True, "tool": "read_file", "input": {"path": "C:/nope.txt"}, "reason": "x"}
         )
 
     monkeypatch.setattr(OllamaProvider, "chat", fake_chat)
+    telemetry = CompatibilityTelemetry()
+    monkeypatch.setattr(routes_tools, "compatibility_telemetry", telemetry)
     sess = (await client.post("/sessions")).json()
-    plan = await client.post(
-        "/tools/plan", json={"session_id": sess["id"], "message": "读"}
-    )
-    tc = plan.json()["tool_call"]
+    try:
+        plan = await client.post(
+            "/tools/plan", json={"session_id": sess["id"], "message": "读"}
+        )
+        tc = plan.json()["tool_call"]
 
-    res = await client.post(f"/tool-calls/{tc['id']}/reject")
-    assert res.status_code == 200
-    assert res.json()["status"] == "rejected"
+        res = await client.post(f"/tool-calls/{tc['id']}/reject")
+        assert res.status_code == 200
+        assert res.headers["Deprecation"] == "true"
+        assert res.json()["status"] == "rejected"
 
-    # 拒绝后再批准 → 409（非法状态转换）
-    again = await client.post(f"/tool-calls/{tc['id']}/approve")
-    assert again.status_code == 409
+        listed = await client.get(
+            "/tool-calls", params={"session_id": sess["id"]}
+        )
+        definitions = await client.get("/tools")
+        detail = await client.get(f"/tool-calls/{tc['id']}")
+        missing = await client.get("/tool-calls/0")
+        assert listed.status_code == 200
+        assert listed.headers["Deprecation"] == "true"
+        assert [item["id"] for item in listed.json()] == [tc["id"]]
+        assert definitions.status_code == 200
+        assert definitions.headers["Deprecation"] == "true"
+        assert any(item["name"] == "summarize_file" for item in definitions.json())
+        assert detail.status_code == 200
+        assert detail.headers["Deprecation"] == "true"
+        assert missing.status_code == 404
+        assert missing.headers["Deprecation"] == "true"
+
+        # 拒绝后再批准 → 409（非法状态转换）
+        again = await client.post(f"/tool-calls/{tc['id']}/approve")
+        assert again.status_code == 409
+        assert again.headers["Deprecation"] == "true"
+        rejected = telemetry.snapshot()["paths"]["/tool-calls/:id/reject"]
+        approve = telemetry.snapshot()["paths"]["/tool-calls/:id/approve"]
+        listed_metric = telemetry.snapshot()["paths"]["/tool-calls"]
+        detail_metric = telemetry.snapshot()["paths"]["/tool-calls/:id"]
+        definitions_metric = telemetry.snapshot()["paths"]["/tools"]
+        assert rejected["outcomes"]["rejected"] == 1
+        assert approve["outcomes"]["conflict"] == 1
+        assert listed_metric["modes"]["session_filtered"] == 1
+        assert detail_metric["outcomes"]["found"] == 1
+        assert detail_metric["outcomes"]["not_found"] == 1
+        assert definitions_metric["outcomes"]["returned"] == 1
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == sess["id"]))
+        await db.commit()
 
 
 @pytest.mark.asyncio

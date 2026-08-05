@@ -13,12 +13,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import secrets
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
+
+from sqlalchemy import select
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -32,22 +40,31 @@ DIST = PROJECT_ROOT / "dist"
 
 
 def run_shell_step(
-    name: str, cmd: list[str], cwd: str | None = None, timeout: int = 600
+    name: str,
+    cmd: list[str],
+    cwd: str | None = None,
+    timeout: int = 600,
+    env: Mapping[str, str] | None = None,
 ) -> dict:
     t0 = time.perf_counter()
     try:
-        r = subprocess.run(
-            cmd,
-            cwd=cwd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-        )
+        # A real file avoids Windows PIPE EOF deadlocks when Node workers inherit
+        # stdout after npm/vitest's direct launcher has already exited.
+        with tempfile.TemporaryFile(mode="w+b") as captured:
+            r = subprocess.run(
+                cmd,
+                cwd=cwd,
+                stdout=captured,
+                stderr=subprocess.STDOUT,
+                timeout=timeout,
+                check=False,
+                env=env,
+            )
+            captured.flush()
+            captured.seek(0)
+            detail = captured.read().decode("utf-8", errors="replace")[-2000:]
         ms = round((time.perf_counter() - t0) * 1000, 1)
         status = "passed" if r.returncode == 0 else "failed"
-        detail = (r.stdout + r.stderr)[-2000:]
         return {
             "name": name,
             "kind": "shell",
@@ -69,7 +86,7 @@ def run_shell_step(
         return {
             "name": name,
             "kind": "shell",
-            "status": "skipped",
+            "status": "failed",
             "duration_ms": 0,
             "returncode": None,
             "detail": f"not found: {e}",
@@ -97,6 +114,187 @@ def npm_script_exists(script: str) -> bool:
         return False
 
 
+def npm_executable(*, platform: str | None = None) -> str:
+    """Return the directly executable npm launcher for the current platform."""
+    return "npm.cmd" if (platform or sys.platform) == "win32" else "npm"
+
+
+def run_docker_compose_config_step(
+    *,
+    source_env: Mapping[str, str] | None = None,
+    timeout: int = 60,
+) -> dict:
+    """Validate Compose with short-lived secret files that are always removed."""
+    secret_parent = PROJECT_ROOT / "data" / "rehearsals" / "release-check-compose"
+    secret_parent.mkdir(parents=True, exist_ok=True)
+    secret_dir = secret_parent / f"run-{secrets.token_hex(8)}"
+    secret_dir.mkdir()
+    result: dict | None = None
+    cleanup_error: OSError | None = None
+    try:
+        env = dict(os.environ if source_env is None else source_env)
+        secret_names = {
+            "PA_API_TOKEN_SECRET_FILE": "api_token",
+            "PA_MYSQL_PASSWORD_SECRET_FILE": "mysql_password",
+            "PA_MYSQL_ROOT_PASSWORD_SECRET_FILE": "mysql_root_password",
+        }
+        for env_name, filename in secret_names.items():
+            path = secret_dir / filename
+            path.write_text(secrets.token_hex(32), encoding="utf-8")
+            path.chmod(0o600)
+            env[env_name] = str(path)
+        result = run_shell_step(
+            "docker_compose_config",
+            [
+                "docker",
+                "compose",
+                "--file",
+                "compose.yaml",
+                "--profile",
+                "ollama-gpu",
+                "config",
+                "--quiet",
+            ],
+            cwd=str(PROJECT_ROOT),
+            timeout=timeout,
+            env=env,
+        )
+    finally:
+        try:
+            shutil.rmtree(secret_dir)
+        except OSError as exc:
+            cleanup_error = exc
+
+    assert result is not None
+    if cleanup_error is not None:
+        result.update(
+            status="failed",
+            returncode=-1,
+            detail="ephemeral Compose secret files could not be removed",
+        )
+    return result
+
+
+def _available_loopback_port() -> int:
+    """Reserve and release a loopback port for the short-lived E2E server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def _wait_for_server(process: subprocess.Popen[bytes], port: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            return False
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return True
+        except OSError:
+            time.sleep(0.1)
+    return False
+
+
+def _stop_managed_process(process: subprocess.Popen[bytes]) -> bool:
+    """Stop a directly spawned helper and report whether it actually exited."""
+    if process.poll() is not None:
+        return True
+    process.terminate()
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            return False
+    return process.poll() is not None
+
+
+def run_managed_e2e_step(
+    npm: str,
+    desktop: str,
+    *,
+    timeout: int = 600,
+    startup_timeout: float = 60,
+) -> dict:
+    """Run Playwright against a directly managed Vite process.
+
+    Playwright's nested ``npm -> cmd -> vite`` webServer process can hang during
+    cleanup on Windows even after every test passed.  Starting Vite directly
+    gives the release check a process handle it can always terminate and verify.
+    """
+    t0 = time.perf_counter()
+    desktop_path = Path(desktop)
+    vite_entry = desktop_path / "node_modules" / "vite" / "bin" / "vite.js"
+    if not vite_entry.is_file():
+        return {
+            "name": "npm_e2e",
+            "kind": "shell",
+            "status": "failed",
+            "duration_ms": 0,
+            "returncode": None,
+            "detail": f"not found: {vite_entry}",
+        }
+
+    port = _available_loopback_port()
+    base_url = f"http://127.0.0.1:{port}"
+    env = os.environ.copy()
+    env["PA_E2E_BASE_URL"] = base_url
+    env["PA_E2E_EXTERNAL_SERVER"] = "1"
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0
+
+    with tempfile.TemporaryFile(mode="w+b") as server_output:
+        server = subprocess.Popen(  # noqa: S603
+            [
+                "node",
+                str(vite_entry),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--strictPort",
+            ],
+            cwd=desktop,
+            stdout=server_output,
+            stderr=subprocess.STDOUT,
+            env=env,
+            creationflags=creationflags,
+            start_new_session=sys.platform != "win32",
+        )
+        try:
+            if not _wait_for_server(server, port, startup_timeout):
+                server_output.flush()
+                server_output.seek(0)
+                detail = server_output.read().decode("utf-8", errors="replace")[-2000:]
+                return {
+                    "name": "npm_e2e",
+                    "kind": "shell",
+                    "status": "failed",
+                    "duration_ms": round((time.perf_counter() - t0) * 1000, 1),
+                    "returncode": server.poll(),
+                    "detail": f"Vite did not become ready at {base_url}\n{detail}".strip(),
+                }
+            result = run_shell_step(
+                "npm_e2e",
+                [npm, "run", "e2e"],
+                cwd=desktop,
+                timeout=timeout,
+                env=env,
+            )
+        finally:
+            stopped = _stop_managed_process(server)
+
+    if not stopped:
+        result.update(
+            status="failed",
+            returncode=-1,
+            detail=f"{result['detail']}\nmanaged Vite process did not exit".strip(),
+        )
+    result["duration_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+    return result
+
+
 # ============ Python 检查 ============
 
 
@@ -107,27 +305,71 @@ def diagnostic_redaction_smoke() -> dict:
 
     from personal_assistant.config import settings as cfg
     from personal_assistant.core.diagnostics import DiagnosticsService
-    from personal_assistant.core.models import Setting
-    from personal_assistant.core.settings import SettingsService
+    from personal_assistant.core.models import DiagnosticRun, Setting
+    from personal_assistant.testing import resolve_test_database_url
 
     fake_key = "sk-release-check-redaction-smoke-9999"
+    test_db_url = resolve_test_database_url(
+        cfg.db_url,
+        os.environ.get("PA_TEST_DB_URL"),
+    )
 
     async def _run() -> bool:
-        eng = create_async_engine(cfg.db_url)
+        eng = create_async_engine(test_db_url)
         try:
             factory = async_sessionmaker(eng, expire_on_commit=False)
             async with factory() as db:
-                await SettingsService(db).update({"openai_api_key": fake_key})
+                row = await db.get(Setting, "openai_api_key")
+                created = row is None
+                original = row.value if row else None
+                if row is None:
+                    row = Setting(key="openai_api_key", value=fake_key)
+                    db.add(row)
+                else:
+                    row.value = fake_key
+                await db.commit()
+                previous_diagnostic_id = int(
+                    await db.scalar(
+                        select(DiagnosticRun.id)
+                        .order_by(DiagnosticRun.id.desc())
+                        .limit(1)
+                    )
+                    or 0
+                )
+                output_path: Path | None = None
                 try:
-                    with tempfile.TemporaryDirectory() as td:
-                        result = await DiagnosticsService(db).export(output_dir=td)
-                        zip_bytes = Path(result["path"]).read_bytes()
-                        return fake_key.encode() not in zip_bytes
+                    output_dir = (
+                        PROJECT_ROOT / "data" / "rehearsals" / "release-check-redaction"
+                    )
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    result = await DiagnosticsService(db).export(
+                        output_dir=str(output_dir)
+                    )
+                    output_path = Path(result["path"])
+                    zip_bytes = output_path.read_bytes()
+                    return fake_key.encode() not in zip_bytes
                 finally:
-                    row = await db.get(Setting, "openai_api_key")
-                    if row:
+                    if output_path is not None:
+                        with suppress(OSError):
+                            output_path.unlink(missing_ok=True)
+                    new_diagnostic_runs = list(
+                        (
+                            await db.scalars(
+                                select(DiagnosticRun).where(
+                                    DiagnosticRun.id > previous_diagnostic_id
+                                )
+                            )
+                        )
+                        .unique()
+                        .all()
+                    )
+                    for diagnostic_run in new_diagnostic_runs:
+                        await db.delete(diagnostic_run)
+                    if created:
                         await db.delete(row)
-                        await db.commit()
+                    else:
+                        row.value = original
+                    await db.commit()
         finally:
             await eng.dispose()
 
@@ -203,7 +445,7 @@ def assemble_report(steps: list[dict], version: str) -> dict:
     passed = [s for s in steps if s["status"] == "passed"]
     return {
         "version": version,
-        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "summary": {"passed": len(passed), "failed": len(failed), "skipped": len(skipped)},
         "ok": len(failed) == 0,
         "steps": steps,
@@ -242,16 +484,17 @@ def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
 def run_all() -> dict:
     version = read_version()
     desktop = str(PROJECT_ROOT / "apps" / "desktop")
+    npm = npm_executable()
     steps: list[dict] = []
 
     steps.append(run_shell_step("pytest", ["uv", "run", "pytest", "-q"], cwd=str(PROJECT_ROOT)))
-    steps.append(run_shell_step("npm_build", ["npm", "run", "build"], cwd=desktop))
+    steps.append(run_shell_step("npm_build", [npm, "run", "build"], cwd=desktop))
     if npm_script_exists("test"):
-        steps.append(run_shell_step("npm_test", ["npm", "run", "test"], cwd=desktop))
+        steps.append(run_shell_step("npm_test", [npm, "run", "test"], cwd=desktop))
     else:
         steps.append(skipped_step("npm_test", "package.json 无 test 脚本（M1 未接入）"))
     if npm_script_exists("e2e"):
-        steps.append(run_shell_step("npm_e2e", ["npm", "run", "e2e"], cwd=desktop))
+        steps.append(run_managed_e2e_step(npm, desktop))
     else:
         steps.append(skipped_step("npm_e2e", "package.json 无 e2e 脚本（M1 未接入）"))
     steps.append(
@@ -265,6 +508,7 @@ def run_all() -> dict:
     steps.append(
         run_shell_step("git_diff_check", ["git", "diff", "--check"], cwd=str(PROJECT_ROOT))
     )
+    steps.append(run_docker_compose_config_step())
     steps.append(diagnostic_redaction_smoke())
     steps.append(validate_latest_json())
     return assemble_report(steps, version)
@@ -278,7 +522,7 @@ def main() -> int:
     args = ap.parse_args()
 
     report = run_all()
-    json_path, md_path = write_report(report, Path(args.out))
+    _json_path, md_path = write_report(report, Path(args.out))
     print(f"[release-check] report: {md_path}")
     print(
         f"  passed={report['summary']['passed']} "

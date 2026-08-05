@@ -14,7 +14,14 @@ from collections.abc import AsyncIterator
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import delete
 
+from personal_assistant.core.models import (
+    MemoryConflict,
+    MemoryEvent,
+    MemoryItem,
+    MemoryRevision,
+)
 from personal_assistant.core.provider import OllamaProvider
 
 
@@ -92,15 +99,24 @@ async def _create_memory(client, created: list[int], **overrides) -> dict:
 
 
 @pytest.fixture(autouse=True)
-async def _mem_cleanup(client):
+async def _mem_cleanup(client, db):
     """追踪并清理本测试创建的记忆，避免共享 DB 跨测试污染。"""
     created: list[int] = []
     yield created
-    for mid in created:
-        try:
-            await client.delete(f"/memories/{mid}")
-        except Exception:  # noqa: BLE001
-            pass
+    if not created:
+        return
+    await db.execute(
+        delete(MemoryConflict).where(
+            (MemoryConflict.left_memory_id.in_(created))
+            | (MemoryConflict.right_memory_id.in_(created))
+        )
+    )
+    await db.execute(delete(MemoryEvent).where(MemoryEvent.memory_id.in_(created)))
+    await db.execute(
+        delete(MemoryRevision).where(MemoryRevision.memory_id.in_(created))
+    )
+    await db.execute(delete(MemoryItem).where(MemoryItem.id.in_(created)))
+    await db.commit()
 
 
 # ============ CRUD ============
@@ -112,6 +128,11 @@ async def test_memory_crud(client, _mem_cleanup):
     assert m["status"] == "confirmed"
     assert m["enabled"] is True
     assert m["sensitive"] is False
+    assert m["memory_version"] == 1
+    assert len(m["stable_key"]) == 32
+    assert len(m["content_sha256"]) == 64
+    assert m["importance"] == pytest.approx(0.5)
+    assert m["sensitivity_level"] == "normal"
     mid = m["id"]
 
     res = await client.get(f"/memories/{mid}")
@@ -128,12 +149,48 @@ async def test_memory_crud(client, _mem_cleanup):
     body = res.json()
     assert body["title"] == "类比偏好（更新）"
     assert body["tags_json"] == ["os"]
+    assert body["memory_version"] == 2
 
     assert (await client.get("/memories/999999")).status_code == 404
 
     assert (await client.delete(f"/memories/{mid}")).status_code == 204
     assert (await client.get(f"/memories/{mid}")).status_code == 404
-    _mem_cleanup.clear()  # 已删除，避免 cleanup 再删
+    revisions = (await client.get(f"/memories/{mid}/revisions")).json()
+    assert [revision["change_type"] for revision in revisions] == [
+        "created",
+        "edited",
+        "deleted",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_memory_conflict_api(client, _mem_cleanup):
+    left = await _create_memory(client, _mem_cleanup, content_md="部署到 A 区域")
+    right = await _create_memory(client, _mem_cleanup, content_md="部署到 B 区域")
+
+    created = await client.post(
+        "/memory-conflicts",
+        json={
+            "left_memory_id": right["id"],
+            "right_memory_id": left["id"],
+            "reason": "部署区域相互冲突",
+        },
+    )
+    assert created.status_code == 201, created.text
+    conflict = created.json()
+    assert conflict["left_memory_id"] == min(left["id"], right["id"])
+    assert conflict["right_memory_id"] == max(left["id"], right["id"])
+    assert any(
+        item["id"] == conflict["id"]
+        for item in (await client.get("/memory-conflicts")).json()
+    )
+
+    resolved = await client.post(
+        f"/memory-conflicts/{conflict['id']}/resolve",
+        json={"resolution": {"winner_memory_id": right["id"]}},
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["status"] == "resolved"
 
 
 # ============ 搜索 ============

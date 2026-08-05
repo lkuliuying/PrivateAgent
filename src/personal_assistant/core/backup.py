@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .. import __version__
 from ..config import settings
 from .models import DocChunk, Setting
+from .settings import PROVIDER_SECRET_REFS, is_provider_secret_reference
 from .timeutil import utcnow
 
 
@@ -62,6 +63,22 @@ BACKUP_TABLES = [
     "integration_sources",
     "integration_imports",
     "extension_registry_items",
+    # Modern Agent Runtime, durable approvals, structured memory, and versioned RAG.
+    # Missing additive tables on a pre-upgrade database are exported as empty lists.
+    "agent_runs",
+    "run_steps",
+    "agent_run_events",
+    "tool_approvals",
+    "agent_run_checkpoints",
+    "agent_tool_executions",
+    "memory_facts",
+    "memory_fact_versions",
+    "document_index_versions",
+    "document_index_chunks",
+    "document_index_heads",
+    # MCP registry configuration and metadata-only audit. OS credentials are excluded.
+    "mcp_servers",
+    "mcp_call_logs",
 ]
 
 
@@ -135,6 +152,7 @@ class BackupService:
             "includes": {
                 "mysql_business_data": True,
                 "settings": True,
+                "os_credentials": False,
                 "chroma_path": str(settings.chroma_dir),
                 "chroma_files_embedded": False,
             },
@@ -175,6 +193,10 @@ class BackupService:
         for row in tables.get("settings", []):
             key = str(row.get("key") or "")
             if not key:
+                continue
+            if key in PROVIDER_SECRET_REFS:
+                # Credentials are restored only through the OS credential store.
+                # This also prevents old backups from reintroducing plaintext rows.
                 continue
             existing = await self.db.get(Setting, key)
             if existing:
@@ -287,12 +309,33 @@ class BackupService:
     async def _dump_table(self, table: str) -> list[dict[str, Any]]:
         try:
             # stream_results=True 用服务端游标分批拉取，降低大表单次内存峰值（第八阶段审查）。
-            result = await self.db.execute(
+            result = await self.db.stream(
                 text(f"SELECT * FROM {table}").execution_options(stream_results=True)
             )
         except Exception:  # noqa: BLE001
             return []
-        return [dict(row) for row in result.mappings().all()]
+        rows = [dict(row) async for row in result.mappings()]
+        if table == "settings":
+            for row in rows:
+                key = str(row.get("key") or "")
+                value = row.get("value")
+                if key in PROVIDER_SECRET_REFS and not is_provider_secret_reference(
+                    key, str(value) if value is not None else None
+                ):
+                    row["value"] = ""
+        elif table == "mcp_servers":
+            # Preserve environment variable names but never copy their plaintext
+            # values into an unencrypted backup archive. Secret refs are identifiers.
+            for row in rows:
+                environment = row.get("env_json")
+                if isinstance(environment, str):
+                    try:
+                        environment = json.loads(environment)
+                    except json.JSONDecodeError:
+                        environment = {}
+                if isinstance(environment, dict):
+                    row["env_json"] = {str(name): "" for name in environment}
+        return rows
 
     @staticmethod
     def _read_backup(backup_path: str) -> tuple[dict, dict]:

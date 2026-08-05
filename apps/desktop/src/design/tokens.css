@@ -8,62 +8,63 @@
 
 :root {
   /* ============ 字体 ============ */
-  --font-sans: "Aptos", "Segoe UI Variable", "PingFang SC", "Microsoft YaHei",
+  --font-sans: "Segoe UI Variable", "Aptos", "PingFang SC", "Microsoft YaHei",
     sans-serif;
-  --font-display: "Songti SC", "STSong", "Noto Serif CJK SC", serif;
+  --font-display: var(--font-sans);
   --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono",
     Menlo, monospace;
 
   /* ============ 颜色 · 浅色主题（默认）============ */
   /* 背景层 */
-  --color-bg: #f5f7f8; /* 冷灰白 · 应用底色 */
+  --color-bg: #f5f9fa; /* 冷灰白 · 应用底色 */
   --color-surface: #ffffff; /* 主表面 */
-  --color-surface-sunken: #edf1f1; /* 输入与内陷区 */
+  --color-surface-sunken: #edf5f6; /* 输入与内陷区 */
+  --color-surface-muted: #f1f7f8;
   --color-surface-raised: #ffffff; /* 抬升表面 */
-  --color-panel: #f9fbfb; /* 次级工作台表面 */
-  --color-surface-hover: #f0f5f3;
+  --color-panel: #f8fbfc; /* 次级工作台表面 */
+  --color-surface-hover: #edf6f7;
 
   /* 文字层 */
-  --color-fg: #17211f; /* 主文字 */
-  --color-fg-muted: #4f5e5a; /* 次级文字 */
-  --color-fg-subtle: #66736f; /* 辅助文字 */
-  --color-fg-faint: #8b9793; /* 提示/占位 */
-  --color-fg-disabled: #bfc1ba; /* 禁用 */
+  --color-fg: #172b32; /* 主文字 */
+  --color-fg-muted: #4f666e; /* 次级文字 */
+  --color-fg-subtle: #667b82; /* 辅助文字 */
+  --color-fg-faint: #8ba0a6; /* 提示/占位 */
+  --color-fg-disabled: #b9c8cc; /* 禁用 */
 
   /* 描边 */
-  --color-border: #e5eae8; /* 弱分割线 */
-  --color-border-strong: #d5ddda; /* 输入框/强调边 */
+  --color-border: #dce8ea; /* 弱分割线 */
+  --color-border-strong: #cbdcdf; /* 输入框/强调边 */
 
   /* 强调色 · 青蓝（仅用于激活态/链接/聚焦环，不铺满） */
-  --color-accent: #2f7b69;
-  --color-accent-hover: #286858;
-  --color-accent-active: #1f5145;
+  --color-accent: #08aeb5;
+  --color-accent-hover: #07959c;
+  --color-accent-active: #06777e;
   --color-accent-fg: #ffffff;
-  --color-accent-soft: #e7f0eb;
-  --color-accent-soft-fg: #285f51;
+  --color-accent-soft: #dff7f7;
+  --color-accent-soft-fg: #08777d;
 
   /* 语义状态色 */
-  --color-success: #16a34a;
-  --color-success-soft: #dcfce7;
-  --color-success-fg: #166534;
-  --color-warning: #d97706; /* 琥珀 */
-  --color-warning-soft: #fef3c7;
-  --color-warning-fg: #92400e;
-  --color-danger: #dc2626; /* 危险操作 */
-  --color-danger-soft: #fee2e2;
-  --color-danger-fg: #b91c1c;
+  --color-success: #21a67a;
+  --color-success-soft: #def5ec;
+  --color-success-fg: #157052;
+  --color-warning: #d89a32; /* 琥珀 */
+  --color-warning-soft: #fff3dc;
+  --color-warning-fg: #8e5d10;
+  --color-danger: #db5a65; /* 危险操作 */
+  --color-danger-soft: #fde8ea;
+  --color-danger-fg: #a3313b;
   --color-info: #2563eb;
   --color-info-soft: #dbeafe;
 
   /* 导航 rail · 深色（与浅色内容区对照） */
-  --color-rail-bg: #132321;
+  --color-rail-bg: #082832;
   --color-rail-surface: rgba(255, 255, 255, 0.08); /* rail 内 hover */
-  --color-rail-active: rgba(139, 190, 173, 0.2); /* rail 内选中 */
+  --color-rail-active: rgba(8, 174, 181, 0.17); /* rail 内选中 */
   --color-rail-border: rgba(255, 255, 255, 0.08);
-  --color-rail-fg: #dce7e2;
+  --color-rail-fg: #dcebed;
   --color-rail-fg-strong: #ffffff;
-  --color-rail-fg-muted: #9eaea8;
-  --color-rail-accent: #78b8a6; /* rail 内激活指示 */
+  --color-rail-fg-muted: #91a9af;
+  --color-rail-accent: #5fe0e5; /* rail 内激活指示 */
 
   /* ============ 字号 ============ */
   --text-xs: 11px;
@@ -95,13 +96,13 @@
   --radius-sm: 4px;
   --radius: 6px;
   --radius-md: 10px;
-  --radius-lg: 16px;
+  --radius-lg: 14px;
   --radius-full: 9999px;
 
   /* ============ 阴影（克制）============ */
-  --shadow-sm: 0 1px 2px rgba(20, 38, 33, 0.04);
-  --shadow: 0 8px 24px rgba(20, 38, 33, 0.055);
-  --shadow-lg: 0 18px 48px rgba(20, 38, 33, 0.08);
+  --shadow-sm: 0 1px 2px rgba(8, 40, 50, 0.04);
+  --shadow: 0 8px 24px rgba(8, 40, 50, 0.06);
+  --shadow-lg: 0 18px 48px rgba(8, 40, 50, 0.1);
 
   /* ============ 动效（plan 要求 120–180ms）============ */
   --duration-fast: 120ms;
@@ -112,10 +113,11 @@
 
   /* ============ 布局尺寸 ============ */
   --rail-w: 240px;
-  --list-w: 280px;
-  --inspector-w: 340px;
-  --statusbar-h: 32px;
-  --topbar-h: 56px;
+  --rail-collapsed-w: 72px;
+  --list-w: 0px;
+  --inspector-w: 360px;
+  --statusbar-h: 30px;
+  --topbar-h: 72px;
 
   /* ============ z-index 层级 ============ */
   --z-base: 0;

@@ -2,7 +2,6 @@
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
-import SessionList from "./components/SessionList.vue";
 import InspectorPanel from "./components/InspectorPanel.vue";
 import StatusBar from "./components/StatusBar.vue";
 import TaskWorkspace from "./components/TaskWorkspace.vue";
@@ -31,10 +30,14 @@ import {
   setApiBase,
   setApiBaseDefault,
   streamChat,
+  streamAgentRunContinuation,
   planTools,
   approveToolCall,
+  approveAgentRunTool,
   rejectToolCall,
+  rejectAgentRunTool,
   listToolCalls,
+  listPendingAgentApprovals,
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
@@ -42,17 +45,17 @@ import {
   candidateMemories,
   createInbox,
   getApiInfo,
+  getRuntimeCapabilities,
+  shouldUseLegacyToolPlanner,
 } from "./api";
-import type { Message, MemorySource, Session, Source, ToolCall, View } from "./types";
+import type { Session, View } from "./types";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
-
-type ChatMessage = Message & {
-  sources?: Source[];
-  memories?: MemorySource[];
-  tool_call?: ToolCall;
-  clientKey?: string;
-};
+import {
+  deriveTaskState,
+  type AgentWorkspaceMessage,
+} from "./models/agentWorkspace";
+import { createAgentWorkspacePreview } from "./dev/agentWorkspacePreview";
 
 // 统一通知/确认/toast store（第七阶段 M4 基建）
 const notify = useNotifications();
@@ -70,20 +73,27 @@ const bootError = ref("");
 
 const sessions = ref<Session[]>([]);
 const currentSessionId = ref<number | null>(null);
-const messages = ref<ChatMessage[]>([]);
-const view = ref<View>("today");
+const messages = ref<AgentWorkspaceMessage[]>([]);
+const view = ref<View>("chat");
 const streaming = ref(false);
+// Capability discovery is backward-compatible: unknown/old backends retain the legacy planner.
+const useLegacyToolPlanner = ref(true);
 const knowledgeBase = ref(false);
+const railCollapsed = ref(false);
+const previewMode =
+  import.meta.env.DEV &&
+  new URLSearchParams(window.location.search).get("workspace-preview") === "running";
+const workspacePreview = previewMode ? createAgentWorkspacePreview() : null;
 // 当前在检查器中展示的引用片段 id（点击来源后设置）
 const currentChunkId = ref<number | null>(null);
 // 右侧检查器折叠状态：宽屏默认展开，窄屏默认收起。
 // rail(60)+list(280)+inspector(340)=680；低于 INSPECTOR_MIN_W 展开会挤压主工作区。
-const INSPECTOR_MIN_W = 1100;
+const INSPECTOR_MIN_W = 1320;
 const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280
 );
 const inspectorOpen = ref(
-  typeof window !== "undefined" && window.innerWidth >= 1280
+  typeof window !== "undefined" && window.innerWidth >= INSPECTOR_MIN_W
 );
 // 仅在 chat 视图且视口足够宽时允许切换检查器，避免窄屏挤压主工作区
 const inspectorToggleable = computed(
@@ -107,8 +117,13 @@ const pendingToolText = ref<Map<number, string>>(new Map());
 const planningCancelled = ref(false);
 // 是否有未决工具调用（待审批时阻止发送新消息，避免交错持久化/单槽覆盖）
 const hasPendingTool = computed(
-  () => messages.value.some((m) => m.tool_call?.status === "pending_approval")
+  () => messages.value.some(
+    (m) =>
+      m.tool_call?.status === "pending_approval" ||
+      m.agent_approval?.status === "pending"
+  )
 );
+const taskState = computed(() => deriveTaskState(messages.value, streaming.value));
 
 const currentSession = computed(
   () => sessions.value.find((s) => s.id === currentSessionId.value) ?? null
@@ -118,7 +133,7 @@ const currentSession = computed(
 const pageTitle = computed(() => {
   switch (view.value) {
     case "chat":
-      return currentSession.value?.title || "私人助手";
+      return currentSession.value?.title || "新任务";
     case "today":
       return "今日";
     case "kb":
@@ -197,7 +212,15 @@ async function boot() {
   if (!isDesktopRuntime()) {
     setApiBaseDefault();
     bootState.value = "done";
-    await loadSessions();
+    if (previewMode) {
+      const preview = workspacePreview!;
+      sessions.value = [preview.session];
+      currentSessionId.value = preview.session.id;
+      messages.value = preview.messages;
+      streaming.value = true;
+      return;
+    }
+    await initializeConnectedWorkspace();
     return;
   }
 
@@ -215,18 +238,18 @@ async function boot() {
   if (res.dev_mode) {
     setApiBaseDefault();
     bootState.value = "dev";
-    await loadSessions();
+    await initializeConnectedWorkspace();
     return;
   }
 
   // 打包模式：sidecar 已 spawn。
-  if (res.ok && res.port) {
+  if (res.ok && res.port && res.token) {
     bootState.value = "starting";
-    setApiBase(res.port);
+    setApiBase(res.port, res.token);
     const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
-      await loadSessions();
+      await initializeConnectedWorkspace();
     } else {
       bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
       bootState.value = "error";
@@ -275,12 +298,12 @@ async function onWizardDone() {
   // 首次运行：启动 sidecar。
   bootState.value = "starting";
   const res = await cmdStartSidecar().catch(() => null);
-  if (res && res.ok && res.port) {
-    setApiBase(res.port);
+  if (res && res.ok && res.port && res.token) {
+    setApiBase(res.port, res.token);
     const ready = await pollApiReady(90);
     if (ready) {
       bootState.value = "done";
-      await loadSessions();
+      await initializeConnectedWorkspace();
     } else {
       bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
       bootState.value = "error";
@@ -322,6 +345,17 @@ function onSearchNavigate(v: View) {
 }
 
 // ============ 会话 / 对话 ============
+
+async function initializeConnectedWorkspace() {
+  try {
+    const capabilities = await getRuntimeCapabilities();
+    useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(capabilities);
+  } catch {
+    // A pre-capabilities backend still owns planning through /tools/plan.
+    useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(null);
+  }
+  await loadSessions();
+}
 
 async function loadSessions() {
   try {
@@ -371,6 +405,25 @@ async function rehydrateToolCalls(sessionId: number) {
     }
   } catch {
     // 工具调用加载失败不影响会话查看
+  }
+  try {
+    const approvals = await listPendingAgentApprovals(sessionId);
+    for (const approval of approvals) {
+      if (!messages.value.some((message) => message.agent_approval?.id === approval.id)) {
+        messages.value.push({
+          id: -Date.now() - messages.value.length,
+          session_id: sessionId,
+          role: "assistant",
+          content: "",
+          created_at: approval.created_at,
+          agent_approval: approval,
+          runId: approval.run_id,
+          clientKey: `agent-approval-${approval.id}`,
+        });
+      }
+    }
+  } catch {
+    // Agent Runtime is default-off; a hidden approval API must not break chat loading.
   }
 }
 
@@ -425,7 +478,12 @@ function sendMessage(text: string) {
   planningCancelled.value = false;
   const mySeq = ++planSeq;
 
-  // plan-then-reply：先判断是否需工具
+  if (!useLegacyToolPlanner.value) {
+    streamAssistantReply(sid, text, kb);
+    return;
+  }
+
+  // Legacy compatibility only: Agent Runtime performs its own planning in /chat/stream.
   planTools(sid, text)
     .then((res) => {
       // 被用户停止或被新消息取代：放弃本次 plan 结果
@@ -470,7 +528,7 @@ function streamAssistantReply(
   toolResult?: { tool_name: string; output: Record<string, unknown> }
 ) {
   const streamId = ++streamSeq;
-  const assistantMessage: ChatMessage = {
+  const assistantMessage: AgentWorkspaceMessage = {
     id: -2,
     session_id: sid,
     role: "assistant",
@@ -479,7 +537,24 @@ function streamAssistantReply(
     clientKey: nextChatKey("assistant"),
   };
   messages.value.push(assistantMessage);
+  let responseMessage: AgentWorkspaceMessage | null = assistantMessage;
+  let activeRunId: string | undefined;
   streaming.value = true;
+
+  const ensureResponseMessage = (): AgentWorkspaceMessage => {
+    if (responseMessage) return responseMessage;
+    responseMessage = {
+      id: -Date.now(),
+      session_id: sid,
+      role: "assistant",
+      content: "",
+      created_at: new Date().toISOString(),
+      clientKey: nextChatKey("assistant"),
+      runId: activeRunId,
+    };
+    messages.value.push(responseMessage);
+    return responseMessage;
+  };
 
   const isCurrentStream = () =>
     streamId === streamSeq && currentSessionId.value === sid;
@@ -490,23 +565,46 @@ function streamAssistantReply(
     kb,
     (e) => {
       if (!isCurrentStream()) return;
-      if (e.type === "token" && e.content) {
-        assistantMessage.content += e.content;
+      if (e.type === "run" && e.run_id) {
+        activeRunId = e.run_id;
+        if (responseMessage) responseMessage.runId = e.run_id;
+      } else if (e.type === "approval" && e.approval) {
+        activeRunId = e.approval.run_id;
+        const approvalMessage = ensureResponseMessage();
+        approvalMessage.content = "";
+        approvalMessage.runId = e.approval.run_id;
+        approvalMessage.agent_approval = e.approval;
+        approvalMessage.clientKey = `agent-approval-${e.approval.id}`;
+        responseMessage = null;
+      } else if (e.type === "token" && e.content) {
+        ensureResponseMessage().content += e.content;
       } else if (e.type === "done") {
-        if (e.message_id) assistantMessage.id = e.message_id;
-        if (e.content) assistantMessage.content = e.content;
-        if (e.sources) assistantMessage.sources = e.sources;
-        if (e.memories) assistantMessage.memories = e.memories;
+        const completedMessage = ensureResponseMessage();
+        if (e.run_id) {
+          for (const message of messages.value) {
+            if (
+              message.agent_approval?.run_id === e.run_id &&
+              message.agent_approval.status === "approved"
+            ) {
+              message.agent_approval = { ...message.agent_approval, status: "consumed" };
+            }
+          }
+        }
+        if (e.run_id) completedMessage.runId = e.run_id;
+        if (e.message_id) completedMessage.id = e.message_id;
+        if (e.content) completedMessage.content = e.content;
+        if (e.sources) completedMessage.sources = e.sources;
+        if (e.memories) completedMessage.memories = e.memories;
       } else if (e.type === "title" && e.title) {
         const s = sessions.value.find((x) => x.id === sid);
         if (s) s.title = e.title;
       } else if (e.type === "error" && e.message) {
-        assistantMessage.content += `\n\n[错误：${e.message}]`;
+        ensureResponseMessage().content += `\n\n[错误：${e.message}]`;
       }
     },
     (err) => {
       if (!isCurrentStream()) return;
-      assistantMessage.content += `\n\n[连接错误：${err}]`;
+      ensureResponseMessage().content += `\n\n[连接错误：${err}]`;
       streaming.value = false;
       controller = null;
     },
@@ -520,6 +618,54 @@ function streamAssistantReply(
 }
 
 /** 从当前对话生成候选记忆（落库 draft，待用户在记忆页确认）。 */
+function continueAgentReply(runId: string, sid: number) {
+  const streamId = ++streamSeq;
+  const assistantMessage: AgentWorkspaceMessage = {
+    id: -Date.now(),
+    session_id: sid,
+    role: "assistant",
+    content: "",
+    created_at: new Date().toISOString(),
+    clientKey: nextChatKey("assistant"),
+    runId,
+  };
+  messages.value.push(assistantMessage);
+  streaming.value = true;
+  const isCurrentStream = () =>
+    streamId === streamSeq && currentSessionId.value === sid;
+
+  controller = streamAgentRunContinuation(
+    runId,
+    (event) => {
+      if (!isCurrentStream()) return;
+      if (event.type === "token" && event.content) {
+        assistantMessage.content += event.content;
+      } else if (event.type === "done") {
+        if (event.message_id) assistantMessage.id = event.message_id;
+        if (event.content) assistantMessage.content = event.content;
+        for (const message of messages.value) {
+          if (message.agent_approval?.run_id === runId) {
+            message.agent_approval = { ...message.agent_approval, status: "consumed" };
+          }
+        }
+      } else if (event.type === "error" && event.message) {
+        assistantMessage.content += `\n\n[错误：${event.message}]`;
+      }
+    },
+    (error) => {
+      if (!isCurrentStream()) return;
+      assistantMessage.content += `\n\n[连接错误：${error}]`;
+      streaming.value = false;
+      controller = null;
+    },
+    () => {
+      if (!isCurrentStream()) return;
+      streaming.value = false;
+      controller = null;
+    }
+  );
+}
+
 async function onGenCandidates() {
   if (!currentSession.value) return;
   const sid = currentSession.value.id;
@@ -608,6 +754,37 @@ async function onRejectToolCall(id: number) {
   pendingToolText.value.delete(id);
 }
 
+async function onApproveAgentRunTool(runId: string, approvalId: string) {
+  if (!currentSession.value) return;
+  const sessionId = currentSession.value.id;
+  const hasLiveStream = controller !== null && streaming.value;
+  const message = messages.value.find(
+    (item) => item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
+  );
+  if (!message?.agent_approval) return;
+  message.agent_approval = { ...message.agent_approval, status: "approved" };
+  try {
+    await approveAgentRunTool(runId, approvalId);
+    if (!hasLiveStream) continueAgentReply(runId, sessionId);
+  } catch (error) {
+    message.agent_approval = { ...message.agent_approval, status: "pending" };
+    notify.error("Agent 工具审批失败", String(error));
+  }
+}
+
+async function onRejectAgentRunTool(runId: string, approvalId: string) {
+  const message = messages.value.find(
+    (item) => item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
+  );
+  if (!message?.agent_approval) return;
+  try {
+    await rejectAgentRunTool(runId, approvalId);
+    message.agent_approval = { ...message.agent_approval, status: "rejected" };
+  } catch (error) {
+    notify.error("Agent 工具拒绝失败", String(error));
+  }
+}
+
 function stopGenerate() {
   // 标记 planning 取消，阻止 plan 完成后继续回复（plan 阶段 controller 尚未赋值）
   planningCancelled.value = true;
@@ -653,28 +830,26 @@ function stopGenerate() {
     v-else
     data-animation-root
     :title="pageTitle"
-    :show-dev-tag="bootState === 'dev'"
-    :show-list="view === 'chat'"
+    :task-state="taskState"
+    :show-dev-tag="bootState === 'dev' || previewMode"
     :inspector-open="view === 'chat' && inspectorOpen"
     :inspector-toggleable="inspectorToggleable"
     :show-topbar="view === 'chat'"
     :show-statusbar="view !== 'today'"
+    :rail-collapsed="railCollapsed"
     @toggle-inspector="inspectorOpen = !inspectorOpen"
   >
     <template #rail>
       <NavRail
         :active="view"
-        @navigate="onNavigate"
-        @open-command="commandPaletteOpen = true"
-      />
-    </template>
-
-    <template #list>
-      <SessionList
         :sessions="sessions"
         :current-id="currentSessionId"
-        @select="selectSession"
-        @new="newSession"
+        :collapsed="railCollapsed"
+        @navigate="onNavigate"
+        @open-command="commandPaletteOpen = true"
+        @new-session="newSession"
+        @select-session="selectSession"
+        @toggle-collapse="railCollapsed = !railCollapsed"
       />
     </template>
 
@@ -706,13 +881,19 @@ function stopGenerate() {
       @toggle-kb="knowledgeBase = !knowledgeBase"
       @approve="onApproveToolCall"
       @reject="onRejectToolCall"
+      @approve-agent="onApproveAgentRunTool"
+      @reject-agent="onRejectAgentRunTool"
       @select-chunk="currentChunkId = $event"
       @gen-candidates="onGenCandidates"
       @save-inbox="onSaveMessageToInbox"
     />
     <div v-else class="welcome">
-      <p class="welcome-title">👋 欢迎使用私人助手</p>
-      <p class="hint">点击左侧「新建」开始对话</p>
+      <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
+      <p class="welcome-title">准备好开始一个新任务</p>
+      <p class="hint">PrivateAgent 会先建立计划，再清晰展示执行过程、工具调用与结果。</p>
+      <button class="pa-btn pa-btn--primary" :disabled="streaming" @click="newSession">
+        新建任务
+      </button>
     </div>
 
     <template #inspector>
@@ -720,6 +901,9 @@ function stopGenerate() {
         :session="currentSession"
         :message-count="messages.length"
         :chunk-id="currentChunkId"
+        :preview-trusted="workspacePreview?.trusted"
+        :preview-activities="workspacePreview?.activities"
+        @close="inspectorOpen = false"
       />
     </template>
 
@@ -798,14 +982,27 @@ function stopGenerate() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  padding: var(--space-8);
   color: var(--color-fg-subtle);
+  text-align: center;
 }
 .welcome-title {
-  margin: var(--space-1) 0;
-  font-size: var(--text-lg);
+  margin: var(--space-2) 0;
+  color: var(--color-fg);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-semibold);
+}
+.welcome-kicker {
+  color: var(--color-accent-soft-fg);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.12em;
 }
 .welcome .hint {
+  max-width: 520px;
+  margin: 0 0 var(--space-5);
+  color: var(--color-fg-subtle);
   font-size: var(--text-sm);
-  color: var(--color-fg-faint);
+  line-height: var(--leading-normal);
 }
 </style>

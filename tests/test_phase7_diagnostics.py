@@ -25,6 +25,20 @@ from personal_assistant.core.diagnostics import (
 from personal_assistant.core.settings import SettingsService
 
 
+async def _set_legacy_provider_secret(db, value: str):
+    """Seed a pre-migration row without using the now reference-only service API."""
+    from personal_assistant.core.models import Setting
+
+    row = await db.get(Setting, "openai_api_key")
+    if row is None:
+        row = Setting(key="openai_api_key", value=value)
+        db.add(row)
+    else:
+        row.value = value
+    await db.commit()
+    return row
+
+
 @pytest.fixture
 async def cleanup(db):
     created: list = []
@@ -76,6 +90,7 @@ async def test_diagnostics_snapshot(db, cleanup):
         "recent_errors",
         "settings_redacted",
         "db_url_redacted",
+        "compatibility_telemetry",
     ):
         assert key in snap, f"缺少诊断字段 {key}"
     assert snap["version"] == __version__
@@ -84,12 +99,7 @@ async def test_diagnostics_snapshot(db, cleanup):
 @pytest.mark.asyncio
 async def test_diagnostics_snapshot_redacts_keys(db, cleanup):
     """snapshot 的 settings_redacted 不含原始 API key。"""
-    svc = SettingsService(db)
-    await svc.update({"openai_api_key": "sk-supersecret-value-123"})
-    # 清理：恢复为空
-    from personal_assistant.core.models import Setting
-
-    cleanup.append(await db.get(Setting, "openai_api_key"))
+    cleanup.append(await _set_legacy_provider_secret(db, "sk-supersecret-value-123"))
 
     snap = await DiagnosticsService(db).snapshot()
     red = snap["settings_redacted"]
@@ -102,7 +112,7 @@ async def test_diagnostics_snapshot_redacts_keys(db, cleanup):
 async def test_diagnostics_export_zip(client, db, tmp_path):
     """export 生成 zip，含 6 个文件，settings.redacted.json 不含原始 key。"""
     svc = SettingsService(db)
-    await svc.update({"openai_api_key": "sk-export-secret-999"})
+    await _set_legacy_provider_secret(db, "sk-export-secret-999")
 
     r = await client.post("/diagnostics/export", json={"output_dir": str(tmp_path)})
     assert r.status_code == 200
@@ -133,3 +143,4 @@ async def test_diagnostics_export_zip(client, db, tmp_path):
 
     # 清理 zip
     zip_path.unlink(missing_ok=True)
+    await svc.update({"openai_api_key": ""})

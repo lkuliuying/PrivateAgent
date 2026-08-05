@@ -1,384 +1,269 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import {
-  PhChatsCircle,
-  PhSun,
+  PhActivity,
   PhBooks,
+  PhBrain,
+  PhChatsCircle,
+  PhCommand,
+  PhDatabase,
+  PhDotsThree,
   PhFolderSimple,
+  PhGearSix,
   PhGraduationCap,
   PhListChecks,
-  PhBrain,
-  PhGearSix,
-  PhActivity,
-  PhPuzzlePiece,
+  PhPlus,
   PhPlugs,
-  PhDatabase,
-  PhCommand,
-  PhDotsThree,
+  PhPuzzlePiece,
+  PhSidebarSimple,
+  PhSparkle,
+  PhSun,
+  PhUserCircle,
 } from "@phosphor-icons/vue";
-import type { View } from "../types";
+import type { Session, View } from "../types";
 
-defineProps<{ active: View }>();
+withDefaults(
+  defineProps<{
+    active: View;
+    sessions?: Session[];
+    currentId?: number | null;
+    collapsed?: boolean;
+  }>(),
+  {
+    sessions: () => [],
+    currentId: null,
+    collapsed: false,
+  }
+);
 const emit = defineEmits<{
   navigate: [view: View];
   "open-command": [];
+  "new-session": [];
+  "select-session": [id: number];
+  "toggle-collapse": [];
 }>();
-const advancedOpen = ref(false);
+const utilitiesOpen = ref(false);
 
 const primaryItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
-  { key: "today", label: "今日", icon: PhSun },
-  { key: "chat", label: "对话", icon: PhChatsCircle },
+  { key: "tasks", label: "任务", icon: PhListChecks },
+  { key: "chat", label: "Agent", icon: PhChatsCircle },
   { key: "kb", label: "知识库", icon: PhBooks },
+  { key: "integrations", label: "集成", icon: PhPlugs },
+  { key: "settings", label: "设置", icon: PhGearSix },
 ];
 
-const workItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
-  { key: "tasks", label: "任务", icon: PhListChecks },
+const utilityItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
+  { key: "today", label: "今日", icon: PhSun },
   { key: "projects", label: "项目", icon: PhFolderSimple },
   { key: "learning", label: "学习", icon: PhGraduationCap },
   { key: "memory", label: "记忆", icon: PhBrain },
-];
-
-const advancedItems: { key: View; label: string; icon: typeof PhChatsCircle }[] = [
   { key: "diagnostics", label: "诊断", icon: PhActivity },
   { key: "extensions", label: "扩展", icon: PhPuzzlePiece },
-  { key: "integrations", label: "集成", icon: PhPlugs },
   { key: "backup", label: "备份", icon: PhDatabase },
 ];
+
+function formatRelative(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const diff = Date.now() - date.getTime();
+  if (diff < 60_000) return "刚刚";
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟`;
+  if (date.toDateString() === new Date().toDateString()) {
+    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  }
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
 </script>
 
 <template>
-  <nav class="navrail" aria-label="主导航">
-    <div class="navrail-brand" title="私人助手" data-motion-logo>
-      <div class="brand-mark">P</div>
+  <nav class="navrail" :class="{ 'is-collapsed': collapsed }" aria-label="主导航">
+    <div class="navrail-brand" title="PrivateAgent 本地智能体">
+      <div class="brand-mark"><PhSparkle :size="22" weight="fill" /></div>
       <div class="brand-copy">
         <strong>PrivateAgent</strong>
-        <span>本地优先</span>
+        <span>LOCAL AGENT</span>
       </div>
     </div>
 
-    <ul class="navrail-items" aria-label="主要功能">
-      <li v-for="item in primaryItems" :key="item.key">
-        <button
-          class="nav-item"
-          :class="{ active: active === item.key }"
-          :aria-current="active === item.key ? 'page' : undefined"
-          :title="item.label"
-          @click="emit('navigate', item.key)"
-        >
-          <component :is="item.icon" class="nav-icon" :size="20" weight="regular" />
-          <span class="nav-label">{{ item.label }}</span>
-        </button>
-      </li>
-    </ul>
+    <button class="new-task" title="新建任务" @click="emit('new-session')">
+      <PhPlus :size="18" weight="bold" />
+      <span>新建任务</span>
+    </button>
 
-    <ul class="navrail-items navrail-group" aria-label="工作区">
-      <li v-for="item in workItems" :key="item.key">
-        <button
-          class="nav-item"
-          :class="{ active: active === item.key }"
-          :aria-current="active === item.key ? 'page' : undefined"
-          :title="item.label"
-          @click="emit('navigate', item.key)"
-        >
-          <component :is="item.icon" class="nav-icon" :size="20" weight="regular" />
-          <span class="nav-label">{{ item.label }}</span>
-        </button>
-      </li>
-    </ul>
+    <div class="rail-scroll">
+      <span class="nav-section-label">工作台</span>
+      <ul class="navrail-items" aria-label="主要功能">
+        <li v-for="item in primaryItems" :key="item.key">
+          <button
+            class="nav-item"
+            :data-testid="`nav-${item.key}`"
+            :class="{ active: active === item.key }"
+            :aria-current="active === item.key ? 'page' : undefined"
+            :title="item.label"
+            @click="emit('navigate', item.key)"
+          >
+            <component :is="item.icon" class="nav-icon" :size="19" />
+            <span class="nav-label">{{ item.label }}</span>
+          </button>
+        </li>
+      </ul>
 
-    <div class="navrail-utilities">
       <button
         class="nav-item utility-toggle"
-        :class="{ active: advancedOpen || advancedItems.some((item) => item.key === active) }"
-        :aria-expanded="advancedOpen"
-        title="更多工具"
-        @click="advancedOpen = !advancedOpen"
+        data-testid="nav-utilities-toggle"
+        :class="{ active: utilitiesOpen || utilityItems.some((item) => item.key === active) }"
+        :aria-expanded="utilitiesOpen"
+        title="更多工作区"
+        @click="utilitiesOpen = !utilitiesOpen"
       >
         <PhDotsThree class="nav-icon" :size="20" weight="bold" />
-        <span class="nav-label">更多</span>
+        <span class="nav-label">更多工作区</span>
       </button>
-
-      <Transition name="nav-more">
-        <ul v-if="advancedOpen" class="navrail-items advanced-items" aria-label="更多工具">
-          <li v-for="item in advancedItems" :key="item.key">
+      <Transition name="rail-more">
+        <ul v-if="utilitiesOpen" class="navrail-items utility-items advanced-items" aria-label="更多工作区">
+          <li v-for="item in utilityItems" :key="item.key">
             <button
               class="nav-item nav-item--compact"
+              :data-testid="`nav-${item.key}`"
               :class="{ active: active === item.key }"
               :aria-current="active === item.key ? 'page' : undefined"
               :title="item.label"
               @click="emit('navigate', item.key)"
             >
-              <component :is="item.icon" class="nav-icon" :size="18" weight="regular" />
+              <component :is="item.icon" class="nav-icon" :size="17" />
               <span class="nav-label">{{ item.label }}</span>
             </button>
           </li>
         </ul>
       </Transition>
 
-      <button
-        class="nav-item"
-        :class="{ active: active === 'settings' }"
-        title="设置"
-        @click="emit('navigate', 'settings')"
-      >
-        <PhGearSix class="nav-icon" :size="20" weight="regular" />
-        <span class="nav-label">设置</span>
-      </button>
+      <section class="recent-section" aria-labelledby="recent-title">
+        <div class="recent-heading">
+          <span id="recent-title">最近任务</span>
+          <span>{{ sessions.length }}</span>
+        </div>
+        <div v-if="sessions.length === 0" class="recent-empty">新建任务后会显示在这里</div>
+        <button
+          v-for="session in sessions.slice(0, 6)"
+          :key="session.id"
+          class="recent-task"
+          :class="{ active: active === 'chat' && session.id === currentId }"
+          :title="session.title"
+          @click="emit('select-session', session.id)"
+        >
+          <span class="recent-icon"><PhFolderSimple :size="15" /></span>
+          <span class="recent-copy">
+            <strong>{{ session.title }}</strong>
+            <small>{{ formatRelative(session.updated_at) }}</small>
+          </span>
+          <span
+            class="recent-status"
+            :class="{ running: active === 'chat' && session.id === currentId }"
+            :aria-label="active === 'chat' && session.id === currentId ? '当前任务' : '已保存'"
+          />
+        </button>
+      </section>
     </div>
 
-    <div class="navrail-status">
-      <span class="status-dot" />
-      <div>
-        <strong>本地运行中</strong>
-        <span>Qwen3 · 本机向量库</span>
+    <div class="navrail-footer">
+      <button class="profile-entry" title="本地用户设置" @click="emit('navigate', 'settings')">
+        <PhUserCircle :size="30" weight="fill" />
+        <span>
+          <strong>本地用户</strong>
+          <small>数据仅存储在此设备</small>
+        </span>
+      </button>
+      <div class="footer-actions">
+        <button class="command-shortcut" title="快捷命令 Ctrl K" aria-label="快捷命令 Ctrl K" @click="emit('open-command')">
+          <PhCommand :size="16" />
+          <span>Ctrl K</span>
+        </button>
+        <button
+          :title="collapsed ? '展开侧栏' : '折叠侧栏'"
+          :aria-label="collapsed ? '展开侧栏' : '折叠侧栏'"
+          @click="emit('toggle-collapse')"
+        >
+          <PhSidebarSimple :size="17" />
+        </button>
       </div>
     </div>
-
-    <button class="command-shortcut" title="打开快捷命令" @click="emit('open-command')">
-      <PhCommand :size="15" />
-      <span>快捷命令</span>
-      <kbd>Ctrl K</kbd>
-    </button>
   </nav>
 </template>
 
 <style scoped>
 .navrail {
+  display: flex;
   width: 100%;
   height: 100%;
-  background: var(--color-rail-bg);
+  min-height: 0;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-3) var(--space-3);
+  overflow: hidden;
   border-right: 1px solid var(--color-rail-border);
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
+  background: var(--color-rail-bg);
   color: var(--color-rail-fg);
-  padding: 24px 16px 18px;
-  gap: 18px;
-  box-shadow: inset -1px 0 rgba(255, 255, 255, 0.025);
 }
-
-/* 品牌 */
-.navrail-brand {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-2);
-  flex-shrink: 0;
+.navrail-brand { display: flex; min-width: 0; flex-shrink: 0; align-items: center; gap: var(--space-3); padding: 0 var(--space-1); }
+.brand-mark { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border: 1px solid rgba(95, 224, 229, .24); border-radius: 11px; background: rgba(8, 174, 181, .13); color: var(--color-rail-accent); }
+.brand-copy { display: flex; min-width: 0; flex-direction: column; }
+.brand-copy strong { overflow: hidden; color: var(--color-rail-fg-strong); font-size: var(--text-lg); letter-spacing: .01em; text-overflow: ellipsis; white-space: nowrap; }
+.brand-copy span { margin-top: 1px; color: var(--color-rail-fg-muted); font-size: 9px; font-weight: var(--font-semibold); letter-spacing: .13em; }
+.new-task { display: flex; width: 100%; height: 40px; flex-shrink: 0; align-items: center; justify-content: center; gap: var(--space-2); border: 1px solid var(--color-accent); border-radius: var(--radius-md); background: var(--color-accent); color: #fff; font-weight: var(--font-semibold); cursor: pointer; transition: background var(--duration-fast) var(--ease), transform var(--duration-fast) var(--ease); }
+.new-task:hover { background: var(--color-accent-hover); transform: translateY(-1px); }
+.new-task:active { transform: translateY(0); }
+.new-task:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--color-rail-bg), 0 0 0 4px var(--color-rail-accent); }
+.rail-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+.nav-section-label { display: block; margin: var(--space-1) var(--space-2) var(--space-2); color: var(--color-rail-fg-muted); font-size: 9px; font-weight: var(--font-semibold); letter-spacing: .12em; text-transform: uppercase; }
+.navrail-items { display: flex; margin: 0; padding: 0; flex-direction: column; gap: 2px; list-style: none; }
+.nav-item { display: flex; position: relative; width: 100%; height: 38px; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); border: none; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg-muted); cursor: pointer; transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease); }
+.nav-item:hover { background: var(--color-rail-surface); color: var(--color-rail-fg-strong); }
+.nav-item.active { background: var(--color-rail-active); color: var(--color-rail-fg-strong); }
+.nav-item.active::before { content: ""; position: absolute; top: 10px; bottom: 10px; left: 0; width: 2px; border-radius: var(--radius-full); background: var(--color-rail-accent); }
+.nav-item:focus-visible, .recent-task:focus-visible, .profile-entry:focus-visible, .footer-actions button:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--color-rail-accent); }
+.nav-icon { flex-shrink: 0; }
+.nav-label { overflow: hidden; font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
+.utility-toggle { margin-top: var(--space-1); }
+.utility-items { margin: var(--space-1) 0 var(--space-2); padding-left: var(--space-2); border-left: 1px solid var(--color-rail-border); }
+.nav-item--compact { height: 32px; }
+.recent-section { margin-top: var(--space-4); padding-top: var(--space-3); border-top: 1px solid var(--color-rail-border); }
+.recent-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-2) var(--space-2); color: var(--color-rail-fg-muted); font-size: 10px; font-weight: var(--font-semibold); letter-spacing: .06em; }
+.recent-empty { padding: var(--space-3); color: var(--color-rail-fg-muted); font-size: var(--text-xs); line-height: 1.5; }
+.recent-task { display: flex; width: 100%; min-width: 0; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg-muted); text-align: left; cursor: pointer; }
+.recent-task:hover { background: var(--color-rail-surface); color: var(--color-rail-fg); }
+.recent-task.active { border-color: rgba(95, 224, 229, .14); background: var(--color-rail-active); color: var(--color-rail-fg-strong); }
+.recent-icon { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border-radius: var(--radius); background: rgba(255,255,255,.055); }
+.recent-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+.recent-copy strong { overflow: hidden; font-size: var(--text-xs); font-weight: var(--font-medium); text-overflow: ellipsis; white-space: nowrap; }
+.recent-copy small { color: var(--color-rail-fg-muted); font-size: 9px; }
+.recent-status { width: 7px; height: 7px; flex: 0 0 7px; border-radius: var(--radius-full); background: #77ca91; }
+.recent-status.running { background: var(--color-rail-accent); box-shadow: 0 0 0 3px rgba(95, 224, 229, .12); }
+.navrail-footer { flex-shrink: 0; padding-top: var(--space-3); border-top: 1px solid var(--color-rail-border); }
+.profile-entry { display: flex; width: 100%; align-items: center; gap: var(--space-2); padding: var(--space-2); border: none; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg); text-align: left; cursor: pointer; }
+.profile-entry:hover { background: var(--color-rail-surface); }
+.profile-entry > span { display: flex; min-width: 0; flex-direction: column; }
+.profile-entry strong { font-size: var(--text-xs); font-weight: var(--font-semibold); }
+.profile-entry small { overflow: hidden; margin-top: 1px; color: var(--color-rail-fg-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.footer-actions { display: flex; align-items: center; justify-content: space-between; margin-top: var(--space-2); }
+.footer-actions button { display: inline-flex; height: 30px; align-items: center; gap: var(--space-2); padding: 0 var(--space-2); border: none; border-radius: var(--radius); background: transparent; color: var(--color-rail-fg-muted); font-size: 10px; cursor: pointer; }
+.footer-actions button:hover { background: var(--color-rail-surface); color: var(--color-rail-fg-strong); }
+.rail-more-enter-active, .rail-more-leave-active { transition: opacity var(--duration) var(--ease), transform var(--duration) var(--ease); }
+.rail-more-enter-from, .rail-more-leave-to { opacity: 0; transform: translateY(-4px); }
+.is-collapsed { align-items: center; padding-inline: var(--space-2); }
+.is-collapsed .brand-copy, .is-collapsed .new-task span, .is-collapsed .nav-section-label, .is-collapsed .nav-label, .is-collapsed .recent-section, .is-collapsed .profile-entry span, .is-collapsed .footer-actions span { display: none; }
+.is-collapsed .new-task, .is-collapsed .nav-item, .is-collapsed .profile-entry { width: 42px; padding: 0; justify-content: center; }
+.is-collapsed .utility-items { padding-left: 0; border-left: none; }
+.is-collapsed .footer-actions { flex-direction: column; }
+.is-collapsed .footer-actions button { width: 42px; justify-content: center; }
+@media (max-width: 920px) {
+  .navrail { align-items: center; padding-inline: var(--space-2); }
+  .brand-copy, .new-task span, .nav-section-label, .nav-label, .recent-section, .profile-entry span, .footer-actions span { display: none; }
+  .new-task, .nav-item, .profile-entry { width: 42px; padding: 0; justify-content: center; }
+  .utility-items { padding-left: 0; border-left: none; }
+  .footer-actions { flex-direction: column; }
+  .footer-actions button { width: 42px; justify-content: center; }
 }
-.brand-mark {
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  display: grid;
-  place-items: center;
-  background: var(--color-accent);
-  color: #fff;
-  font-weight: 800;
-  font-family: var(--font-display);
-  font-size: 21px;
-  flex-shrink: 0;
-}
-.brand-copy {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.brand-copy strong {
-  font-size: var(--text-lg);
-  color: var(--color-rail-fg-strong);
-  line-height: 1.2;
-}
-.brand-copy span {
-  font-size: var(--text-xs);
-  color: var(--color-rail-fg-muted);
-}
-/* 导航项 */
-.navrail-items {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-.navrail-group {
-  border-top: 1px solid var(--color-rail-border);
-  padding-top: 14px;
-}
-.nav-item {
-  position: relative;
-  width: 100%;
-  height: 44px;
-  border: none;
-  background: transparent;
-  color: var(--color-rail-fg-muted);
-  cursor: pointer;
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  gap: var(--space-3);
-  border-radius: 10px;
-  padding: 0 var(--space-3);
-  transition: background var(--duration-fast) var(--ease),
-    color var(--duration-fast) var(--ease);
-}
-.nav-item:hover {
-  background: var(--color-rail-surface);
-  color: var(--color-rail-fg-strong);
-}
-.nav-item:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--color-rail-accent);
-}
-.nav-item.active {
-  color: var(--color-rail-fg-strong);
-  background: var(--color-rail-active);
-}
-/* 激活指示条 */
-.nav-item.active::before {
-  content: "";
-  position: absolute;
-  left: -16px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 3px;
-  height: 22px;
-  border-radius: 0 var(--radius-full) var(--radius-full) 0;
-  background: var(--color-rail-accent);
-}
-.nav-icon {
-  flex-shrink: 0;
-}
-.nav-label {
-  font-size: var(--text-base);
-  line-height: 1;
-  letter-spacing: 0;
-}
-.navrail-utilities {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-  border-top: 1px solid var(--color-rail-border);
-  padding-top: 14px;
-}
-.advanced-items {
-  padding-left: 10px;
-}
-.nav-item--compact {
-  height: 36px;
-}
-.utility-toggle.active:not(:hover) {
-  background: transparent;
-}
-.navrail-status {
-  margin-top: auto;
-  padding-top: 16px;
-  border-top: 1px solid var(--color-rail-border);
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  color: var(--color-rail-fg-muted);
-}
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: #22c55e;
-  box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12);
-  margin-top: 5px;
-  flex-shrink: 0;
-}
-.navrail-status strong,
-.navrail-status span {
-  display: block;
-}
-.navrail-status strong {
-  font-size: var(--text-sm);
-  color: var(--color-rail-fg-strong);
-  font-weight: var(--font-medium);
-}
-.navrail-status span {
-  margin-top: 2px;
-  font-size: var(--text-xs);
-  line-height: 1.45;
-}
-.command-shortcut {
-  width: 100%;
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  border: 1px solid var(--color-rail-border);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.025);
-  color: var(--color-rail-fg-muted);
-  cursor: pointer;
-  transition: color var(--duration-fast) var(--ease),
-    background var(--duration-fast) var(--ease),
-    border-color var(--duration-fast) var(--ease);
-}
-.command-shortcut:hover,
-.command-shortcut:focus-visible {
-  color: var(--color-rail-fg-strong);
-  background: var(--color-rail-surface);
-  border-color: rgba(120, 184, 166, 0.34);
-  outline: none;
-}
-.command-shortcut span {
-  font-size: var(--text-sm);
-}
-.command-shortcut kbd {
-  margin-left: auto;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  color: var(--color-rail-fg-muted);
-  border: 1px solid var(--color-rail-border);
-  border-radius: 5px;
-  padding: 2px 5px;
-}
-.nav-more-enter-active,
-.nav-more-leave-active {
-  transition: opacity var(--duration-fast) var(--ease),
-    transform var(--duration-fast) var(--ease-out);
-}
-.nav-more-enter-from,
-.nav-more-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
-}
-
-@media (max-width: 1180px) {
-  .navrail {
-    padding: 18px 10px;
-    align-items: center;
-  }
-  .brand-copy,
-    .nav-label,
-    .navrail-status,
-    .command-shortcut span,
-    .command-shortcut kbd {
-    display: none;
-  }
-  .nav-item {
-    justify-content: center;
-    padding: 0;
-    width: 44px;
-  }
-  .nav-item.active::before {
-    left: -10px;
-  }
-  .navrail-utilities {
-    width: 100%;
-  }
-  .advanced-items {
-    padding-left: 0;
-  }
-  .command-shortcut {
-    width: 44px;
-    justify-content: center;
-    padding: 0;
-  }
+@media (prefers-reduced-motion: reduce) {
+  .new-task, .nav-item, .rail-more-enter-active, .rail-more-leave-active { transition: none; }
 }
 </style>

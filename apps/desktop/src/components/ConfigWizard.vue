@@ -2,6 +2,7 @@
 import { ref, onMounted } from "vue";
 import {
   cmdCheckDependencies,
+  cmdPromptDatabasePassword,
   cmdReadConfig,
   cmdWriteConfig,
   cmdTestConnections,
@@ -23,17 +24,19 @@ const testing = ref(false);
 const conn = ref<ConnResult | null>(null);
 const saving = ref(false);
 const error = ref("");
+const secretPrompting = ref(false);
 
 function makeDefault(): ConfigData {
   return {
     db_host: "127.0.0.1",
     db_port: 3306,
     db_user: "root",
-    db_password: "",
     db_name: "personal_assistant",
+    db_password_configured: false,
     ollama_base_url: "http://127.0.0.1:11434",
     llm_model: "qwen2.5:14b-instruct-q4_K_M",
     embed_model: "bge-m3",
+    mcp_enabled: false,
   };
 }
 
@@ -97,6 +100,19 @@ async function saveAndStart() {
   }
 }
 
+async function configureDatabasePassword() {
+  error.value = "";
+  secretPrompting.value = true;
+  try {
+    const result = await cmdPromptDatabasePassword();
+    if (!result.cancelled) cfg.value.db_password_configured = result.configured;
+  } catch (e) {
+    error.value = "数据库凭据保存失败：" + String(e);
+  } finally {
+    secretPrompting.value = false;
+  }
+}
+
 const saveLabel = props.mode === "reconfigure" ? "保存并重启应用" : "保存并启动后端";
 </script>
 
@@ -145,7 +161,20 @@ const saveLabel = props.mode === "reconfigure" ? "保存并重启应用" : "保�
           <label class="field"><span>主机</span><input v-model="cfg.db_host" /></label>
           <label class="field"><span>端口</span><input type="number" v-model.number="cfg.db_port" /></label>
           <label class="field"><span>用户名</span><input v-model="cfg.db_user" /></label>
-          <label class="field"><span>密码</span><input type="password" v-model="cfg.db_password" /></label>
+          <label class="field">
+            <span>密码</span>
+            <button
+              type="button"
+              class="ghost-btn secret-action"
+              :disabled="secretPrompting"
+              @click="configureDatabasePassword"
+            >
+              {{ secretPrompting ? "等待系统凭据窗口…" : "输入或更新数据库密码…" }}
+            </button>
+            <small class="secret-hint">
+              {{ cfg.db_password_configured ? "已存入 Windows 凭据管理器" : "尚未保存密码；无密码数据库可跳过" }}
+            </small>
+          </label>
           <label class="field"><span>数据库名</span><input v-model="cfg.db_name" /></label>
         </div>
 
@@ -336,6 +365,11 @@ h1 {
 .field input:focus {
   border-color: #1a1b1e;
 }
+
+.secret-hint {
+  color: #6a6b6e;
+  font-size: 11px;
+}
 .actions {
   display: flex;
   gap: 10px;
@@ -366,6 +400,10 @@ h1 {
 .ghost-btn:disabled {
   color: #c0c1c4;
   cursor: not-allowed;
+}
+.secret-action {
+  align-self: flex-start;
+  text-align: left;
 }
 .conn-result {
   margin-top: 6px;

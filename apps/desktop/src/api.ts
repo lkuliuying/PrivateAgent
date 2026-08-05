@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./api/http";
+import { apiFetch as fetch, ensureApiBase } from "./api/http";
 import type {
   AgentTask,
   Activity,
@@ -83,6 +83,7 @@ import type {
 } from "./types";
 
 export {
+  apiFetch,
   ensureApiBase,
   resetApiBase,
   setApiBase,
@@ -91,8 +92,15 @@ export {
 export {
   cmdCheckForUpdates,
   cmdCheckDependencies,
+  cmdClearMcpSecret,
   cmdConfigExists,
+  cmdClearProviderSecret,
   cmdDownloadAndInstallUpdate,
+  cmdPromptDatabasePassword,
+  cmdPromptMcpSecret,
+  cmdPromptProviderSecret,
+  cmdMcpSecretStatus,
+  cmdProviderSecretStatus,
   cmdReadConfig,
   cmdRelaunchApp,
   cmdStartSidecar,
@@ -132,6 +140,27 @@ export type { IntegrityFinding, RepairPlanItem } from "./api/maintenance";
 export { listExtensions, patchExtension } from "./api/extensions";
 export type { ExtensionDescriptor } from "./api/extensions";
 export {
+  createMcpServer,
+  deleteMcpServer,
+  discoverMcpServer,
+  listMcpCalls,
+  listMcpServers,
+  updateMcpServerState,
+} from "./api/mcp";
+export type {
+  McpCallLog,
+  McpDiscoveredTool,
+  McpServer,
+  McpServerCreate,
+  McpTransport,
+} from "./api/mcp";
+export {
+  approveAgentRunTool,
+  listPendingAgentApprovals,
+  rejectAgentRunTool,
+  streamAgentRunContinuation,
+} from "./api/agentRuns";
+export {
   createIntegrationSource,
   listIntegrationImports,
   listIntegrationSources,
@@ -146,10 +175,21 @@ export type {
 } from "./api/integrations";
 export { getMigrationRunbook, restoreDrillBackup } from "./api/backup";
 export { listTestRuns, listUpgradeSmokeRuns } from "./api/testing";
+export {
+  getRuntimeCapabilities,
+  shouldUseLegacyToolPlanner,
+} from "./api/runtime";
 export type {
+  ChatExecutionMode,
+  RuntimeCapabilities,
+} from "./api/runtime";
+export type {
+  ApiConnection,
   ConfigData,
   ConnResult,
   DepResult,
+  ProviderSecretName,
+  ProviderSecretStatus,
   SidecarStartResult,
   UpdateInfo,
 } from "./api/tauri";
@@ -1517,10 +1557,8 @@ export async function listProviders(): Promise<ProviderStatus> {
 export async function updateProviders(data: {
   provider_type?: "ollama" | "openai" | "claude";
   remote_provider_enabled?: boolean;
-  openai_api_key?: string;
   openai_base_url?: string;
   openai_model?: string;
-  claude_api_key?: string;
   claude_model?: string;
 }): Promise<ProviderStatus> {
   const base = await ensureApiBase();
@@ -1528,6 +1566,27 @@ export async function updateProviders(data: {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+export async function updateProviderSecretReference(
+  provider: "openai" | "claude",
+  configured: boolean
+): Promise<{
+  provider: "openai" | "claude";
+  secret: { configured: boolean; available: boolean; storage: string };
+  restart_required: boolean;
+}> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers/${provider}/secret-reference`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ configured }),
   });
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
@@ -1939,10 +1998,10 @@ export interface AppSettings {
   kb_enabled_by_default: boolean;
   provider_type: "ollama" | "openai" | "claude";
   remote_provider_enabled: boolean;
-  openai_api_key: string;
+  openai_api_key_configured: boolean;
   openai_base_url: string;
   openai_model: string;
-  claude_api_key: string;
+  claude_api_key_configured: boolean;
   claude_model: string;
   reminders_enabled: boolean;
   reminder_tick_seconds: number;

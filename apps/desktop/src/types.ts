@@ -33,6 +33,40 @@ export interface Message {
   created_at: string;
 }
 
+/** Agent 工作台步骤状态。与后端工具/活动状态解耦，由前端适配层统一映射。 */
+export type WorkspaceStepStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "blocked"
+  | "failed";
+
+export interface WorkspacePlanStep {
+  id: string;
+  title: string;
+  detail: string;
+  status: WorkspaceStepStatus;
+}
+
+export type AgentTaskState =
+  | "idle"
+  | "running"
+  | "waiting"
+  | "completed"
+  | "failed"
+  | "stopped";
+
+export type AgentActivityKind =
+  | "user"
+  | "agent"
+  | "tool"
+  | "change"
+  | "approval"
+  | "result"
+  | "system";
+
+export type AgentArtifactType = "document" | "image" | "code" | "report";
+
 /** RAG 引用来源。 */
 export interface Source {
   doc_name: string;
@@ -48,13 +82,29 @@ export interface Source {
 }
 
 export interface ChatEvent {
-  type: "token" | "done" | "title" | "error";
+  type: "run" | "token" | "done" | "title" | "error" | "approval";
+  run_id?: string;
   content?: string;
   message_id?: number;
   title?: string;
   message?: string;
   sources?: Source[];
   memories?: MemorySource[];
+  approval?: AgentRunApproval;
+}
+
+export interface AgentRunApproval {
+  id: string;
+  run_id: string;
+  tool_call_id: string;
+  tool_name: string;
+  tool_version: string;
+  arguments_sha256: string;
+  risk_level: string;
+  required_capabilities: string[];
+  status: "pending" | "approved" | "rejected" | "consumed" | "expired" | "cancelled";
+  expires_at: string;
+  created_at: string;
 }
 
 export type DocStatus =
@@ -854,14 +904,27 @@ export interface ProviderInfo {
   enabled: boolean;
   remote: boolean;
   configured?: boolean;
+  available?: boolean;
+  storage?: "none" | "legacy" | "os_keyring";
 }
 
 export interface ProviderConfig {
   provider_type: ProviderType;
   remote_provider_enabled: boolean;
   ollama: { model: string; embed_model: string };
-  openai: { base_url: string; model: string; configured: boolean };
-  claude: { model: string; configured: boolean };
+  openai: {
+    base_url: string;
+    model: string;
+    configured: boolean;
+    available: boolean;
+    storage: "none" | "legacy" | "os_keyring";
+  };
+  claude: {
+    model: string;
+    configured: boolean;
+    available: boolean;
+    storage: "none" | "legacy" | "os_keyring";
+  };
 }
 
 export interface ProviderPrivacy {

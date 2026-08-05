@@ -11,12 +11,17 @@ MemoryEventRepository。M1 检索为纯 MySQL + Python 评分（无向量），�
 from __future__ import annotations
 
 import re
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
 from .models import MemoryItem
-from .repo_memories import MemoryEventRepository, MemoryRepository
+from .repo_memories import (
+    MemoryConflictRepository,
+    MemoryEventRepository,
+    MemoryRepository,
+    MemoryRevisionRepository,
+)
+from .timeutil import utcnow
 
 logger = get_logger(__name__)
 
@@ -45,6 +50,8 @@ class MemoryService:
         self.db = db
         self.repo = MemoryRepository(db)
         self.events = MemoryEventRepository(db)
+        self.revisions = MemoryRevisionRepository(db)
+        self.conflicts = MemoryConflictRepository(db)
 
     # ---------------- 检索 ----------------
     async def retrieve_for_context(
@@ -60,7 +67,14 @@ class MemoryService:
             logger.exception("memory retrieve_for_context failed, fallback empty")
             return []
         # 敏感记忆绝不进 prompt（DB 层未过滤，在此兜底）
-        items = [m for m in items if not m.sensitive]
+        now = utcnow()
+        items = [
+            m
+            for m in items
+            if not m.sensitive
+            and m.sensitivity_level == "normal"
+            and (m.expires_at is None or m.expires_at > now)
+        ]
         if not items or not query:
             return []
         terms = _extract_terms(query)
@@ -159,10 +173,16 @@ class MemoryService:
         old = await self.repo.get(memory_id)
         if old is None:
             return None
-        await self.repo.update(memory_id, **kwargs)
+        changes = {key: value for key, value in kwargs.items() if value is not None}
+        if not changes:
+            return old
+        old_enabled = old.enabled
+        updated = await self.repo.update(memory_id, **changes)
+        if updated is None:
+            return None
         # 事件类型：启用->禁用记 disabled，其余编辑记 edited
-        new_enabled = kwargs.get("enabled")
-        if new_enabled is not None and old.enabled and not new_enabled:
+        new_enabled = changes.get("enabled")
+        if new_enabled is not None and old_enabled and not new_enabled:
             etype = "disabled"
         else:
             etype = "edited"
@@ -170,19 +190,41 @@ class MemoryService:
             await self.events.create(memory_id=memory_id, event_type=etype)
         except Exception:  # noqa: BLE001
             logger.exception("memory edited-event write failed (best-effort)")
-        return await self.repo.get_fresh(memory_id)
+        return updated
 
     async def delete(self, memory_id: int) -> bool:
         old = await self.repo.get(memory_id)
         if old is None:
             return False
-        # memory_events 对 memory_id 有 ON DELETE CASCADE：删记忆会级联删全部事件，
-        # 故 'deleted' 事件无法持久化（写后即被级联删除）。删除审计留待后续活动流。
-        await self.repo.delete(memory_id)
-        return True
+        return await self.repo.delete(memory_id)
 
     async def get(self, memory_id: int) -> MemoryItem | None:
         return await self.repo.get(memory_id)
 
+    async def get_including_deleted(self, memory_id: int) -> MemoryItem | None:
+        return await self.repo.get_including_deleted(memory_id)
+
     async def list_events(self, memory_id: int):
         return await self.events.list_by_memory(memory_id)
+
+    async def list_revisions(self, memory_id: int):
+        return await self.revisions.list_by_memory(memory_id)
+
+    async def create_conflict(
+        self,
+        left_memory_id: int,
+        right_memory_id: int,
+        *,
+        reason: str,
+    ):
+        return await self.conflicts.create(
+            left_memory_id,
+            right_memory_id,
+            reason=reason,
+        )
+
+    async def resolve_conflict(self, conflict_id: int, *, resolution: dict):
+        return await self.conflicts.resolve(conflict_id, resolution=resolution)
+
+    async def list_open_conflicts(self):
+        return await self.conflicts.list_open()

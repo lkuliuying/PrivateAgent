@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from collections.abc import AsyncIterator
 from functools import lru_cache
 from typing import Any
@@ -14,6 +15,7 @@ import httpx
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..config import settings
+from ..llm.sse import iter_sse_events
 from ..logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -117,6 +119,33 @@ def _to_lc_messages(messages: list[dict[str, str]]) -> list[Any]:
     return out
 
 
+async def _iter_remote_sse(
+    client: httpx.AsyncClient | None,
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> AsyncIterator[tuple[str | None, str]]:
+    async def consume(active_client: httpx.AsyncClient) -> AsyncIterator[tuple[str | None, str]]:
+        async with active_client.stream(
+            "POST",
+            url,
+            headers=headers,
+            json=payload,
+        ) as response:
+            response.raise_for_status()
+            async for event in iter_sse_events(response.aiter_lines()):
+                yield event
+
+    if client is not None:
+        async for event in consume(client):
+            yield event
+        return
+    async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as active_client:
+        async for event in consume(active_client):
+            yield event
+
+
 class OllamaProvider:
     """Ollama LLM + Embedding 封装。
 
@@ -138,6 +167,7 @@ class OllamaProvider:
             temperature if temperature is not None else settings.llm_temperature
         )
         self.context_length = context_length or settings.llm_context_length
+        self._embedding_client: Any | None = None
 
     # ---------------- LLM ----------------
     def _chat_llm(self) -> Any:
@@ -179,12 +209,14 @@ class OllamaProvider:
 
     # ---------------- Embedding ----------------
     def _embedder(self) -> Any:
-        _, ollama_embeddings = _load_ollama_components()
-        return ollama_embeddings(
-            model=self.embed_model,
-            base_url=self.base_url,
-            client_kwargs={"timeout": httpx.Timeout(60.0)},
-        )
+        if self._embedding_client is None:
+            _, ollama_embeddings = _load_ollama_components()
+            self._embedding_client = ollama_embeddings(
+                model=self.embed_model,
+                base_url=self.base_url,
+                client_kwargs={"timeout": httpx.Timeout(60.0)},
+            )
+        return self._embedding_client
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:
@@ -253,11 +285,13 @@ class OpenAICompatibleProvider:
         api_key: str,
         model: str,
         temperature: float = 0.7,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self._client = client
 
     def _headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
@@ -294,7 +328,68 @@ class OpenAICompatibleProvider:
             ) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        yield await self.chat(messages)
+        if not self.api_key:
+            raise ProviderError(
+                "OpenAI-compatible Provider 未配置 API key",
+                error_code="missing_api_key",
+            )
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        terminal = False
+        output_chars = 0
+        try:
+            async for _event_name, raw_data in _iter_remote_sse(
+                self._client,
+                f"{self.base_url}/chat/completions",
+                headers=self._headers(),
+                payload=payload,
+            ):
+                if raw_data == "[DONE]":
+                    terminal = True
+                    break
+                data = json.loads(raw_data)
+                if not isinstance(data, dict):
+                    raise TypeError("OpenAI stream event must be a JSON object")
+                if data.get("error"):
+                    raise ProviderError(
+                        "OpenAI-compatible Provider 返回流式错误",
+                        error_code="provider_error",
+                    )
+                choices = data.get("choices") or []
+                if not isinstance(choices, list):
+                    raise TypeError("OpenAI stream choices must be a list")
+                for choice in choices:
+                    if not isinstance(choice, dict):
+                        raise TypeError("OpenAI stream choice must be an object")
+                    if int(choice.get("index") or 0) != 0:
+                        continue
+                    delta = choice.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        raise TypeError("OpenAI stream delta must be an object")
+                    content = delta.get("content")
+                    if content is not None and not isinstance(content, str):
+                        raise TypeError("OpenAI stream text delta must be a string")
+                    if content:
+                        output_chars += len(content)
+                        if output_chars > 8_388_608:
+                            raise ValueError(
+                                "OpenAI stream output exceeds the configured limit"
+                            )
+                        yield content
+            if not terminal:
+                raise ValueError("OpenAI stream ended without a [DONE] event")
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            code = classify_error(e, provider_type="openai", api_key=self.api_key)
+            raise ProviderError(
+                f"OpenAI-compatible 流式对话失败: {e}", error_code=code
+            ) from e
 
     async def health(self) -> dict[str, Any]:
         result = {
@@ -325,11 +420,13 @@ class ClaudeProvider:
         api_key: str,
         model: str,
         temperature: float = 0.7,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
         self.base_url = "https://api.anthropic.com/v1"
+        self._client = client
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -383,7 +480,86 @@ class ClaudeProvider:
             raise ProviderError(f"Claude chat 失败: {e}", error_code=code) from e
 
     async def chat_stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
-        yield await self.chat(messages)
+        if not self.api_key:
+            raise ProviderError(
+                "Claude Provider 未配置 API key", error_code="missing_api_key"
+            )
+        system, converted = self._convert_messages(messages)
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": converted,
+            "max_tokens": 4096,
+            "temperature": self.temperature,
+            "stream": True,
+        }
+        if system:
+            payload["system"] = system
+        started = False
+        terminal = False
+        output_chars = 0
+        try:
+            async for event_name, raw_data in _iter_remote_sse(
+                self._client,
+                f"{self.base_url}/messages",
+                headers=self._headers(),
+                payload=payload,
+            ):
+                data = json.loads(raw_data)
+                if not isinstance(data, dict):
+                    raise TypeError("Claude stream event must be a JSON object")
+                data_type = data.get("type")
+                if not isinstance(data_type, str):
+                    raise TypeError("Claude stream event type must be a string")
+                if event_name and event_name != data_type:
+                    raise ValueError(
+                        "Claude SSE event name does not match its data type"
+                    )
+                if data_type == "error":
+                    error = data.get("error") or {}
+                    error_type = error.get("type") if isinstance(error, dict) else None
+                    code = {
+                        "rate_limit_error": "rate_limited",
+                        "authentication_error": "unauthorized",
+                        "not_found_error": "model_not_found",
+                    }.get(str(error_type), "provider_error")
+                    raise ProviderError(
+                        "Claude Provider 返回流式错误", error_code=code
+                    )
+                if data_type == "message_start":
+                    if started:
+                        raise ValueError(
+                            "Claude stream contains duplicate message_start"
+                        )
+                    started = True
+                elif data_type == "content_block_delta":
+                    delta = data.get("delta") or {}
+                    if not isinstance(delta, dict):
+                        raise TypeError("Claude content delta must be an object")
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text")
+                        if not isinstance(text, str):
+                            raise TypeError("Claude text delta must be a string")
+                        if text:
+                            output_chars += len(text)
+                            if output_chars > 8_388_608:
+                                raise ValueError(
+                                    "Claude stream output exceeds the configured limit"
+                                )
+                            yield text
+                    # Thinking/signature/tool input deltas are not user-visible text.
+                elif data_type == "message_stop":
+                    terminal = True
+                    break
+                # ping, block lifecycle and future event types do not contain visible text.
+            if not started or not terminal:
+                raise ValueError(
+                    "Claude stream ended without a complete message lifecycle"
+                )
+        except ProviderError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            code = classify_error(e, provider_type="claude", api_key=self.api_key)
+            raise ProviderError(f"Claude 流式对话失败: {e}", error_code=code) from e
 
     async def health(self) -> dict[str, Any]:
         if not self.api_key:
@@ -442,6 +618,59 @@ class ProviderRouter:
             context_length=int(
                 self.settings.get("llm_context_length", settings.llm_context_length)
             ),
+        )
+
+    def model_gateway(self) -> Any:
+        """Build the typed Agent Runtime gateway without changing legacy callers.
+
+        The existing ``chat_provider`` remains the compatibility path until the
+        chat API is moved behind AgentRuntime.
+        """
+        from ..llm import (
+            ClaudeMessagesAdapter,
+            ModelGateway,
+            OllamaChatAdapter,
+            OpenAIChatAdapter,
+        )
+
+        provider_type = self.settings.get("provider_type", "ollama")
+        remote_enabled = (
+            self.settings.get("remote_provider_enabled", "false").lower() == "true"
+        )
+        temperature = float(
+            self.settings.get("llm_temperature", settings.llm_temperature)
+        )
+        if provider_type == "openai" and remote_enabled:
+            return ModelGateway(
+                OpenAIChatAdapter(
+                    base_url=self.settings.get("openai_base_url")
+                    or "https://api.openai.com/v1",
+                    api_key=self.settings.get("openai_api_key") or "",
+                    model=self.settings.get("openai_model") or "gpt-4o-mini",
+                    temperature=temperature,
+                )
+            )
+        if provider_type == "claude" and remote_enabled:
+            return ModelGateway(
+                ClaudeMessagesAdapter(
+                    api_key=self.settings.get("claude_api_key") or "",
+                    model=self.settings.get("claude_model")
+                    or "claude-3-5-sonnet-latest",
+                    temperature=temperature,
+                )
+            )
+        return ModelGateway(
+            OllamaChatAdapter(
+                base_url=settings.ollama_base_url,
+                model=self.settings.get("llm_model") or settings.llm_model,
+                temperature=temperature,
+                context_length=int(
+                    self.settings.get(
+                        "llm_context_length",
+                        settings.llm_context_length,
+                    )
+                ),
+            )
         )
 
     def embedding_provider(self) -> OllamaProvider:

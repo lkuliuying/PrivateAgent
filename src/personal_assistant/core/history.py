@@ -69,3 +69,22 @@ class MessageRepository:
         )
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_recent_by_session(
+        self,
+        session_id: int,
+        *,
+        limit: int = 200,
+    ) -> list[Message]:
+        """Return a bounded recent window in chronological order."""
+
+        if not 1 <= limit <= 1_000:
+            raise ValueError("message history limit must be between 1 and 1000")
+        stmt = (
+            select(Message)
+            .where(Message.session_id == session_id)
+            .order_by(Message.created_at.desc(), Message.id.desc())
+            .limit(limit)
+        )
+        result = await self.db.execute(stmt)
+        return list(reversed(result.scalars().all()))

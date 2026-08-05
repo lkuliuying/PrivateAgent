@@ -315,6 +315,7 @@
   - 保存为待重试收件箱。
   - 复制诊断摘要。
 - [x] 评估远程流式支持，若实现则保持审计完整。
+  - 已实现 OpenAI Chat Completions SSE 与 Claude Messages SSE；Thinking 不发布、终止生命周期失败关闭、首 delta 后不重试。当前为无密钥 MockTransport 合同验收，真实端点待授权环境 smoke。
 
 验收：
 

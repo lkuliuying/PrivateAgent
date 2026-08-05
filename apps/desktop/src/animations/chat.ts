@@ -16,8 +16,10 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
       if (animated.has(message)) return;
       animated.add(message);
 
-      const avatar = message.querySelector<HTMLElement>(".avatar");
-      const content = message.querySelector<HTMLElement>(".bubble-wrap");
+      const avatar = message.querySelector<HTMLElement>(".avatar, .timeline-marker");
+      const content = message.querySelector<HTMLElement>(
+        ".bubble-wrap, .activity-content"
+      );
       const toolSections = message.querySelectorAll<HTMLElement>(
         "[data-tool-section]"
       );
@@ -85,7 +87,9 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
       records.forEach((record) => {
         if (record.type !== "characterData") return;
         const parent = record.target.parentElement;
-        const bubble = parent?.closest<HTMLElement>(".bubble.is-streaming");
+        const bubble = parent?.closest<HTMLElement>(
+          ".bubble.is-streaming, .agent-response.is-streaming"
+        );
         if (bubble) bubbles.add(bubble);
       });
       if (!bubbles.size) return;

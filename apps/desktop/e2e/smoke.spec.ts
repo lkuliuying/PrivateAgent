@@ -67,7 +67,77 @@ function mockApi(
   });
 }
 
+async function navigate(page: import("@playwright/test").Page, view: string) {
+  const target = page.getByTestId(`nav-${view}`);
+  if (await target.count()) {
+    await target.click();
+    return;
+  }
+
+  await page.getByTestId("nav-utilities-toggle").click();
+  await page.getByTestId(`nav-${view}`).click();
+}
+
 test.describe("E2E smoke", () => {
+  test("Agent Runtime 模式的新消息绕过旧工具规划器", async ({ page }) => {
+    let plannerCalls = 0;
+    let chatStreamCalls = 0;
+    await page.route("**://127.0.0.1:8000/**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/capabilities") {
+        await route.fulfill({
+          json: {
+            chat_execution_mode: "agent_runtime",
+            legacy_tool_planner_enabled: false,
+            agent_read_only_tools_enabled: true,
+            rag_chat_runtime_enabled: false,
+          },
+        });
+        return;
+      }
+      if (path === "/sessions") {
+        await route.fulfill({
+          json: [
+            {
+              id: 1,
+              title: "Runtime route test",
+              created_at: "2026-08-03T00:00:00Z",
+              updated_at: "2026-08-03T00:00:00Z",
+            },
+          ],
+        });
+        return;
+      }
+      if (path === "/tools/plan") {
+        plannerCalls += 1;
+        await route.fulfill({ json: { tool_call: null } });
+        return;
+      }
+      if (path === "/chat/stream") {
+        chatStreamCalls += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "text/event-stream; charset=utf-8",
+          body:
+            'data: {"type":"run","run_id":"run-e2e"}\n\n' +
+            'data: {"type":"token","content":"Runtime E2E reply"}\n\n' +
+            'data: {"type":"done","run_id":"run-e2e","message_id":10,"content":"Runtime E2E reply"}\n\n',
+        });
+        return;
+      }
+      await route.fulfill({ json: [] });
+    });
+
+    await page.goto("/");
+    await page.getByTestId("task-composer-input").fill("Use the runtime");
+    await page.getByTestId("task-composer-submit").click();
+
+    await expect(page.getByText("Runtime E2E reply")).toBeVisible();
+    expect(chatStreamCalls).toBe(1);
+    expect(plannerCalls).toBe(0);
+  });
+
   test("Today 首屏渲染", async ({ page }) => {
     await mockApi(page, (url) => {
       if (url.includes("/health")) return GREEN_HEALTH;
@@ -98,8 +168,9 @@ test.describe("E2E smoke", () => {
     await page.goto("/");
     // 应用外壳启动（NavRail 品牌）
     await expect(page.locator(".navrail-brand")).toBeVisible();
-    // 默认进入 Today 视图（今日 nav 项激活）
-    await expect(page.locator(".nav-item.active").getByText("今日")).toBeVisible();
+    // 当前产品默认进入 Agent 工作区；显式进入 Today 后再验证首屏。
+    await navigate(page, "today");
+    await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-current", "page");
     // Today 视图渲染了模拟收件项（宽超时，等待 /today 返回后渲染）
     await expect(page.getByText("E2E测试收件项")).toBeVisible({ timeout: 20_000 });
   });
@@ -114,7 +185,7 @@ test.describe("E2E smoke", () => {
     await page.goto("/");
     await expect(page.locator(".navrail-brand")).toBeVisible();
     // 进入设置页，应显示后端未连接提示
-    await page.locator(".nav-item", { hasText: "设置" }).click();
+    await navigate(page, "settings");
     await expect(page.getByText(/本地后端.*未连接|无法获取状态/).first()).toBeVisible({
       timeout: 20_000,
     });
@@ -152,7 +223,7 @@ test.describe("E2E smoke", () => {
     });
 
     await page.goto("/");
-    await page.locator(".nav-item", { hasText: "知识库" }).click();
+    await navigate(page, "kb");
     await expect(page.getByRole("heading", { name: "知识库" })).toBeVisible();
     await expect(page.getByText(/一份用于验证超长文档名称/)).toBeVisible();
     const metrics = await page.evaluate(() => ({
@@ -178,6 +249,7 @@ test.describe("E2E smoke", () => {
         return [];
       });
       await page.goto("/");
+      await navigate(page, "today");
       await expect(page.getByRole("heading", { name: "今日工作台" })).toBeVisible();
       const metrics = await page.evaluate(() => ({
         body: document.body.scrollWidth,

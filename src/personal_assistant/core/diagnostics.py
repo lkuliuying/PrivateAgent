@@ -25,19 +25,18 @@ from .. import __version__
 from ..config import settings as cfg
 from .activities import ActivityService
 from .backup import BackupService
+from .compatibility import compatibility_telemetry
+from .extensions import ExtensionDescriptor, ExtensionKind, extension_registry
 from .health import HealthService
 from .models import (
-    Activity,
     AgentEvidence,
     DiagnosticRun,
     Document,
-    ProviderCallAudit,
     Reminder,
 )
 from .repo_privacy import ProviderCallAuditRepository
 from .settings import SettingsService
 from .timeutil import utcnow
-from .extensions import ExtensionDescriptor, ExtensionKind, extension_registry
 
 _RECENT_ERROR_LINES = 80
 _LOG_ERROR_RE = re.compile(r"\[(ERROR|WARNING)\]")
@@ -78,7 +77,7 @@ def _scrub_log_line(line: str) -> str:
     """脱敏日志行：替换 db_url 中的密码 + 掩码 sk- 令牌（第八阶段审查）。"""
     try:
         line = line.replace(cfg.db_url, redact_db_url(cfg.db_url))
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001, S110
         pass
     return _SK_TOKEN_RE.sub("sk-***", line)
 
@@ -89,7 +88,7 @@ class DiagnosticsService:
 
     async def snapshot(self) -> dict[str, Any]:
         """诊断中心快照（不含敏感正文）。"""
-        health = await HealthService().check_all()
+        health = await HealthService(self.db).check_all()
         settings_all = await SettingsService(self.db).get_all()
         backup = await BackupService(self.db).list()
         failed_activities = await ActivityService(self.db).list(status="failed")
@@ -119,7 +118,7 @@ class DiagnosticsService:
             if enabled and desc.runner is not None:
                 try:
                     extra.update(await desc.runner(self.db))
-                except Exception:  # noqa: BLE001
+                except Exception:  # noqa: BLE001, S112
                     continue
 
         snap = {
@@ -163,6 +162,7 @@ class DiagnosticsService:
             "settings_redacted": redact_settings(settings_all),
             "db_url_redacted": redact_db_url(cfg.db_url),
             "diagnostic_checks": diag_checks,
+            "compatibility_telemetry": compatibility_telemetry.snapshot(),
         }
         snap.update(extra)
         return snap

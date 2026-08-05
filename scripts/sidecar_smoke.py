@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -76,12 +77,14 @@ def main() -> int:
         return 0
 
     port = free_port()
+    token = secrets.token_hex(32)
     dev_env = read_dev_env()
     with tempfile.TemporaryDirectory() as td:
         env = {
             **os.environ,
             **dev_env,
             "PA_API_PORT": str(port),
+            "PA_API_TOKEN": token,
             "PA_SKIP_MIGRATIONS": "1",
             "PA_DATA_DIR": td,
         }
@@ -97,9 +100,12 @@ def main() -> int:
             deadline = time.time() + HEALTH_TIMEOUT_S
             while time.time() < deadline:
                 try:
-                    with urllib.request.urlopen(
+                    request = urllib.request.Request(
                         f"http://127.0.0.1:{port}/health",
-                        timeout=HEALTH_REQUEST_TIMEOUT_S,
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    with urllib.request.urlopen(
+                        request, timeout=HEALTH_REQUEST_TIMEOUT_S
                     ) as r:
                         if r.status == 200:
                             ok = True

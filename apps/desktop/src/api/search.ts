@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch as fetch, ensureApiBase } from "./http";
 
 export interface SearchResult {
   type: string;

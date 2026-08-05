@@ -9,6 +9,9 @@
 - DELETE /documents/{id}            删除文档
 - POST   /documents/{id}/retry      重试失败的导入
 - GET    /chunks/{id}               引用片段详情
+- GET    /index-chunks/{id}         版本化引用片段详情
+- GET    /documents/{id}/index-versions  索引版本与校验状态
+- POST   /documents/{id}/index-rollback  原子回滚到已验证版本
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
@@ -29,17 +32,45 @@ from ..core.document_extraction import (
     ExtractionNotFound,
 )
 from ..core.exports import DocNotFound, ExportService
+from ..core.index_versions import (
+    DocumentIndexRepository,
+    IndexValidationError,
+    VersionedDocumentIndexer,
+)
 from ..core.permissions import PermissionError_
 from ..core.repo import DocChunkRepository, DocumentRepository
 from ..core.repo_documents import DocumentExtractionRepository
-from ..core.store_chroma import chroma_store
+from ..core.store_chroma import chroma_store, versioned_chroma_store
 from ..logging_setup import get_logger
-from ..workers.importer import import_document, reindex_document, retry_import
+from ..workers.importer import (
+    import_document,
+    recover_versioned_index,
+    reindex_document,
+    retry_import,
+)
 
 router = APIRouter(tags=["documents"])
 logger = get_logger(__name__)
 
-ALLOWED_EXT = {".pdf", ".docx", ".md", ".markdown", ".txt"}
+CODE_EXTENSIONS = {
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".vue",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".h",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".hpp",
+    ".cs",
+}
+ALLOWED_EXT = {".pdf", ".docx", ".md", ".markdown", ".txt", *CODE_EXTENSIONS}
 BATCH_MAX_FILES = 200
 
 # 扩展名 → doc_type（导入时自动推断，供知识库筛选）
@@ -49,6 +80,7 @@ _EXT_DOC_TYPE: dict[str, str] = {
     ".md": "markdown",
     ".markdown": "markdown",
     ".txt": "text",
+    **{extension: "code" for extension in CODE_EXTENSIONS},
 }
 
 
@@ -88,6 +120,64 @@ class ChunkOut(BaseModel):
     content: str
     token_count: int | None
     created_at: datetime
+
+
+class IndexChunkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    index_version_id: str
+    doc_id: int
+    ordinal: int
+    content: str
+    content_sha256: str
+    token_count: int | None
+    heading: str | None
+    source_kind: str
+    parser_version: str
+    page_start: int | None = None
+    page_end: int | None = None
+    char_start: int | None = None
+    char_end: int | None = None
+    line_start: int | None = None
+    line_end: int | None = None
+    heading_path: list[str] = Field(default_factory=list)
+    created_at: datetime
+
+
+class IndexVersionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    doc_id: int
+    version_number: int
+    status: str
+    source_sha256: str
+    chunker_version: str
+    embedding_model: str
+    embedding_dimensions: int | None
+    chunk_count: int
+    vector_count: int
+    manifest_sha256: str | None
+    failure_code: str | None
+    error_message: str | None
+    build_started_at: datetime
+    validated_at: datetime | None
+    activated_at: datetime | None
+    retired_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class IndexHeadOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    doc_id: int
+    active_version_id: str | None
+    previous_version_id: str | None
+    lock_version: int
+    switched_at: datetime | None
+
+
+class IndexRollbackRequest(BaseModel):
+    target_version_id: str | None = None
 
 
 class DocumentPatch(BaseModel):
@@ -269,7 +359,13 @@ async def delete_document(doc_id: int, db: AsyncSession = Depends(get_session)):
 
     await docs.update_status(doc_id, status="deleting")
     try:
+        version_ids = [
+            version.id
+            for version in await DocumentIndexRepository(db).list_versions(doc_id)
+        ]
         await chroma_store.delete_by_doc(doc_id)
+        for version_id in version_ids:
+            await versioned_chroma_store.delete_version(version_id)
         await docs.delete(doc_id)  # cascade 删 doc_chunks
         upload_path = _upload_path(doc_id, doc.name)
         await asyncio.to_thread(lambda p: p.unlink(missing_ok=True), upload_path)
@@ -306,6 +402,101 @@ async def get_chunk(chunk_id: int, db: AsyncSession = Depends(get_session)):
     if c is None:
         raise HTTPException(404, "片段不存在")
     return c
+
+
+@router.get("/index-chunks/{chunk_id}", response_model=IndexChunkOut)
+async def get_index_chunk(chunk_id: int, db: AsyncSession = Depends(get_session)):
+    repository = DocumentIndexRepository(db)
+    chunk = (await repository.get_chunks_by_ids([chunk_id])).get(chunk_id)
+    if chunk is None:
+        raise HTTPException(404, "版本化片段不存在")
+    provenance = (await repository.get_provenance_by_chunk_ids([chunk_id])).get(
+        chunk_id
+    )
+    if provenance is None:
+        raise HTTPException(409, "版本化片段来源信息缺失")
+    return {
+        "id": chunk.id,
+        "index_version_id": chunk.index_version_id,
+        "doc_id": chunk.doc_id,
+        "ordinal": chunk.ordinal,
+        "content": chunk.content,
+        "content_sha256": chunk.content_sha256,
+        "token_count": chunk.token_count,
+        "heading": chunk.heading,
+        "source_kind": provenance.source_kind,
+        "parser_version": provenance.parser_version,
+        "page_start": provenance.page_start,
+        "page_end": provenance.page_end,
+        "char_start": provenance.char_start,
+        "char_end": provenance.char_end,
+        "line_start": provenance.line_start,
+        "line_end": provenance.line_end,
+        "heading_path": list(provenance.heading_path_json or []),
+        "created_at": chunk.created_at,
+    }
+
+
+@router.get(
+    "/documents/{doc_id}/index-versions",
+    response_model=list[IndexVersionOut],
+)
+async def list_document_index_versions(
+    doc_id: int, db: AsyncSession = Depends(get_session)
+):
+    if await DocumentRepository(db).get(doc_id) is None:
+        raise HTTPException(404, "文档不存在")
+    return await DocumentIndexRepository(db).list_versions(doc_id)
+
+
+@router.get("/documents/{doc_id}/index-head", response_model=IndexHeadOut)
+async def get_document_index_head(
+    doc_id: int, db: AsyncSession = Depends(get_session)
+):
+    if await DocumentRepository(db).get(doc_id) is None:
+        raise HTTPException(404, "文档不存在")
+    head = await DocumentIndexRepository(db).get_head(doc_id)
+    if head is None:
+        raise HTTPException(404, "文档尚无版本化索引")
+    return head
+
+
+@router.post(
+    "/documents/{doc_id}/index-rollback",
+    response_model=IndexVersionOut,
+)
+async def rollback_document_index(
+    doc_id: int,
+    req: IndexRollbackRequest,
+    db: AsyncSession = Depends(get_session),
+):
+    try:
+        return await VersionedDocumentIndexer(db, versioned_chroma_store).rollback(
+            doc_id,
+            target_version_id=req.target_version_id,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except IndexValidationError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post(
+    "/documents/{doc_id}/index-versions/{version_id}/retry",
+    status_code=202,
+)
+async def retry_document_index_version(
+    doc_id: int,
+    version_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    version = await DocumentIndexRepository(db).get_version(version_id)
+    if version is None or version.doc_id != doc_id:
+        raise HTTPException(404, "索引版本不存在")
+    if version.status != "failed":
+        raise HTTPException(409, f"仅 failed 索引可重试，当前: {version.status}")
+    asyncio.create_task(recover_versioned_index(version_id, retry_failed=True))
+    return {"accepted": True, "version_id": version_id}
 
 
 # ============ 第三阶段 M4：文档工作台增强 ============

@@ -11,6 +11,17 @@ export async function getApiPort(): Promise<number | null> {
   return invoke<number | null>("get_api_port");
 }
 
+export interface ApiConnection {
+  port: number;
+  token: string;
+}
+
+/** Read the current in-memory sidecar port and startup token. */
+export async function getApiConnection(): Promise<ApiConnection | null> {
+  if (!isTauri()) return null;
+  return invoke<ApiConnection | null>("get_api_connection");
+}
+
 /** Tauri directory picker; browser/dev mode returns null so callers can fall back to text input. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri()) return null;
@@ -42,11 +53,12 @@ export interface ConfigData {
   db_host: string;
   db_port: number;
   db_user: string;
-  db_password: string;
   db_name: string;
+  db_password_configured: boolean;
   ollama_base_url: string;
   llm_model: string;
   embed_model: string;
+  mcp_enabled: boolean;
 }
 
 export interface DepResult {
@@ -68,7 +80,33 @@ export interface SidecarStartResult {
   ok: boolean;
   dev_mode: boolean;
   port: number | null;
+  token: string | null;
   error: string | null;
+}
+
+export type ProviderSecretName = "openai" | "claude";
+
+export interface ProviderSecretStatus {
+  openai_configured: boolean;
+  claude_configured: boolean;
+}
+
+export interface DatabaseSecretPromptResult {
+  configured: boolean;
+  cancelled: boolean;
+}
+
+export interface ProviderSecretPromptResult extends ProviderSecretStatus {
+  cancelled: boolean;
+}
+
+export interface McpSecretStatus {
+  reference: string;
+  configured: boolean;
+}
+
+export interface McpSecretPromptResult extends McpSecretStatus {
+  cancelled: boolean;
 }
 
 export interface UpdateInfo {
@@ -87,9 +125,48 @@ export async function cmdReadConfig(): Promise<ConfigData> {
   return invoke<ConfigData>("read_config");
 }
 
-/** Write desktop config to .env. */
+/** Write only non-secret desktop config. */
 export async function cmdWriteConfig(cfg: ConfigData): Promise<void> {
   return invoke<void>("write_config", { cfg });
+}
+
+/** Ask Windows for the DB password; the renderer never receives the value. */
+export async function cmdPromptDatabasePassword(): Promise<DatabaseSecretPromptResult> {
+  return invoke<DatabaseSecretPromptResult>("prompt_database_password");
+}
+
+/** Return only configured flags; secret values never leave the Rust process. */
+export async function cmdProviderSecretStatus(): Promise<ProviderSecretStatus> {
+  return invoke<ProviderSecretStatus>("provider_secret_status");
+}
+
+/** Ask Windows for a Provider secret; the renderer never receives the value. */
+export async function cmdPromptProviderSecret(
+  provider: ProviderSecretName
+): Promise<ProviderSecretPromptResult> {
+  return invoke<ProviderSecretPromptResult>("prompt_provider_secret", { provider });
+}
+
+/** Remove a Provider secret from the OS credential store. */
+export async function cmdClearProviderSecret(
+  provider: ProviderSecretName
+): Promise<ProviderSecretStatus> {
+  return invoke<ProviderSecretStatus>("clear_provider_secret", { provider });
+}
+
+/** Return only whether an MCP credential alias exists in the OS credential store. */
+export async function cmdMcpSecretStatus(alias: string): Promise<McpSecretStatus> {
+  return invoke<McpSecretStatus>("mcp_secret_status", { alias });
+}
+
+/** Ask the native shell for an MCP credential; plaintext never reaches the renderer. */
+export async function cmdPromptMcpSecret(alias: string): Promise<McpSecretPromptResult> {
+  return invoke<McpSecretPromptResult>("prompt_mcp_secret", { alias });
+}
+
+/** Remove an MCP credential and its non-secret startup index entry. */
+export async function cmdClearMcpSecret(alias: string): Promise<McpSecretStatus> {
+  return invoke<McpSecretStatus>("clear_mcp_secret", { alias });
 }
 
 /** Probe whether MySQL and Ollama are reachable on their default ports. */

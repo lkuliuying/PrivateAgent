@@ -19,8 +19,19 @@ def _project_base() -> Path:
     """项目根（开发模式）或 PyInstaller 解压目录（打包模式 ``sys._MEIPASS``）。"""
     if getattr(sys, "frozen", False):
         return Path(sys._MEIPASS)  # type: ignore[attr-defined]
-    # 开发模式：src/personal_assistant/server_entry.py -> 项目根
-    return Path(__file__).resolve().parent.parent.parent
+
+    # A normal source checkout resolves directly from ``__file__``.  A
+    # non-editable wheel installation (including the Docker image) places this
+    # module under ``.venv/site-packages`` while the Alembic resources remain
+    # at the application root.  Prefer the first candidate that actually owns
+    # both resources instead of assuming one fixed installation layout.
+    source_base = Path(__file__).resolve().parent.parent.parent
+    candidates = [source_base, Path.cwd().resolve()]
+    candidates.extend(Path(sys.executable).resolve().parents)
+    for candidate in dict.fromkeys(candidates):
+        if (candidate / "alembic.ini").is_file() and (candidate / "alembic").is_dir():
+            return candidate
+    return source_base
 
 
 def _ensure_data_dirs() -> None:
@@ -34,18 +45,18 @@ def _ensure_data_dirs() -> None:
 
 def _run_migrations() -> None:
     """进程内执行 Alembic ``upgrade head``（打包后无 alembic CLI）。"""
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     base = _project_base()
     ini = base / "alembic.ini"
     alembic_dir = base / "alembic"
     if not ini.exists() or not alembic_dir.exists():
-        print(
-            f"[server_entry] 未找到 alembic 资源（{ini}），跳过自动迁移。",
-            file=sys.stderr,
+        raise FileNotFoundError(
+            "required Alembic resources are missing from the application root: "
+            f"{base}"
         )
-        return
     cfg = Config(str(ini))
     cfg.set_main_option("script_location", str(alembic_dir))
     # env.py 会注入 settings.db_url，此处不设置 sqlalchemy.url
@@ -113,10 +124,18 @@ def main() -> None:
         try:
             _run_migrations()
         except Exception as exc:  # noqa: BLE001
-            # 迁移失败不阻断启动：MySQL 可能尚未就绪，前端状态页会展示 MySQL 不可用
-            print(f"[server_entry] 自动迁移失败（继续启动）: {exc}", file=sys.stderr)
+            # A writable API on an unknown schema can corrupt user data. Do not
+            # print the exception body because driver errors may include DSNs or
+            # SQL parameters; diagnostics can still identify the exception type.
+            print(
+                "[server_entry] database migration failed; refusing to start "
+                f"({type(exc).__name__})",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
 
     import uvicorn
+
     from personal_assistant.config import settings
 
     uvicorn.run(

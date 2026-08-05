@@ -2,12 +2,64 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+from pathlib import Path
+from uuid import uuid4
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from personal_assistant.config import settings as cfg
+from personal_assistant.testing import UnsafeTestDatabaseError, resolve_test_database_url
+
+
+try:
+    TEST_DB_URL = resolve_test_database_url(cfg.db_url, os.environ.get("PA_TEST_DB_URL"))
+except UnsafeTestDatabaseError as exc:
+    raise pytest.UsageError(f"数据库测试安全检查失败：{exc}") from exc
+
+# Set this before importing core.db/main_api.  Those modules create global
+# engines and background-session factories at import time.
+cfg.db_url = TEST_DB_URL
+# 通用套件默认走 legacy 检索路径（测试用 3/8 维 fake embedder，且只 mock
+# chroma_store.query）。versioned 相关测试在用例内通过 monkeypatch 显式
+# 开启 flag 并注入 FakeVersionVectorStore，不依赖全局开关。
+cfg.versioned_rag_indexing_enabled = False
+cfg.versioned_rag_retrieval_enabled = False
+TEST_API_TOKEN = "test-api-token-0123456789abcdef0123456789abcdef"
+cfg.api_auth_enabled = True
+cfg.api_token = SecretStr(TEST_API_TOKEN)
+
+
+@pytest.fixture
+def tmp_path():
+    """Windows/sandbox-safe replacement for pytest's built-in ``tmp_path``.
+
+    Python 3.13 applies a private ACL when pytest creates its base directory with
+    mode ``0o700``.  Under the Codex Windows sandbox that ACL can exclude the
+    restricted process token that created it.  Use an isolated workspace leaf
+    with normal inherited ACLs instead.
+    """
+
+    workspace = Path(__file__).resolve().parents[1]
+    root = (workspace / ".tmp" / "pytest-safe").resolve()
+    if workspace != root and workspace not in root.parents:
+        raise RuntimeError(f"unsafe pytest temporary root: {root}")
+    root.mkdir(parents=True, exist_ok=True, mode=0o777)
+    path = root / uuid4().hex
+    path.mkdir(mode=0o777)
+    try:
+        yield path
+    finally:
+        resolved = path.resolve()
+        if root not in resolved.parents:
+            raise RuntimeError(f"refusing to remove unsafe pytest path: {resolved}")
+        shutil.rmtree(resolved, ignore_errors=True)
+
 from personal_assistant.core.db import get_session
 import personal_assistant.core.db as dbmod
 import personal_assistant.workers.importer as importer_mod
@@ -25,7 +77,7 @@ async def db():
     共享 aiomysql 连接导致的清理错误（Windows proactor）。
     """
     engine = create_async_engine(
-        cfg.db_url,
+        TEST_DB_URL,
         pool_pre_ping=True,
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )
@@ -45,7 +97,7 @@ async def client():
     避免跨 event loop 泄漏 aiomysql 连接。
     """
     test_engine = create_async_engine(
-        cfg.db_url,
+        TEST_DB_URL,
         pool_pre_ping=True,
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )
@@ -69,7 +121,11 @@ async def client():
     # OCR 后台 worker 同样直接导入 async_session_factory 名字，须重绑（phase7 M3）。
     ocr_mod.async_session_factory = test_factory
     try:
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://127.0.0.1",
+            headers={"Authorization": f"Bearer {TEST_API_TOKEN}"},
+        ) as c:
             yield c
     finally:
         # 先排空后台任务（scan/import 等 fire-and-forget，factory 仍指向 test_factory），
@@ -118,13 +174,34 @@ async def _clean_stale_test_data():
         UpgradeSmokeRun,
     )
 
-    eng = create_async_engine(cfg.db_url, pool_pre_ping=True)
+    eng = create_async_engine(TEST_DB_URL, pool_pre_ping=True)
     try:
         async with async_sessionmaker(eng, expire_on_commit=False)() as s:
             await s.execute(delete(Message).where(Message.content.like("perf message%")))
             await s.execute(delete(ChatSession).where(ChatSession.title.like("perf-session-%")))
             await s.execute(delete(InboxItem).where(InboxItem.title.like("perf-inbox-%")))
             await s.execute(delete(Document).where(Document.name.like("perf-doc-%")))
+            await s.execute(
+                delete(Document).where(
+                    Document.name.in_(
+                        [
+                            "versioned-rag.txt",
+                            "safe-reindex.txt",
+                            "index-cleanup.txt",
+                            "immutable-index.txt",
+                            "legacy-source.txt",
+                            "migrated-source.txt",
+                            "version-api.txt",
+                            "preserved-reindex.txt",
+                            "rollback-guard.txt",
+                            "recover-building.txt",
+                            "recover-validated.txt",
+                            "retention-index.txt",
+                            "stale-build.txt",
+                        ]
+                    )
+                )
+            )
             await s.execute(delete(AppNotification).where(AppNotification.title.like("perf-notif-%")))
             await s.execute(
                 delete(DataIntegrityFinding).where(
@@ -150,7 +227,7 @@ async def fresh_session():
     提交的行；需要跨 session 验证时用本 fixture。第八阶段审查修复。
     """
     eng = create_async_engine(
-        cfg.db_url,
+        TEST_DB_URL,
         pool_pre_ping=True,
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )

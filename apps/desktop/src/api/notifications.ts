@@ -1,4 +1,4 @@
-import { ensureApiBase } from "./http";
+import { apiFetch as fetch, ensureApiBase } from "./http";
 import type { AppNotification, AppNotificationCreate } from "../types";
 
 export async function listNotifications(

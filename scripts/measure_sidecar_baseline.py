@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -125,6 +126,8 @@ def measure_one_startup(port: int, db_url: str | None, ollama_url: str | None, t
     """
     env = os.environ.copy()
     env["PA_API_PORT"] = str(port)
+    token = secrets.token_hex(32)
+    env["PA_API_TOKEN"] = token
     env["PA_SKIP_MIGRATIONS"] = "1"
     if db_url:
         env["PA_DB_URL"] = db_url
@@ -148,7 +151,11 @@ def measure_one_startup(port: int, db_url: str | None, ollama_url: str | None, t
             if proc.poll() is not None:
                 return None, f"sidecar exited early (rc={proc.returncode})"
             try:
-                with urllib.request.urlopen(url, timeout=2) as r:
+                request = urllib.request.Request(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                with urllib.request.urlopen(request, timeout=2) as r:
                     if r.status == 200:
                         ok = True
                         break

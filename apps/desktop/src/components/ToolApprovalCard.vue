@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, type Component } from "vue";
 import {
   PhShieldCheck,
   PhCheck,
   PhX,
   PhCircleNotch,
   PhWarning,
-  PhFileText,
+  PhFileMagnifyingGlass,
+  PhPencilLine,
+  PhTerminalWindow,
+  PhWrench,
 } from "@phosphor-icons/vue";
-import type { ToolCall, ToolCallStatus, RiskLevel } from "../types";
+import type { ToolCall, RiskLevel } from "../types";
+import {
+  TOOL_STATUS_META,
+  toolLabel,
+  toolSummary,
+} from "../models/agentWorkspace";
 
 /** 工具调用审批卡片：展示工具/参数/风险/状态，pending 时可批准/拒绝。 */
 const props = defineProps<{ toolCall: ToolCall }>();
@@ -17,29 +25,31 @@ const emit = defineEmits<{
   reject: [id: number];
 }>();
 
-const statusMeta: Record<ToolCallStatus, { label: string; tone: string }> = {
-  pending_approval: { label: "等待审批", tone: "warning" },
-  approved: { label: "执行中", tone: "info" },
-  running: { label: "执行中", tone: "info" },
-  succeeded: { label: "成功", tone: "success" },
-  failed: { label: "失败", tone: "danger" },
-  rejected: { label: "已拒绝", tone: "muted" },
-  cancelled: { label: "已取消", tone: "muted" },
-};
-
 const riskMeta: Record<RiskLevel, { label: string; tone: string }> = {
   safe: { label: "安全", tone: "info" },
   confirm: { label: "需审批", tone: "warning" },
   restricted: { label: "受限", tone: "danger" },
 };
 
-const status = computed(() => statusMeta[props.toolCall.status]);
+const status = computed(() => TOOL_STATUS_META[props.toolCall.status]);
 const risk = computed(() => riskMeta[props.toolCall.risk_level]);
 const isPending = computed(() => props.toolCall.status === "pending_approval");
 const isRunning = computed(
   () =>
     props.toolCall.status === "running" || props.toolCall.status === "approved"
 );
+const actionSummary = computed(() => toolSummary(props.toolCall));
+const actionIcon = computed<Component>(() => {
+  if (props.toolCall.tool_name === "read_file") return PhFileMagnifyingGlass;
+  if (
+    props.toolCall.tool_name === "write_file" ||
+    props.toolCall.tool_name === "apply_patch"
+  ) {
+    return PhPencilLine;
+  }
+  if (props.toolCall.tool_name === "run_command") return PhTerminalWindow;
+  return PhWrench;
+});
 
 // read_file 输出摘要
 const readFileOutput = computed(() => {
@@ -59,11 +69,19 @@ const readFileOutput = computed(() => {
 </script>
 
 <template>
-  <div class="tool-card" :class="`tone-${status.tone}`" data-agent-card>
+  <div
+    class="tool-card"
+    :class="`tone-${status.tone}`"
+    :data-agent-state="isRunning ? 'executing' : 'idle'"
+    data-agent-card
+  >
     <div class="card-head">
       <div class="head-left">
-        <PhFileText class="tool-icon" :size="16" weight="regular" />
-        <span class="tool-name">{{ toolCall.tool_name }}</span>
+        <component :is="actionIcon" class="tool-icon" :size="17" weight="regular" />
+        <div class="tool-copy">
+          <span class="tool-name">{{ actionSummary }}</span>
+          <span class="tool-raw">{{ toolLabel(toolCall.tool_name) }} · {{ toolCall.tool_name }}</span>
+        </div>
         <span class="pa-badge" :class="`pa-badge--${risk.tone}`">
           <PhShieldCheck :size="11" weight="bold" />
           {{ risk.label }}
@@ -80,36 +98,38 @@ const readFileOutput = computed(() => {
       </span>
     </div>
 
-    <!-- 输入参数 -->
-    <div v-if="toolCall.input_json" class="card-section" data-tool-section>
-      <div class="section-label">参数</div>
-      <dl class="params">
-        <div v-for="(v, k) in toolCall.input_json" :key="k" class="param-row">
-          <dt>{{ k }}</dt>
-          <dd class="pa-ellipsis" :title="String(v)">{{ v }}</dd>
-        </div>
-      </dl>
-    </div>
-
-    <!-- 成功输出 -->
-    <div v-if="readFileOutput" class="card-section" data-tool-section>
-      <div class="section-label">
-        结果 · {{ readFileOutput.size }} 字节<template v-if="readFileOutput.truncated">
-          · 已截断</template>
-      </div>
-      <details class="output-details" data-tool-disclosure>
-        <summary>查看文件内容</summary>
-        <pre class="output-pre" data-tool-panel>{{ readFileOutput.full }}</pre>
-      </details>
-    </div>
-    <div
-      v-else-if="toolCall.output_json && toolCall.status === 'succeeded'"
-      class="card-section"
-      data-tool-section
+    <details
+      v-if="toolCall.input_json || toolCall.output_json"
+      class="tool-details"
+      :open="isPending"
+      data-tool-disclosure
     >
-      <div class="section-label">结果</div>
-      <pre class="output-pre">{{ JSON.stringify(toolCall.output_json, null, 2) }}</pre>
-    </div>
+      <summary>查看完整参数与结果</summary>
+      <div v-if="toolCall.input_json" class="card-section" data-tool-section>
+        <div class="section-label">输入参数</div>
+        <dl class="params">
+          <div v-for="(v, k) in toolCall.input_json" :key="k" class="param-row">
+            <dt>{{ k }}</dt>
+            <dd :title="String(v)">{{ v }}</dd>
+          </div>
+        </dl>
+      </div>
+      <div v-if="readFileOutput" class="card-section" data-tool-section>
+        <div class="section-label">
+          结果 · {{ readFileOutput.size }} 字节<template v-if="readFileOutput.truncated">
+            · 已截断</template>
+        </div>
+        <pre class="output-pre" data-tool-panel>{{ readFileOutput.full }}</pre>
+      </div>
+      <div
+        v-else-if="toolCall.output_json && toolCall.status === 'succeeded'"
+        class="card-section"
+        data-tool-section
+      >
+        <div class="section-label">执行结果</div>
+        <pre class="output-pre">{{ JSON.stringify(toolCall.output_json, null, 2) }}</pre>
+      </div>
+    </details>
 
     <!-- 失败错误 -->
     <div v-if="toolCall.error_message && toolCall.status === 'failed'" class="error-box">
@@ -149,7 +169,7 @@ const readFileOutput = computed(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  max-width: 560px;
+  width: 100%;
 }
 .tool-card.tone-warning {
   border-left-color: var(--color-warning);
@@ -176,14 +196,30 @@ const readFileOutput = computed(() => {
   gap: var(--space-2);
   min-width: 0;
 }
+.tool-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
 .tool-icon {
   color: var(--color-fg-muted);
   flex-shrink: 0;
 }
 .tool-name {
+  display: block;
+  overflow: hidden;
   font-size: var(--text-base);
   font-weight: var(--font-semibold);
   color: var(--color-fg);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-raw {
+  color: var(--color-fg-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 .status {
   display: inline-flex;
@@ -223,6 +259,19 @@ const readFileOutput = computed(() => {
   flex-direction: column;
   gap: var(--space-1);
 }
+.tool-details {
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
+}
+.tool-details > summary {
+  color: var(--color-accent-soft-fg);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  user-select: none;
+}
+.tool-details[open] > summary {
+  margin-bottom: var(--space-2);
+}
 .section-label {
   font-size: var(--text-xs);
   color: var(--color-fg-faint);
@@ -251,16 +300,12 @@ const readFileOutput = computed(() => {
   margin: 0;
   color: var(--color-fg);
   min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
   font-family: var(--font-mono);
   font-size: var(--text-xs);
 }
 
-.output-details summary {
-  cursor: pointer;
-  font-size: var(--text-xs);
-  color: var(--color-accent-soft-fg);
-  user-select: none;
-}
 .output-pre {
   margin: var(--space-2) 0 0;
   padding: var(--space-2);

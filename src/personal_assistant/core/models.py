@@ -5,7 +5,10 @@
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime
+from decimal import Decimal
+from uuid import uuid4
 
 from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
 from sqlalchemy.dialects.mysql import (
@@ -14,6 +17,7 @@ from sqlalchemy.dialects.mysql import (
     CHAR,
     DATE,
     DATETIME,
+    DECIMAL,
     ENUM,
     FLOAT,
     INTEGER,
@@ -27,6 +31,15 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     pass
+
+
+def _new_memory_stable_key() -> str:
+    return uuid4().hex
+
+
+def _new_memory_content_hash(context) -> str:
+    content = str(context.get_current_parameters().get("content_md") or "")
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 class ChatSession(Base):
@@ -164,6 +177,189 @@ class DocChunk(Base):
             mysql_prefix="FULLTEXT",
             mysql_with_parser="ngram",
         ),
+    )
+
+
+class DocumentIndexVersion(Base):
+    """One immutable side-by-side RAG build for a document."""
+
+    __tablename__ = "document_index_versions"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    doc_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    version_number: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    chunker_version: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    embedding_dimensions: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    chunk_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    vector_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    manifest_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    failure_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    build_started_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False
+    )
+    validated_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "doc_id", "version_number", name="uk_document_index_version_number"
+        ),
+        Index(
+            "idx_document_index_version_status",
+            "doc_id",
+            "status",
+            "version_number",
+        ),
+    )
+
+
+class DocumentIndexChunk(Base):
+    """Chunk snapshot belonging to exactly one document index version."""
+
+    __tablename__ = "document_index_chunks"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    index_version_id: Mapped[str] = mapped_column(
+        CHAR(36),
+        ForeignKey("document_index_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    doc_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    content: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    token_count: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    heading: Mapped[str | None] = mapped_column(VARCHAR(512), nullable=True)
+    keywords_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    bm25_text: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "index_version_id",
+            "ordinal",
+            name="uk_document_index_chunk_ordinal",
+        ),
+        Index(
+            "idx_document_index_chunk_doc",
+            "doc_id",
+            "index_version_id",
+            "ordinal",
+        ),
+        Index(
+            "ft_document_index_chunk_bm25",
+            "bm25_text",
+            mysql_prefix="FULLTEXT",
+            mysql_with_parser="ngram",
+        ),
+    )
+
+
+class DocumentIndexChunkProvenance(Base):
+    """Source coordinates for one immutable versioned retrieval chunk."""
+
+    __tablename__ = "document_index_chunk_provenance"
+
+    chunk_id: Mapped[int] = mapped_column(
+        BIGINT,
+        ForeignKey("document_index_chunks.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    doc_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    source_kind: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    parser_version: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    page_start: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    page_end: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    char_start: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    char_end: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    line_start: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    line_end: Mapped[int | None] = mapped_column(INTEGER, nullable=True)
+    heading_path_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    provenance_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_document_index_chunk_provenance_page",
+            "doc_id",
+            "page_start",
+            "page_end",
+        ),
+    )
+
+
+class DocumentIndexHead(Base):
+    """Atomic document pointer to the only index version served online."""
+
+    __tablename__ = "document_index_heads"
+
+    doc_id: Mapped[int] = mapped_column(
+        BIGINT,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    active_version_id: Mapped[str | None] = mapped_column(
+        CHAR(36),
+        ForeignKey("document_index_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    previous_version_id: Mapped[str | None] = mapped_column(
+        CHAR(36),
+        ForeignKey("document_index_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    lock_version: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    switched_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        Index("idx_document_index_head_active", "active_version_id"),
     )
 
 
@@ -727,6 +923,31 @@ class MemoryItem(Base):
         default="confirmed",
         server_default="confirmed",
     )
+    stable_key: Mapped[str] = mapped_column(
+        VARCHAR(64), nullable=False, default=_new_memory_stable_key
+    )
+    memory_version: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=1, server_default="1"
+    )
+    content_sha256: Mapped[str] = mapped_column(
+        CHAR(64), nullable=False, default=_new_memory_content_hash
+    )
+    importance: Mapped[float] = mapped_column(
+        FLOAT, nullable=False, default=0.5, server_default="0.5"
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    sensitivity_level: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="normal", server_default="normal"
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    last_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
     )
@@ -742,10 +963,140 @@ class MemoryItem(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint("stable_key", name="uk_memory_stable_key"),
         Index("idx_memory_kind_enabled", "kind", "enabled"),
         Index("idx_memory_project", "project_id"),
         Index("idx_memory_topic", "topic_id"),
         Index("idx_memory_status", "status", "enabled"),
+        Index(
+            "idx_memory_active_expiry",
+            "deleted_at",
+            "status",
+            "enabled",
+            "expires_at",
+        ),
+    )
+
+
+class MemoryRevision(Base):
+    """Immutable snapshot of one logical memory version; intentionally no FK."""
+
+    __tablename__ = "memory_revisions"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    memory_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    stable_key: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    memory_version: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    kind: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    title: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    content_md: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    summary: Mapped[str | None] = mapped_column(VARCHAR(1024), nullable=True)
+    state_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    change_type: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "memory_id",
+            "memory_version",
+            name="uk_memory_revision_version",
+        ),
+        Index("idx_memory_revision_stable", "stable_key", "memory_version"),
+    )
+
+
+class MemoryConflict(Base):
+    """Explicit relation for facts that must not silently overwrite each other."""
+
+    __tablename__ = "memory_conflicts"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    left_memory_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("memory_items.id", ondelete="CASCADE"), nullable=False
+    )
+    right_memory_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("memory_items.id", ondelete="CASCADE"), nullable=False
+    )
+    reason: Mapped[str] = mapped_column(TEXT, nullable=False)
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    resolution_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "left_memory_id",
+            "right_memory_id",
+            name="uk_memory_conflict_pair",
+        ),
+        Index("idx_memory_conflict_status", "status", "updated_at"),
+    )
+
+
+class ConversationSummary(Base):
+    """Traceable summary of an immutable message range."""
+
+    __tablename__ = "conversation_summaries"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    first_message_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    last_message_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("messages.id", ondelete="SET NULL"), nullable=True
+    )
+    source_message_count: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    source_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    summary_text: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    summary_version: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    prompt_version: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    provider: Mapped[str | None] = mapped_column(VARCHAR(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    sensitive: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "source_sha256",
+            "summary_version",
+            name="uk_conversation_summary_source_version",
+        ),
+        Index(
+            "idx_conversation_summary_active",
+            "session_id",
+            "status",
+            "last_message_id",
+        ),
     )
 
 
@@ -1740,3 +2091,399 @@ class ExtensionRegistryItem(Base):
     )
 
     __table_args__ = (Index("idx_extension_registry_kind", "kind", "enabled"),)
+
+
+# ============================================================================
+# Modern Agent runtime: durable runs, ordered steps, and reconnectable events
+# ============================================================================
+
+
+class AgentRun(Base):
+    """One bounded AgentRuntime execution.
+
+    This is deliberately separate from ``agent_tasks``: a task is a durable
+    user plan, while a run is one concrete model/tool execution attempt.
+    """
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    session_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
+    )
+    trace_id: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, unique=True)
+    status: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="created", server_default="created"
+    )
+    provider: Mapped[str | None] = mapped_column(VARCHAR(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    max_steps: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    max_tool_calls: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    max_wall_time_ms: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    last_event_sequence: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    tool_call_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    input_tokens: Mapped[int] = mapped_column(
+        BIGINT, nullable=False, default=0, server_default="0"
+    )
+    output_tokens: Mapped[int] = mapped_column(
+        BIGINT, nullable=False, default=0, server_default="0"
+    )
+    cached_tokens: Mapped[int] = mapped_column(
+        BIGINT, nullable=False, default=0, server_default="0"
+    )
+    cost_usd: Mapped[Decimal | None] = mapped_column(DECIMAL(18, 8), nullable=True)
+    output: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(128), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    cancel_requested_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    steps: Mapped[list["RunStep"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="RunStep.ordinal",
+    )
+    events: Mapped[list["AgentRunEvent"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AgentRunEvent.sequence",
+    )
+    tool_approvals: Mapped[list["ToolApproval"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="ToolApproval.created_at",
+    )
+
+    __table_args__ = (
+        Index("idx_agent_run_session_created", "session_id", "created_at"),
+        Index("idx_agent_run_status_updated", "status", "updated_at"),
+    )
+
+
+class RunStep(Base):
+    """An ordered model or tool step projected from the durable event stream."""
+
+    __tablename__ = "run_steps"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    kind: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="running", server_default="running"
+    )
+    tool_call_id: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    name: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    provider: Mapped[str | None] = mapped_column(VARCHAR(100), nullable=True)
+    model: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    provider_request_id: Mapped[str | None] = mapped_column(VARCHAR(300), nullable=True)
+    input_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    output_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    latency_ms: Mapped[float | None] = mapped_column(FLOAT, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="steps")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "ordinal", name="uk_run_step_ordinal"),
+        Index("idx_run_step_run_ordinal", "run_id", "ordinal"),
+        Index("idx_run_step_status", "status"),
+        Index("idx_run_step_tool_call", "tool_call_id"),
+    )
+
+
+class AgentRunEvent(Base):
+    """An immutable public event used for replay and state projection."""
+
+    __tablename__ = "agent_run_events"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    sequence: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    event_type: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    step_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("run_steps.id", ondelete="SET NULL"), nullable=True
+    )
+    payload_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+
+    run: Mapped[AgentRun] = relationship(back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uk_agent_run_event_sequence"),
+        Index("idx_agent_run_event_type", "event_type", "created_at"),
+    )
+
+
+class ToolApproval(Base):
+    """A one-time approval bound to exact normalized tool arguments."""
+
+    __tablename__ = "tool_approvals"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("run_steps.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_call_id: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    tool_name: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    tool_version: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    arguments_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    arguments_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    risk_level: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    required_capabilities_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="pending", server_default="pending"
+    )
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    approval_token_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    decision_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    consumed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="tool_approvals")
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "tool_call_id", name="uk_tool_approval_run_call"),
+        Index("idx_tool_approval_status_expiry", "status", "expires_at"),
+        Index("idx_tool_approval_step", "step_id"),
+    )
+
+
+class AgentRunCheckpoint(Base):
+    """Latest versioned continuation state for a non-terminal Agent run."""
+
+    __tablename__ = "agent_run_checkpoints"
+
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), primary_key=True
+    )
+    checkpoint_version: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    event_sequence: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    conversation_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    pending_tool_calls_json: Mapped[list[dict]] = mapped_column(JSON, nullable=False)
+    tool_call_count: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    input_tokens: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    output_tokens: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    cached_tokens: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    cost_usd: Mapped[Decimal | None] = mapped_column(DECIMAL(18, 8), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "event_sequence", name="uk_agent_run_checkpoint_sequence"
+        ),
+    )
+
+
+class AgentToolExecution(Base):
+    """A leased execution claim and its redacted durable result/audit record."""
+
+    __tablename__ = "agent_tool_executions"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("run_steps.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_call_id: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    tool_name: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    tool_version: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    arguments_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    arguments_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    execution_key_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    risk_level: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    required_capabilities_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    approval_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("tool_approvals.id", ondelete="SET NULL"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    attempt_count: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    claim_token_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    output_json: Mapped[object | None] = mapped_column(JSON, nullable=True)
+    output_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    output_size_bytes: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "tool_call_id", name="uk_agent_tool_execution_run_call"
+        ),
+        UniqueConstraint(
+            "run_id",
+            "execution_key_sha256",
+            name="uk_agent_tool_execution_run_key",
+        ),
+        UniqueConstraint("approval_id", name="uk_agent_tool_execution_approval"),
+        Index("idx_agent_tool_execution_status_lease", "status", "lease_expires_at"),
+        Index("idx_agent_tool_execution_step", "step_id"),
+    )
+
+
+class McpServer(Base):
+    """Trusted-boundary configuration and discovery cache for one MCP server."""
+
+    __tablename__ = "mcp_servers"
+
+    id: Mapped[str] = mapped_column(
+        CHAR(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    name: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    transport: Mapped[str] = mapped_column(
+        ENUM("stdio", "streamable_http", name="mcp_transport_enum"), nullable=False
+    )
+    command: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    args_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    working_directory: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    url: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    env_json: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
+    secret_refs_json: Mapped[dict[str, str] | None] = mapped_column(JSON, nullable=True)
+    allow_insecure_local: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    allow_private_network: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    trusted: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    allowed_tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    timeout_ms: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=30_000, server_default="30000"
+    )
+    max_output_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=256 * 1024, server_default="262144"
+    )
+    status: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="disabled", server_default="disabled"
+    )
+    last_error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    discovery_tools_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    discovery_resources_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    discovery_prompts_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    discovery_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    last_checked_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    discovered_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    call_logs: Mapped[list["McpCallLog"]] = relationship(
+        back_populates="server", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uk_mcp_server_name"),
+        Index("idx_mcp_server_enabled_status", "enabled", "trusted", "status"),
+    )
+
+
+class McpCallLog(Base):
+    """Bounded metadata-only audit for an MCP tool invocation."""
+
+    __tablename__ = "mcp_call_logs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    server_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("mcp_servers.id", ondelete="CASCADE"), nullable=False
+    )
+    run_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="SET NULL"), nullable=True
+    )
+    tool_name: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    request_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    duration_ms: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    output_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    server: Mapped[McpServer] = relationship(back_populates="call_logs")
+
+    __table_args__ = (
+        Index("idx_mcp_call_server_time", "server_id", "created_at"),
+        Index("idx_mcp_call_run_time", "run_id", "created_at"),
+    )

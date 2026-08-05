@@ -31,6 +31,7 @@ DEFAULT_READ_LINES = 2000
 GIT_TIMEOUT = 15.0
 GIT_DIFF_MAX_CHARS = 20000  # diff 输出截断上限
 PATCH_MAX_CHARS = 500000
+PATCH_DIFF_MAX_CHARS = 200000
 COMMAND_TIMEOUT = 120.0
 COMMAND_OUTPUT_MAX_CHARS = 30000
 
@@ -271,6 +272,9 @@ async def propose_patch(
         )
         if diff:
             diff += "\n"
+        truncated = len(diff) > PATCH_DIFF_MAX_CHARS
+        if truncated:
+            diff = diff[:PATCH_DIFF_MAX_CHARS] + "\n…（diff 已截断）"
         return {
             "project_id": project_id,
             "rel_path": rel_path,
@@ -279,6 +283,7 @@ async def propose_patch(
             "new_sha256": _sha256_text(new_content),
             "creates_file": not full.exists(),
             "changed": old != new_content,
+            "truncated": truncated,
         }
 
     return await asyncio.to_thread(_preview)
@@ -318,6 +323,7 @@ async def apply_patch_to_workspace(
         "new_sha256": preview["new_sha256"],
         "size_bytes": size,
         "diff": preview["diff"],
+        "truncated": preview["truncated"],
     }
 
 

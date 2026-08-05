@@ -12,19 +12,31 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings as cfg
+from ..core.compatibility import compatibility_telemetry
 from ..core import approvals
 from ..core.activities import ActivityService
 from ..core.db import get_session
 from ..core.provider import OllamaProvider
 from ..core.repo_tools import ToolCallRepository
 from ..core.settings import SettingsService
-from ..core.tools import ToolError, ToolExecutor, default_registry, plan_tool_call
+from ..core.tool_adapter import READ_ONLY_AGENT_TOOL_NAMES
+from ..core.tools import (
+    ToolError,
+    ToolExecutor,
+    ToolRegistry,
+    default_registry,
+    plan_tool_call,
+)
+from ..logging_setup import get_logger
 
 router = APIRouter(tags=["tools"])
+logger = get_logger(__name__)
+_DEPRECATION_HEADERS = {"Deprecation": "true"}
 
 
 # ---- Schemas ----
@@ -74,11 +86,57 @@ async def _provider(db: AsyncSession) -> OllamaProvider:
     )
 
 
+def _runtime_tool_ownership_active() -> bool:
+    return bool(
+        cfg.chat_agent_runtime_enabled
+        and cfg.agent_run_read_only_tools_enabled
+    )
+
+
+def _legacy_planner_registry() -> ToolRegistry:
+    """Hide tools already owned by native Runtime from the text-JSON planner."""
+
+    if not _runtime_tool_ownership_active():
+        return default_registry
+    registry = ToolRegistry()
+    for tool in default_registry.list():
+        if tool.name not in READ_ONLY_AGENT_TOOL_NAMES:
+            registry.register(tool)
+    return registry
+
+
+def _record_legacy_tool_action(path: str, outcome: str) -> None:
+    _record_compatibility(path, "legacy_tool_call", outcome)
+
+
+def _record_compatibility(path: str, mode: str, outcome: str) -> None:
+    compatibility_telemetry.record(
+        path=path,
+        mode=mode,
+        outcome=outcome,
+    )
+    logger.info(
+        "deprecated compatibility path invoked",
+        compatibility_path=path,
+        compatibility_mode=mode,
+        compatibility_outcome=outcome,
+    )
+
+
+def _legacy_tool_http_error(status_code: int, detail: str) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+        headers=_DEPRECATION_HEADERS,
+    )
+
+
 # ---- Routes ----
 
 @router.get("/tools", response_model=list[ToolDefinitionOut])
-async def list_tools() -> list[dict[str, Any]]:
-    return [
+async def list_tools(response: Response) -> list[dict[str, Any]]:
+    response.headers.update(_DEPRECATION_HEADERS)
+    result = [
         {
             "name": t.name,
             "description": t.description,
@@ -88,69 +146,145 @@ async def list_tools() -> list[dict[str, Any]]:
         }
         for t in default_registry.list()
     ]
+    _record_compatibility("/tools", "legacy_registry", "returned")
+    return result
 
 
 @router.post("/tools/plan", response_model=ToolPlanResponse)
-async def plan(req: ToolPlanRequest, db: AsyncSession = Depends(get_session)):
-    provider = await _provider(db)
-    tc = await plan_tool_call(provider, db, req.session_id, req.message)
+async def plan(
+    req: ToolPlanRequest,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+):
+    response.headers["Deprecation"] = "true"
+    mode = (
+        "runtime_filtered" if _runtime_tool_ownership_active() else "legacy_full"
+    )
+    try:
+        provider = await _provider(db)
+        tc = await plan_tool_call(
+            provider,
+            db,
+            req.session_id,
+            req.message,
+            registry=_legacy_planner_registry(),
+        )
+    except Exception as exc:
+        compatibility_telemetry.record(
+            path="/tools/plan", mode=mode, outcome="error"
+        )
+        if isinstance(exc, HTTPException):
+            exc.headers = {**(exc.headers or {}), **_DEPRECATION_HEADERS}
+        logger.warning(
+            "deprecated compatibility path failed",
+            compatibility_path="/tools/plan",
+            compatibility_mode=mode,
+            error_type=type(exc).__name__,
+        )
+        raise
+    outcome = "planned" if tc is not None else "not_planned"
+    compatibility_telemetry.record(
+        path="/tools/plan", mode=mode, outcome=outcome
+    )
+    logger.info(
+        "deprecated compatibility path invoked",
+        compatibility_path="/tools/plan",
+        compatibility_mode=mode,
+        compatibility_outcome=outcome,
+    )
     return ToolPlanResponse(tool_call=tc)
 
 
 @router.post("/tool-calls/{tool_call_id}/approve", response_model=ToolCallOut)
-async def approve(tool_call_id: int, db: AsyncSession = Depends(get_session)):
+async def approve(
+    tool_call_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+):
+    path = "/tool-calls/:id/approve"
+    response.headers.update(_DEPRECATION_HEADERS)
     repo = ToolCallRepository(db)
     tc = await repo.get(tool_call_id)
     if tc is None:
-        raise HTTPException(404, "工具调用不存在")
+        _record_legacy_tool_action(path, "not_found")
+        raise _legacy_tool_http_error(404, "工具调用不存在")
     try:
         approvals.assert_transition(tc.status, "approved")
     except approvals.ApprovalError as e:
-        raise HTTPException(409, str(e))
+        _record_legacy_tool_action(path, "conflict")
+        raise _legacy_tool_http_error(409, str(e))
     try:
-        return await ToolExecutor(db).execute_tool_call(tool_call_id)
+        result = await ToolExecutor(db).execute_tool_call(tool_call_id)
     except approvals.ApprovalError as e:
         # 原子 claim 失败：已被并发请求处理
-        raise HTTPException(409, str(e))
+        _record_legacy_tool_action(path, "conflict")
+        raise _legacy_tool_http_error(409, str(e))
     except ToolError as e:
         # 执行失败已记录到 tool_calls（status=failed），这里返回 400 供前端提示
-        raise HTTPException(400, str(e))
+        _record_legacy_tool_action(path, "failed")
+        raise _legacy_tool_http_error(400, str(e))
+    _record_legacy_tool_action(path, "succeeded")
+    return result
 
 
 @router.post("/tool-calls/{tool_call_id}/reject", response_model=ToolCallOut)
-async def reject(tool_call_id: int, db: AsyncSession = Depends(get_session)):
+async def reject(
+    tool_call_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+):
+    path = "/tool-calls/:id/reject"
+    response.headers.update(_DEPRECATION_HEADERS)
     repo = ToolCallRepository(db)
     tc = await repo.get(tool_call_id)
     if tc is None:
-        raise HTTPException(404, "工具调用不存在")
+        _record_legacy_tool_action(path, "not_found")
+        raise _legacy_tool_http_error(404, "工具调用不存在")
     try:
         approvals.assert_transition(tc.status, "rejected")
     except approvals.ApprovalError as e:
-        raise HTTPException(409, str(e))
+        _record_legacy_tool_action(path, "conflict")
+        raise _legacy_tool_http_error(409, str(e))
     # 原子占用 pending_approval -> rejected，防与 approve 并发时 check-then-set 竞争。
     if not await repo.claim(
         tool_call_id, from_status="pending_approval", to_status="rejected"
     ):
-        raise HTTPException(409, "工具调用已被处理或状态已变更")
+        _record_legacy_tool_action(path, "conflict")
+        raise _legacy_tool_http_error(409, "工具调用已被处理或状态已变更")
     tc = await repo.get_fresh(tool_call_id)
     assert tc is not None
     await ActivityService(db).sync_tool_call(tc)
+    _record_legacy_tool_action(path, "rejected")
     return tc
 
 
 @router.get("/tool-calls", response_model=list[ToolCallOut])
 async def list_tool_calls(
-    session_id: int | None = Query(default=None), db: AsyncSession = Depends(get_session)
+    response: Response,
+    session_id: int | None = Query(default=None),
+    db: AsyncSession = Depends(get_session),
 ):
+    response.headers.update(_DEPRECATION_HEADERS)
     repo = ToolCallRepository(db)
+    mode = "session_filtered" if session_id is not None else "all"
     if session_id is not None:
-        return await repo.list_by_session(session_id)
-    return await repo.list()
+        result = await repo.list_by_session(session_id)
+    else:
+        result = await repo.list()
+    _record_compatibility("/tool-calls", mode, "returned")
+    return result
 
 
 @router.get("/tool-calls/{tool_call_id}", response_model=ToolCallOut)
-async def get_tool_call(tool_call_id: int, db: AsyncSession = Depends(get_session)):
+async def get_tool_call(
+    tool_call_id: int,
+    response: Response,
+    db: AsyncSession = Depends(get_session),
+):
+    response.headers.update(_DEPRECATION_HEADERS)
     tc = await ToolCallRepository(db).get(tool_call_id)
     if tc is None:
-        raise HTTPException(404, "工具调用不存在")
+        _record_legacy_tool_action("/tool-calls/:id", "not_found")
+        raise _legacy_tool_http_error(404, "工具调用不存在")
+    _record_legacy_tool_action("/tool-calls/:id", "found")
     return tc

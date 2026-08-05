@@ -73,6 +73,16 @@ async def test_backup_includes_phase678_tables(db, backup_cleanup):
         "integration_sources",
         "integration_imports",
         "extension_registry_items",
+        "agent_runs",
+        "tool_approvals",
+        "agent_run_checkpoints",
+        "agent_tool_executions",
+        "memory_facts",
+        "document_index_versions",
+        "document_index_chunks",
+        "document_index_heads",
+        "mcp_servers",
+        "mcp_call_logs",
     ):
         assert t in tables, f"备份缺少表 {t}"
 

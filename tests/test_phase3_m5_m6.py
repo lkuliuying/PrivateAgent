@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from personal_assistant.core import code_tools
 from personal_assistant.core.code_tools import (
     is_whitelisted_command,
     parse_command,
@@ -14,7 +16,11 @@ from personal_assistant.core.tools import default_registry
 
 
 def test_m5_tools_registered():
-    assert default_registry.get("propose_patch").risk_level == "safe"
+    preview = default_registry.get("propose_patch")
+    assert preview.risk_level == "safe"
+    assert preview.input_schema["properties"]["new_content"]["maxLength"] == 500000
+    assert preview.output_schema["properties"]["diff"]["maxLength"] == 200020
+    assert "truncated" in preview.output_schema["required"]
     assert default_registry.get("apply_patch_to_workspace").risk_level == "confirm"
     assert default_registry.get("run_whitelisted_command").risk_level == "confirm"
 
@@ -26,6 +32,29 @@ def test_command_whitelist_rejects_shell_control():
     assert is_whitelisted_command(["npm", "run", "build"])
     assert is_whitelisted_command(["cargo", "check"])
     assert not is_whitelisted_command(["git", "status"])
+
+
+@pytest.mark.asyncio
+async def test_patch_preview_is_bounded_without_writing(tmp_path, monkeypatch):
+    source = tmp_path / "bounded.py"
+    source.write_text("old content\n", encoding="utf-8")
+
+    class FakeProjectService:
+        def __init__(self, db):
+            del db
+
+        async def get(self, project_id):
+            assert project_id == 1
+            return SimpleNamespace(root_path=str(tmp_path))
+
+    monkeypatch.setattr(code_tools, "ProjectService", FakeProjectService)
+    monkeypatch.setattr(code_tools, "PATCH_DIFF_MAX_CHARS", 10)
+
+    preview = await propose_patch(None, 1, "bounded.py", "new content\n")
+
+    assert preview["truncated"] is True
+    assert len(preview["diff"]) < 40
+    assert source.read_text(encoding="utf-8") == "old content\n"
 
 
 async def _project(client, tmp_path) -> tuple[int, object]:
@@ -44,6 +73,7 @@ async def test_patch_preview_and_approved_apply(client, db, tmp_path):
         db, pid, "a.py", "def value():\n    return 2\n"
     )
     assert "return 2" in preview["diff"]
+    assert preview["truncated"] is False
     assert (root / "a.py").read_text(encoding="utf-8").endswith("return 1\n")
 
     req = await client.post(

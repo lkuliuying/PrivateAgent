@@ -83,9 +83,11 @@ function mountEntranceTimeline(root: AnimationRoot): AnimationHandle {
 function mountCardInteractions(root: AnimationRoot): AnimationHandle {
   return createAnimationScope(root, ({ scope }) => {
     return observeElements(root, "[data-agent-card]", (card) => {
+      let interaction: ReturnType<typeof animate> | null = null;
       const enter = () => {
         card.classList.add("is-motion-hovered");
-        scope.execute(() =>
+        interaction?.cancel();
+        interaction = scope.execute(() =>
           animate(card, {
             y: -6,
             scale: 1.02,
@@ -96,7 +98,8 @@ function mountCardInteractions(root: AnimationRoot): AnimationHandle {
       };
       const leave = () => {
         card.classList.remove("is-motion-hovered");
-        scope.execute(() =>
+        interaction?.cancel();
+        interaction = scope.execute(() =>
           animate(card, {
             y: 0,
             scale: 1,
@@ -118,11 +121,15 @@ function mountCardInteractions(root: AnimationRoot): AnimationHandle {
       card.addEventListener("focusout", focusOut);
 
       return () => {
+        interaction?.cancel();
+        interaction = null;
         card.classList.remove("is-motion-hovered");
         card.removeEventListener("mouseenter", enter);
         card.removeEventListener("mouseleave", leave);
         card.removeEventListener("focusin", enter);
         card.removeEventListener("focusout", focusOut);
+        card.style.removeProperty("transform");
+        card.style.removeProperty("opacity");
       };
     });
   });

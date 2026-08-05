@@ -1,82 +1,136 @@
-"""设置服务测试。"""
+"""Settings service and public secret-reference boundary tests."""
 from __future__ import annotations
+
+import json
+from pathlib import Path
+import zipfile
 
 import pytest
 
-from personal_assistant.core.settings import SettingsService
+from personal_assistant.core.models import Setting
+from personal_assistant.core.backup import BackupService
+from personal_assistant.core.settings import PROVIDER_SECRET_REFS, SettingsService
 
 
 @pytest.mark.asyncio
 async def test_settings_has_defaults(db):
-    svc = SettingsService(db)
-    s = await svc.get_all()
-    assert "llm_model" in s
-    assert "llm_temperature" in s
-    assert "kb_enabled_by_default" in s
+    values = await SettingsService(db).get_all()
+    assert "llm_model" in values
+    assert "llm_temperature" in values
+    assert "kb_enabled_by_default" in values
 
 
 @pytest.mark.asyncio
 async def test_settings_update_and_persist(db):
-    svc = SettingsService(db)
-    original = (await svc.get_all())["llm_temperature"]
+    service = SettingsService(db)
+    original = (await service.get_all())["llm_temperature"]
     try:
-        await svc.update({"llm_temperature": "0.42"})
-        s = await svc.get_all()
-        assert s["llm_temperature"] == "0.42"
-        # 未知 key 被忽略，不报错
-        await svc.update({"unknown_key": "x"})
-        s2 = await svc.get_all()
-        assert "unknown_key" not in s2
+        await service.update({"llm_temperature": "0.42"})
+        assert (await service.get_all())["llm_temperature"] == "0.42"
+        await service.update({"unknown_key": "x"})
+        assert "unknown_key" not in await service.get_all()
     finally:
-        await svc.update({"llm_temperature": original})
-
-
-# ============ API key 掩码（第八阶段审查修复）============
+        await service.update({"llm_temperature": original})
 
 
 @pytest.mark.asyncio
-async def test_settings_get_masks_api_keys(client, db):
-    """GET /settings 不回显 API key 原文，返回掩码占位。"""
-    svc = SettingsService(db)
-    await svc.update({"openai_api_key": "sk-secret-12345"})
+async def test_public_settings_never_include_provider_secret_fields(client, db):
+    row = await db.get(Setting, "openai_api_key")
+    original = row.value if row else None
+    if row is None:
+        row = Setting(key="openai_api_key", value="sk-legacy-secret")
+        db.add(row)
+    else:
+        row.value = "sk-legacy-secret"
+    await db.commit()
     try:
-        r = await client.get("/settings")
-        assert r.status_code == 200
-        assert r.json()["openai_api_key"] == "********"
-        assert "sk-secret-12345" not in r.text
+        response = await client.get("/settings")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["openai_api_key_configured"] is True
+        assert "openai_api_key" not in body
+        assert "sk-legacy-secret" not in response.text
     finally:
-        await svc.update({"openai_api_key": ""})
+        row = await db.get(Setting, "openai_api_key")
+        if row is not None:
+            row.value = original or ""
+            await db.commit()
 
 
 @pytest.mark.asyncio
-async def test_settings_put_mask_preserves_new_clears(client, db):
-    """PUT：回传掩码保留原值；新值更新；空串清空。"""
-    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+async def test_http_settings_and_provider_routes_reject_plaintext_secrets(client):
+    settings_response = await client.put(
+        "/settings", json={"openai_api_key": "sk-must-not-enter-http"}
+    )
+    assert settings_response.status_code == 422
+    provider_response = await client.patch(
+        "/providers", json={"claude_api_key": "sk-must-not-enter-http"}
+    )
+    assert provider_response.status_code == 422
 
-    from personal_assistant.config import settings as cfg
 
-    svc = SettingsService(db)
-    await svc.update({"openai_api_key": "sk-real-999"})
-
-    async def raw_key() -> str:
-        # 用 fresh session 读，避免 db fixture 旧事务快照看不到 client 写入
-        eng = create_async_engine(cfg.db_url)
-        try:
-            f = async_sessionmaker(eng, expire_on_commit=False)
-            async with f() as s:
-                return (await SettingsService(s).get_all())["openai_api_key"]
-        finally:
-            await eng.dispose()
-
+@pytest.mark.asyncio
+async def test_secret_reference_resolves_only_from_process_environment(
+    db, monkeypatch
+):
+    service = SettingsService(db)
+    monkeypatch.setenv("PA_OPENAI_API_KEY", "sk-process-only")
     try:
-        # 回传掩码 -> 保留原值（不被掩码覆盖）
-        await client.put("/settings", json={"openai_api_key": "********"})
-        assert await raw_key() == "sk-real-999"
-        # 回传新值 -> 更新
-        await client.put("/settings", json={"openai_api_key": "sk-new-value"})
-        assert await raw_key() == "sk-new-value"
-        # 回传空 -> 清空
-        await client.put("/settings", json={"openai_api_key": ""})
-        assert await raw_key() == ""
+        status = await service.set_provider_secret_reference("openai", configured=True)
+        assert status == {
+            "configured": True,
+            "available": True,
+            "storage": "os_keyring",
+        }
+        assert (await service.get_all())["openai_api_key"] == "sk-process-only"
+        stored = await db.get(Setting, "openai_api_key")
+        assert stored is not None
+        assert stored.value == PROVIDER_SECRET_REFS["openai_api_key"]
     finally:
-        await svc.update({"openai_api_key": ""})
+        await service.set_provider_secret_reference("openai", configured=False)
+
+
+@pytest.mark.asyncio
+async def test_secret_reference_endpoint_never_accepts_arbitrary_reference(client):
+    response = await client.put(
+        "/providers/openai/secret-reference",
+        json={"configured": True, "reference": "secret://attacker/value"},
+    )
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_backup_redacts_legacy_provider_secret_and_excludes_os_credentials(
+    db,
+):
+    row = await db.get(Setting, "openai_api_key")
+    if row is None:
+        row = Setting(key="openai_api_key", value="sk-legacy-backup-secret")
+        db.add(row)
+    else:
+        row.value = "sk-legacy-backup-secret"
+    await db.commit()
+
+    path: Path | None = None
+    try:
+        result = await BackupService(db).export()
+        path = Path(result["path"])
+        with zipfile.ZipFile(path) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            tables_text = archive.read("tables.json").decode("utf-8")
+            tables = json.loads(tables_text)
+        assert manifest["includes"]["os_credentials"] is False
+        assert "sk-legacy-backup-secret" not in tables_text
+        secret_rows = [
+            item
+            for item in tables["settings"]
+            if item.get("key") == "openai_api_key"
+        ]
+        assert secret_rows and secret_rows[0]["value"] == ""
+    finally:
+        row = await db.get(Setting, "openai_api_key")
+        if row is not None:
+            row.value = ""
+            await db.commit()
+        if path is not None:
+            path.unlink(missing_ok=True)

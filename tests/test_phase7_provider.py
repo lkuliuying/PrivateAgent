@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -85,6 +87,93 @@ async def test_claude_missing_api_key():
     with pytest.raises(ProviderError) as ei:
         await p.chat([{"role": "user", "content": "hi"}])
     assert ei.value.error_code == "missing_api_key"
+
+
+@pytest.mark.asyncio
+async def test_legacy_openai_chat_stream_yields_native_sse_deltas():
+    captured: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        body = (
+            'data: {"choices":[{"index":0,"delta":{"content":"hello "}}]}\n\n'
+            'data: {"choices":[{"index":0,"delta":{"content":"world"},'
+            '"finish_reason":"stop"}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        return httpx.Response(200, request=request, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://api.openai.com/v1",
+            api_key="secret",
+            model="gpt-test",
+            client=client,
+        )
+        tokens = [
+            token
+            async for token in provider.chat_stream(
+                [{"role": "user", "content": "hello"}]
+            )
+        ]
+
+    assert captured["stream"] is True
+    assert captured["stream_options"] == {"include_usage": True}
+    assert tokens == ["hello ", "world"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_claude_chat_stream_hides_thinking_and_yields_text():
+    captured: dict = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(json.loads(request.content))
+        events = [
+            {"type": "message_start", "message": {"content": []}},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "private"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "visible "},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "answer"},
+            },
+            {"type": "message_stop"},
+        ]
+        body = "".join(
+            f"event: {event['type']}\n"
+            f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+            for event in events
+        )
+        return httpx.Response(200, request=request, content=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = ClaudeProvider(
+            api_key="secret",
+            model="claude-test",
+            client=client,
+        )
+        tokens = [
+            token
+            async for token in provider.chat_stream(
+                [
+                    {"role": "system", "content": "Be concise."},
+                    {"role": "user", "content": "hello"},
+                ]
+            )
+        ]
+
+    assert captured["stream"] is True
+    assert captured["system"] == "Be concise."
+    assert tokens == ["visible ", "answer"]
+    assert "private" not in "".join(tokens)
 
 
 # ============ 审计 M6 字段 ============
@@ -169,6 +258,32 @@ def test_ollama_client_is_loaded_only_when_used(monkeypatch):
     assert imported == ["langchain_ollama"]
     assert exc_info.value.error_code == "provider_error"
     provider_module._load_ollama_components.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_ollama_embedding_client_is_reused(monkeypatch):
+    created: list[dict] = []
+
+    class FakeEmbeddings:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+        async def aembed_query(self, _text):
+            return [1.0, 0.0]
+
+        async def aembed_documents(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(
+        provider_module,
+        "_load_ollama_components",
+        lambda: (object, FakeEmbeddings),
+    )
+    provider = OllamaProvider(base_url="http://127.0.0.1:11434")
+
+    assert await provider.embed_one("query") == [1.0, 0.0]
+    assert await provider.embed(["one", "two"]) == [[1.0, 0.0], [1.0, 0.0]]
+    assert len(created) == 1
 
 
 @pytest.mark.asyncio
