@@ -4,6 +4,8 @@
 > 日期：2026-08-02
 > 原则：先止损、后建契约、再切流量；每阶段可验证、可回退、可保留现有数据
 
+> **当前状态（2026-08-05）**：本文 Phase 0–8 的执行台账属于历史记录，其中「主库仍为 `0012`」「未获授权迁移」「发布未放行」等描述只代表对应切片当时的时点事实，不得据此重复迁移或重新 rollout。当前事实：应用主库已获授权迁移到 `0020 (head)`（48 张原表行数零变化，回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留）；versioned RAG indexing/retrieval 已生产启用（4 个 canonical 文档、10 个 reviewed case 全通过）；Agent Runtime、MCP、自动摘要仍默认关闭。详见下方「下一步（已完成）」及 `docs/database-design.md`、`docs/rag-design.md` 顶部摘要。
+
 ## 1. 总体策略
 
 迁移采用 Strangler Pattern：新能力在稳定契约后逐步接管旧路径，旧 API 和数据结构通过适配器继续工作。禁止以一次性重写替代迁移，也禁止在没有数据核验和回滚方案时做破坏性 schema 变更。

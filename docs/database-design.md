@@ -35,9 +35,13 @@ SQLAlchemy async session 位于 `src/personal_assistant/core/db.py`，ORM 模型
 - 精确行数；
 - 计数 SHA-256。
 
-已保留两份升级前克隆。历史克隆 `personal_assistant_preupgrade_20260802105903` 为 `0012 / 48 tables / 10579 rows / aa5a2cca…096db`；当前克隆 `personal_assistant_preupgrade_20260803081120` 精确匹配现主库，为 `0012 / 48 tables / 10581 rows / a4075821…f033`，无凭据 manifest 位于 `data/backups/personal_assistant_preupgrade_20260803081120.json`。
+已保留三份升级前克隆（均为 `0012` schema 的历史基线，无凭据 manifest 位于 `data/backups/*.json`）：
 
-最终发布检查审计发现旧版 `diagnostic_redaction_smoke` 曾错误连接应用主库，并留下两条成功的 `diagnostic_runs`（ID 36、37）。当前主库因此为 `0012 / 48 tables / 10581 rows / counts SHA-256 a40758211caff6665e0ddbbe2ad8247d789023f55184a4509c9bb43fa545f033`；与保留克隆唯一的表计数差异是 `diagnostic_runs +2`，关键业务表计数未变。精确删除请求未获批准，这两条审计记录继续保留。
+- `personal_assistant_preupgrade_20260802105903`：`0012 / 48 tables / 10579 rows / aa5a2cca…096db`（诊断审计行修复前）；
+- `personal_assistant_preupgrade_20260803081120`：`0012 / 48 tables / 10581 rows / a4075821…f033`（匹配 2026-08-03 时点主库，含审计行）；
+- `personal_assistant_preupgrade_20260805111304`：`0012 / 48 tables / 10581 rows / a4075821…f033`，当前正式回滚备份（2026-08-05 正式迁移前克隆，计数/哈希与 03081120 一致）。
+
+最终发布检查审计（2026-08-02/03）发现旧版 `diagnostic_redaction_smoke` 曾错误连接应用主库，并留下两条成功的 `diagnostic_runs`（ID 36、37）。该时点主库计数因此为 `0012 / 48 tables / 10581 rows / counts SHA-256 a40758211caff6665e0ddbbe2ad8247d789023f55184a4509c9bb43fa545f033`；与更早的 `02105903` 克隆唯一的表计数差异是 `diagnostic_runs +2`，关键业务表计数未变。精确删除请求未获批准，这两条审计记录继续保留。2026-08-05 主库迁移到 `0020` 后，48 张原表行数保持 10,581 不变。
 
 发布 runner 已修正为通过 `resolve_test_database_url` 只使用专用测试库，并在成功或失败后删除自己新增的测试库诊断记录、恢复临时 setting、删除临时诊断包。修复后的 smoke 已验证主库与测试库前后表计数均不变。
 

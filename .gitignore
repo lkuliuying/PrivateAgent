@@ -38,6 +38,8 @@ apps/desktop/src-tauri/binaries/*.sig
 
 # Tauri updater 签名私钥 + Windows 代码签名证书（仅本地持有，严禁入库）
 .tauri/
+# updater 签名验证器 Cargo 构建产物（可再生成，不入库）
+scripts/windows/updater-signature-verifier/target/
 *.key
 *.key.pwd
 *.pem

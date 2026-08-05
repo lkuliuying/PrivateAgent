@@ -34,7 +34,7 @@
 
 | 门禁 | 当前状态 | 要求 |
 |---|---|---|
-| 生产 schema | `0012` | 获得明确授权且最新克隆演练通过后迁移到 `0020` |
+| 生产 schema | `0020`（2026-08-05 已授权迁移完成） | 获得明确授权且最新克隆演练通过后迁移到 `0020`（已满足） |
 | embedding dependency | 直接启动 Ollama 后 preflight 与真实 embedding 成功；client 已复用 | 修复/升级 Desktop wrapper，形成稳定启动方式 |
 | vector consistency | legacy `0%`；隔离 versioned 演练 `4 chunks / 4 vectors` | 主库获批后小批构建并逐批核对 |
 | benchmark | 10 个 reviewed case（真实意图 4 / 重复文档 2 / 引用边界 2 / 无答案 2）；质量通过，P95 `412.24 ms`，`rollout_ready=true` | 固定、人工审阅且能代表真实任务的 case set |
@@ -49,7 +49,7 @@
 
 2026-08-05 用最新 `0020` head 在同样受控克隆中完成 RAG 端到端演练：`data/rehearsals/versioned-rag-canonical-0020-20260805.json`，10 个 reviewed case 全部通过，`status=passed`、`reviewed=true`、`rollout_ready=true`，P95 `412.24 ms`，主库 revision 与计数哈希未变化。无答案 case 的 `abstention_rate=0.0` 记录为已知局限：Chroma 无相似度阈值，越界查询仍返回 top-k 结果。
 
-最终跨栈回归通过：Python `445 passed`、Vitest `28 passed`、Playwright `13 passed`、Rust `6 passed`、Vue/Vite production build、`cargo check --locked` 与 Docker Compose 配置门禁成功；发布报告为 10 passed / 0 failed / 0 skipped。主库仍为 `0012`，RAG 演练和修复后的最终复跑没有改变业务表；较保留克隆仅多两条修复前发布 smoke 留下、未获删除授权的 `diagnostic_runs` 审计记录。
+最终跨栈回归（2026-08-02/03，rollout 前证据）通过：Python `445 passed`、Vitest `28 passed`、Playwright `13 passed`、Rust `6 passed`、Vue/Vite production build、`cargo check --locked` 与 Docker Compose 配置门禁成功；发布报告为 10 passed / 0 failed / 0 skipped。主库当时仍为 `0012`，RAG 演练和修复后的最终复跑没有改变业务表；较更早保留克隆仅多两条修复前发布 smoke 留下、未获删除授权的 `diagnostic_runs` 审计记录。该时点门禁已由 2026-08-05 授权迁移后的小批构建和全新完整门禁取代。
 
 ## 可复现材料
 

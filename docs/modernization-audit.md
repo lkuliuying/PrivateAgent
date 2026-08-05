@@ -4,6 +4,8 @@
 审计基线：`main` / `19ea237`，工作区存在用户未提交的桌面端改动
 审计范围：Python sidecar、FastAPI API、LLM/工具/记忆/RAG、MySQL/Alembic、Tauri/Rust、Vue/TypeScript、测试与发布脚本
 
+> **快照说明（2026-08-05 补注）**：本文是 2026-08-02 对变更前基线 `19ea237` 的历史审计快照；文中「当前数据库 `0012 (head)`」「应用主库仍为 `0012`」等描述只反映该审计时间点，属于历史证据。此后应用主库已获授权迁移到 `0020 (head)`（2026-08-05，48 张原表行数零变化，回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留），versioned RAG indexing/retrieval 已生产启用；Agent Runtime、MCP、自动摘要仍保持默认关闭。最新状态以 `docs/agent-runtime.md`、`docs/rag-design.md`、`docs/database-design.md`、`docs/migration-plan.md`、`docs/testing-guide.md` 顶部摘要为准。
+
 ## 1. 结论先行
 
 PrivateAgent 不是从零开始的普通聊天 Demo。项目已经具备 FastAPI sidecar、SSE 流式聊天、MySQL 业务库、ChromaDB 向量索引、混合检索、长期记忆、工具审批、项目任务状态机、Tauri 桌面壳和较大规模测试资产，现有模块中有相当一部分应保留。

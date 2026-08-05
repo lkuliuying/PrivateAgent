@@ -1,6 +1,6 @@
 # Agent Runtime 设计与运行手册
 
-> 状态：代码与测试已完成；应用主库仍为 Alembic `0012`，相关能力默认关闭，尚未生产启用。
+> 状态（2026-08-05）：代码与测试已完成；应用主库已为 Alembic `0020`（2026-08-05 授权迁移，48 张原表行数零变化，回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留）。Agent Runtime 及其全部接入开关（Agent API、只读工具、ContextBuilder、输出验证、RAG 工具、聊天接管）仍默认关闭，尚未生产启用；MCP 与自动摘要 worker 同样保持默认关闭。
 
 ## 1. 目标与边界
 

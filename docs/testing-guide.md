@@ -2,6 +2,8 @@
 
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。
 
+> 当前状态（2026-08-05）：应用主库为 Alembic `0020 (head)`；versioned RAG indexing/retrieval 已生产启用；Agent Runtime、MCP、自动摘要相关开关仍默认关闭。专用测试库为 `0020 (head)`，已完成真实 `0020 → 0019 → 0020` 往返。
+
 ## 1. 环境
 
 ```powershell
@@ -134,6 +136,10 @@ uv run pytest -q tests/test_agent_recovery.py
 完整门禁至少覆盖：Python、Vue、Playwright、Rust、数据库 revision、升级 smoke、诊断脱敏、容器配置、发布 manifest 和 updater 签名结构。发布 runner 为 Compose 生成三个短生命周期 secret files，配置检查后强制删除；报告和命令行都不包含值。API 镜像、独立 MySQL、新库迁移、Bearer 认证和 CPU 容器 healthcheck 已完成一次隔离实机验收；安装、覆盖升级、卸载、可选 GPU Ollama profile 和真实 vN→vN+1 仍需对应运行环境验收。
 
 ## 8. 最近基线
+
+2026-08-05 正式迁移配套的完整发布门禁：全部测试 `535 passed`（实际执行数，含参数化展开），Vitest / Playwright / Rust / Vue production build / `cargo check --locked` / Docker Compose 配置门禁通过；发布检查报告为 `10 passed / 0 failed / 0 skipped`。
+
+口径说明：发布报告数字是流水线**步骤数**（10 个 gate step），不是测试用例数；pytest 的 `535 passed` 是**实际执行数**（参数化可能高于静态定义数，仓库静态函数定义为 493 个 Python 测试函数、32 个 Vitest 定义、11 个 Playwright 定义，均可能低于展开后的执行数）；三者口径不同，不能互相替代或直接比较。
 
 2026-08-03 最近一次完整代码门禁（完成于 Phase 4 Slice 3 的 RAG ToolSpec/collection isolation 变更之前）：
 
