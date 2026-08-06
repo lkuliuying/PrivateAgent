@@ -2487,3 +2487,40 @@ class McpCallLog(Base):
         Index("idx_mcp_call_server_time", "server_id", "created_at"),
         Index("idx_mcp_call_run_time", "run_id", "created_at"),
     )
+
+
+class CompatibilityTelemetryRow(Base):
+    """Durable per-window compatibility call counts (R3 遥测持久化).
+
+    每个进程/观察窗口一行组合（scope, scope_key, path, mode, outcome）；
+    calls 为窗口内累计计数，跨窗口聚合用于 §6.4 的 legacy 归零观察。
+    """
+
+    __tablename__ = "compatibility_telemetry"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    scope_key: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    path: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    mode: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    outcome: Mapped[str] = mapped_column(VARCHAR(32), nullable=False)
+    calls: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    started_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    last_flushed_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    ended_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope",
+            "scope_key",
+            "path",
+            "mode",
+            "outcome",
+            name="uk_compat_telemetry_cell",
+        ),
+        Index("idx_compat_telemetry_window", "scope", "started_at"),
+    )

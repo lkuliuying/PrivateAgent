@@ -1,6 +1,6 @@
 # 数据库与持久化设计
 
-> **当前状态（2026-08-06）**：源码 Alembic head 为 `0020`；应用主库 `personal_assistant` 已获授权于 2026-08-05 迁移到 `0020`（48 张原表行数零变化，10,581 行精确保持）。专用测试库已验证升级/回退；真实数据克隆 `personal_assistant_preupgrade_20260805111304` 保留为回滚备份，RAG 端到端演练（2026-08-05，`rollout_ready=true`）已在同 head 完成。
+> **当前状态（2026-08-06）**：源码 Alembic head 为 `0021`；应用主库 `personal_assistant` 已获授权于 2026-08-05 迁移到 `0020`（48 张原表行数零变化，10,581 行精确保持），并于 2026-08-06 迁移到 `0021`（新增 `compatibility_telemetry` 表，克隆 `personal_assistant_preupgrade_20260806070435` 为 0020 基线）。专用测试库已验证升级/回退；真实数据克隆 `personal_assistant_preupgrade_20260805111304` 保留为回滚备份，RAG 端到端演练（2026-08-05，`rollout_ready=true`）已在同 head 完成。
 >
 > **历史执行台账（不得当作当前状态）**：本文 `0012` 迁移前基线、历史克隆清单等段落只代表 2026-08-05 之前各时点，不得据此重复迁移或清理。
 
@@ -25,6 +25,7 @@ SQLAlchemy async session 位于 `src/personal_assistant/core/db.py`，ORM 模型
 | `0018` | `document_index_versions`、`document_index_chunks`、`document_index_heads` | 删除版本化索引元数据 |
 | `0019` | `mcp_servers`、`mcp_call_logs` | 删除 MCP 配置和审计 |
 | `0020` | `document_index_chunk_provenance` | 删除版本化 chunk 的来源坐标与独立来源哈希 |
+| `0021` | `compatibility_telemetry`（R3 遥测持久化，2026-08-06） | 删除跨窗口兼容遥测计数 |
 
 迁移文件位于 `alembic/versions/0013_*.py` 至 `0020_*.py`。MySQL DDL 非事务性；失败可能留下部分表或列，不能假设异常会自动回滚。迁移前必须有完整克隆，sidecar 迁移失败会拒绝启动，见 `src/personal_assistant/server_entry.py`。
 

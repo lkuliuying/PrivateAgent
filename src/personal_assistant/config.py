@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     )
     mcp_enabled: bool = False
 
+    # === 兼容遥测持久化（R3 §6.4 跨版本观察窗口） ===
+    # 开启后 CompatibilityTelemetry 的窗口计数定期落库（compatibility_telemetry 表，
+    # schema 0021+），进程退出标记 ended_at；跨窗口聚合用于 legacy 归零观察。
+    compatibility_telemetry_persist_enabled: bool = False
+    compatibility_telemetry_flush_seconds: int = Field(default=60, ge=10, le=3_600)
+
     @model_validator(mode="after")
     def validate_summary_worker_limits(self) -> Settings:
         if (
@@ -140,6 +146,10 @@ class Settings(BaseSettings):
     embed_model: str = "bge-m3"
     llm_temperature: float = 0.7
     llm_context_length: int = Field(default=8192, ge=128, le=10_000_000)
+    # R3：token 估算安全系数（保守上界）。与真实 provider usage 对比校准见
+    # data/rehearsals/r3-tokenizer-20260806/report.json——纯字符公式会低估，
+    # 默认 2.0 保证抽样文本估算 ≥ 真实值；预算语义是保守上界而非精确计数。
+    token_estimate_safety_factor: float = Field(default=2.0, ge=1.0, le=10.0)
 
     # === 知识库 ===
     kb_enabled_by_default: bool = False

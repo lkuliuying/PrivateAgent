@@ -17,10 +17,17 @@
 >   `error_code`（`ollama_not_running`/`ollama_timeout`/`ollama_http_error`/`ollama_model_missing`）与
 >   `missing_models`；`scripts/ollama_lifecycle_check.py` + 证据报告
 >   （embed P50 87ms / P95 111ms，bge-m3 常驻 1.6 GB）；文档 `docs/ollama-lifecycle.md`。
-> - **R3 部分完成**：取消清理修复（git/命令子进程 CancelledError 时 kill、grep to_thread stop_event
->   退让）、SSE 断线取消与 owner 监控 verify→shutdown 测试补齐、灰度逐项验证矩阵与兼容链退出提案
->   （`docs/agent-runtime-gray-verification.md`）；**生产开启任何 Runtime 开关仍待单独授权**，
->   跨版本遥测观察窗口未启动，provider tokenizer 口径对比未做。
+> - **R3 部分完成（2026-08-06 二轮）**：取消清理/故障门禁（上轮）+ 本轮新增：
+>   ① 预算口径统一——旧聊天历史按 `llm_context_length` 截断（保留最近）、远程审计改用
+>   `ConservativeTokenEstimator`，`tests/test_chat_budget.py`；② tokenizer 校准——真实 usage
+>   抽样（5 类文本）显示原公式 4/5 低估，`PA_TOKEN_ESTIMATE_SAFETY_FACTOR=2.0` 后 5/5 ≥ 真实值
+>   （`scripts/measure_tokenizer_accuracy.py`，`data/rehearsals/r3-tokenizer-20260806/`；
+>   Ollama `/api/tokenize` 本机 404 不可用）；③ 遥测持久化（§6.4 基础设施）——迁移 `0021`
+>   `compatibility_telemetry` 表，主库已迁移（克隆 `personal_assistant_preupgrade_20260806070435`
+>   为 0020 基线，测试库往返演练通过），生产 `.env` 已授权开启
+>   `PA_COMPATIBILITY_TELEMETRY_PERSIST_ENABLED=true`，`CompatibilityTelemetryPersister` +
+>   `scripts/telemetry_window_report.py` + 4 个新测试。**生产开启任何 Runtime 开关仍待单独授权**
+>   （本次明确不开启）；§6.4 观察窗口自 2026-08-06 起积累，尚未覆盖一次升级周期。
 > - **R4 完成（2026-08-06）**：领域级结果验证器 6 类全部实现（`agents/result_verification.py`）：
 >   文件 Diff（回读 SHA/交叉校验/路径越界）、代码（白名单+标记）、Shell（退出码/stderr/超时/截断/取消）、
 >   API（状态码/Schema/重试/幂等）、数据库（提交/约束/影响行/读回）、多步骤完成条件（可信谓词）；

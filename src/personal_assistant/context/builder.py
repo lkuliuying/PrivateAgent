@@ -9,6 +9,7 @@ from collections.abc import Iterable, Sequence
 from typing import Protocol
 
 from personal_assistant.agents.contracts import ModelMessage
+from personal_assistant.config import settings
 
 from .contracts import (
     ContextBudget,
@@ -32,16 +33,29 @@ class TokenEstimator(Protocol):
 
 
 class ConservativeTokenEstimator:
-    """Tokenizer-free upper estimate suitable until a provider tokenizer is known."""
+    """Tokenizer-free conservative upper estimate.
+
+    R3 校准（2026-08-06，data/rehearsals/r3-tokenizer-20260806/report.json）：
+    与真实 Ollama ``prompt_eval_count`` 对比，纯字符公式在 4/5 项代表文本上
+    低估（最低约 0.5x，含 chat template 固定开销），不保证上界。因此乘以
+    ``safety_factor``（默认 2.0，`PA_TOKEN_ESTIMATE_SAFETY_FACTOR` 可调），
+    使估算在抽样文本上恒不小于真实值；预算语义是"保守上界"而非精确计数。
+    """
 
     _cjk = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
+
+    def __init__(self, safety_factor: float = 2.0) -> None:
+        if not 1.0 <= float(safety_factor) <= 10.0:
+            raise ValueError("token estimate safety factor must be between 1.0 and 10.0")
+        self._safety_factor = float(safety_factor)
 
     def estimate_text(self, text: str) -> int:
         if not text:
             return 0
         cjk_count = len(self._cjk.findall(text))
         non_cjk = len(text) - cjk_count
-        return cjk_count + math.ceil(non_cjk / 3)
+        raw = cjk_count + math.ceil(non_cjk / 3)
+        return math.ceil(raw * self._safety_factor)
 
     def estimate_message(self, message: ModelMessage) -> int:
         tool_calls = (
@@ -80,8 +94,10 @@ class ContextBuilder:
         budget: ContextBudget | None = None,
         estimator: TokenEstimator | None = None,
     ) -> None:
+        self.estimator = estimator or ConservativeTokenEstimator(
+            settings.token_estimate_safety_factor
+        )
         self.budget = budget or ContextBudget()
-        self.estimator = estimator or ConservativeTokenEstimator()
 
     def build(
         self,

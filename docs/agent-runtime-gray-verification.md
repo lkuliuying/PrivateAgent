@@ -34,8 +34,8 @@
 | 并发 continuation 唯一消息投影 | ✅ 已有 | `test_chat_agent_runtime_compat.py::test_completed_chat_run_can_reconnect_and_persist_its_answer` |
 | grep_code 线程取消退让 | ✅ 本次修复 | `tool_adapter.py` 绑定 stop_event；`_grep` 检查点退让；`test_agent_process_cancellation.py`（3 项） |
 | Git/legacy 子进程取消清理 | ✅ 本次修复 | `code_tools.py::_run_git/_execute_command` CancelledError 时 kill；`test_agent_process_cancellation.py`（2 项） |
-| provider 精确 tokenizer 与旧聊天预算口径 | ⏳ 后续 | 需要在真实模型上对比旧 chat 预算与 runtime 口径（不改动默认路径前单独评估） |
-| compatibility telemetry 跨版本观察窗口 | ⏳ 待启动 | 见 §4 提案 |
+| provider 精确 tokenizer 与旧聊天预算口径 | ✅ 完成（2026-08-06） | 见下节；Ollama `/api/tokenize` 在本机 404，精确 tokenizer 不可用，改用真实 usage 抽样校准 |
+| compatibility telemetry 跨版本观察窗口 | ✅ 基础设施完成（2026-08-06）；窗口观察进行中 | 见 §4；持久化已上线，等待跨版本窗口积累 |
 
 ## 3. 取消清理修复明细（本次代码改动）
 
@@ -49,31 +49,63 @@
 - `src/personal_assistant/main_api.py`：`monitor_agent_runtime_owner(guard, coordinator, interval)`
   从 lifespan 抽出为模块级可测函数，行为不变（10s 轮询、verify 失败 shutdown+退出）。
 
-## 4. 兼容链退出提案（§6.4）
+## 3.1 预算口径统一与 tokenizer 校准（2026-08-06）
 
-删除 `/tools`、`/tools/plan` 或旧 tool-call 端点**必须同时满足**以下条件，缺一不可：
+**修复前**：旧聊天（`ChatService.stream_reply`）把全部历史无预算注入，远程审计用
+`input_chars // 4` 估算 token；AgentRuntime/ContextBuilder 用 `ConservativeTokenEstimator`
+（CJK 1:1、非 CJK /3）。三处口径分裂，且旧聊天可突破 provider `num_ctx`。
+
+**修复**（`docs/remaining-work-plan-20260806.md` §6.3 项）：
+- 旧聊天历史按 `llm_context_length`（settings 表生效值）做**从旧到新截断**，保留最近消息，
+  与 Runtime 共用同一估算器（`core/chat.py` + `tests/test_chat_budget.py`）；
+- 远程审计 `estimated_input_tokens` 改用同一估算器（不再用字符/4），测试断言统一口径；
+- **安全系数**：真实 usage 抽样（`scripts/measure_tokenizer_accuracy.py`，
+  `data/rehearsals/r3-tokenizer-20260806/`）显示纯字符公式在 5 类代表文本中 4 项低估
+  （最低约 0.5x，含 chat template 固定开销），**不保证上界**；`ConservativeTokenEstimator`
+  增加 `safety_factor`（默认 2.0，`PA_TOKEN_ESTIMATE_SAFETY_FACTOR` 可调），
+  系数 2.0 下抽样文本估算/真实比率 1.000–2.645，**5/5 项 ≥1.0**，保守上界成立；
+- 预算语义明确为"保守上界"而非精确计数；Ollama `/api/tokenize` 在本机版本返回 404，
+  精确 tokenizer 不可用（如实记录），后续版本可用时再按精确计数校准系数。
+
+## 4. 兼容链退出提案（§6.4）删除 `/tools`、`/tools/plan` 或旧 tool-call 端点**必须同时满足**以下条件，缺一不可：
 
 1. **Runtime 模式新消息 planner 调用稳定为 0**：桌面端 `/capabilities` 返回
    `chat_execution_mode=agent_runtime` 时 `useLegacyToolPlanner=false`（已有 E2E 覆盖）；
    需要生产遥测确认 `/tools/plan` 的 `runtime_filtered` 计数为 0。
-2. **跨版本观察窗口 legacy 调用为 0**：`CompatibilityTelemetry`（`core/compatibility.py`）
-   记录 `/tools`（legacy_registry）、`/tools/plan`（legacy_full）、`/tool-calls*` 计数，
-   诊断 API 已暴露。建议窗口：**至少覆盖一次发布升级（如 0.2.0 → 0.2.1）前后各 ≥14 天**，
-   期间 `legacy_full` 与 `/tools` 调用为零、无 pending tool_call 残留。
+2. **跨版本观察窗口 legacy 调用为 0**：兼容遥测已持久化（2026-08-06 上线，
+   schema `0021`、`PA_COMPATIBILITY_TELEMETRY_PERSIST_ENABLED=true`，每个进程一个窗口，
+   退出标记 `ended_at`）。观察窗口建议：**至少覆盖一次发布升级（如 0.2.0 → 0.2.1）
+   前后各 ≥14 天**，期间 `legacy_full` 与 `/tools` 调用为零、无 pending tool_call 残留。
+   证据输出：`uv run python scripts/telemetry_window_report.py --since <升级前日期>`
+   （`legacy_zero=true` 且窗口覆盖整个观察期）。
 3. **历史 pending 调用处置**：`waiting_approval`/`pending_approval` 记录需耗尽、迁移或
    有明确人工处置方案（审批 API 的恢复链路保留到删除端点为止）。
 4. **回滚一致性**：删除端点与最低支持版本同步——回滚安装旧版不再调用已删端点，或删除
    提案本身携带回滚版本要求。
 5. **删除是独立变更**：单独 commit、单独回滚，不与"默认开启 Runtime"同一提交完成。
 
-当前状态：1–5 均未满足，**不提案删除任何 legacy 端点**。本次交付为取消清理、SSE 断线
-与 owner 监控的故障门禁补齐，以及观察窗口的启动条件定义。
+当前状态：条件 2 的持久化基础设施已就绪并开始积累窗口（自 2026-08-06 生产启用起）；
+条件 1/3/4/5 尚未满足，**不提案删除任何 legacy 端点**。预算口径与 tokenizer 校准见 §3.1。
+
+### 4.1 遥测持久化实现（2026-08-06）
+
+- 迁移 `0021` 新增 `compatibility_telemetry` 表（scope/scope_key/path/mode/outcome/calls/
+  started_at/last_flushed_at/ended_at，唯一约束 per cell）；测试库已演练
+  `0020 → 0021 → 0020` 往返，主库已迁移并保留克隆
+  `personal_assistant_preupgrade_20260806070435`（0020 基线）。
+- `CompatibilityTelemetryPersister`（`core/compatibility.py`）：每进程一个窗口
+  （scope_key=uuid），定期（默认 60s，`PA_COMPATIBILITY_TELEMETRY_FLUSH_SECONDS`）把
+  增量 upsert 落库，进程退出 `flush_now(ended=True)` 标记 `ended_at`；崩溃最多丢一个间隔。
+- `windowed_telemetry_summary()` 跨窗口聚合；`scripts/telemetry_window_report.py`
+  输出窗口列表、legacy 分路径计数与 `legacy_zero` 判定。
+- 测试：`tests/test_compatibility_telemetry.py`（增量幂等、ended 标记、跨窗口聚合）。
 
 ## 5. 未完成边界（如实记录）
 
 - 未在生产 `.env` 开启任何 Agent Runtime 开关（`PA_AGENT_RUNS_API_ENABLED` 等保持 false）；
   灰度第 1–8 步的**生产开启**需要单独授权，本报告只提供隔离验证证据。
-- provider 精确 tokenizer 与旧聊天预算口径对比未做。
-- 跨版本遥测观察窗口未启动（需先在生产开启并跨一次升级观察）。
+- provider 精确 tokenizer（Ollama `/api/tokenize`）在本机版本返回 404，不可用；
+  预算以校准后的安全系数（2.0）保守估算，后续 Ollama 版本支持后再按精确计数复核。
+- 跨版本观察窗口自 2026-08-06 起开始积累，但尚未覆盖一次升级周期，§6.4 条件 2 未达成。
 - `grep_code` 线程不可强杀：stop_event 只能让线程在检查点退让，单次超大文件内的
   正则扫描仍会跑完；已按计划以 `supports_cancellation=False` 明确声明并丢弃迟到结果。

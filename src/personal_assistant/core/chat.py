@@ -15,6 +15,8 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
+from ..context.builder import ConservativeTokenEstimator
 from ..logging_setup import get_logger
 from .history import MessageRepository, SessionRepository
 from .provider import OllamaProvider, ProviderError, ProviderRouter, classify_error
@@ -127,13 +129,41 @@ class ChatService:
                 tool_result.get("tool_name", "工具"), tool_result.get("output") or {}
             )
 
+        # R3：历史消息预算截断——与 AgentRuntime/ContextBuilder 使用同一个
+        # ConservativeTokenEstimator 保守口径，避免旧聊天全量注入超长历史
+        # 突破 provider 上下文（num_ctx）。预算基线与 provider 生效值一致
+        # （settings 表 llm_context_length，缺省回退 config）。
+        estimator = ConservativeTokenEstimator(settings.token_estimate_safety_factor)
+        effective_context_length = int(
+            provider_settings.get("llm_context_length")
+            or settings.llm_context_length
+        )
+        history_budget = max(
+            0,
+            effective_context_length
+            - estimator.estimate_text(system_content)
+            - estimator.estimate_text(user_content)
+            - 64,
+        )
+        history_truncated = False
+        bounded_history: list[dict[str, str]] = []
+        for message in reversed(history):
+            cost = estimator.estimate_text(message.content)
+            if cost > history_budget:
+                history_truncated = True
+                break
+            bounded_history.append({"role": message.role, "content": message.content})
+            history_budget -= cost
+
         msgs: list[dict[str, str]] = [{"role": "system", "content": system_content}]
-        for m in history:
-            msgs.append({"role": m.role, "content": m.content})
+        msgs.extend(reversed(bounded_history))
         msgs.append({"role": "user", "content": user_content})
 
         audit_id: int | None = None
         input_chars = sum(len(m["content"]) for m in msgs)
+        estimated_input_tokens = estimator.estimate_text(
+            "\n".join(m["content"] for m in msgs)
+        )
         if privacy_scope.get("remote_provider_enabled") and privacy_scope.get(
             "provider_type"
         ) in {"openai", "claude"}:
@@ -153,7 +183,7 @@ class ChatService:
                 remote=True,
                 context_types_json=context_types,
                 estimated_input_chars=input_chars,
-                estimated_input_tokens=input_chars // 4,
+                estimated_input_tokens=estimated_input_tokens,
                 status="sent",
                 started_at=utcnow(),
             )
@@ -164,6 +194,7 @@ class ChatService:
             session_id=session_id,
             first_turn=is_first_turn,
             kb=knowledge_base,
+            history_truncated=history_truncated,
         )
 
         t0 = time.monotonic()

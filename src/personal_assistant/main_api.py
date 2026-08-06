@@ -130,10 +130,34 @@ async def lifespan(app: FastAPI):
 
         summary_task = asyncio.create_task(conversation_summary_tick_loop())
         logger.info("会话摘要后台 worker 已启动")
+    telemetry_task: asyncio.Task | None = None
+    if settings.compatibility_telemetry_persist_enabled:
+        from .core.compatibility import (
+            CompatibilityTelemetryPersister,
+            compatibility_telemetry,
+        )
+        from .core.db import async_session_factory
+
+        telemetry_persister = CompatibilityTelemetryPersister(
+            compatibility_telemetry,
+            async_session_factory,
+            flush_interval_seconds=settings.compatibility_telemetry_flush_seconds,
+        )
+        telemetry_task = asyncio.create_task(telemetry_persister.run())
+        logger.info(
+            "兼容遥测持久化已启动",
+            scope_key=telemetry_persister.scope_key,
+            flush_interval_seconds=settings.compatibility_telemetry_flush_seconds,
+        )
     try:
         yield
     finally:
         await agent_run_coordinator.shutdown()
+        if telemetry_task is not None:
+            await telemetry_persister.flush_now(ended=True)
+            telemetry_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await telemetry_task
         if agent_guard_task is not None:
             agent_guard_task.cancel()
             with suppress(asyncio.CancelledError):
