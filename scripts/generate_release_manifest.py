@@ -128,8 +128,12 @@ def render_release_check(version: str, data: dict | None) -> list[str]:
     ]
 
 
-def checklist_items(data: dict | None) -> list[str]:
-    """由 release-check 报告的真实步骤结果生成 checklist，状态缺失时如实标为未完成。"""
+def checklist_items(data: dict | None, qa_evidence: dict | None = None) -> list[str]:
+    """由 release-check 报告的真实步骤结果生成 checklist，状态缺失时如实标为未完成。
+
+    ``qa_evidence``（--qa-evidence <json>）为机器 QA 记录：手工验收项
+    （/health、干净安装、升级 smoke、签名状态）由真实证据勾选，不人工勾选。
+    """
     if not data:
         return [
             "- [ ] `scripts/release-check-full.bat` 全量发布检查（未运行）",
@@ -144,14 +148,41 @@ def checklist_items(data: dict | None) -> list[str]:
              for s in steps]
     if not items:
         items.append("- [ ] release-check 报告没有步骤记录")
-    items.append("- [ ] `/health` all green")
-    items.append("- [ ] clean-install smoke (docs/release-checklist.md)")
-    items.append("- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
-    items.append("- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)")
+    qa = qa_evidence or {}
+    health_ok = bool(qa.get("health_all_green"))
+    clean_ok = bool(qa.get("clean_install_smoke", {}).get("passed"))
+    upgrade_ok = bool(qa.get("upgrade_smoke", {}).get("passed"))
+    signed_ok = bool(qa.get("code_signed_consistent"))
+    items.append(
+        "- [x] `/health` all green"
+        + (f"（{qa['health_all_green']['evidence']}）" if isinstance(qa.get("health_all_green"), dict) else "")
+        if health_ok
+        else "- [ ] `/health` all green"
+    )
+    if clean_ok:
+        ev = qa.get("clean_install_smoke", {})
+        items.append(
+            "- [x] clean-install smoke"
+            + (f"（{ev.get('evidence', '')}）" if ev.get("evidence") else "")
+        )
+    else:
+        items.append("- [ ] clean-install smoke (docs/release-checklist.md)")
+    if signed_ok:
+        items.append("- [x] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
+    else:
+        items.append("- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
+    if upgrade_ok:
+        ev = qa.get("upgrade_smoke", {})
+        items.append(
+            "- [x] upgrade smoke vN → vN+1"
+            + (f"（{ev.get('evidence', '')}）" if ev.get("evidence") else "")
+        )
+    else:
+        items.append("- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)")
     return items
 
 
-def build_manifest() -> str:
+def build_manifest(qa_evidence: dict | None = None) -> str:
     version = read_version()
     commit = git(["rev-parse", "HEAD"])
     branch = git(["rev-parse", "--abbrev-ref", "HEAD"])
@@ -241,7 +272,7 @@ def build_manifest() -> str:
         "## Validation checklist",
         "",
     ]
-    lines += checklist_items(release_check_data)
+    lines += checklist_items(release_check_data, qa_evidence)
     lines += [
         "## Rollback",
         "",
@@ -256,9 +287,19 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--write", action="store_true", help="write to dist/release-manifest-<version>.md")
     ap.add_argument("--out", help="explicit output path (implies --write)")
+    ap.add_argument(
+        "--qa-evidence",
+        type=Path,
+        default=None,
+        help="机器 QA 记录 JSON（/health、干净安装、升级 smoke、签名一致性），"
+        "提供时手工验收项按证据勾选",
+    )
     args = ap.parse_args()
 
-    manifest = build_manifest()
+    qa_evidence: dict | None = None
+    if args.qa_evidence is not None:
+        qa_evidence = json.loads(args.qa_evidence.read_text(encoding="utf-8"))
+    manifest = build_manifest(qa_evidence)
     if args.out:
         out = Path(args.out)
     elif args.write:

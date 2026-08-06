@@ -87,6 +87,11 @@ def main() -> int:
             "PA_API_TOKEN": token,
             "PA_SKIP_MIGRATIONS": "1",
             "PA_DATA_DIR": td,
+            # 0.2.1 QA：smoke 只验证 sidecar 可启动与 /health，不参与 Agent owner
+            # 竞争——显式关闭 agent 开关，避免与正在运行的安装版（批 A 持有
+            # MySQL named lock）冲突导致 acquire 失败。
+            "PA_AGENT_RUNS_API_ENABLED": "false",
+            "PA_CHAT_AGENT_RUNTIME_ENABLED": "false",
         }
         print(f"[sidecar-smoke] starting sidecar on port {port}...")
         proc = subprocess.Popen(
