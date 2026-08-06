@@ -36,6 +36,7 @@ from ..agents import (
     VersionedToolRegistry,
 )
 from ..agents.recovery import agent_runtime_process_guard
+from ..agents.result_verification import ToolResultVerifier
 from ..config import settings as cfg
 from ..context import (
     ContextBudgetExceededError,
@@ -206,9 +207,20 @@ async def get_agent_tool_bundle(
         approval_token: str | None = None,
     ) -> ToolDispatcher:
         registry = VersionedToolRegistry()
+        result_verifier: ToolResultVerifier | None = None
         if cfg.agent_run_read_only_tools_enabled:
             for spec in build_read_only_tool_registry(run_db).list():
                 registry.register(spec)
+            # R4：文件 diff 结果验证器——复用旧 SHA/回读事实复核 propose_patch 预览，
+            # 防止模型基于过期预览继续操作（read-only 工作流即真实调用方）。
+            from ..agents.result_verification import FileDiffResultVerifier
+            from ..core.projects import ProjectService
+
+            async def resolve_root(project_id: int) -> str:
+                project = await ProjectService(run_db).get(project_id)
+                return project.root_path
+
+            result_verifier = FileDiffResultVerifier(resolve_root)
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
                 registry.register(spec)
@@ -241,6 +253,7 @@ async def get_agent_tool_bundle(
                 else None
             ),
             execution_store=ToolExecutionRepository(run_db, run_id=run_id),
+            result_verifier=result_verifier,
         )
 
     def dispatcher_factory(run_db: AsyncSession, run_id: str) -> ToolDispatcher:

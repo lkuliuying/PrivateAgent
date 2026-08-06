@@ -21,6 +21,11 @@
 >   退让）、SSE 断线取消与 owner 监控 verify→shutdown 测试补齐、灰度逐项验证矩阵与兼容链退出提案
 >   （`docs/agent-runtime-gray-verification.md`）；**生产开启任何 Runtime 开关仍待单独授权**，
 >   跨版本遥测观察窗口未启动，provider tokenizer 口径对比未做。
+> - **R4 完成（2026-08-06）**：领域级结果验证器 6 类全部实现（`agents/result_verification.py`）：
+>   文件 Diff（回读 SHA/交叉校验/路径越界）、代码（白名单+标记）、Shell（退出码/stderr/超时/截断/取消）、
+>   API（状态码/Schema/重试/幂等）、数据库（提交/约束/影响行/读回）、多步骤完成条件（可信谓词）；
+>   `ValidatedToolDispatcher` 新增 `result_verifier` 挂钩，失败写 durable `agent_tool_executions` 并给有界反馈；
+>   `propose_patch` 已接入真实只读工作流；18 个新测试 + runtime 端到端；文档 `docs/domain-verifiers.md`。
 
 ## 1. 已完成且不得重复实施
 
@@ -45,6 +50,7 @@
 | R1 | 当前干净提交的完整发布门禁 | 完成（2026-08-06，`c4c1566`，14/0/0） | P0 | 已解除 |
 | R2 | RAG 无答案拒答与 Ollama 生命周期 | 完成（2026-08-06；语义反转干扰为已知边界） | P1 | 质量风险已按授权处理 |
 | R3 | Agent Runtime 灰度与兼容链退出 | 部分完成（取消清理/故障门禁/退出提案；生产开启与遥测窗口待授权） | P1 | 阻塞 Runtime 默认启用 |
+| R4 | 领域级验证器 | 完成（2026-08-06，6 类验证器 + 文件 Diff 接入真实工作流） | P1 | 对应高风险工作流开放前必须挂验证器 |
 | R4 | 领域级验证器 | 未完成 | P1 | 阻塞对应高风险工作流开放 |
 | R5 | MCP 与远程 Provider 生产互操作 | 条件性、未启动 | P2 | 仅阻塞外部能力启用 |
 | R6 | 跨平台、正式签名与桌面自动化 | 条件性、未启动 | P2 | 不阻塞 unsigned Windows 交付 |

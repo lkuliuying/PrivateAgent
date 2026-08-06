@@ -12,6 +12,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..agents.executions import ToolExecutionRepository
+from ..agents.result_verification import ToolResultVerifier
 from ..agents.runtime import CancellationToken
 from ..agents.tools import (
     ToolCapability,
@@ -130,6 +131,8 @@ def build_read_only_tool_registry(
 def build_read_only_tool_dispatcher(
     db: AsyncSession,
     run_id: str | None = None,
+    *,
+    result_verifier: ToolResultVerifier | None = None,
 ) -> ValidatedToolDispatcher:
     """Build a default-deny dispatcher for the audited read-only capabilities."""
 
@@ -149,6 +152,7 @@ def build_read_only_tool_dispatcher(
             if run_id is not None
             else None
         ),
+        result_verifier=result_verifier,
     )
 
 

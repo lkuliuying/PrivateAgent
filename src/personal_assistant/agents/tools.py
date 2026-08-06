@@ -17,6 +17,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
 from .contracts import ModelToolDefinition, ToolCall, ToolResult
+from .result_verification import ResultVerification, ToolResultVerifier
 from .runtime import CancellationToken
 
 
@@ -341,12 +342,14 @@ class ValidatedToolDispatcher:
         approval_requester: ToolApprovalRequester | None = None,
         approval_consumer: ToolApprovalConsumer | None = None,
         execution_store: ToolExecutionStore | None = None,
+        result_verifier: ToolResultVerifier | None = None,
     ) -> None:
         self._registry = registry
         self._policy = policy or ToolCapabilityPolicy()
         self._approval_requester = approval_requester
         self._approval_consumer = approval_consumer
         self._execution_store = execution_store
+        self._result_verifier = result_verifier
         self._success_cache: dict[str, Any] = {}
 
     def model_definitions(self) -> tuple[ModelToolDefinition, ...]:
@@ -556,6 +559,34 @@ class ValidatedToolDispatcher:
                 code="output_schema_invalid",
                 message=_validation_error("工具输出", output_error),
             )
+
+        if (
+            self._result_verifier is not None
+            and self._result_verifier.supports(call.name)
+        ):
+            try:
+                verification = await self._result_verifier.verify(
+                    call.name, canonical_arguments, canonical_output
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                verification = ResultVerification(
+                    passed=False,
+                    code="verifier_error",
+                    message=(
+                        f"结果验证器异常: {type(exc).__name__}"
+                        if str(exc)
+                        else type(exc).__name__
+                    )[:2_000],
+                )
+            if not verification.passed:
+                return await self._terminal_failure(
+                    call,
+                    execution_claim,
+                    code=verification.code or "result_verification_failed",
+                    message=verification.message,
+                )
 
         if spec.redaction_policy == ToolRedactionPolicy.SENSITIVE_KEYS:
             output = _redact_value(canonical_output, spec.sensitive_keys)
