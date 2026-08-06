@@ -3,6 +3,10 @@
 > 对应 `docs/phase5-plan.md` M4 与 `docs/phase5-requirements.md` 5.7。
 > 每次发布按本清单逐项执行并留存结果。发布失败时按 §7 回滚。
 
+> **0.2.1 候选 QA 记录（2026-08-06）**：升级 smoke run #27 `0.2.0 → 0.2.1` passed
+> （数据保留 `preserved=true`）；run #28 回滚往返（卸载 0.2.1 数据保留 → 重装 0.2.0 → 再升级回 0.2.1）；
+> updater 签名正向 `OK`、篡改 1 字节 `FAILED`。安装包 unsigned（`dist/codesign-status-0.2.1.json`）。
+
 ---
 
 ## 1. 发布前置（代码与构建）

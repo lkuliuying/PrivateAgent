@@ -165,6 +165,12 @@ uv run pytest -q tests/test_agent_recovery.py
 
 2026-08-06 发布门禁收口（R0/R1）：把 Ruff（`E/F/I`，忽略 E501）、compileall、Rust `cargo test` 和已构建 sidecar smoke 加入完整 runner（门禁由 10 步扩至 14 步），并在干净 HEAD 以 `scripts/release-check-full.bat` 重跑。最新发布报告为 `14 passed / 0 failed / 0 skipped / ok=true`、`worktree_dirty=false`、`database_schema=0020`、`pytest 535 passed`；`release-manifest-0.2.0.md` 与报告绑定同一提交，checklist 由报告步骤生成。当前发布 HEAD 的具体短哈希以 `dist/release-check-0.2.0.json` 的 `commit.short` 为准（该文件是机器事实源），本文不重复粘贴，避免文档与报告漂移。
 
+2026-08-06 0.2.1 候选门禁（路线图阶段 B，`cbbc9fe`）：完整 14 项门禁全绿
+（`14 passed / 0 failed / 0 skipped / ok=true`、`worktree_dirty=false`、`database_schema=0021`、
+`pytest 584 passed in 441.39s`）；报告 `dist/release-check-0.2.1.json`，manifest
+`dist/release-manifest-0.2.1.md` 与报告同 commit。阶段 C 安装 QA：`0.2.0 → 0.2.1` 就地升级
+run #27 passed（数据保留 preserved=true）、回滚往返 run #28、updater 签名正向 OK/篡改拒绝。
+
 口径说明：发布报告数字是流水线**步骤数**（当前 14 个 gate step），不是测试用例数；pytest 的 `535 passed` 是**实际执行数**（参数化可能高于静态定义数，仓库静态函数定义为 493 个 Python 测试函数、32 个 Vitest 定义、11 个 Playwright 定义，均可能低于展开后的执行数）；三者口径不同，不能互相替代或直接比较。
 
 2026-08-03 最近一次完整代码门禁（完成于 Phase 4 Slice 3 的 RAG ToolSpec/collection isolation 变更之前）：

@@ -1,11 +1,21 @@
 # PrivateAgent 项目整体执行路线图（2026-08-06 校准版）
 
 > 基线日期：2026-08-06  
-> 当前源码：`e878001`，`main` 比 `origin/main` 领先 10 个提交，工作区干净  
-> 当前应用版本：`0.2.0`  
+> 当前源码：`cbbc9fe`（0.2.1 冻结提交，`main` 比 `origin/main` 领先 11 个提交，工作区干净）
+> 当前应用版本：`0.2.1`（本地候选已安装运行，unsigned）
 > 当前数据库：`0021 (head)`  
 > 当前交付边界：Windows 10/11 x64、本地优先、外部 Ollama、unsigned 安装包  
 > 文档目的：给出从当前状态到稳定发布、Runtime 默认启用、可信工作流和后续扩展的完整执行顺序。
+
+> **执行进度（2026-08-06）**：
+> - 阶段 A（0.2.1 冻结）✅ `cbbc9fe`：版本统一 0.2.1、CHANGELOG、文档事实收口。
+> - 阶段 B（工程门禁）✅ `cbbc9fe`：14/14 全绿、`worktree_dirty=false`、schema `0021`、
+>   `pytest 584 passed`；报告 `dist/release-check-0.2.1.json`、manifest `release-manifest-0.2.1.md`。
+> - 阶段 C（安装包与升级验收）✅ 本地候选：0.2.1 NSIS 构建（94.1 MB，SHA256 `6332C0…EFD0`）、
+>   `0.2.0 → 0.2.1` 升级 run #27 passed（preserved=true）、回滚往返 run #28、updater 签名正向/篡改负向；
+>   安装版 0.2.1 已安装并运行（`/health` 四项全绿）。**未执行**：GitHub Release 上传（无权限）、
+>   updater UI 端到端篡改测试（沿用 M2 的 0.2.0 证据，代码未变）。
+> - 阶段 D（批 A 生产观察）：安装版 0.2.1 已含批 A 与 0021，观察窗口自此起算。
 
 ## 1. 总体判断
 
