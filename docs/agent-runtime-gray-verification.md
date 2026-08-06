@@ -174,3 +174,20 @@
   与"没有窗口"可区分（§6.4 归零观察前提），已补测试。
 - 说明：窗口 `ended_at` 为 null 是 smoke 服务被强制停止（崩溃场景）所致；正常退出由
   lifespan finally 标记结束。
+
+### 6.6 批 A 端到端实机验证（2026-08-06）
+
+源码模式服务以**测试库**（`personal_assistant_test`，守卫库，无生产写入）启动，
+批 A 全部开关生效，真实模型（qwen2.5:14b）执行：
+
+1. `POST /agent-runs` → `202 created`（run_id 记录）；
+2. 轮询至 **`completed`**；
+3. 输出为结构化 JSON `{"answer": ..., "citations": []}`——非空验证 + （RAG 工具开启时的）
+   引用验证链工作；
+4. 事件链：`run.started`（`output_verifier=composite`、`max_verification_retries=1`）→
+   `context.prepared`（ContextBuilder）→ `model.started` → `model.completed` →
+   `output.validation_started` → `output.validation_passed` → `run.completed`；
+5. 清理：run 记录已删除（级联 events/steps/executions），服务已停止。
+
+结论：批 A 在生产配置下全链路可用（创建→协调→模型→验证→完成）；桌面端聊天仍走 legacy
+（`/capabilities` 未变），批 B（聊天接管）可按计划在观察期后决策。
