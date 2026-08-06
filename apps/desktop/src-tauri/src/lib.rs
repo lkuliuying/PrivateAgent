@@ -594,6 +594,25 @@ fn pick_free_port() -> Option<u16> {
         .map(|a| a.port())
 }
 
+/// 终止 sidecar 及其整个子进程树（0.2.1 QA 修复）。
+///
+/// ``CommandChild::kill`` 只终止 sidecar 直接进程，其派生的命令执行、git、
+/// MCP stdio server 等子进程会残留为孤儿。Windows 上用 ``taskkill /T /F``
+/// 递归终止进程树（PID 会随 0.2.1+ sidecar 复用重生成，故按当前 PID 终止），
+/// 并保留 ``child.kill()`` 作为兜底；非 Windows 平台保持原 kill 语义。
+fn kill_sidecar_tree(child: CommandChild) {
+    #[cfg(target_os = "windows")]
+    {
+        let pid = child.pid();
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+}
+
 /// Generate a 256-bit per-process bearer token using the operating system RNG.
 fn generate_api_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
@@ -864,9 +883,10 @@ async fn start_sidecar(
     };
 
     // 若已有 sidecar 在跑（重试 / 重配），先终止旧的——CommandChild 不会在 Drop 时杀进程，
-    // 不主动 kill 会留下占用端口与 DB 连接的孤儿进程。
+    // 不主动 kill 会留下占用端口与 DB 连接的孤儿进程。用进程树终止，避免 sidecar 的
+    // 命令/git/MCP 子进程残留。
     if let Some(prev) = state.child.lock().unwrap().take() {
-        let _ = prev.kill();
+        kill_sidecar_tree(prev);
         *state.port.lock().unwrap() = None;
         *state.token.lock().unwrap() = None;
     }
@@ -1002,9 +1022,9 @@ async fn download_and_install_update(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "当前已是最新版本".to_string())?;
     // 安装会通过 std::process::exit 退出当前进程，绕过 RunEvent::Exit（sidecar 的唯一终止点），
-    // 因此先手动终止 sidecar，避免更新后留下孤儿进程。
+    // 因此先手动终止 sidecar（进程树），避免更新后留下孤儿进程。
     if let Some(child) = state.child.lock().unwrap().take() {
-        let _ = child.kill();
+        kill_sidecar_tree(child);
         *state.port.lock().unwrap() = None;
     }
     update
@@ -1060,12 +1080,12 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
-            // 应用退出时终止 sidecar 子进程
+            // 应用退出时终止 sidecar 子进程树
             if let RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<SidecarState>() {
                     if let Some(child) = state.child.lock().unwrap().take() {
-                        let _ = child.kill();
-                        println!("[sidecar] 已终止子进程");
+                        kill_sidecar_tree(child);
+                        println!("[sidecar] 已终止子进程树");
                     }
                 }
             }
