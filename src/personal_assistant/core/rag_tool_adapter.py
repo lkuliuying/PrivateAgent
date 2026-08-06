@@ -261,13 +261,25 @@ def build_rag_tool_registry(db: AsyncSession) -> VersionedToolRegistry:
             project_id=arguments.get("project_id"),
             tags=arguments.get("tags"),
         )
-        chunks = await RagService(db).retrieve(
+        chunks, evidence = await RagService(db).retrieve_with_evidence(
             arguments["query"],
             top_k=arguments.get("top_k", 5),
             filters=filters,
         )
         if cancellation.is_cancelled:
             raise RuntimeError("知识库检索已取消")
+        if evidence.abstain:
+            # R2.1：证据不足——返回空结果与结构化原因，回答层必须说明资料不足。
+            return {
+                "count": 0,
+                "results": [],
+                "evidence_insufficient": True,
+                "evidence": {
+                    "reason_code": evidence.reason_code,
+                    "detail": evidence.detail,
+                    "policy_version": evidence.policy_version,
+                },
+            }
         refs_by_doc = await _collection_refs_by_doc(
             db,
             [chunk.doc_id for chunk in chunks],
@@ -556,6 +568,17 @@ def build_rag_tool_registry(db: AsyncSession) -> VersionedToolRegistry:
                 "type": "object",
                 "properties": {
                     "count": {"type": "integer", "minimum": 0, "maximum": 10},
+                    "evidence_insufficient": {"type": "boolean"},
+                    "evidence": {
+                        "type": ["object", "null"],
+                        "properties": {
+                            "reason_code": {"type": "string", "maxLength": 64},
+                            "detail": {"type": "string", "maxLength": 512},
+                            "policy_version": {"type": "string", "maxLength": 64},
+                        },
+                        "required": ["reason_code", "detail", "policy_version"],
+                        "additionalProperties": False,
+                    },
                     "results": {
                         "type": "array",
                         "maxItems": 10,
@@ -646,8 +669,7 @@ def build_rag_tool_registry(db: AsyncSession) -> VersionedToolRegistry:
                 "required": ["count", "results"],
                 "additionalProperties": False,
             },
-            risk_level=ToolRiskLevel.SAFE,
-            required_capabilities=frozenset(
+            risk_level=ToolRiskLevel.SAFE,            required_capabilities=frozenset(
                 {ToolCapability.DATABASE_QUERY, ToolCapability.NETWORK_FETCH}
             ),
             timeout_ms=60_000,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 
@@ -348,8 +349,17 @@ class ProjectService:
         await self.get(project_id)
         return await self.file_repo.search_by_name(project_id, query, limit=limit)
 
-    async def search_content(self, project_id: int, pattern: str) -> dict:
-        """在已索引文本文件中 grep，返回 path/line/上下文。"""
+    async def search_content(
+        self,
+        project_id: int,
+        pattern: str,
+        stop_event: "threading.Event | None" = None,
+    ) -> dict:
+        """在已索引文本文件中 grep，返回 path/line/上下文。
+
+        R3：``stop_event`` 让 to_thread 的扫描循环在取消时提前退让
+        （线程不可强杀，迟到结果由调用方丢弃）。
+        """
         project = await self.get(project_id)
         files = await self.file_repo.list_by_project(project.id)
         try:
@@ -363,6 +373,8 @@ class ProjectService:
             hits: list[dict] = []
             scanned = 0
             for f in files:
+                if stop_event is not None and stop_event.is_set():
+                    break
                 if f.is_binary:
                     continue
                 if f.size_bytes and f.size_bytes > MAX_GREP_FILE_BYTES:
@@ -380,6 +392,8 @@ class ProjectService:
                 except OSError:
                     continue
                 for lineno, line in enumerate(text.splitlines(), 1):
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     if regex.search(line):
                         ctx = line.strip()
                         if len(ctx) > 300:

@@ -460,7 +460,9 @@ dist/latest.json
 - MySQL `Access denied`：源码开发检查项目 `.env` 的 `PA_DB_URL`；Windows 安装版在连接配置向导中重新输入系统凭据并核对主机、端口、用户名和数据库名。
 - `link.exe not found`：安装 MSVC Build Tools，并使用 `scripts\run-tauri-dev.bat`。
 - `tauri build` 首次下载 NSIS 超时：确认 GitHub 网络可达，必要时为当前终端配置 `HTTPS_PROXY`。
-- Ollama 状态异常：确认 `ollama serve` 正在运行，并已拉取对话模型和 `bge-m3`。
+- Ollama 状态异常：确认 `ollama serve` 正在运行，并已拉取对话模型和 `bge-m3`。`/health` 的 `ollama` 项
+  会区分服务未启动（`ollama_not_running`）/ 超时（`ollama_timeout`）/ 模型缺失（`missing_models`），
+  详见 `docs/ollama-lifecycle.md`；可运行 `uv run python scripts/ollama_lifecycle_check.py` 自查。
 - `uv` 缓存无权限：把 `UV_CACHE_DIR` 指向当前用户可写目录后重试。
 
 ## 文档导航
@@ -478,6 +480,7 @@ dist/latest.json
 - `docs/context-design.md`：上下文优先级、预算、信任边界和会话摘要
 - `docs/memory-design.md`：结构化记忆、版本、冲突、候选和语义索引
 - `docs/rag-design.md`：legacy/versioned RAG、真实数据质量和上线门禁
+- `docs/ollama-lifecycle.md`：Ollama 外部交付模式的安装检测、故障分类与测量基线
 - `docs/mcp-design.md`：MCP 客户端、审批、安全边界、回滚与未完成项
 - `docs/database-design.md`：MySQL/Chroma 职责、迁移、一致性和数据保留
 - `docs/security-model.md`：本地 API、凭据、工具、RAG、MCP、CSP 与发布威胁模型

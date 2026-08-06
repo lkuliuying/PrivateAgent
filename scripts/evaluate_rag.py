@@ -38,6 +38,10 @@ from personal_assistant.core.rag_evaluation import (  # noqa: E402
     RetrievalGate,
     evaluate_retrieval,
 )
+from personal_assistant.core.rag_evidence import (  # noqa: E402
+    EVIDENCE_POLICY_VERSION,
+    RagEvidencePolicy,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -60,6 +64,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-citation-correctness", type=float, default=0.8)
     parser.add_argument("--max-empty-rate", type=float, default=0.1)
     parser.add_argument("--max-p95-ms", type=float, default=2_000.0)
+    parser.add_argument(
+        "--min-abstention",
+        type=float,
+        default=0.8,
+        help="R2.1 无答案 case 的最低拒答率（0..1）；正式 gate 强制",
+    )
+    parser.add_argument(
+        "--disable-evidence-policy",
+        action="store_true",
+        help="关闭 R2.1 证据充分性策略（用于采集原始分数分布，观察旧行为）",
+    )
+    parser.add_argument(
+        "--evidence-min-final-score",
+        type=float,
+        default=None,
+        help="覆盖最终归一化分数阈值（0..1）",
+    )
+    parser.add_argument(
+        "--evidence-min-single-channel-score",
+        type=float,
+        default=None,
+        help="覆盖单一命中渠道阈值（0..1）",
+    )
     parser.add_argument(
         "--allow-unreviewed",
         action="store_true",
@@ -90,38 +117,41 @@ async def run(args: argparse.Namespace) -> int:
                 filters.append(Document.name.in_(required_names))
             if required_ids:
                 filters.append(Document.id.in_(required_ids))
-            from sqlalchemy import or_
+            if filters:
+                # 预检：相关文档必须存在且 ready+enabled。候选集（无相关文档，
+                # 如 no-answer/abstention 特征化）不查全库，直接跳过预检。
+                from sqlalchemy import or_
 
-            documents = list(
-                (await db.execute(select(Document).where(or_(*filters))))
-                .scalars()
-                .all()
-            )
-            ids_by_name: dict[str, set[int]] = {}
-            for document in documents:
-                ids_by_name.setdefault(document.name, set()).add(document.id)
-            missing = sorted(required_names - ids_by_name.keys())
-            if missing:
-                raise ValueError(
-                    "evaluation documents are missing: " + ", ".join(missing)
+                documents = list(
+                    (await db.execute(select(Document).where(or_(*filters))))
+                    .scalars()
+                    .all()
                 )
-            found_ids = {document.id for document in documents}
-            missing_ids = sorted(required_ids - found_ids)
-            if missing_ids:
-                raise ValueError(
-                    "evaluation document ids are missing: "
-                    + ", ".join(map(str, missing_ids))
+                ids_by_name: dict[str, set[int]] = {}
+                for document in documents:
+                    ids_by_name.setdefault(document.name, set()).add(document.id)
+                missing = sorted(required_names - ids_by_name.keys())
+                if missing:
+                    raise ValueError(
+                        "evaluation documents are missing: " + ", ".join(missing)
+                    )
+                found_ids = {document.id for document in documents}
+                missing_ids = sorted(required_ids - found_ids)
+                if missing_ids:
+                    raise ValueError(
+                        "evaluation document ids are missing: "
+                        + ", ".join(map(str, missing_ids))
+                    )
+                unavailable_ids = sorted(
+                    document.id
+                    for document in documents
+                    if document.status != "ready" or not document.enabled
                 )
-            unavailable_ids = sorted(
-                document.id
-                for document in documents
-                if document.status != "ready" or not document.enabled
-            )
-            if unavailable_ids:
-                raise ValueError(
-                    "evaluation documents are not ready and enabled: "
-                    + ", ".join(map(str, unavailable_ids))
-                )
+                if unavailable_ids:
+                    raise ValueError(
+                        "evaluation documents are not ready and enabled: "
+                        + ", ".join(map(str, unavailable_ids))
+                    )
             cases = [
                 RetrievalEvaluationCase(
                     id=row["id"],
@@ -152,6 +182,20 @@ async def run(args: argparse.Namespace) -> int:
                 use_versioned=use_versioned,
                 enable_vector=args.mode == "hybrid",
             )
+            evidence_policy = RagEvidencePolicy(
+                enabled=not args.disable_evidence_policy,
+                min_final_score=(
+                    settings.rag_evidence_min_final_score
+                    if args.evidence_min_final_score is None
+                    else args.evidence_min_final_score
+                ),
+                single_channel_min_final_score=(
+                    settings.rag_evidence_min_single_channel_score
+                    if args.evidence_min_single_channel_score is None
+                    else args.evidence_min_single_channel_score
+                ),
+            )
+            evidence_decisions: dict[str, dict] = {}
             vector_dimension = None
             if args.mode == "hybrid":
                 try:
@@ -173,7 +217,15 @@ async def run(args: argparse.Namespace) -> int:
                     return 4
 
             async def retrieve(query: str, top_k: int):
-                return await retriever.retrieve(query, top_k=top_k)
+                results, decision = await retriever.retrieve_with_evidence(
+                    query, top_k=top_k, policy=evidence_policy
+                )
+                evidence_decisions[query] = {
+                    "abstain": decision.abstain,
+                    "reason_code": decision.reason_code,
+                    "policy_version": decision.policy_version,
+                }
+                return results
 
             report = await evaluate_retrieval(
                 cases,
@@ -185,6 +237,7 @@ async def run(args: argparse.Namespace) -> int:
                     min_citation_correctness=args.min_citation_correctness,
                     max_empty_recall_rate=args.max_empty_rate,
                     max_p95_latency_ms=args.max_p95_ms,
+                    min_abstention_rate=args.min_abstention,
                 ),
             )
     finally:
@@ -195,6 +248,14 @@ async def run(args: argparse.Namespace) -> int:
         "mode": args.mode,
         "reviewed": all(row["review_status"] == "reviewed" for row in rows),
         "vector_dimension": vector_dimension,
+        "evidence_policy": {
+            "enabled": evidence_policy.enabled,
+            "min_final_score": evidence_policy.min_final_score,
+            "single_channel_min_final_score": evidence_policy.single_channel_min_final_score,
+            "version": EVIDENCE_POLICY_VERSION,
+            "min_abstention_gate": args.min_abstention,
+        },
+        "score_distribution": _build_score_distribution(report, cases, evidence_decisions),
         "report": asdict(report),
     }
     _write_report(args.report, payload)
@@ -216,6 +277,69 @@ async def run(args: argparse.Namespace) -> int:
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if report.passed else 2
+
+
+def _build_score_distribution(report, cases, evidence_decisions: dict) -> dict:
+    """聚合每条 case 的拒答决策与分数分布（R2.1；不含查询与正文）。
+
+    输出结构：
+    - per_case: [{id, expect_empty, abstain, reason_code, top_score, scores:[...]}]
+    - aggregates: {all: {count,min,max,mean,p50,p95},
+                   known_answer: {...}, no_answer: {...}}（基于每条 case 的最高分）
+    """
+    per_case: list[dict] = []
+    all_top: list[float] = []
+    known_top: list[float] = []
+    no_answer_top: list[float] = []
+    for case, case_result in zip(cases, report.cases, strict=True):
+        decision = evidence_decisions.get(case.query, {})
+        scores = case_result.scores or ()
+        top = None
+        if scores:
+            top = next(
+                (s.get("score") for s in scores if s.get("score") is not None),
+                None,
+            )
+        entry = {
+            "id": case.id,
+            "expect_empty": case.expect_empty,
+            "abstain": bool(decision.get("abstain")),
+            "reason_code": decision.get("reason_code"),
+            "policy_version": decision.get("policy_version"),
+            "top_score": top,
+            "retrieved_count": len(scores),
+            "scores": list(scores),
+        }
+        per_case.append(entry)
+        if top is not None:
+            all_top.append(float(top))
+            (no_answer_top if case.expect_empty else known_top).append(float(top))
+    return {
+        "per_case": per_case,
+        "aggregates": {
+            "all": _stats(all_top),
+            "known_answer": _stats(known_top),
+            "no_answer": _stats(no_answer_top),
+        },
+    }
+
+
+def _stats(values: list[float]) -> dict:
+    if not values:
+        return {"count": 0}
+    ordered = sorted(values)
+    count = len(ordered)
+    mean = sum(ordered) / count
+    p50 = ordered[count // 2] if count % 2 else (ordered[count // 2 - 1] + ordered[count // 2]) / 2
+    p95 = ordered[min(count - 1, int(count * 0.95))]
+    return {
+        "count": count,
+        "min": round(ordered[0], 4),
+        "max": round(ordered[-1], 4),
+        "mean": round(mean, 4),
+        "p50": round(p50, 4),
+        "p95": round(p95, 4),
+    }
 
 
 def _write_report(path: Path | None, payload: dict) -> None:

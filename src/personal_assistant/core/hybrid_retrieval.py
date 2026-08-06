@@ -32,10 +32,20 @@ from .models import (
     DocumentIndexChunk,
     DocumentIndexHead,
 )
+from .rag_evidence import EvidenceDecision, RagEvidencePolicy
 from .repo import DocChunkRepository, DocumentRepository
 from .store_chroma import chroma_store, versioned_chroma_store
 
 logger = get_logger(__name__)
+
+
+def policy_from_settings() -> RagEvidencePolicy:
+    """从应用配置构建证据充分性策略（R2.1）。"""
+    return RagEvidencePolicy(
+        enabled=settings.rag_evidence_enabled,
+        min_final_score=settings.rag_evidence_min_final_score,
+        single_channel_min_final_score=settings.rag_evidence_min_single_channel_score,
+    )
 
 RRF_K = 60  # RRF 常数，标准值
 VECTOR_OVERFETCH = 4  # 向量过取倍数（过滤禁用/元数据后仍够 top_k）
@@ -124,7 +134,7 @@ class EmbeddingReranker:
         self.batch_size = max(1, batch_size)
 
     async def rerank(self, query: str, results: list[HybridResult]) -> list[HybridResult]:
-        if len(results) <= 1:
+        if not results:
             return results
 
         inputs = [
@@ -348,12 +358,32 @@ class HybridRetriever:
         reranker = self.reranker
         if reranker is None and provider is not None and query_embedding is not None:
             reranker = EmbeddingReranker(provider, query_embedding)
-        if reranker is not None and len(merged) > 1:
+        if reranker is not None and len(merged) >= 1:
             try:
                 merged = await reranker.rerank(query, merged)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("embedding rerank failed, keeping rrf order", error=str(exc))
         return merged[:top_k]
+
+    async def retrieve_with_evidence(
+        self,
+        query: str,
+        top_k: int = 5,
+        filters: RetrievalFilters | None = None,
+        policy: RagEvidencePolicy | None = None,
+    ) -> tuple[list[HybridResult], EvidenceDecision]:
+        """混合检索 + 证据充分性判断（R2.1）。
+
+        返回 ``(results, decision)``；``decision.abstain=True`` 时 ``results`` 为空，
+        回答层应依据 ``decision`` 的结构化原因说明资料不足，不生成伪引用。
+        """
+        results = await self.retrieve(query, top_k=top_k, filters=filters)
+        if policy is None:
+            policy = policy_from_settings()
+        decision = policy.decide(results)
+        if decision.abstain:
+            return [], decision
+        return results, decision
 
     async def _vector_recall(
         self,

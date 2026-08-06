@@ -62,6 +62,22 @@ setup_logging()
 logger = get_logger(__name__)
 
 
+async def monitor_agent_runtime_owner(
+    guard, coordinator, *, interval: float = 10.0
+) -> None:
+    """周期核验 Agent runtime 的 MySQL named lock 所有权（R3 故障门禁）。
+
+    ``guard.verify()`` 失败（owner connection 丢失）时关闭 coordinator 并退出，
+    防止失去锁后继续写入口。``interval`` 可注入便于测试。
+    """
+    while True:
+        await asyncio.sleep(interval)
+        if not await guard.verify():
+            logger.error("Agent runtime process ownership lost")
+            await coordinator.shutdown()
+            return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     token = settings.api_token.get_secret_value() if settings.api_token else None
@@ -93,15 +109,9 @@ async def lifespan(app: FastAPI):
             unknown_executions=recovery.unknown_executions,
         )
 
-        async def monitor_agent_runtime_owner() -> None:
-            while True:
-                await asyncio.sleep(10)
-                if not await agent_runtime_process_guard.verify():
-                    logger.error("Agent runtime process ownership lost")
-                    await agent_run_coordinator.shutdown()
-                    return
-
-        agent_guard_task = asyncio.create_task(monitor_agent_runtime_owner())
+        agent_guard_task = asyncio.create_task(
+            monitor_agent_runtime_owner(agent_runtime_process_guard, agent_run_coordinator)
+        )
     # 提醒后台 tick：sidecar 生命周期内轻量轮询到期提醒（reminders_enabled 关闭则跳过）。
     # 测试用 POST /reminders/tick 手动触发，不依赖此循环（ASGITransport 不运行 lifespan）。
     from .core.reminders import reminder_tick_loop

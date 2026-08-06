@@ -240,12 +240,19 @@ class OllamaProvider:
 
         超时 3s（第八阶段 M6 热点优化）：Ollama 离线/慢响应时不再阻塞诊断快照与
         /health 轮询 5s；3s 内无响应即视为不可用，足够本地探测。
+
+        R2.2（外部 Ollama 模式）：返回结构化错误分类，供诊断页区分
+        ``ollama_not_running``（连接被拒）/ ``ollama_timeout``（请求超时）/
+        ``ollama_http_error``（非 200），模型缺失时列出 ``missing_models``。
+        GPU 不可用无法从 Ollama HTTP API 探测（外部模式由 Ollama 自动 CPU
+        fallback），见 docs/ollama-lifecycle.md 已知边界。
         """
         result: dict[str, Any] = {"ok": False, "base_url": self.base_url}
         try:
             async with httpx.AsyncClient(timeout=3.0) as client:
                 r = await client.get(f"{self.base_url}/api/tags")
                 if r.status_code != 200:
+                    result["error_code"] = "ollama_http_error"
                     result["error"] = f"Ollama /api/tags 返回 {r.status_code}"
                     return result
                 data = r.json()
@@ -255,8 +262,20 @@ class OllamaProvider:
                 result["embed_model_available"] = self._model_available(
                     models, self.embed_model
                 )
+                missing = []
+                if not result["llm_model_available"] and self.llm_model:
+                    missing.append(self.llm_model)
+                if not result["embed_model_available"] and self.embed_model:
+                    missing.append(self.embed_model)
+                if missing:
+                    result["error_code"] = "ollama_model_missing"
+                    result["missing_models"] = missing
                 result["ok"] = True
+        except httpx.TimeoutException as e:  # noqa: BLE001
+            result["error_code"] = "ollama_timeout"
+            result["error"] = f"Ollama 请求超时: {e}"
         except Exception as e:  # noqa: BLE001
+            result["error_code"] = "ollama_not_running"
             result["error"] = f"无法连接 Ollama: {e}"
         return result
 

@@ -28,6 +28,7 @@ from personal_assistant.core.rag_citation_evidence import (
     RagCitationEvidenceError,
     load_durable_rag_citation_sources,
 )
+from personal_assistant.core.rag_evidence import EvidenceDecision
 from personal_assistant.core.rag_tool_adapter import build_rag_tool_registry
 from personal_assistant.core.timeutil import utcnow
 from personal_assistant.main_api import app
@@ -101,27 +102,36 @@ async def test_search_knowledge_base_tool_returns_traceable_bounded_sources(
     )
     await db.commit()
 
-    async def fake_retrieve(self, query, top_k=5, filters=None):
-        del self
+    async def fake_retrieve_with_evidence(
+        self, query, top_k=5, filters=None, policy=None
+    ):
+        del self, policy
         captured.update(query=query, top_k=top_k, filters=filters)
-        return [
-            RetrievedChunk(
-                chunk_id=41,
-                doc_id=document.id,
-                doc_name=document.name,
-                ordinal=2,
-                content="source evidence " * 200,
-                heading="Install",
-                index_version_id="version-1",
-                page_start=3,
-                page_end=3,
-                source_kind="pdf_page",
-                parser_version="pypdf:v1",
-                heading_path=["Install"],
-            )
-        ]
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=41,
+                    doc_id=document.id,
+                    doc_name=document.name,
+                    ordinal=2,
+                    content="source evidence " * 200,
+                    heading="Install",
+                    index_version_id="version-1",
+                    page_start=3,
+                    page_end=3,
+                    source_kind="pdf_page",
+                    parser_version="pypdf:v1",
+                    heading_path=["Install"],
+                )
+            ],
+            EvidenceDecision(
+                abstain=False,
+                reason_code="sufficient_evidence",
+                policy_version="rag-evidence-v1",
+            ),
+        )
 
-    monkeypatch.setattr(RagService, "retrieve", fake_retrieve)
+    monkeypatch.setattr(RagService, "retrieve_with_evidence", fake_retrieve_with_evidence)
     spec = build_rag_tool_registry(db).get("search_knowledge_base")
     assert spec is not None
     try:
@@ -423,24 +433,33 @@ async def test_agent_rag_workflow_verifies_only_durable_retrieved_citations(
     document_id = document.id
     document_name = document.name
 
-    async def fake_retrieve(self, query, top_k=5, filters=None):
-        del self, query, top_k, filters
-        return [
-            RetrievedChunk(
-                chunk_id=41,
-                doc_id=document_id,
-                doc_name=document_name,
-                ordinal=0,
-                content="The deployment window starts at 09:30 UTC.",
-                heading="Deployment",
-                index_version_id="version-1",
-                source_kind="markdown_block",
-                parser_version="markdown:v2",
-                heading_path=["Deployment"],
-            )
-        ]
+    async def fake_retrieve_with_evidence(
+        self, query, top_k=5, filters=None, policy=None
+    ):
+        del self, query, top_k, filters, policy
+        return (
+            [
+                RetrievedChunk(
+                    chunk_id=41,
+                    doc_id=document_id,
+                    doc_name=document_name,
+                    ordinal=0,
+                    content="The deployment window starts at 09:30 UTC.",
+                    heading="Deployment",
+                    index_version_id="version-1",
+                    source_kind="markdown_block",
+                    parser_version="markdown:v2",
+                    heading_path=["Deployment"],
+                )
+            ],
+            EvidenceDecision(
+                abstain=False,
+                reason_code="sufficient_evidence",
+                policy_version="rag-evidence-v1",
+            ),
+        )
 
-    monkeypatch.setattr(RagService, "retrieve", fake_retrieve)
+    monkeypatch.setattr(RagService, "retrieve_with_evidence", fake_retrieve_with_evidence)
     model = RagCitationWorkflowModel()
     app.dependency_overrides[agent_routes.get_agent_model_client] = lambda: model
     run_id: str | None = None

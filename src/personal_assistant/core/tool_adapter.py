@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
@@ -157,7 +160,30 @@ def _wrap_legacy_tool(
     async def execute(arguments: dict[str, Any], cancellation: CancellationToken) -> Any:
         if cancellation.is_cancelled:
             raise RuntimeError("工具执行已取消")
-        return await legacy.execute(arguments, ToolContext(db))
+        # R3：grep_code 的 to_thread 线程不可强杀。绑定取消事件让扫描循环提前
+        # 退让（线程在文件/行之间检查事件）；即使迟到，结果也会被取消方丢弃
+        # （supports_cancellation=False 明确声明）。finally 中无条件 set，
+        # 保证取消/超时路径下线程不会继续全量扫描。
+        stop_event: threading.Event | None = None
+        watch_task: asyncio.Task | None = None
+        if legacy.name == "grep_code":
+            stop_event = threading.Event()
+
+            async def _watch() -> None:
+                with suppress(asyncio.CancelledError):
+                    await cancellation.wait()
+                stop_event.set()  # type: ignore[union-attr]
+
+            watch_task = asyncio.create_task(_watch())
+        try:
+            return await legacy.execute(arguments, ToolContext(db, grep_stop_event=stop_event))
+        finally:
+            if stop_event is not None:
+                stop_event.set()
+            if watch_task is not None:
+                watch_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await watch_task
 
     return ToolSpec(
         name=legacy.name,

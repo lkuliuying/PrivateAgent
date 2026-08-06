@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -55,8 +56,13 @@ class ToolError(RuntimeError):
 
 @dataclass
 class ToolContext:
-    """工具执行上下文，提供 db 等依赖。"""
+    """工具执行上下文，提供 db 等依赖。
+
+    ``grep_stop_event``（R3）：grep 类工具的取消协作事件——to_thread 线程无法
+    强杀，通过该事件提前退让；由 tool_adapter 在 Agent 执行路径上绑定。
+    """
     db: AsyncSession
+    grep_stop_event: "threading.Event | None" = None
 
 
 @dataclass
@@ -179,7 +185,12 @@ async def _search_files_execute(inputs: dict, ctx: ToolContext) -> dict:
 
 
 async def _grep_code_execute(inputs: dict, ctx: ToolContext) -> dict:
-    return await grep_code(ctx.db, _require_project_id(inputs), inputs.get("pattern", ""))
+    return await grep_code(
+        ctx.db,
+        _require_project_id(inputs),
+        inputs.get("pattern", ""),
+        stop_event=ctx.grep_stop_event,
+    )
 
 
 async def _read_code_file_execute(inputs: dict, ctx: ToolContext) -> dict:

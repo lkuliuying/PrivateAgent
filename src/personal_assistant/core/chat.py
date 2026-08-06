@@ -95,10 +95,10 @@ class ChatService:
             from .rag import RagService
 
             rag = RagService(self.db)
-            chunks = await rag.retrieve(user_content, top_k=5)
+            chunks, evidence = await rag.retrieve_with_evidence(user_content, top_k=5)
             if chunks:
                 sources = rag.format_sources(chunks)
-            system_content = rag.build_system_prompt(chunks)
+            system_content = rag.build_system_prompt(chunks, evidence=evidence)
         else:
             system_content = SYSTEM_PROMPT
 

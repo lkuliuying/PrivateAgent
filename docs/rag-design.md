@@ -1,6 +1,17 @@
 # RAG 架构、数据质量与上线门禁
 
-> 状态：版本化索引与 retrieval 已启用（`PA_VERSIONED_RAG_INDEXING_ENABLED=true`、`PA_VERSIONED_RAG_RETRIEVAL_ENABLED=true`）。应用主库已于 2026-08-05 授权迁移到 `0020`，4 个 canonical 文档完成生产构建（4 chunks / 4 vectors，来源哈希一致），生产 hybrid 评测 10 个 reviewed case 全部通过（Recall/MRR/引用 1.0，P95 约 510 ms）。回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留。
+> **当前状态（2026-08-06）**：版本化索引与 retrieval 已启用（`PA_VERSIONED_RAG_INDEXING_ENABLED=true`、`PA_VERSIONED_RAG_RETRIEVAL_ENABLED=true`）。应用主库已于 2026-08-05 授权迁移到 `0020`，4 个 canonical 文档完成生产构建（4 chunks / 4 vectors，来源哈希一致），生产 hybrid 评测 10 个 reviewed case 全部通过（Recall/MRR/引用 1.0，P95 约 510 ms）。回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留。
+>
+> **R2.1 证据充分性（2026-08-06 上线）**：检索层新增 `rag-evidence-v1` 无答案拒答策略
+> （`src/personal_assistant/core/rag_evidence.py`，`PA_RAG_EVIDENCE_ENABLED=true` 生产已授权开启）。
+> 阈值 `PA_RAG_EVIDENCE_MIN_FINAL_SCORE=0.80`、`PA_RAG_EVIDENCE_MIN_SINGLE_CHANNEL_SCORE=0.85`
+> 经真实语料校准（已知答案 0.906–0.954，无答案 0.761–0.848，单渠道）；10 reviewed case 重跑
+> `abstention_rate=1.0` 且 Recall/MRR/引用正确率保持 1.0、零误拒答。拒答返回空来源 + 结构化原因
+> （`evidence_insufficient`/`single_channel_weak`/`no_results`），聊天提示词与
+> `search_knowledge_base` 工具输出都会明确说明资料不足。已知边界：语义反转类干扰查询
+> （>0.88、双渠道高分）分数策略无法拒答，需语义蕴含级验证，记录于
+> `data/rehearsals/rag-evidence-r2-20260806/summary.md`。评测口径：`evaluate_rag.py`
+> 现在支持 `--min-abstention` 门禁（默认 0.8）与分数分布报告。
 
 ## 1. 存储职责
 

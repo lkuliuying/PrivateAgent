@@ -148,6 +148,16 @@ class Settings(BaseSettings):
     versioned_rag_retention_days: int = Field(default=14, ge=1, le=3650)
     versioned_rag_min_retired_versions: int = Field(default=1, ge=0, le=100)
 
+    # === RAG 证据充分性（R2.1 无答案拒答） ===
+    # 开启后检索层对重排后的最终分数做"证据不足"判断，证据不足时返回空来源
+    # 与结构化原因，由回答层明确说明资料不足，不生成弱引用。
+    # 默认值经 2026-08-06 真实语料校准（data/rehearsals/rag-evidence-r2-20260806/）：
+    # 已知答案 case 最高命中 0.906–0.954（双渠道）；无答案 case 0.761–0.848（单渠道）。
+    # 分数策略无法拒答的语义反转干扰（>0.88 双渠道命中）记录为已知局限，需语义级验证。
+    rag_evidence_enabled: bool = False
+    rag_evidence_min_final_score: float = Field(default=0.80, ge=0.0, le=1.0)
+    rag_evidence_min_single_channel_score: float = Field(default=0.85, ge=0.0, le=1.0)
+
     # === 日志 ===
     log_level: str = "INFO"
 

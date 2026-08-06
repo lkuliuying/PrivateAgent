@@ -40,6 +40,9 @@ class RetrievalGate:
     min_citation_correctness: float = 0.8
     max_empty_recall_rate: float = 0.1
     max_p95_latency_ms: float = 2_000.0
+    # R2.1：无答案 case 的最低拒答率。None 表示只观察不计门禁（默认，向后兼容）；
+    # 正式发布门禁由 evaluate_rag.py 显式传入（--min-abstention）。
+    min_abstention_rate: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +53,7 @@ class RetrievalCaseResult:
     retrieved_doc_ids: tuple[int, ...]
     citation_supported: bool
     latency_ms: float
+    scores: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +85,26 @@ def _percentile(values: Sequence[float], percentile: float) -> float:
         return ordered[lower]
     weight = position - lower
     return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+
+
+def _score_snapshot(results: Sequence[RetrievalResult]) -> tuple[dict, ...]:
+    """提取每条结果的分数快照（R2.1 分数分布报告；不含查询与正文）。"""
+    out: list[dict] = []
+    for result in results:
+        via = getattr(result, "matched_via", None)
+        channels = [str(v) for v in via] if isinstance(via, (list, tuple)) else []
+        out.append(
+            {
+                "doc_id": int(getattr(result, "doc_id", 0)),
+                "chunk_id": getattr(result, "chunk_id", None),
+                "score": getattr(result, "score", None),
+                "fusion_score": getattr(result, "fusion_score", None),
+                "rerank_score": getattr(result, "rerank_score", None),
+                "bm25_score": getattr(result, "bm25_score", None),
+                "matched_via": channels,
+            }
+        )
+    return tuple(out)
 
 
 async def evaluate_retrieval(
@@ -143,6 +167,7 @@ async def evaluate_retrieval(
                 retrieved_doc_ids=retrieved_doc_ids,
                 citation_supported=citation_supported,
                 latency_ms=latency_ms,
+                scores=_score_snapshot(results),
             )
         )
 
@@ -191,6 +216,12 @@ async def evaluate_retrieval(
         failures.append("empty_recall_rate")
     if p95 > gate.max_p95_latency_ms:
         failures.append("p95_latency_ms")
+    if (
+        gate.min_abstention_rate is not None
+        and expect_empty_count > 0
+        and abstention_rate < gate.min_abstention_rate
+    ):
+        failures.append("abstention_rate")
     return RetrievalEvaluationReport(
         top_k=top_k,
         case_count=count,

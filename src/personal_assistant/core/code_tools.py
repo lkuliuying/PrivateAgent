@@ -12,6 +12,7 @@ import asyncio
 import difflib
 import hashlib
 import shlex
+import threading
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,7 +50,10 @@ WHITELISTED_COMMAND_PREFIXES: tuple[tuple[str, ...], ...] = (
 async def _run_git(
     root: str, args: list[str], timeout: float = GIT_TIMEOUT
 ) -> tuple[int, str, str]:
-    """在 root 目录运行 git 只读子命令，返回 (returncode, stdout, stderr)。"""
+    """在 root 目录运行 git 只读子命令，返回 (returncode, stdout, stderr)。
+
+    R3：取消时杀掉子进程并重新抛出 CancelledError，避免 git 子进程残留。
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "git",
@@ -64,16 +68,32 @@ async def _run_git(
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        await _kill_process(proc)
         raise TimeoutError(f"git 命令超时（{timeout}s）")
+    except asyncio.CancelledError:
+        await _kill_process(proc)
+        raise
     return (
         proc.returncode or 0,
         stdout_b.decode("utf-8", errors="ignore"),
         stderr_b.decode("utf-8", errors="ignore"),
     )
+
+
+async def _kill_process(proc: asyncio.subprocess.Process) -> None:
+    """尽力终止子进程并回收其输出管道，抑制重复 kill 的异常。"""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        pass
+    except ProcessLookupError:
+        pass
 
 
 async def search_files(
@@ -97,11 +117,22 @@ async def search_files(
     }
 
 
-async def grep_code(db: AsyncSession, project_id: int, pattern: str) -> dict:
-    """在项目文本文件中搜索内容，返回 path/line/上下文。pattern 为正则。"""
+async def grep_code(
+    db: AsyncSession,
+    project_id: int,
+    pattern: str,
+    stop_event: "threading.Event | None" = None,
+) -> dict:
+    """在项目文本文件中搜索内容，返回 path/line/上下文。pattern 为正则。
+
+    R3：``stop_event`` 用于取消协作——to_thread 线程无法强杀，但会定期检查
+    该事件提前退让，迟到的结果由取消方丢弃。
+    """
     if not pattern:
         raise ValueError("pattern 不能为空")
-    return await ProjectService(db).search_content(project_id, pattern)
+    return await ProjectService(db).search_content(
+        project_id, pattern, stop_event=stop_event
+    )
 
 
 async def read_code_file(
@@ -368,11 +399,11 @@ async def _execute_command(
     try:
         stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
+        await _kill_process(proc)
         raise TimeoutError(f"命令超时（{timeout}s）")
+    except asyncio.CancelledError:
+        await _kill_process(proc)
+        raise
     stdout = stdout_b.decode("utf-8", errors="ignore")
     stderr = stderr_b.decode("utf-8", errors="ignore")
     combined = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()

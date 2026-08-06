@@ -5,6 +5,23 @@
 > 当前 Git：`1258b8e`，本地 `main` 比 `origin/main` 领先 3 个提交  
 > 适用范围：只处理 2026-08-06 核验后仍未完成的事项，不重复执行已经完成的数据库迁移、RAG 上线、Windows 升级 smoke 或 ICS 集成样板。
 
+> **执行台账（2026-08-06 更新，随工作推进刷新）**：
+> - **R0/R1 完成**：发布事实源收口（`release-check-<version>.json` 为机器事实源、manifest checklist 由报告生成）、
+>   Ruff/compileall/cargo_test/sidecar_smoke 加入完整门禁（10 步扩至 14 步）、干净 HEAD `c4c1566` 重跑
+>   `14 passed / 0 failed / 0 skipped / ok=true`、`worktree_dirty=false`、schema `0020`、manifest 与报告同 commit。
+> - **R2.1 完成**：`rag-evidence-v1` 策略（阈值 `0.80`/单渠道 `0.85`，校准证据在
+>   `data/rehearsals/rag-evidence-r2-20260806/`）；10 reviewed case 重跑 `abstention_rate=1.0`、
+>   Recall/MRR/引用正确率保持 1.0、零误拒答；生产 `.env` 已授权开启 `PA_RAG_EVIDENCE_ENABLED=true`；
+>   已知局限：语义反转类干扰（>0.88 双渠道）需语义级验证，已记录为错误案例。
+> - **R2.2 完成**：Windows 交付模式定为**外部 Ollama 由用户管理**（用户决策）；`/health` 增加
+>   `error_code`（`ollama_not_running`/`ollama_timeout`/`ollama_http_error`/`ollama_model_missing`）与
+>   `missing_models`；`scripts/ollama_lifecycle_check.py` + 证据报告
+>   （embed P50 87ms / P95 111ms，bge-m3 常驻 1.6 GB）；文档 `docs/ollama-lifecycle.md`。
+> - **R3 部分完成**：取消清理修复（git/命令子进程 CancelledError 时 kill、grep to_thread stop_event
+>   退让）、SSE 断线取消与 owner 监控 verify→shutdown 测试补齐、灰度逐项验证矩阵与兼容链退出提案
+>   （`docs/agent-runtime-gray-verification.md`）；**生产开启任何 Runtime 开关仍待单独授权**，
+>   跨版本遥测观察窗口未启动，provider tokenizer 口径对比未做。
+
 ## 1. 已完成且不得重复实施
 
 以下事项已经有代码、运行状态或验收证据，本计划不再安排：
@@ -23,11 +40,11 @@
 ## 2. 当前未完成项总表
 
 | 编号 | 工作包 | 当前状态 | 优先级 | 阻塞范围 |
-|---|---|---|---:|---|
-| R0 | 发布事实源与文档收口 | 部分完成 | P0 | 阻塞可信发布说明 |
-| R1 | 当前干净提交的完整发布门禁 | 部分完成 | P0 | 阻塞 `0.2.0` 最终放行 |
-| R2 | RAG 无答案拒答与 Ollama 生命周期 | 未完成 | P1 | 质量/运维风险；可由风险接受决定是否阻塞发布 |
-| R3 | Agent Runtime 灰度与兼容链退出 | 未完成 | P1 | 阻塞 Runtime 默认启用 |
+|---|---|---:|---:|---|
+| R0 | 发布事实源与文档收口 | 完成（2026-08-06） | P0 | 已解除 |
+| R1 | 当前干净提交的完整发布门禁 | 完成（2026-08-06，`c4c1566`，14/0/0） | P0 | 已解除 |
+| R2 | RAG 无答案拒答与 Ollama 生命周期 | 完成（2026-08-06；语义反转干扰为已知边界） | P1 | 质量风险已按授权处理 |
+| R3 | Agent Runtime 灰度与兼容链退出 | 部分完成（取消清理/故障门禁/退出提案；生产开启与遥测窗口待授权） | P1 | 阻塞 Runtime 默认启用 |
 | R4 | 领域级验证器 | 未完成 | P1 | 阻塞对应高风险工作流开放 |
 | R5 | MCP 与远程 Provider 生产互操作 | 条件性、未启动 | P2 | 仅阻塞外部能力启用 |
 | R6 | 跨平台、正式签名与桌面自动化 | 条件性、未启动 | P2 | 不阻塞 unsigned Windows 交付 |

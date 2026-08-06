@@ -732,3 +732,122 @@ async def test_runtime_chat_flag_keeps_rag_requests_on_legacy_path(
     finally:
         await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
         await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_sse_disconnect_cancels_active_run(client, db, monkeypatch):
+    """R3：SSE 断线（流关闭）时 _agent_chat_stream 的 finally 取消运行。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    model = ApprovalCompatModel()
+
+    async def fake_model(_db):
+        return model
+
+    async def execute(arguments, cancellation):
+        del cancellation
+        return {"value": arguments["value"]}
+
+    spec = ToolSpec(
+        name="chat_echo",
+        version="1.0.0",
+        description="Approval-gated chat echo",
+        input_schema={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        output_schema={
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        },
+        risk_level=ToolRiskLevel.CONFIRM,
+        required_capabilities=frozenset(),
+        timeout_ms=5_000,
+        max_output_bytes=4_096,
+        idempotency=ToolIdempotency.NON_IDEMPOTENT,
+        supports_cancellation=True,
+        redaction_policy=ToolRedactionPolicy.SENSITIVE_KEYS,
+        executor=execute,
+    )
+
+    def registry():
+        result = VersionedToolRegistry()
+        result.register(spec)
+        return result
+
+    def initial_dispatcher(run_db, run_id):
+        return ValidatedToolDispatcher(
+            registry(),
+            policy=ToolCapabilityPolicy(),
+            approval_requester=SqlToolApprovalRequester(run_db, run_id=run_id),
+            execution_store=ToolExecutionRepository(run_db, run_id=run_id),
+        )
+
+    def resumed_dispatcher(run_db, run_id, approval_id, token):
+        return ValidatedToolDispatcher(
+            registry(),
+            policy=ToolCapabilityPolicy(),
+            approval_requester=SqlToolApprovalRequester(run_db, run_id=run_id),
+            approval_consumer=SqlToolApprovalConsumer(
+                run_db, approval_id=approval_id, token=token
+            ),
+            execution_store=ToolExecutionRepository(run_db, run_id=run_id),
+        )
+
+    bundle = AgentToolBundle(
+        definitions=(spec.to_model_definition(),),
+        dispatcher_factory=initial_dispatcher,
+        resume_dispatcher_factory=resumed_dispatcher,
+    )
+
+    async def fake_bundle(_db):
+        return bundle
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    monkeypatch.setattr(routes_chat, "get_agent_tool_bundle", fake_bundle)
+    app.dependency_overrides[get_agent_model_client] = lambda: model
+    app.dependency_overrides[get_agent_tool_bundle] = lambda: bundle
+    session = (await client.post("/sessions")).json()
+    run_id: str | None = None
+    try:
+        async with client.stream(
+            "POST",
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "use approved tool then disconnect",
+                "knowledge_base": False,
+            },
+        ) as response:
+            assert response.status_code == 200
+            # 读取首个 SSE 块后立即断开（不等审批完成）
+            async for chunk in response.aiter_raw():
+                if chunk:
+                    break
+            run_id = None
+            for block in chunk.decode("utf-8", errors="ignore").split("\n\n"):
+                for line in block.splitlines():
+                    if line.startswith("data:"):
+                        run_id = json.loads(line.removeprefix("data:").strip())["run_id"]
+
+        assert run_id is not None
+        # 流关闭后 finally 应已请求取消；等待 coordinator 落地取消状态
+        cancelled = False
+        for _ in range(100):
+            record = await db.get(AgentRunRecord, run_id)
+            assert record is not None
+            if record.status == "cancelled":
+                cancelled = True
+                break
+            await asyncio.sleep(0.05)
+        assert cancelled is True, "SSE 断线后 run 必须被取消"
+    finally:
+        app.dependency_overrides.pop(get_agent_tool_bundle, None)
+        app.dependency_overrides.pop(get_agent_model_client, None)
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
