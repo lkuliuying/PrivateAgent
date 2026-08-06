@@ -49,7 +49,7 @@ async def test_persister_flushes_increments_to_db(db):
         rows = (
             (await db.execute(select(CompatibilityTelemetryRow))).scalars().all()
         )
-        assert len(rows) == 5
+        assert len(rows) == 6  # 5 增量行 + 1 窗口基线行
         by_mode = {
             (row.path, row.mode): row.calls
             for row in rows
@@ -111,6 +111,31 @@ async def test_persister_marks_window_ended(db):
         assert rows
         for row in rows:
             assert row.ended_at is not None
+    finally:
+        await db.execute(delete(CompatibilityTelemetryRow))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_zero_call_window_still_records_baseline_row(db):
+    """零调用窗口也必须产生基线行，才能证明"窗口存在且 legacy 为 0"。"""
+    telemetry = CompatibilityTelemetry()  # 没有任何调用
+    persister = CompatibilityTelemetryPersister(
+        telemetry, _factory(db), scope_key="window-empty"
+    )
+    try:
+        deltas = await persister.flush_now()
+        assert deltas == []
+        rows = (
+            (await db.execute(select(CompatibilityTelemetryRow))).scalars().all()
+        )
+        assert len(rows) == 1
+        assert rows[0].path == "__window__"
+        assert rows[0].calls == 0
+        summary = await windowed_telemetry_summary(db)
+        assert summary["window_count"] == 1
+        assert summary["by_path"] == {}
+        assert "legacy_zero" not in summary  # 归零判定由报告脚本基于 by_path 计算
     finally:
         await db.execute(delete(CompatibilityTelemetryRow))
         await db.commit()

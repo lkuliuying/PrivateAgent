@@ -32,6 +32,15 @@ cfg.db_url = TEST_DB_URL
 # 开启 flag 并注入 FakeVersionVectorStore，不依赖全局开关。
 cfg.versioned_rag_indexing_enabled = False
 cfg.versioned_rag_retrieval_enabled = False
+# Agent Runtime 灰度开关：测试环境显式重置为默认关闭，与生产 .env 解耦；
+# 需要开启的用例用 monkeypatch 显式设置（保持确定性）。
+cfg.agent_runs_api_enabled = False
+cfg.agent_run_read_only_tools_enabled = False
+cfg.agent_rag_tools_enabled = False
+cfg.agent_context_builder_enabled = False
+cfg.agent_output_verification_enabled = False
+cfg.chat_agent_runtime_enabled = False
+cfg.compatibility_telemetry_persist_enabled = False
 TEST_API_TOKEN = "test-api-token-0123456789abcdef0123456789abcdef"
 cfg.api_auth_enabled = True
 cfg.api_token = SecretStr(TEST_API_TOKEN)

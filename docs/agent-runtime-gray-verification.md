@@ -109,3 +109,68 @@
 - 跨版本观察窗口自 2026-08-06 起开始积累，但尚未覆盖一次升级周期，§6.4 条件 2 未达成。
 - `grep_code` 线程不可强杀：stop_event 只能让线程在检查点退让，单次超大文件内的
   正则扫描仍会跑完；已按计划以 `supports_cancellation=False` 明确声明并丢弃迟到结果。
+
+## 6. 灰度开启决策（2026-08-06，按遥测数据）
+
+### 6.1 遥测现状（决策输入）
+
+`scripts/telemetry_window_report.py`（2026-08-06 08:19）：**window_count=0**。
+
+原因（如实）：
+- 正在运行的桌面应用是 **2026-08-05 构建的安装版**（`C:\ProgramSoftware\PrivateAgent\`，
+  进程 13068），其二进制不含 `0021` 迁移与遥测持久化代码，配置在 `%APPDATA%` 而非项目 `.env`；
+- 项目源码模式服务自遥测上线后未重启，未加载新 `.env`（`PA_COMPATIBILITY_TELEMETRY_PERSIST_ENABLED=true`）。
+
+结论：**legacy 归零判定尚无数据支撑**。遥测观察窗口从"开启开关后的下一次服务启动"才开始
+积累；安装版用户流量需要等包含 `0021` 的新构建发布后才进入窗口。灰度开启决策因此以
+测试/故障门禁/验证器证据为主，遥测用于开启后的**行为观察与旧链退出判定**（§6.4 条件 2）。
+
+### 6.2 灰度证据基础（开启依据）
+
+| 证据 | 状态 |
+|---|---|
+| 全量测试 | 583 passed（含 Agent/审批/恢复/SSE/取消/遥测/验证器全套） |
+| 故障门禁 | owner lock 丢失 503、孤儿 run、审批 token 轮换/一次消费/过期、SSE 断线取消、owner 监控 verify→shutdown |
+| R4 验证器 | 6 类就绪，文件 Diff 已挂 `propose_patch`；写文件/Shell/API/DB 工作流开放前强制 |
+| 生产遗留 | `agent_runs` 0 条、无 running/waiting_approval、无 pending 审批 → reconcile 无副作用 |
+| 回退性 | 全部独立 flag，关闭即回退，无需 schema downgrade |
+| 测试确定性 | 所有 flag 测试用 monkeypatch 显式设置，`.env` 开启不影响测试（已核验） |
+
+### 6.3 推荐开启方案（分两批）
+
+**批 A（本次建议开启，低风险）**——`PA_AGENT_RUNS_API_ENABLED`、
+`PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED`、`PA_AGENT_CONTEXT_BUILDER_ENABLED`、
+`PA_AGENT_OUTPUT_VERIFICATION_ENABLED`、`PA_AGENT_RAG_TOOLS_ENABLED`。
+- 只影响显式创建的 agent-run API 路径；**不改变聊天主路径**（聊天接管未开时
+  `/chat/stream` 仍走 legacy，桌面端 `/capabilities` 仍为 `legacy`，旧 `/tools/plan`
+  工具列表不变——planner 过滤要求 chat 接管与只读工具同开才生效）；
+- 开启后源码模式服务重启 → 新遥测窗口开始积累 agent_runtime/legacy 计数。
+
+**批 B（暂缓，单独决策）**——`PA_CHAT_AGENT_RUNTIME_ENABLED`（第 7 步）：
+所有新消息接管 Runtime，影响最大；建议在批 A 运行至少一个观察期、且安装版新构建
+（含 0021 + 本批代码）完成真机验证后再开。`PA_CONVERSATION_SUMMARY_WORKER_ENABLED`
+（第 8 步）独立灰度，另行决策。
+
+### 6.4 风险与回退
+
+- **owner lock 单进程**：批 A 开启后，Agent-enabled API 进程持有 MySQL named lock，
+  第二个实例（含开发时的重复启动）写入口返回 503；多实例并行开发需注意。
+- **运行中安装版不受影响**：项目 `.env` 只作用于源码模式；桌面用户行为不变。
+- **回退**：删除对应 `PA_*` 行即回退；不需要数据库 downgrade；遥测窗口数据保留。
+
+### 6.5 决策状态
+
+- 2026-08-06：用户授权开启**批 A**（§6.3），生产 `.env` 已写入：
+  `PA_AGENT_RUNS_API_ENABLED=true`、`PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=true`、
+  `PA_AGENT_CONTEXT_BUILDER_ENABLED=true`、`PA_AGENT_OUTPUT_VERIFICATION_ENABLED=true`、
+  `PA_AGENT_RAG_TOOLS_ENABLED=true`。第 7 步（聊天接管）与第 8 步（摘要 worker）保持关闭。
+- 只读 smoke（源码模式 uvicorn + 临时 token，主库）：`/health` 全绿、
+  `/capabilities` 返回 `chat_execution_mode=legacy`（旧 planner 保留）、
+  `agent_read_only_tools_enabled=true`；`POST /agent-runs` 路由已挂载（405 验证仅 POST）。
+- **首个真实遥测窗口**：`window_count=1`（scope_key `d1b2fc1a43fd43a7`，2026-08-06 08:50 起）；
+  窗口存在且 legacy 归零（`legacy_zero=true`）；随后一次真实 `GET /tools` 调用被如实记录
+  （`/tools=1`，`legacy_zero=false`）——计数/聚合/判定链路全部工作。
+- 基线行修复：零调用窗口也会写 `__window__` 基线行，保证"窗口存在且 legacy=0"
+  与"没有窗口"可区分（§6.4 归零观察前提），已补测试。
+- 说明：窗口 `ended_at` 为 null 是 smoke 服务被强制停止（崩溃场景）所致；正常退出由
+  lifespan finally 标记结束。

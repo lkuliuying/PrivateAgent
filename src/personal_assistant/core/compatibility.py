@@ -51,6 +51,9 @@ _LABELS = {
     },
 }
 
+# 窗口基线行保留 path：证明窗口存在（即使零调用），不计入 legacy 分路径计数。
+WINDOW_BASELINE_PATH = "__window__"
+
 
 class CompatibilityTelemetry:
     """Track process-lifetime compatibility calls without user-controlled labels."""
@@ -152,6 +155,9 @@ class CompatibilityTelemetryPersister:
     async def flush_now(self, *, ended: bool = False) -> list[tuple[str, int]]:
         """把自上次 flush 的增量写入表；ended=True 时标记窗口结束。
 
+        首次 flush（窗口开始）总是写一条基线行（path="__window__"），保证
+        "窗口存在且 legacy 调用为 0"可以被证明（§6.4 归零观察需要能区分
+        "没有窗口"与"有窗口但零调用"）。
         返回 [(label, delta), ...]，label 形如 ``path#mode`` / ``path#outcome``。
         """
         current = self._telemetry.snapshot()
@@ -165,9 +171,10 @@ class CompatibilityTelemetryPersister:
                 delta = self._delta(path, label, count)
                 if delta > 0:
                     deltas.append((f"{path}#{label}", delta))
+        first_flush = self._last is None
         self._last = current
-        if deltas or ended:
-            await self._write(deltas, ended=ended)
+        if deltas or ended or first_flush:
+            await self._write(deltas, ended=ended, ensure_window=first_flush)
         return deltas
 
     def _delta(self, path: str, label: str, count: int) -> int:
@@ -180,12 +187,36 @@ class CompatibilityTelemetryPersister:
             prev = self._last["paths"][path]["outcomes"][label]
         return max(0, count - prev)
 
-    async def _write(self, deltas: list[tuple[str, int]], *, ended: bool) -> None:
+    async def _write(
+        self, deltas: list[tuple[str, int]], *, ended: bool, ensure_window: bool = False
+    ) -> None:
         from .models import CompatibilityTelemetryRow
         from .timeutil import utcnow
 
         now = utcnow()
         async with self._factory() as db:
+            if ensure_window:
+                existing = (
+                    await db.execute(
+                        select(CompatibilityTelemetryRow).where(
+                            CompatibilityTelemetryRow.scope == self._scope,
+                            CompatibilityTelemetryRow.scope_key == self._scope_key,
+                            CompatibilityTelemetryRow.path == WINDOW_BASELINE_PATH,
+                        )
+                    )
+                ).scalar_one_or_none()
+                if existing is None:
+                    db.add(
+                        CompatibilityTelemetryRow(
+                            scope=self._scope,
+                            scope_key=self._scope_key,
+                            path=WINDOW_BASELINE_PATH,
+                            mode="-",
+                            outcome="-",
+                            calls=0,
+                            last_flushed_at=now,
+                        )
+                    )
             for label, delta in deltas:
                 path, _, label_value = label.partition("#")
                 row = (
@@ -264,6 +295,8 @@ async def windowed_telemetry_summary(
                 "ended_at": row.ended_at,
             },
         )
+        if row.path == WINDOW_BASELINE_PATH:
+            continue
         if row.mode != "-":
             by_path[row.path] += row.calls
         # 窗口内 path 的 mode 计数用于"legacy 归零"判断（mode 维度完整）
