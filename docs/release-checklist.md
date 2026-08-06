@@ -14,7 +14,7 @@
 | 发布 manifest | `uv run python scripts\generate_release_manifest.py --write`（在完整检查**之后**执行；checklist 由报告步骤生成） | `dist\release-manifest-<version>.md` 与报告同一 commit 且摘要一致 |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | `0020 (head)`（与代码模型一致） |
+| 迁移 head | `uv run alembic current` | `0021 (head)`（与代码模型一致） |
 
 > `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
 > 完整 release check 的顺序固定：先跑 `release-check-full.bat`，再刷新 manifest，避免 manifest 固化旧报告。sidecar 未构建时 `sidecar_smoke` 如实标记 skipped，不伪装通过。

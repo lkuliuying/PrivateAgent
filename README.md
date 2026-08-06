@@ -4,7 +4,7 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 
 项目强调“可控”而不是无边界自动化：文件访问受授权路径约束，写入和命令执行必须经过审批，高风险任务保留计划、状态、输出和证据；远程 Provider 默认关闭，诊断包和发布流程包含脱敏、签名与完整性检查。
 
-> 当前版本：`0.2.0` · 源码数据库迁移：`0020 (head)` · 主交付平台：Windows 10/11 x64
+> 当前版本：`0.2.1`（发布候选）· 源码数据库迁移：`0021 (head)` · 主交付平台：Windows 10/11 x64
 
 ## 目录
 
@@ -184,7 +184,7 @@ Agent/
 │   ├── workers/               # 导入、OCR、项目扫描等后台任务
 │   ├── main_api.py            # FastAPI 应用入口
 │   └── server_entry.py        # sidecar 启动与迁移入口
-├── alembic/                   # MySQL 数据库迁移（当前 head: 0020）
+├── alembic/                   # MySQL 数据库迁移（当前 head: 0021）
 ├── tests/                     # 后端、RAG、治理、发布和升级测试
 ├── scripts/                   # 开发、构建、签名、发布检查与 smoke 脚本
 ├── docs/                      # 需求、阶段计划、使用和发布文档
@@ -262,7 +262,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-预期输出包含 `0020 (head)`。
+预期输出包含 `0021 (head)`。
 
 ### 4. 启动本地 API
 
@@ -321,7 +321,7 @@ npm run dev
 | `PA_CONVERSATION_SUMMARY_WORKER_ENABLED` | `false` | 在 schema 0017+ 上启动可追溯会话摘要 worker；保留原消息与来源哈希 |
 | `PA_CONVERSATION_SUMMARY_ALLOW_REMOTE_PROVIDER` | `false` | 单独允许自动摘要把受预算约束的消息发送给已启用的远程 provider；本地 Ollama 不需要 |
 | `PA_MCP_ENABLED` | `false` | 开启 MCP 注册表与客户端 API；每个服务器仍需显式信任、启用和工具 allowlist |
-| `PA_VERSIONED_RAG_INDEXING_ENABLED` | `false` | 在 schema 0020+ 使用带来源追溯的旁路版本构建；先于 retrieval 开启 |
+| `PA_VERSIONED_RAG_INDEXING_ENABLED` | `false` | 在 schema 0021+ 使用带来源追溯的旁路版本构建；先于 retrieval 开启 |
 | `PA_VERSIONED_RAG_RETRIEVAL_ENABLED` | `false` | 有 active head 的文档读取版本化索引，无 head 文档回退 legacy |
 | `PA_VERSIONED_RAG_RETENTION_DAYS` | `14` | retired 索引版本的最短保留天数 |
 | `PA_VERSIONED_RAG_MIN_RETIRED_VERSIONS` | `1` | 每文档至少保留的 retired 回滚版本数 |

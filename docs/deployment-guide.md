@@ -67,8 +67,8 @@ Tauri 每次启动生成新的 API token，选择空闲 loopback 端口并启动
 3. 在 clone 上演练 upgrade/downgrade；
 4. 记录主库 revision 和关键计数；
 5. 获取明确的 schema 变更授权；
-6. 升到 `0020`，立即检查 `/health`、schema 和数据计数；
-7. 所有新功能开关仍保持 false。
+6. 升到目标 head（当前 `0021`），立即检查 `/health`、schema 和数据计数；
+7. 所有新功能开关仍保持 false（已获授权的灰度开关除外）。
 
 截至 2026-08-02，应用主库仍为 `0012`。已通过的 clone 演练不能替代第 5 步授权。
 
@@ -84,7 +84,7 @@ Tauri 每次启动生成新的 API token，选择空闲 loopback 端口并启动
 4. `PA_CHAT_AGENT_RUNTIME_ENABLED=true`，小范围普通聊天。
 5. `PA_VERSIONED_RAG_INDEXING_ENABLED=true`，只做旁路小批构建。
 6. 人工复核 benchmark 且延迟/质量通过后，`PA_VERSIONED_RAG_RETRIEVAL_ENABLED=true`。
-7. MCP 先验证 OS keyring 引用、目标服务静态认证/证书/限流，并取得当前 head `0020` 的主库迁移授权；OAuth 或高安全远程目标还需补齐授权生命周期和网络栈级约束后，才考虑 `PA_MCP_ENABLED=true`。
+7. MCP 先验证 OS keyring 引用、目标服务静态认证/证书/限流，并取得当前 head `0021` 的主库迁移授权；OAuth 或高安全远程目标还需补齐授权生命周期和网络栈级约束后，才考虑 `PA_MCP_ENABLED=true`。
 
 每一步观察错误率、P95、取消/审批恢复、数据库/向量一致性和 UI 兼容性。任一异常先关闭当前开关，不同时推进下一项。
 
@@ -95,7 +95,7 @@ Tauri 每次启动生成新的 API token，选择空闲 loopback 端口并启动
 - 数据库回滚：无必须保留的新写入时，停机后切换到已核验 clone；有新写入时先做新备份和差异迁移设计。
 - RAG 回滚：切回 previous verified index head，或关闭 versioned retrieval 回退 legacy；不要先删当前/旧向量。
 
-不要把 Alembic downgrade 当作无条件回滚。`0013`–`0020` 的 downgrade 会删除新事实表。
+不要把 Alembic downgrade 当作无条件回滚。`0013`–`0021` 的 downgrade 会删除新事实表（`0021` 为纯新增 telemetry 表，旧应用可忽略；`0013`–`0020` 删除 Agent/MCP/版本化 RAG 事实表）。
 
 ## 8. 可选 Docker / Compose 部署
 

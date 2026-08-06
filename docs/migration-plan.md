@@ -4,7 +4,7 @@
 > 日期：2026-08-02
 > 原则：先止损、后建契约、再切流量；每阶段可验证、可回退、可保留现有数据
 
-> **当前状态（2026-08-06）**：本文 Phase 0–8 的执行台账属于历史记录（**历史执行台账（不得当作当前状态）**），其中「主库仍为 `0012`」「未获授权迁移」「发布未放行」等描述只代表对应切片当时的时点事实，不得据此重复迁移或重新 rollout。当前事实：应用主库已获授权迁移到 `0020 (head)`（48 张原表行数零变化，回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留）；versioned RAG indexing/retrieval 已生产启用（4 个 canonical 文档、10 个 reviewed case 全通过）；Agent Runtime、MCP、自动摘要仍默认关闭。Windows `0.2.0` 的 M0/M2 标记完成，M1（完整发布门禁）已于 2026-08-06 在干净 HEAD 重跑。详见 `docs/database-design.md`、`docs/rag-design.md` 顶部摘要。
+> **当前状态（2026-08-06）**：本文 Phase 0–8 的执行台账属于历史记录（**历史执行台账（不得当作当前状态）**），其中「主库仍为 `0012`」「未获授权迁移」「发布未放行」等描述只代表对应切片当时的时点事实，不得据此重复迁移或重新 rollout。当前事实：应用主库已获授权迁移到 `0021 (head)`（`0020` 为 2026-08-05 迁移基线，2026-08-06 新增 `0021` telemetry 表；回滚克隆 `personal_assistant_preupgrade_20260805111304`、`personal_assistant_preupgrade_20260806070435` 保留）；versioned RAG indexing/retrieval 已生产启用（4 个 canonical 文档、10 个 reviewed case 全通过）；RAG 证据充分性与 Agent Runtime 批 A 已生产开启，聊天接管与自动摘要仍默认关闭。Windows `0.2.1` 为当前发布候选。详见 `docs/database-design.md`、`docs/rag-design.md` 顶部摘要。
 
 ## 1. 总体策略
 

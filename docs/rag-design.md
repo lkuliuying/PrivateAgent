@@ -1,6 +1,6 @@
 # RAG 架构、数据质量与上线门禁
 
-> **当前状态（2026-08-06）**：版本化索引与 retrieval 已启用（`PA_VERSIONED_RAG_INDEXING_ENABLED=true`、`PA_VERSIONED_RAG_RETRIEVAL_ENABLED=true`）。应用主库已于 2026-08-05 授权迁移到 `0020`，4 个 canonical 文档完成生产构建（4 chunks / 4 vectors，来源哈希一致），生产 hybrid 评测 10 个 reviewed case 全部通过（Recall/MRR/引用 1.0，P95 约 510 ms）。回滚克隆 `personal_assistant_preupgrade_20260805111304` 保留。
+> **当前状态（2026-08-06）**：版本化索引与 retrieval 已启用（`PA_VERSIONED_RAG_INDEXING_ENABLED=true`、`PA_VERSIONED_RAG_RETRIEVAL_ENABLED=true`）。应用主库已于 2026-08-05 授权迁移到 `0020`、2026-08-06 迁移到 `0021`（新增 compatibility telemetry 表），4 个 canonical 文档完成生产构建（4 chunks / 4 vectors，来源哈希一致），生产 hybrid 评测 10 个 reviewed case 全部通过（Recall/MRR/引用 1.0，P95 约 510 ms）。回滚克隆 `personal_assistant_preupgrade_20260805111304` 与 `personal_assistant_preupgrade_20260806070435` 保留。
 >
 > **R2.1 证据充分性（2026-08-06 上线）**：检索层新增 `rag-evidence-v1` 无答案拒答策略
 > （`src/personal_assistant/core/rag_evidence.py`，`PA_RAG_EVIDENCE_ENABLED=true` 生产已授权开启）。

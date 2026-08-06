@@ -2,7 +2,12 @@
 
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。
 
-> **当前状态（2026-08-06）**：应用主库为 Alembic `0020 (head)`；versioned RAG indexing/retrieval 已生产启用；Agent Runtime、MCP、自动摘要相关开关仍默认关闭。专用测试库为 `0020 (head)`，已完成真实 `0020 → 0019 → 0020` 往返。Windows `0.2.0` 发布里程碑：M0/M2 完成，M1 完整发布门禁已在干净 HEAD 以 `scripts/release-check-full.bat` 重跑（Ruff/compileall 已加入 runner 并全绿）。历史切片（2026-08-05 之前的报告、`0012` 叙述）属于**历史执行台账（不得当作当前状态）**。
+> **当前状态（2026-08-06）**：应用主库为 Alembic `0021 (head)`（2026-08-06 新增
+> `compatibility_telemetry` 表）；versioned RAG indexing/retrieval 已生产启用；RAG 证据充分性
+> 策略（`rag-evidence-v1`）已生产开启；Agent Runtime **批 A**（Agent API、只读工具、
+> ContextBuilder、输出验证、RAG 工具）已生产开启，聊天接管（批 B）与自动摘要 worker 仍默认关闭。
+> 当前版本 `0.2.1`（发布候选）。专用测试库为 `0021 (head)`，已完成真实 `0021 → 0020 → 0021` 往返。
+> 历史切片（2026-08-05 之前的报告、`0012`/`0020` 叙述）属于**历史执行台账（不得当作当前状态）**。
 
 ## 1. 环境
 
@@ -146,7 +151,7 @@ uv run pytest -q tests/test_agent_recovery.py
 7. cargo_check；
 8. cargo_test（Rust 单元测试，`scripts/cargo-test-tauri.bat`）；
 9. sidecar_smoke（已构建 sidecar 时启动并轮询 `/health`；未构建如实标记 skipped）；
-10. alembic_current（必须为 `0020 (head)`）；
+10. alembic_current（必须为 `0021 (head)`）；
 11. git_diff_check（`git diff --check`）；
 12. docker_compose_config（短生命周期 secret files，配置后强制删除）；
 13. diagnostic_redaction_smoke（测试库，不得直连 `PA_DB_URL`）；

@@ -1,5 +1,47 @@
 # 更新日志
 
+## 0.2.1（2026-08-06，稳定化发布候选）
+
+### 数据库（schema `0021`）
+
+- 新增 `compatibility_telemetry` 表（迁移 `0021`）：每进程一个观察窗口的兼容遥测持久化，
+  用于跨版本 legacy 归零观察（§6.4）；主库已迁移（克隆 `personal_assistant_preupgrade_20260806070435`
+  为 0020 基线），测试库完成 `0020 → 0021 → 0020` 往返演练。
+
+### RAG 无答案拒答（rag-evidence-v1）
+
+- 检索层证据充分性策略：阈值 `PA_RAG_EVIDENCE_MIN_FINAL_SCORE=0.80`、
+  `PA_RAG_EVIDENCE_MIN_SINGLE_CHANNEL_SCORE=0.85`（真实语料校准）；无答案 case 稳定拒答
+  （reviewed 集 abstention_rate=1.0），已知答案 Recall/MRR/引用正确率保持 1.0、零误拒答；
+  拒答返回空来源 + 结构化原因，聊天与 `search_knowledge_base` 工具明确说明资料不足。
+- 已知边界：语义反转类干扰（高分双渠道）需语义蕴含级验证（`data/rehearsals/rag-evidence-r2-20260806/`）。
+
+### Ollama 生命周期（外部用户管理模式）
+
+- `/health` 错误分类：`ollama_not_running` / `ollama_timeout` / `ollama_http_error` /
+  `ollama_model_missing` + `missing_models`；`scripts/ollama_lifecycle_check.py` 与文档
+  `docs/ollama-lifecycle.md`（embed P50 87ms / P95 111ms 实测）。
+
+### Agent Runtime 灰度（批 A）
+
+- 生产配置开启：Agent Runs API、只读工具、ContextBuilder、输出验证、RAG 工具
+  （`PA_AGENT_*_ENABLED=true`）；聊天接管与摘要 worker 保持关闭。
+- 取消清理：git/命令子进程 CancelledError 时 kill、grep to_thread stop_event 退让、
+  SSE 断线取消、owner 监控 verify→shutdown；预算口径统一（旧聊天历史按 context length 截断、
+  安全系数 `PA_TOKEN_ESTIMATE_SAFETY_FACTOR=2.0`，真实 usage 抽样校准 5/5 项 ≥ 真实值）。
+
+### 领域级结果验证器（R4）
+
+- 6 类验证器（文件 Diff / 代码 / Shell / API / 数据库 / 多步骤完成条件）+ 组合器；
+  文件 Diff 已接入 `propose_patch` 真实工作流；失败写 durable `agent_tool_executions`
+  并给有界反馈，不消费审批。
+
+### 已知限制与回滚
+
+- 安装包 unsigned（SmartScreen 风险）；GitHub Release 未发布（无权限），仅本地候选验收。
+- 观察期：兼容遥测窗口自 2026-08-06 起积累，§6.4 legacy 归零判定尚未达成。
+- 回滚：删除 `PA_*` 开关行即可回退灰度；数据库回滚非必要（0021 为纯新增表，旧应用可忽略）。
+
 ## 0.2.0（2026-08-06 发布门禁收口）
 
 ### 发布事实源与门禁（R0/R1，对应 `docs/remaining-work-plan-20260806.md`）

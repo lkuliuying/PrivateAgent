@@ -40,7 +40,8 @@
 
 以下事项已经有代码、运行状态或验收证据，本计划不再安排：
 
-- 应用主库 `0012 → 0020` 正式迁移；当前实际 `alembic current` 为 `0020 (head)`。
+- 应用主库 `0012 → 0020` 正式迁移（2026-08-05）与 `0020 → 0021`（2026-08-06，telemetry 表）；
+  当前实际 `alembic current` 为 `0021 (head)`。
 - Versioned RAG 生产启用；indexing/retrieval 两个开关均为 `true`。
 - 4 个 canonical 文档的 versioned 构建和 10 个 reviewed benchmark case。
 - Agent Runtime、ToolSpec、审批、checkpoint、durable execution、ContextBuilder 和 RAG 引用验证的代码底座。
@@ -58,9 +59,8 @@
 | R0 | 发布事实源与文档收口 | 完成（2026-08-06） | P0 | 已解除 |
 | R1 | 当前干净提交的完整发布门禁 | 完成（2026-08-06，`c4c1566`，14/0/0） | P0 | 已解除 |
 | R2 | RAG 无答案拒答与 Ollama 生命周期 | 完成（2026-08-06；语义反转干扰为已知边界） | P1 | 质量风险已按授权处理 |
-| R3 | Agent Runtime 灰度与兼容链退出 | 部分完成（取消清理/故障门禁/退出提案；生产开启与遥测窗口待授权） | P1 | 阻塞 Runtime 默认启用 |
+| R3 | Agent Runtime 灰度与兼容链退出 | 部分完成（批 A 已生产开启、遥测观察窗口积累中；批 B 与旧链退出待观察/授权） | P1 | 阻塞 Runtime 默认启用 |
 | R4 | 领域级验证器 | 完成（2026-08-06，6 类验证器 + 文件 Diff 接入真实工作流） | P1 | 对应高风险工作流开放前必须挂验证器 |
-| R4 | 领域级验证器 | 未完成 | P1 | 阻塞对应高风险工作流开放 |
 | R5 | MCP 与远程 Provider 生产互操作 | 条件性、未启动 | P2 | 仅阻塞外部能力启用 |
 | R6 | 跨平台、正式签名与桌面自动化 | 条件性、未启动 | P2 | 不阻塞 unsigned Windows 交付 |
 | R7 | 记忆与更多集成增强 | 条件性、未启动 | P3 | 不阻塞当前版本 |
@@ -135,9 +135,9 @@
 最终机器报告至少满足：
 
 ```text
-commit.short = 1258b8e 或其后明确提交
+commit.short = 1258b8e 或其后明确提交（0.2.1 候选以最终冻结 commit 为准）
 commit.dirty = false
-database_schema = 0020
+database_schema = 0021
 failed = 0
 skipped = 0
 ok = true
@@ -337,7 +337,7 @@ R4 ─────┘（按开放工作流匹配）
 
 ## 13. 通用安全与报告要求
 
-- 当前主库已经是 `0020`；任何新生产写入、删除、feature flag 开启或 downgrade 仍需单独明确授权。
+- 当前主库已经是 `0021 (head)`；任何新生产写入、删除、feature flag 开启或 downgrade 仍需单独明确授权。
 - 不触碰回滚克隆 `personal_assistant_preupgrade_20260805111304`。
 - 不删除历史 `diagnostic_runs` 36、37，除非取得精确生产数据删除授权。
 - 测试使用守卫后的测试库、隔离 clone、临时目录或本地 mock 服务。
@@ -348,9 +348,11 @@ R4 ─────┘（按开放工作流匹配）
 
 ## 14. 完成定义
 
-### 当前 Windows `0.2.0` 最终放行
+### 当前 Windows `0.2.1` 稳定化候选放行（路线图阶段 A–C，`docs/project-roadmap-20260806.md`）
 
-必须完成 R0、R1，并保留已完成的 M2 证据。最终 report/manifest 必须绑定同一个干净 HEAD，schema 为 `0020`，强制门禁零失败、零跳过，签名状态如实记录。
+必须完成：版本统一 `0.2.1`、当前候选 HEAD 的完整发布门禁（schema `0021`）、安装/升级/回滚/负面
+验证，并保留历史 `0.2.0` 与 M2 证据。最终 report/manifest 必须绑定同一个干净 HEAD，schema 为
+`0021`，强制门禁零失败、零跳过，签名状态如实记录；无 GitHub 发布权限时标记"本地候选验收完成"。
 
 ### Agent Runtime 默认启用
 
