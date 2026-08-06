@@ -904,17 +904,23 @@ async fn start_sidecar(
         }
     };
 
-    let token = match generate_api_token() {
-        Ok(token) => token,
-        Err(error) => {
-            return Ok(SidecarStartResult {
-                ok: false,
-                dev_mode: false,
-                port: None,
-                token: None,
-                error: Some(error),
-            })
-        }
+    // QA-only 静态 token：仅当 Tauri 主进程环境显式设置 PA_QA_STATIC_TOKEN 时使用，
+    // 供发布验收（真实 Agent API/RAG smoke）在外部复现认证。默认保持随机注入，
+    // 不落盘、不写日志；未设置该环境变量时行为与之前完全一致。
+    let token = match std::env::var("PA_QA_STATIC_TOKEN") {
+        Ok(static_token) if static_token.len() >= 32 => static_token,
+        _ => match generate_api_token() {
+            Ok(token) => token,
+            Err(error) => {
+                return Ok(SidecarStartResult {
+                    ok: false,
+                    dev_mode: false,
+                    port: None,
+                    token: None,
+                    error: Some(error),
+                })
+            }
+        },
     };
 
     match app.shell().sidecar(SIDECAR_BIN) {
