@@ -9,12 +9,19 @@
 
 > **执行进度（2026-08-06）**：
 > - 阶段 A（0.2.1 冻结）✅ `cbbc9fe`：版本统一 0.2.1、CHANGELOG、文档事实收口。
-> - 阶段 B（工程门禁）✅ `cbbc9fe`：14/14 全绿、`worktree_dirty=false`、schema `0021`、
->   `pytest 584 passed`；报告 `dist/release-check-0.2.1.json`、manifest `release-manifest-0.2.1.md`。
-> - 阶段 C（安装包与升级验收）✅ 本地候选：0.2.1 NSIS 构建（94.1 MB，SHA256 `6332C0…EFD0`）、
->   `0.2.0 → 0.2.1` 升级 run #27 passed（preserved=true）、回滚往返 run #28、updater 签名正向/篡改负向；
->   安装版 0.2.1 已安装并运行（`/health` 四项全绿）。**未执行**：GitHub Release 上传（无权限）、
->   updater UI 端到端篡改测试（沿用 M2 的 0.2.0 证据，代码未变）。
+> - 阶段 B（工程门禁）✅：14/14 全绿、`worktree_dirty=false`、schema `0021`、`pytest 584 passed`。
+> - 阶段 C（安装包与升级验收）✅：NSIS 构建、0.2.0→0.2.1 升级 run #27、回滚 run #28、
+>   updater 签名正/负验证；安装版 0.2.1 已运行。
+> - **QA 收尾（0.2.1 正式发布）✅ `a3ac17c` + tag `v0.2.1`**：
+>   * T1 桌面退出 sidecar 进程树清理（taskkill /T）+ 3 轮启动-退出回归零残留；
+>   * T2 安装版批 A 安全启用（%APPDATA%\.env，备份保留）+ QA 静态 token 钩子
+>     （PA_QA_STATIC_TOKEN，默认关闭）+ 真实 Agent API/RAG smoke 通过；
+>   * T3 全新 %APPDATA% 干净安装：health 全绿、collections=0、Agent API/RAG 可用，已还原；
+>   * T4 run #27/#28 补齐 data_preserved/schema_ok、manifest 手工验收项由
+>     `--qa-evidence` 机器证据勾选（dist/qa-evidence-0.2.1.json）；
+>   * T5 最终门禁绑定 `a3ac17c`（打 tag 的同一提交）；
+>   * T6 **已推送 main + tag v0.2.1 并发布 GitHub Release**
+>     （https://github.com/lkuliuying/PrivateAgent/releases/tag/v0.2.1，9 资产）。
 > - 阶段 D（批 A 生产观察）：安装版 0.2.1 已含批 A 与 0021，观察窗口自此起算。
 
 ## 1. 总体判断

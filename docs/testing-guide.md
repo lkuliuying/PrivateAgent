@@ -171,6 +171,13 @@ uv run pytest -q tests/test_agent_recovery.py
 `dist/release-manifest-0.2.1.md` 与报告同 commit。阶段 C 安装 QA：`0.2.0 → 0.2.1` 就地升级
 run #27 passed（数据保留 preserved=true）、回滚往返 run #28、updater 签名正向 OK/篡改拒绝。
 
+2026-08-06 0.2.1 正式发布门禁（`a3ac17c` + tag `v0.2.1`）：14/14 全绿、`worktree_dirty=false`、
+schema `0021`、`pytest 584 passed in 389.36s`；sidecar_smoke 显式关闭 agent 开关以规避运行中
+安装版的 owner lock；QA 收尾 T1–T6（进程树清理回归、安装版批 A + 真实 Agent API/RAG smoke、
+全新 %APPDATA% 干净安装、run #27/#28 结构化字段、manifest 手工项由 `--qa-evidence` 勾选、
+GitHub Release 已发布）。QA 陷阱记录：PowerShell `Invoke-RestMethod` 发送中文 body 会按非
+UTF-8 编码损坏（bm25 query 变 `?`），发布 smoke 请用 UTF-8 客户端（httpx）。
+
 口径说明：发布报告数字是流水线**步骤数**（当前 14 个 gate step），不是测试用例数；pytest 的 `535 passed` 是**实际执行数**（参数化可能高于静态定义数，仓库静态函数定义为 493 个 Python 测试函数、32 个 Vitest 定义、11 个 Playwright 定义，均可能低于展开后的执行数）；三者口径不同，不能互相替代或直接比较。
 
 2026-08-03 最近一次完整代码门禁（完成于 Phase 4 Slice 3 的 RAG ToolSpec/collection isolation 变更之前）：
