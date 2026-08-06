@@ -159,9 +159,9 @@ async def test_reindex_all(client, monkeypatch):
 @pytest.mark.asyncio
 async def test_disabled_doc_excluded_from_rag(db, monkeypatch):
     """禁用文档的切片不参与 RAG 检索；启用后恢复。"""
+    from personal_assistant.core import store_chroma
     from personal_assistant.core.models import DocChunk, Document
     from personal_assistant.core.rag import RagService
-    from personal_assistant.core import store_chroma
 
     doc = Document(name="disabled.md", status="ready", enabled=False, chunk_count=1)
     db.add(doc)

@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 import pytest
 
-from personal_assistant.core.models import Setting
 from personal_assistant.core.backup import BackupService
+from personal_assistant.core.models import Setting
 from personal_assistant.core.settings import PROVIDER_SECRET_REFS, SettingsService
 
 

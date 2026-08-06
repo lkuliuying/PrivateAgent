@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Generate a release manifest for a built Windows release.
 
-Run after ``scripts/build-release.bat`` (or after a successful ``tauri build``).
+Run after ``scripts/release-check-full.bat`` **and** a successful ``tauri build``
+(always run the full release check first; the manifest's checklist is derived from
+``dist/release-check-<version>.json`` and must not be hand-marked).
 Records the version (read from ``tauri.conf.json``), git commit/branch/remote,
-SHA-256 of the sidecar, NSIS installer, and updater ``.sig``, plus the
-latest.json generation reminder and a validation checklist.
+SHA-256 of the sidecar, NSIS installer, and updater ``.sig``, plus the release
+check summary and a checklist generated from the real step results.
 
 Usage (project root)::
 
@@ -24,7 +26,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _release_utils import find_installer as find_installer_for_version, installer_sig, read_version
+from _release_utils import find_installer as find_installer_for_version
+from _release_utils import installer_sig, read_version
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SIDECAR = (
@@ -93,6 +96,61 @@ def rel(p: Path) -> str:
         return str(p)
 
 
+def render_release_check(version: str, data: dict | None) -> list[str]:
+    """发布检查事实摘要。release-check-<version>.json 是机器事实源，manifest 只引用其摘要。"""
+    if not data:
+        return [
+            "",
+            "## Release check (phase8): 未生成",
+            "",
+            f"- 缺少 dist/release-check-{version}.json，先运行 scripts/release-check-full.bat。",
+            "",
+        ]
+    summary = data.get("summary") or {}
+    commit = data.get("commit") or {}
+    return [
+        "",
+        f"## Release check (phase8): {summary.get('passed', '?')} passed / "
+        f"{summary.get('failed', '?')} failed / {summary.get('skipped', '?')} skipped",
+        "",
+        f"- ok: {data.get('ok')}",
+        f"- generated_at: {data.get('generated_at')}",
+        f"- commit: {commit.get('short')} ({commit.get('describe')})",
+        f"- worktree_dirty: {commit.get('dirty')}",
+        f"- database_schema: {data.get('database_schema')}",
+        f"- pytest_summary: {data.get('pytest_summary')}",
+        f"- signing: installer_built={data.get('signing', {}).get('installer_built')}, "
+        f"code_signed={data.get('signing', {}).get('code_signed')}, "
+        f"evidence={data.get('signing', {}).get('evidence')}",
+        "- 机器事实源：dist/release-check-<version>.json；本清单由该报告步骤结果生成，"
+        "不人工勾选。",
+        "",
+    ]
+
+
+def checklist_items(data: dict | None) -> list[str]:
+    """由 release-check 报告的真实步骤结果生成 checklist，状态缺失时如实标为未完成。"""
+    if not data:
+        return [
+            "- [ ] `scripts/release-check-full.bat` 全量发布检查（未运行）",
+            "- [ ] `/health` all green",
+            "- [ ] clean-install smoke (docs/release-checklist.md)",
+            "- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）",
+            "- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)",
+        ]
+    steps = data.get("steps") or []
+    marks = {"passed": "[x]", "failed": "[ ]", "skipped": "[~]"}
+    items = [f"- {marks.get(str(s.get('status')), '[ ]')} {s.get('name')} ({s.get('status')})"
+             for s in steps]
+    if not items:
+        items.append("- [ ] release-check 报告没有步骤记录")
+    items.append("- [ ] `/health` all green")
+    items.append("- [ ] clean-install smoke (docs/release-checklist.md)")
+    items.append("- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
+    items.append("- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)")
+    return items
+
+
 def build_manifest() -> str:
     version = read_version()
     commit = git(["rev-parse", "HEAD"])
@@ -112,15 +170,15 @@ def build_manifest() -> str:
         except Exception:  # noqa: BLE001
             pass
 
-    # 发布检查摘要（由 run_release_checks.py 写入 dist/release-check-<version>.json）
-    release_check_summary: dict | None = None
+    # 发布检查摘要（机器事实源：dist/release-check-<version>.json，由 run_release_checks.py 写入；
+    # manifest 只引用其摘要和步骤结果，不自行声明完成状态）
+    release_check_data: dict | None = None
     release_check_path = DIST / f"release-check-{version}.json"
     if release_check_path.exists():
         try:
-            rc = json.loads(release_check_path.read_text(encoding="utf-8"))
-            release_check_summary = rc.get("summary")
+            release_check_data = json.loads(release_check_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
-            pass
+            release_check_data = None
 
     sidecar_hash = sha256(SIDECAR)
     installer, sig = find_installer(version)
@@ -177,30 +235,20 @@ def build_manifest() -> str:
         "- Generate with `scripts/generate-latest-json.py` and upload alongside the installer to the GitHub Release.",
         "- Endpoint: see `plugins.updater.endpoints` in `apps/desktop/src-tauri/tauri.conf.json`.",
         "",
+    ]
+    lines += render_release_check(version, release_check_data)
+    lines += [
         "## Validation checklist",
         "",
-        "- [ ] `scripts/release-check.bat` (pytest / npm build / cargo check / alembic current)",
-        "- [ ] `scripts/release-check-full.bat` (phase8: + npm test / e2e / 诊断包脱敏 / 清单校验)",
-        "- [ ] `/health` all green",
-        "- [ ] clean-install smoke (docs/release-checklist.md)",
-        "- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）",
-        "- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)",
-        "",
+    ]
+    lines += checklist_items(release_check_data)
+    lines += [
         "## Rollback",
         "",
         "- Revert the GitHub Release asset, or repoint `latest.json` to the previous stable version.",
         "- See the rollback section of `docs/release-checklist.md`.",
         "",
     ]
-    if release_check_summary:
-        lines += [
-            "",
-            "## Release check (phase8)",
-            f"- passed: {release_check_summary.get('passed')}",
-            f"- failed: {release_check_summary.get('failed')}",
-            f"- skipped: {release_check_summary.get('skipped')}",
-            "- 详见 dist/release-check-<version>.md（scripts/release-check-full.bat）",
-        ]
     return "\n".join(lines)
 
 

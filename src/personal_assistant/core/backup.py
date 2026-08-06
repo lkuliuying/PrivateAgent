@@ -17,7 +17,6 @@ from .models import DocChunk, Setting
 from .settings import PROVIDER_SECRET_REFS, is_provider_secret_reference
 from .timeutil import utcnow
 
-
 BACKUP_TABLES = [
     "settings",
     "trusted_paths",

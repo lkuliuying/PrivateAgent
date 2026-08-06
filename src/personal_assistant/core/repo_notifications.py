@@ -6,7 +6,6 @@ source_type/source_id 软引用来源对象供跳转；action_* 描述可重试/
 """
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import select, update

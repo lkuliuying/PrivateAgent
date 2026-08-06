@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from personal_assistant.api import routes_health
 from personal_assistant.core import health as health_module
 from personal_assistant.core.health import HealthService
-from personal_assistant.api import routes_health
 
 
 @pytest.mark.asyncio

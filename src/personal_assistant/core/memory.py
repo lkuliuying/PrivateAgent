@@ -11,6 +11,7 @@ MemoryEventRepository。M1 检索为纯 MySQL + Python 评分（无向量），�
 from __future__ import annotations
 
 import re
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger

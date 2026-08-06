@@ -14,7 +14,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import pytest
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from personal_assistant.config import settings as cfg

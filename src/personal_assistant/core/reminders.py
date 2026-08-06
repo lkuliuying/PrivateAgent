@@ -19,8 +19,8 @@ from datetime import datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .db import async_session_factory  # 后台 tick 用；请求路径用注入的 db
 from ..logging_setup import get_logger
+from .db import async_session_factory  # 后台 tick 用；请求路径用注入的 db
 from .models import Reminder
 from .repo_inbox import InboxRepository
 from .repo_reminders import ReminderRepository

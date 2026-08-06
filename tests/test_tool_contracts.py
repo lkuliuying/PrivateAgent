@@ -24,7 +24,6 @@ from personal_assistant.agents import (
 )
 from personal_assistant.core.tool_adapter import build_read_only_tool_registry
 
-
 Executor = Callable[[dict[str, Any], CancellationToken], Awaitable[Any]]
 
 

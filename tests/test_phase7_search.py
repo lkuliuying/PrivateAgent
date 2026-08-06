@@ -17,14 +17,12 @@ from personal_assistant.core.models import (
     AgentTask,
     Briefing,
     ChatSession,
-    Document,
     DocChunk,
+    Document,
     InboxItem,
-    LearningTopic,
     MemoryItem,
     Message,
     PersonalGoal,
-    Reminder,
     SearchRecentItem,
 )
 from personal_assistant.core.search import SearchService
@@ -179,6 +177,7 @@ async def test_search_recent_route(client, db, cleanup):
 async def test_search_recent_upsert_service(db, cleanup):
     """upsert 逻辑：存在则 open_count +1（service 级，单 session 避免跨事务快照）。"""
     from sqlalchemy import select
+
     from personal_assistant.core.timeutil import utcnow
 
     db.add(

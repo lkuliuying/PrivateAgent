@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..logging_setup import get_logger
 from .code_tools import _execute_command, _sha256_text, parse_command
 from .learning import parse_json_object
+from .models import PatchSet, ProjectCommandProfile
 from .projects import ProjectNotFound, ProjectService, resolve_within
 from .provider import OllamaProvider, ProviderError
 from .repo_patch_sets import PatchSetRepository, ProjectCommandProfileRepository

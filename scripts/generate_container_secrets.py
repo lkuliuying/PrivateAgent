@@ -14,7 +14,6 @@ import os
 import secrets
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SECRET_FILENAMES = ("api_token", "mysql_password", "mysql_root_password")
 

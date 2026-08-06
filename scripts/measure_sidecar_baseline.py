@@ -29,7 +29,8 @@ import time
 import urllib.request
 from pathlib import Path
 
-from _release_utils import find_installer as find_installer_for_version, installer_sig, read_version
+from _release_utils import find_installer as find_installer_for_version
+from _release_utils import installer_sig, read_version
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SIDECAR = (

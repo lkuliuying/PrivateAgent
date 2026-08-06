@@ -12,7 +12,12 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Document, DocumentCollection, DocumentCollectionItem, DocumentExtraction
+from .models import (
+    Document,
+    DocumentCollection,
+    DocumentCollectionItem,
+    DocumentExtraction,
+)
 
 
 class DocumentCollectionRepository:

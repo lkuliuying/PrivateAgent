@@ -30,7 +30,6 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import insert, select  # noqa: E402
 
-from personal_assistant.config import settings as cfg  # noqa: E402
 from personal_assistant.core.db import async_session_factory  # noqa: E402
 from personal_assistant.core.models import (  # noqa: E402
     AppNotification,

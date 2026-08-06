@@ -18,9 +18,9 @@ import pytest
 from personal_assistant import __version__
 from personal_assistant.core.diagnostics import (
     DiagnosticsService,
+    _mask,
     redact_db_url,
     redact_settings,
-    _mask,
 )
 from personal_assistant.core.settings import SettingsService
 

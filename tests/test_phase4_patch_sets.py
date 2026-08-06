@@ -12,7 +12,6 @@ import pytest
 
 from personal_assistant.core.provider import OllamaProvider
 
-
 # ============ helpers ============
 
 
@@ -30,7 +29,6 @@ def _mock_chat(monkeypatch, payload) -> None:
 
 
 async def _project(client, tmp_path, name: str = "m4proj") -> tuple[int, object]:
-    from pathlib import Path
 
     root = tmp_path / name
     root.mkdir()

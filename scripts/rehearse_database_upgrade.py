@@ -12,10 +12,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from sqlalchemy.engine import make_url  # noqa: E402
 
+from alembic import command  # noqa: E402
 from personal_assistant.config import settings  # noqa: E402
 from personal_assistant.core.database_clone import (  # noqa: E402
     DatabaseCloneError,

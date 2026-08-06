@@ -7,11 +7,10 @@ from pathlib import Path
 
 import pytest
 
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 from generate_container_secrets import (  # noqa: E402
-    ContainerSecretError,
     SECRET_FILENAMES,
+    ContainerSecretError,
     generate_secret_files,
 )
 

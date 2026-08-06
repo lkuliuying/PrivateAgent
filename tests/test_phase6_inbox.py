@@ -20,7 +20,6 @@ from sqlalchemy import delete
 from personal_assistant.core.models import AgentTask, InboxItem, Reminder
 from personal_assistant.core.timeutil import utcnow
 
-
 # ============ fixtures ============
 
 

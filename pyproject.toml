@@ -56,6 +56,12 @@ filterwarnings = [
   "ignore::pytest.PytestUnraisableExceptionWarning",
 ]
 
+[tool.ruff.lint]
+# 发布门禁口径（2026-08-06 固化）：E/F/I 基础规则，E501 长行属于仓库既有风格债务，
+# 不作为门禁；与 docs/testing-guide.md §7 保持一致，`ruff check src tests scripts` 即该口径。
+select = ["E", "F", "I"]
+ignore = ["E501"]
+
 [dependency-groups]
 dev = [
     "pyinstaller>=6.21.0",

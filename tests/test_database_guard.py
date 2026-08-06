@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from personal_assistant.testing import UnsafeTestDatabaseError, resolve_test_database_url
-
+from personal_assistant.testing import (
+    UnsafeTestDatabaseError,
+    resolve_test_database_url,
+)
 
 APP_URL = "mysql+aiomysql://app:secret@127.0.0.1:3306/personal_assistant?charset=utf8mb4"
 

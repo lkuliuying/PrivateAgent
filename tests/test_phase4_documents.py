@@ -15,7 +15,6 @@ import pytest
 
 from personal_assistant.core.provider import OllamaProvider
 
-
 # ============ helpers ============
 
 
@@ -72,7 +71,11 @@ async def _cleanup(client, db):
     doc_ids: list[int] = []
     ext_ids: list[int] = []
     yield coll_ids, doc_ids, ext_ids
-    from personal_assistant.core.models import Document, DocumentCollection, DocumentExtraction
+    from personal_assistant.core.models import (
+        Document,
+        DocumentCollection,
+        DocumentExtraction,
+    )
 
     for eid in ext_ids:
         e = await db.get(DocumentExtraction, eid)

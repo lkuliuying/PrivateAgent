@@ -11,6 +11,7 @@ rejected / succeeded / failed / cancelled 为终态。
 """
 from __future__ import annotations
 
+
 class ApprovalError(RuntimeError):
     """非法的审批状态转换。"""
 

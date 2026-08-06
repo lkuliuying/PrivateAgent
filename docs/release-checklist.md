@@ -10,13 +10,14 @@
 | 步骤 | 命令 | 期望 |
 |---|---|---|
 | 快速检查 | `scripts\release-check.bat`（pytest / npm build / cargo check / alembic current） | 全部 OK |
-| 完整证据（phase8） | `scripts\release-check-full.bat`（+ npm test / e2e / 诊断包脱敏 / latest.json 校验） | 输出 `dist\release-check-<version>.json+.md`，无 blocker |
+| 完整证据（phase8） | `scripts\release-check-full.bat`（pytest / ruff / compileall / npm build+test / e2e / cargo check+test / sidecar smoke / alembic current / git diff / 诊断脱敏 / Compose 配置 / latest.json 校验） | 输出 `dist\release-check-<version>.json+.md`，`failed=0`、`ok=true`、无 blocker |
+| 发布 manifest | `uv run python scripts\generate_release_manifest.py --write`（在完整检查**之后**执行；checklist 由报告步骤生成） | `dist\release-manifest-<version>.md` 与报告同一 commit 且摘要一致 |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | 与代码模型一致（当前 `0011 (head)`） |
+| 迁移 head | `uv run alembic current` | `0020 (head)`（与代码模型一致） |
 
 > `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
-> phase8 `release-check-full.bat` 中 npm test / e2e 在 M1 工具未就绪时 SKIP（不阻断）；sidecar smoke 见 `scripts\sidecar_smoke.py`。
+> 完整 release check 的顺序固定：先跑 `release-check-full.bat`，再刷新 manifest，避免 manifest 固化旧报告。sidecar 未构建时 `sidecar_smoke` 如实标记 skipped，不伪装通过。
 
 ## 1.1 第八阶段发布检查（phase8）
 

@@ -1,5 +1,16 @@
 # 更新日志
 
+## 0.2.0（2026-08-06 发布门禁收口）
+
+### 发布事实源与门禁（R0/R1，对应 `docs/remaining-work-plan-20260806.md`）
+
+- 明确 `dist/release-check-<version>.json` 为唯一机器事实源：`scripts/generate_release_manifest.py` 改为从该报告的步骤结果生成 manifest 的 validation checklist，不再人工勾选；生成顺序固定为先完整 release check、后刷新 manifest。
+- `scripts/run_release_checks.py` 新增四个强制步骤：`ruff_check`、`compileall`、`cargo_test`（新增 `scripts/cargo-test-tauri.bat`）、`sidecar_smoke`，完整门禁由 10 步扩至 14 步。
+- Ruff 门禁口径固化到 `pyproject.toml` 的 `[tool.ruff.lint]`（`select = ["E", "F", "I"]`、`ignore = ["E501"]`），并清理存量 `E/F/I` 违规（未使用导入、导入排序、缺失模型导入、死代码等）；`ruff check src tests scripts` 与测试指南口径一致。
+- 设计/审计文档统一「当前状态（2026-08-06）」与「历史执行台账（不得当作当前状态）」标记；旧计划书顶部状态更新为 M0/M2 已完成、M1 待干净 HEAD 重跑。
+- 以干净工作区最终 HEAD 重跑完整发布门禁：`release-check-0.2.0.json/.md` 绑定该 commit（`worktree_dirty=false`、schema `0020`、`failed=0 / skipped=0 / ok=true`），manifest 与报告同一 commit 与摘要。
+- 发布状态边界如实记录：无 Authenticode 证书（`code_signed: no`）；GitHub Release 远程 updater 未以真实远程资产验收。
+
 ## 0.2.0（2026-08-05）
 
 ### 版本化 RAG 生产上线（schema `0020`）

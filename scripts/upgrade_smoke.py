@@ -128,7 +128,6 @@ async def snapshot_counts() -> dict:
 
 async def generate_sample_data() -> dict:
     """生成升级 smoke 样本数据（每类一条，标题/名称带 upgrade-smoke 前缀，便于清理）。"""
-    from datetime import datetime
 
     from personal_assistant.core.timeutil import utcnow
 
@@ -137,7 +136,6 @@ async def generate_sample_data() -> dict:
     try:
         factory = async_sessionmaker(eng, expire_on_commit=False)
         async with factory() as db:
-            from sqlalchemy import insert
 
             sess = ChatSession(title=f"upgrade-smoke-session-{tag}")
             db.add(sess)

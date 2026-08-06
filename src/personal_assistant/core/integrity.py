@@ -16,20 +16,20 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .backup import BackupService
+from .extensions import ExtensionDescriptor, ExtensionKind, extension_registry
 from .models import (
     AgentTask,
     Briefing,
     ChatSession,
     DataIntegrityFinding,
+    DocChunk,
     Document,
     DocumentCollection,
-    DocChunk,
     GoalLink,
     InboxItem,
     LearningTopic,
@@ -41,7 +41,6 @@ from .models import (
 )
 from .store_chroma import chroma_store
 from .timeutil import utcnow
-from .extensions import ExtensionDescriptor, ExtensionKind, extension_registry
 
 # 软引用 target_type -> ORM 模型（用于悬空校验）
 TARGET_TABLES: dict[str, type] = {

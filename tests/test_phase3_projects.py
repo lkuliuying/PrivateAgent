@@ -15,12 +15,10 @@ from __future__ import annotations
 import asyncio
 import shutil
 import subprocess
-from pathlib import Path
 
 import pytest
 
 from personal_assistant.core.tools import default_registry
-
 
 # ============ 工具注册 ============
 

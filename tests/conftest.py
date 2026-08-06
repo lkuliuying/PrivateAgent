@@ -14,8 +14,10 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from personal_assistant.config import settings as cfg
-from personal_assistant.testing import UnsafeTestDatabaseError, resolve_test_database_url
-
+from personal_assistant.testing import (
+    UnsafeTestDatabaseError,
+    resolve_test_database_url,
+)
 
 try:
     TEST_DB_URL = resolve_test_database_url(cfg.db_url, os.environ.get("PA_TEST_DB_URL"))
@@ -33,6 +35,14 @@ cfg.versioned_rag_retrieval_enabled = False
 TEST_API_TOKEN = "test-api-token-0123456789abcdef0123456789abcdef"
 cfg.api_auth_enabled = True
 cfg.api_token = SecretStr(TEST_API_TOKEN)
+
+import personal_assistant.core.db as dbmod  # noqa: E402
+import personal_assistant.core.reminders as reminders_mod  # noqa: E402
+import personal_assistant.workers.importer as importer_mod  # noqa: E402
+import personal_assistant.workers.ocr as ocr_mod  # noqa: E402
+import personal_assistant.workers.project_scanner as scanner_mod  # noqa: E402
+from personal_assistant.core.db import get_session  # noqa: E402
+from personal_assistant.main_api import app  # noqa: E402
 
 
 @pytest.fixture
@@ -59,14 +69,6 @@ def tmp_path():
         if root not in resolved.parents:
             raise RuntimeError(f"refusing to remove unsafe pytest path: {resolved}")
         shutil.rmtree(resolved, ignore_errors=True)
-
-from personal_assistant.core.db import get_session
-import personal_assistant.core.db as dbmod
-import personal_assistant.workers.importer as importer_mod
-import personal_assistant.workers.ocr as ocr_mod
-import personal_assistant.workers.project_scanner as scanner_mod
-import personal_assistant.core.reminders as reminders_mod
-from personal_assistant.main_api import app
 
 
 @pytest_asyncio.fixture
@@ -162,7 +164,6 @@ async def _clean_stale_test_data():
 
     from personal_assistant.core.models import (
         AppNotification,
-        CaptureItem,
         ChatSession,
         DataIntegrityFinding,
         Document,

@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from .models import Briefing
 from .goals import GoalService
+from .models import Briefing
 from .repo_briefings import BriefingRepository
 from .tasks import AgentTaskService
-from .today import TodayService
 from .timeutil import utcnow
+from .today import TodayService
 
 
 class BriefingNotFound(Exception):

@@ -10,6 +10,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from personal_assistant.agents.approvals import SqlToolApprovalRequester
 from personal_assistant.agents.executions import ToolExecutionRepository
 from personal_assistant.agents.runtime import CancellationToken
 from personal_assistant.agents.tools import (
@@ -22,7 +23,6 @@ from personal_assistant.agents.tools import (
     ValidatedToolDispatcher,
     VersionedToolRegistry,
 )
-from personal_assistant.agents.approvals import SqlToolApprovalRequester
 from personal_assistant.core.models import McpServer
 
 from .client import McpClient, McpClientError, OfficialMcpClient

@@ -16,7 +16,6 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, field_validator
-
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session

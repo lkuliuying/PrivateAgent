@@ -1,7 +1,6 @@
 """Phase3 M5/M6: coding tools and multi-step tasks."""
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import pytest

@@ -22,17 +22,16 @@ from personal_assistant.core.models import (
     MemoryItem,
 )
 from personal_assistant.core.repo_briefings import BriefingRepository
-from personal_assistant.core.repo_inbox import InboxRepository
-from personal_assistant.core.repo_privacy import ProviderCallAuditRepository
-from personal_assistant.core.repo_reminders import ReminderRepository
 from personal_assistant.core.repo_goals import (
     GoalCheckinRepository,
     GoalLinkRepository,
     PersonalGoalRepository,
 )
-from personal_assistant.core.today import TodayService
+from personal_assistant.core.repo_inbox import InboxRepository
+from personal_assistant.core.repo_privacy import ProviderCallAuditRepository
+from personal_assistant.core.repo_reminders import ReminderRepository
 from personal_assistant.core.timeutil import utcnow
-
+from personal_assistant.core.today import TodayService
 
 # ============ fixtures ============
 

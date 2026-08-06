@@ -21,6 +21,8 @@ from personal_assistant.core.history import MessageRepository, SessionRepository
 from personal_assistant.core.memory import MemoryService
 from personal_assistant.core.models import (
     AgentRun as AgentRunRecord,
+)
+from personal_assistant.core.models import (
     MemoryEvent,
     MemoryItem,
     MemoryRevision,

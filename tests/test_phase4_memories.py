@@ -24,7 +24,6 @@ from personal_assistant.core.models import (
 )
 from personal_assistant.core.provider import OllamaProvider
 
-
 # ============ helpers ============
 
 

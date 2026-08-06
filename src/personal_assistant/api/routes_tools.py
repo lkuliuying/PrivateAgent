@@ -17,9 +17,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings as cfg
-from ..core.compatibility import compatibility_telemetry
 from ..core import approvals
 from ..core.activities import ActivityService
+from ..core.compatibility import compatibility_telemetry
 from ..core.db import get_session
 from ..core.provider import OllamaProvider
 from ..core.repo_tools import ToolCallRepository

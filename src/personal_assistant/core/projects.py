@@ -174,7 +174,6 @@ def walk_project_files(root: Path) -> list[dict]:
     """
     root = root.resolve()
     out: list[dict] = []
-    truncated = False
     for path in sorted(root.rglob("*")):
         if not path.is_file():
             continue
@@ -187,7 +186,6 @@ def walk_project_files(root: Path) -> list[dict]:
         if any(p in IGNORED_DIRS for p in parts[:-1]):
             continue
         if len(out) >= SCAN_MAX_FILES:
-            truncated = True
             break
         rel_path = PurePosixPath(*parts).as_posix()
         # 跳过符号链接：防止索引/读取项目根外文件（链接目标可能越界）

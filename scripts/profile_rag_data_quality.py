@@ -12,8 +12,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from personal_assistant.config import settings  # noqa: E402
-from personal_assistant.core.rag_data_quality import (
-    profile_rag_data_quality,  # noqa: E402
+from personal_assistant.core.rag_data_quality import (  # noqa: E402
+    profile_rag_data_quality,
 )
 
 

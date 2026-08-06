@@ -17,7 +17,6 @@ import pytest
 from personal_assistant.core.provider import OllamaProvider
 from personal_assistant.core.timeutil import utcnow
 
-
 # ============ helpers ============
 
 

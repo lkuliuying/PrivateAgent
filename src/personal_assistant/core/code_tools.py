@@ -18,8 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .permissions import PermissionError_
 from .projects import (
-    MAX_GREP_FILE_BYTES,
-    ProjectNotFound,
     ProjectService,
     language_for_ext,
     resolve_within,

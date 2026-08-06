@@ -2,7 +2,7 @@
 
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。
 
-> 当前状态（2026-08-05）：应用主库为 Alembic `0020 (head)`；versioned RAG indexing/retrieval 已生产启用；Agent Runtime、MCP、自动摘要相关开关仍默认关闭。专用测试库为 `0020 (head)`，已完成真实 `0020 → 0019 → 0020` 往返。
+> **当前状态（2026-08-06）**：应用主库为 Alembic `0020 (head)`；versioned RAG indexing/retrieval 已生产启用；Agent Runtime、MCP、自动摘要相关开关仍默认关闭。专用测试库为 `0020 (head)`，已完成真实 `0020 → 0019 → 0020` 往返。Windows `0.2.0` 发布里程碑：M0/M2 完成，M1 完整发布门禁已在干净 HEAD 以 `scripts/release-check-full.bat` 重跑（Ruff/compileall 已加入 runner 并全绿）。历史切片（2026-08-05 之前的报告、`0012` 叙述）属于**历史执行台账（不得当作当前状态）**。
 
 ## 1. 环境
 
@@ -26,6 +26,8 @@ Set-Location ..\..
 uv run --with ruff ruff check src tests scripts
 uv run python -m compileall -q src scripts
 ```
+
+Ruff 门禁口径固化在 `pyproject.toml` 的 `[tool.ruff.lint]`（`select = ["E", "F", "I"]`，`ignore = ["E501"]`）；`ruff check src tests scripts` 即该口径。E501 长行属于仓库既有风格债务，不作为门禁；新增规则变更必须同时修改测试指南和 `scripts/run_release_checks.py` 的步骤。`ruff` 不在常规依赖中，按需通过 `uv run --with ruff` 提供；离线环境需要预先缓存该包。
 
 前端类型检查包含在生产构建中：
 
@@ -133,7 +135,24 @@ uv run pytest -q tests/test_conversation_summary_worker.py
 uv run pytest -q tests/test_agent_recovery.py
 ```
 
-完整门禁至少覆盖：Python、Vue、Playwright、Rust、数据库 revision、升级 smoke、诊断脱敏、容器配置、发布 manifest 和 updater 签名结构。发布 runner 为 Compose 生成三个短生命周期 secret files，配置检查后强制删除；报告和命令行都不包含值。API 镜像、独立 MySQL、新库迁移、Bearer 认证和 CPU 容器 healthcheck 已完成一次隔离实机验收；安装、覆盖升级、卸载、可选 GPU Ollama profile 和真实 vN→vN+1 仍需对应运行环境验收。
+完整门禁（`scripts/release-check-full.bat` → `scripts/run_release_checks.py`）至少覆盖以下步骤，任一非跳过步骤失败即整体失败：
+
+1. pytest（Python 全量）；
+2. ruff_check（`uv run --with ruff ruff check src tests scripts`，口径见 §2）；
+3. compileall（`uv run python -m compileall -q src scripts`）；
+4. npm_build（`vue-tsc --noEmit && vite build`）；
+5. npm_test（Vitest）；
+6. npm_e2e（Playwright，runner 直接管理 Vite 进程）；
+7. cargo_check；
+8. cargo_test（Rust 单元测试，`scripts/cargo-test-tauri.bat`）；
+9. sidecar_smoke（已构建 sidecar 时启动并轮询 `/health`；未构建如实标记 skipped）；
+10. alembic_current（必须为 `0020 (head)`）；
+11. git_diff_check（`git diff --check`）；
+12. docker_compose_config（短生命周期 secret files，配置后强制删除）；
+13. diagnostic_redaction_smoke（测试库，不得直连 `PA_DB_URL`）；
+14. latest_json_validation（updater 清单结构与签名）。
+
+报告生成顺序固定为：先跑完整 release check，再由 `scripts/generate_release_manifest.py --write` 以 `dist/release-check-<version>.json` 为机器事实源刷新 manifest；manifest 的 validation checklist 由真实步骤结果生成，不人工勾选。报告和 manifest 都不得包含 token、密码、DSN、聊天正文或文档原文。发布 runner 为 Compose 生成三个短生命周期 secret files，配置检查后强制删除；报告和命令行都不包含值。
 
 ## 8. 最近基线
 

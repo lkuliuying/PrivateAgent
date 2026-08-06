@@ -26,7 +26,6 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 from _release_utils import (
     assemble_manifest,

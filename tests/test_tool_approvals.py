@@ -20,13 +20,13 @@ from personal_assistant.agents import (
     ModelMessage,
     ModelResponse,
     PersistentAgentRunner,
-    SqlToolApprovalRequester,
     SqlToolApprovalConsumer,
-    ToolCall,
+    SqlToolApprovalRequester,
     ToolApprovalConflictError,
     ToolApprovalExpiredError,
     ToolApprovalRepository,
     ToolApprovalTokenError,
+    ToolCall,
     ToolCapability,
     ToolCapabilityPolicy,
     ToolExecutionRepository,
@@ -37,8 +37,8 @@ from personal_assistant.agents import (
     ValidatedToolDispatcher,
     VersionedToolRegistry,
 )
-from personal_assistant.core.models import AgentRun as AgentRunRecord
 from personal_assistant.config import settings
+from personal_assistant.core.models import AgentRun as AgentRunRecord
 
 
 class MutableClock:

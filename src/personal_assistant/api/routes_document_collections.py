@@ -22,8 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
 from ..core.document_extraction import (
-    ExtractionNotFound,
     DocumentExtractionService,
+    ExtractionNotFound,
 )
 from ..core.repo import DocumentRepository
 from ..core.repo_documents import DocumentCollectionRepository

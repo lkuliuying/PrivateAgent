@@ -10,8 +10,6 @@
 """
 from __future__ import annotations
 
-from datetime import timedelta
-
 import pytest
 from sqlalchemy import select
 
@@ -21,11 +19,8 @@ from personal_assistant.core.models import (
     DocumentCollection,
     DocumentCollectionItem,
     GoalLink,
-    InboxItem,
-    PersonalGoal,
 )
 from personal_assistant.core.repo_goals import PersonalGoalRepository
-from personal_assistant.core.timeutil import utcnow
 
 
 @pytest.fixture

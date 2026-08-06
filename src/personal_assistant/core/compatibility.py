@@ -6,7 +6,6 @@ from collections import Counter
 from datetime import datetime, timezone
 from threading import Lock
 
-
 _LABELS = {
     "/tools": {
         "modes": frozenset({"legacy_registry"}),

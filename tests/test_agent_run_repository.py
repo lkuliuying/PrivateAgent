@@ -9,8 +9,8 @@ from sqlalchemy import delete
 from personal_assistant.agents import (
     AgentEvent,
     AgentEventType,
-    AgentRunLimits,
     AgentRunCheckpoint,
+    AgentRunLimits,
     AgentRunProjectionError,
     AgentRunRepository,
     AgentRunSequenceError,

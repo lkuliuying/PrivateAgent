@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
-from ..core.models import AgentEvidence, AgentTask, AgentTaskStep
+from ..core.models import AgentTask
 from ..core.tasks import AgentTaskService, StepNotFound, TaskNotFound
 
 router = APIRouter(tags=["agent-tasks"])

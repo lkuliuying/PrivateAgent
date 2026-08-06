@@ -19,16 +19,15 @@ from personal_assistant.core.models import (
     Briefing,
     ChatSession,
     Document,
-    LearningCard,
-    LearningTopic,
-    PersonalGoal,
 )
-from personal_assistant.core.repo_goals import GoalCheckinRepository, PersonalGoalRepository
+from personal_assistant.core.repo_goals import (
+    GoalCheckinRepository,
+    PersonalGoalRepository,
+)
 from personal_assistant.core.repo_inbox import InboxRepository
 from personal_assistant.core.repo_reminders import ReminderRepository
-from personal_assistant.core.today import TodayFilters, TodayService
 from personal_assistant.core.timeutil import utcnow
-
+from personal_assistant.core.today import TodayFilters, TodayService
 
 # ============ fixtures ============
 

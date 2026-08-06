@@ -372,11 +372,15 @@ scripts\cargo-check-tauri.bat
 # 快速检查：pytest、前端构建、Cargo check、迁移状态
 scripts\release-check.bat
 
-# 完整证据链：增加前端测试、E2E、诊断包脱敏和 updater 清单校验
+# 完整证据链：pytest / Ruff / compileall / 前端构建与测试 / E2E / Rust check+test /
+# sidecar smoke / 迁移 head / git diff / 诊断脱敏 / Compose 配置 / updater 清单
 scripts\release-check-full.bat
+
+# 由 release-check-<version>.json 生成/刷新发布 manifest（先跑完整检查，再刷新 manifest）
+uv run python scripts/generate_release_manifest.py --write
 ```
 
-完整检查会在 `dist/` 生成 `release-check-<version>.json` 和 `release-check-<version>.md`，记录各步骤状态、耗时和错误摘要。测试覆盖包括：
+完整检查会在 `dist/` 生成 `release-check-<version>.json`（机器事实源）和 `release-check-<version>.md`，记录 commit、schema、各步骤状态、耗时和错误摘要；release manifest 的 validation checklist 由该报告步骤结果生成，不人工勾选。测试覆盖包括：
 
 - 对话 SSE、RAG、文档导入和检索降级
 - 授权路径、路径穿越、审批状态机、工具调用和补丁写入
@@ -444,9 +448,9 @@ dist/latest.json
 ## 当前交付边界
 
 - Windows NSIS、Python sidecar、动态端口、发布清单、updater、无证书透明策略和自动化检查已实现。
-- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷与配置门禁；它是独立单机拓扑，不代表公网或多租户支持。
-- Windows 真实 `vN → vN+1` 安装升级仍需使用两个真实发布版本完成环境验收。
-- Authenticode 签名逻辑已接入，但正式证书实签需要在发布环境中执行。
+- Windows 真实 `v0.1.2 → v0.2.0` 安装升级、数据保留、卸载/重装回滚和 updater 签名负面验证已完成（2026-08-05，升级 smoke run #26）。GitHub Release 真实远程 updater 交付仍需仓库发布权限后以真实远程资产补一次 smoke；当前本地镜像证据不代表已部署生产 Release。
+- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷与配置门禁；它是独立单机拓扑，不代表公网或多租户支持。容器 GPU profile 的真实 GPU healthcheck 尚未完成（见 `docs/remaining-work-plan-20260806.md` §5.2）。
+- Authenticode 签名逻辑已接入，但正式证书实签需要在发布环境执行；当前如实标记 `unsigned`，SmartScreen 可能显示未知发布者。
 - macOS/Linux 的数据目录适配、构建脚本和发布清单结构已准备，尚未完成实机构建与 smoke，因此当前不宣称正式跨平台交付。
 - `externalBin` 变化后，同版本覆盖安装应先完成真实验证；未验证前建议卸载旧版本再安装新包。
 

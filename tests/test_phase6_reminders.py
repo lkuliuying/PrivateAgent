@@ -21,7 +21,6 @@ from personal_assistant.core.models import InboxItem, Reminder
 from personal_assistant.core.reminders import compute_next_fire
 from personal_assistant.core.timeutil import utcnow
 
-
 # ============ fixtures ============
 
 

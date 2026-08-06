@@ -1,8 +1,8 @@
 """第四阶段 M5/M6：任务计划 2.0、Provider 路由和备份治理。"""
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
+from pathlib import Path
 
 import pytest
 

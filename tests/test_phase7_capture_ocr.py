@@ -14,7 +14,7 @@ import pytest
 from personal_assistant.core.capture import CaptureService
 from personal_assistant.core.models import CaptureItem, Document, OcrJob
 from personal_assistant.core.ocr import ocr_engine_available
-from personal_assistant.core.rag import NeedsOcrError, is_scanned_pdf, parse_document
+from personal_assistant.core.rag import NeedsOcrError, parse_document
 from personal_assistant.core.repo_ocr_jobs import OcrJobRepository
 
 

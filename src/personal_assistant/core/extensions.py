@@ -14,7 +14,7 @@ IntegrityService 在运行时遍历调用，使新增检查自动出现在诊断
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import select

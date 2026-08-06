@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """第八阶段 M2：发布检查 2.0（full evidence pipeline）。
 
-串联后端测试 / 前端构建 / 前端测试 / E2E / Rust 检查 / 迁移 head / git diff /
-诊断包脱敏 smoke / latest.json+.sig 校验，输出 dist/release-check-<version>.json + .md，
-任一非跳过步骤失败时退出码非 0。
+串联后端测试 / Ruff / compileall / 前端构建 / 前端测试 / E2E / Rust check / Rust test /
+sidecar smoke / 迁移 head / git diff / 诊断包脱敏 smoke / latest.json+.sig 校验，
+输出 dist/release-check-<version>.json + .md，任一非跳过步骤失败时退出码非 0。
 
 quick check 仍用 scripts/release-check.bat（pytest/npm build/cargo check/alembic current）。
+Ruff 门禁口径为 pyproject.toml 的 [tool.ruff.lint]：E/F/I，忽略 E501（仓库既有长行）。
 npm test / e2e 在 M1 接入前端测试工具前会标记 skipped（不阻断）。
 """
 from __future__ import annotations
@@ -32,7 +33,7 @@ from sqlalchemy import select
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from _release_utils import NSIS_DIR, read_version
+from _release_utils import NSIS_DIR, read_version  # noqa: E402
 
 DIST = PROJECT_ROOT / "dist"
 
@@ -393,6 +394,26 @@ def diagnostic_redaction_smoke() -> dict:
         }
 
 
+def sidecar_smoke_step() -> dict:
+    """启动已构建 PyInstaller sidecar 的 /health smoke（未构建时如实标记 skipped）。"""
+    binary = (
+        PROJECT_ROOT
+        / "apps"
+        / "desktop"
+        / "src-tauri"
+        / "binaries"
+        / "personal-assistant-server-x86_64-pc-windows-msvc.exe"
+    )
+    if not binary.is_file():
+        return skipped_step("sidecar_smoke", "sidecar 二进制未构建（运行 scripts/build-sidecar.bat）")
+    return run_shell_step(
+        "sidecar_smoke",
+        ["uv", "run", "python", "scripts/sidecar_smoke.py"],
+        cwd=str(PROJECT_ROOT),
+        timeout=240,
+    )
+
+
 def validate_latest_json(dist: Path | None = None) -> dict:
     """校验 dist/latest.json：version 匹配 tauri.conf.json，platforms 各项 signature/url 非空。"""
     t0 = time.perf_counter()
@@ -559,6 +580,20 @@ def run_all() -> dict:
     steps: list[dict] = []
 
     steps.append(run_shell_step("pytest", ["uv", "run", "pytest", "-q"], cwd=str(PROJECT_ROOT)))
+    steps.append(
+        run_shell_step(
+            "ruff_check",
+            ["uv", "run", "--with", "ruff", "ruff", "check", "src", "tests", "scripts"],
+            cwd=str(PROJECT_ROOT),
+        )
+    )
+    steps.append(
+        run_shell_step(
+            "compileall",
+            ["uv", "run", "python", "-m", "compileall", "-q", "src", "scripts"],
+            cwd=str(PROJECT_ROOT),
+        )
+    )
     steps.append(run_shell_step("npm_build", [npm, "run", "build"], cwd=desktop))
     if npm_script_exists("test"):
         steps.append(run_shell_step("npm_test", [npm, "run", "test"], cwd=desktop))
@@ -574,7 +609,15 @@ def run_all() -> dict:
         )
     )
     steps.append(
-        run_shell_step("alembic_current", ["uv", "run", "alembic", "current"], cwd=str(PROJECT_ROOT))
+        run_shell_step(
+            "cargo_test", ["cmd", "/c", "scripts\\cargo-test-tauri.bat"], cwd=str(PROJECT_ROOT)
+        )
+    )
+    steps.append(sidecar_smoke_step())
+    steps.append(
+        run_shell_step(
+            "alembic_current", ["uv", "run", "alembic", "current"], cwd=str(PROJECT_ROOT)
+        )
     )
     steps.append(
         run_shell_step("git_diff_check", ["git", "diff", "--check"], cwd=str(PROJECT_ROOT))

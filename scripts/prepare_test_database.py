@@ -12,15 +12,17 @@ import os
 import re
 from pathlib import Path
 
-from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from alembic import command
 from personal_assistant.config import settings
-from personal_assistant.testing import display_database_target, resolve_test_database_url
-
+from personal_assistant.testing import (
+    display_database_target,
+    resolve_test_database_url,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _MYSQL_IDENTIFIER = re.compile(r"^[A-Za-z0-9_$]+$")

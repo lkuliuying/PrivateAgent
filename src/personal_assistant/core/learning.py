@@ -27,7 +27,7 @@ from .repo_learning import (
     LearningReviewRepository,
     LearningTopicRepository,
 )
-from .review_scheduler import CardState, RATING_QUALITY, schedule
+from .review_scheduler import RATING_QUALITY, CardState, schedule
 from .settings import SettingsService
 from .timeutil import utcnow
 

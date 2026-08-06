@@ -11,7 +11,6 @@ import re
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.exc import ArgumentError
 
-
 _TEST_DATABASE_NAME = re.compile(r"(?:^|_)test(?:_|$)", re.IGNORECASE)
 
 

@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..logging_setup import get_logger
 from .learning import parse_json_array, parse_json_object
-from .permissions import PermissionError_, assert_trusted
+from .permissions import assert_trusted
 from .provider import OllamaProvider, ProviderError
 from .repo import DocChunkRepository, DocumentRepository
 from .repo_tools import TrustedPathRepository

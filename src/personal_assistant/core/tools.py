@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..logging_setup import get_logger
+from ..workers.importer import import_document
 from . import approvals
 from .activities import ActivityService
 from .code_tools import (
@@ -34,8 +35,8 @@ from .code_tools import (
     run_whitelisted_command,
     search_files,
 )
-from .files import summarize_path
 from .exports import DocNotFound, ExportService
+from .files import summarize_path
 from .learning import LearningNotFound, LearningService
 from .models import ToolCall
 from .permissions import PermissionError_, RiskLevel, assert_trusted
@@ -44,7 +45,6 @@ from .provider import OllamaProvider
 from .rag import parse_document
 from .repo import DocumentRepository
 from .repo_tools import ToolCallRepository, TrustedPathRepository
-from ..workers.importer import import_document
 
 logger = get_logger(__name__)
 

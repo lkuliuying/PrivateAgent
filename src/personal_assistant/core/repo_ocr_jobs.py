@@ -8,7 +8,6 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import OcrJob
-from .timeutil import utcnow
 
 
 class OcrJobRepository:
