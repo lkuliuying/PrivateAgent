@@ -1,8 +1,10 @@
 @echo off
-REM 第八阶段 M2：发布检查 2.0（full evidence pipeline）。
-REM 串联 pytest / npm build / npm test / e2e / cargo check / alembic current / git diff /
-REM 诊断包脱敏 smoke / latest.json+.sig 校验，输出 dist/release-check-<version>.json + .md。
-REM 任一非跳过步骤失败时退出码非 0。quick check 见 scripts/release-check.bat。
+REM Release gate 2.0 (full evidence pipeline). Run from anywhere; project root
+REM is derived from this script's location. Chains pytest / ruff / compileall /
+REM npm build+test / e2e / cargo check+test / sidecar smoke / alembic current /
+REM git diff / diagnostic redaction / Compose config / latest.json validation,
+REM writing dist/release-check-<version>.json + .md. Exits non-zero if any
+REM non-skipped step fails. Quick check: scripts/release-check.bat.
 setlocal
 set "PROJECT_ROOT=%~dp0.."
 cd /d "%PROJECT_ROOT%"
