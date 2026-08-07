@@ -1,10 +1,12 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
+import personal_assistant.workers.conversation_summarizer as worker_mod
 from personal_assistant.agents.contracts import ModelResponse, TokenUsage
 from personal_assistant.config import Settings
 from personal_assistant.core.context_summaries import ConversationSummaryRepository
@@ -13,8 +15,15 @@ from personal_assistant.core.conversation_summarizer import (
     ConversationSummaryService,
 )
 from personal_assistant.core.history import MessageRepository, SessionRepository
-from personal_assistant.core.models import ChatSession, ConversationSummary, Message
+from personal_assistant.core.models import (
+    ChatSession,
+    ConversationSummary,
+    Message,
+    Setting,
+)
+from personal_assistant.core.settings import SettingsService
 from personal_assistant.workers.conversation_summarizer import (
+    run_conversation_summary_once,
     schema_supports_conversation_summaries,
 )
 
@@ -188,3 +197,139 @@ def test_summary_worker_configuration_rejects_inverted_message_limits():
 )
 def test_summary_worker_requires_schema_0017_or_later(revision, expected):
     assert schema_supports_conversation_summaries(revision) is expected
+
+
+async def _bind_worker_to_test_db(db, monkeypatch):
+    """把 run_conversation_summary_once 的 engine/factory 绑到测试库。"""
+    factory = async_sessionmaker(db.bind, expire_on_commit=False)
+    monkeypatch.setattr(worker_mod, "engine", db.bind)
+    monkeypatch.setattr(worker_mod, "async_session_factory", factory)
+    return factory
+
+
+async def _enable_remote_provider(db) -> None:
+    await SettingsService(db).update(
+        {
+            "provider_type": "openai",
+            "remote_provider_enabled": "true",
+            "openai_api_key": "secret://os-keyring/provider/openai",
+        }
+    )
+
+
+async def _cleanup_settings(db) -> None:
+    await db.execute(
+        delete(Setting).where(
+            Setting.key.in_(
+                ["provider_type", "remote_provider_enabled", "openai_api_key"]
+            )
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_summary_worker_skips_remote_provider_without_authorization(db, monkeypatch):
+    """M4 §9.2：远程 provider 未显式授权时 worker 跳过，不产生模型调用与摘要。"""
+    monkeypatch.setattr(
+        worker_mod.settings, "conversation_summary_allow_remote_provider", False
+    )
+    session, _ = await _seed_messages(db, count=21)
+    await _enable_remote_provider(db)
+    called = {"n": 0}
+    try:
+        original_gateway = worker_mod.ProviderRouter.model_gateway
+
+        def counting_gateway(self):
+            called["n"] += 1
+            return original_gateway(self)
+
+        monkeypatch.setattr(
+            worker_mod.ProviderRouter, "model_gateway", counting_gateway
+        )
+        await _bind_worker_to_test_db(db, monkeypatch)
+
+        outcome = await run_conversation_summary_once()
+
+        assert outcome.status == "skipped"
+        assert outcome.reason == "remote_provider_not_allowed"
+        assert called["n"] == 0, "远程未授权时不得构建模型网关"
+        assert await ConversationSummaryRepository(db).list_all(session.id) == []
+    finally:
+        await _cleanup_settings(db)
+        await _cleanup_session(db, session.id)
+
+
+@pytest.mark.asyncio
+async def test_summary_worker_allows_remote_only_with_explicit_flag(db, monkeypatch):
+    """M4 §9.2：PA_CONVERSATION_SUMMARY_ALLOW_REMOTE_PROVIDER=true 时才放行远程。"""
+    monkeypatch.setattr(
+        worker_mod.settings, "conversation_summary_allow_remote_provider", True
+    )
+    session, _ = await _seed_messages(db, count=21)
+    await _enable_remote_provider(db)
+    try:
+        model = RecordingModel()
+
+        def fake_gateway(self):
+            del self
+            return model
+
+        monkeypatch.setattr(
+            worker_mod.ProviderRouter, "model_gateway", fake_gateway
+        )
+        await _bind_worker_to_test_db(db, monkeypatch)
+
+        outcome = await run_conversation_summary_once()
+
+        assert outcome.status == "created"
+        assert outcome.session_id == session.id
+        assert model.requests, "授权后必须实际调用模型"
+    finally:
+        await _cleanup_settings(db)
+        await _cleanup_session(db, session.id)
+
+
+@pytest.mark.asyncio
+async def test_summary_worker_never_deletes_messages_and_is_idempotent(db):
+    """M4 §9.4：摘要不删除原始消息；已摘要范围不会被重复调度。"""
+    session, messages = await _seed_messages(db, count=7)
+    service = ConversationSummaryService(
+        db,
+        min_source_messages=2,
+        keep_recent_messages=2,
+        max_source_messages=3,
+        max_source_chars=1_000,
+    )
+    try:
+        await service.summarize_next(RecordingModel(), session_id=session.id)
+
+        # 原始消息完整保留（数量与内容不变）
+        remaining = list(
+            (
+                await db.execute(
+                    select(Message).where(Message.session_id == session.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert [message.id for message in remaining] == [
+            message.id for message in messages
+        ]
+        assert [message.content for message in remaining] == [
+            message.content for message in messages
+        ]
+
+        # 幂等：重复调度不会重新生成已覆盖范围（cursor 已推进）
+        again = await service.find_candidate(session_id=session.id)
+        if again is not None:
+            assert again.first_message_id > messages[2].id, (
+                "已摘要范围被重复调度"
+            )
+        active = await ConversationSummaryRepository(db).list_active(session.id)
+        assert [(s.first_message_id, s.last_message_id) for s in active] == [
+            (messages[0].id, messages[2].id)
+        ]
+    finally:
+        await _cleanup_session(db, session.id)
