@@ -311,38 +311,55 @@ async def _agent_chat_stream(
                 for delta in _drain_agent_output(output_queue):
                     streamed_parts.append(delta)
                     yield service.event_to_sse({"type": "token", "content": delta})
-                async with dbmod.async_session_factory() as poll_db:
-                    run_repository = AgentRunRepository(poll_db)
-                    approval_repository = ToolApprovalRepository(poll_db)
-                    current = await run_repository.get_run(run_id)
-                    if current is None:
-                        yield service.event_to_sse(
-                            {"type": "error", "message": "运行记录不存在"}
+                try:
+                    async with dbmod.async_session_factory() as poll_db:
+                        run_repository = AgentRunRepository(poll_db)
+                        approval_repository = ToolApprovalRepository(poll_db)
+                        current = await run_repository.get_run(run_id)
+                        if current is None:
+                            yield service.event_to_sse(
+                                {"type": "error", "message": "运行记录不存在"}
+                            )
+                            return
+                        current_status = current.status
+                        output = current.output
+                        error = current.error_message
+                        error_code = current.error_code
+                        run_approvals = (
+                            await approval_repository.list_for_run(run_id)
+                            if current_status
+                            in {"running", "waiting_approval", "completed"}
+                            else []
                         )
-                        return
-                    current_status = current.status
-                    output = current.output
-                    error = current.error_message
-                    error_code = current.error_code
-                    run_approvals = (
-                        await approval_repository.list_for_run(run_id)
-                        if current_status
-                        in {"running", "waiting_approval", "completed"}
-                        else []
+                        if current_status == "waiting_approval" and any(
+                            approval.status == "pending" and approval.expires_at <= utcnow()
+                            for approval in run_approvals
+                        ):
+                            await approval_repository.expire_due()
+                            await run_repository.cancel_waiting_approval(
+                                run_id,
+                                error="tool approval expired",
+                                error_code="approval_expired",
+                            )
+                            current_status = "cancelled"
+                            error = "tool approval expired"
+                            error_code = "approval_expired"
+                except Exception:  # noqa: BLE001
+                    # MySQL 短暂断连等持久层故障：失败关闭，向用户给出明确错误，
+                    # 不伪造 run 终态（run 由下次启动 recovery 收敛），不崩溃进程。
+                    logger.warning(
+                        "chat run poll failed",
+                        run_id=run_id,
+                        error_type="persistence_unavailable",
                     )
-                    if current_status == "waiting_approval" and any(
-                        approval.status == "pending" and approval.expires_at <= utcnow()
-                        for approval in run_approvals
-                    ):
-                        await approval_repository.expire_due()
-                        await run_repository.cancel_waiting_approval(
-                            run_id,
-                            error="tool approval expired",
-                            error_code="approval_expired",
-                        )
-                        current_status = "cancelled"
-                        error = "tool approval expired"
-                        error_code = "approval_expired"
+                    yield service.event_to_sse(
+                        {
+                            "type": "error",
+                            "run_id": run_id,
+                            "message": "数据库暂时不可用，运行状态暂无法同步，请稍后重试",
+                        }
+                    )
+                    return
 
                 for approval in run_approvals:
                     if approval.id in announced_approvals:
@@ -566,16 +583,32 @@ async def continue_agent_chat_stream(
                 for delta in _drain_agent_output(output_queue):
                     streamed_parts.append(delta)
                     yield service.event_to_sse({"type": "token", "content": delta})
-                async with dbmod.async_session_factory() as poll_db:
-                    current = await AgentRunRepository(poll_db).get_run(run_id)
-                    if current is None or current.session_id != session_id:
-                        yield service.event_to_sse(
-                            {"type": "error", "message": "Agent chat run not found"}
-                        )
-                        return
-                    current_status = current.status
-                    output = current.output
-                    error = current.error_message
+                try:
+                    async with dbmod.async_session_factory() as poll_db:
+                        current = await AgentRunRepository(poll_db).get_run(run_id)
+                        if current is None or current.session_id != session_id:
+                            yield service.event_to_sse(
+                                {"type": "error", "message": "Agent chat run not found"}
+                            )
+                            return
+                        current_status = current.status
+                        output = current.output
+                        error = current.error_message
+                except Exception:  # noqa: BLE001
+                    # MySQL 短暂断连等持久层故障：失败关闭（见 _agent_chat_stream 注释）
+                    logger.warning(
+                        "chat continuation poll failed",
+                        run_id=run_id,
+                        error_type="persistence_unavailable",
+                    )
+                    yield service.event_to_sse(
+                        {
+                            "type": "error",
+                            "run_id": run_id,
+                            "message": "数据库暂时不可用，运行状态暂无法同步，请稍后重试",
+                        }
+                    )
+                    return
 
                 if current_status == "completed":
                     assistant_content = output or ""

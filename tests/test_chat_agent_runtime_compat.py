@@ -8,6 +8,7 @@ from sqlalchemy import delete, select
 
 import personal_assistant.api.routes_chat as routes_chat
 from personal_assistant.agents import (
+    AgentRunRepository,
     AgentRuntime,
     ModelMessage,
     ModelResponse,
@@ -610,6 +611,110 @@ async def test_chat_route_mismatched_stream_end_fails_closed(client, db, monkeyp
     finally:
         if run_id is not None:
             await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_route_fails_closed_when_mysql_disconnects_during_poll(
+    client, db, monkeypatch
+):
+    """M3 故障注入：轮询期间 MySQL 断连（Lost connection）→ SSE 明确错误、
+    进程不崩溃、run 由收敛收尾；MySQL 恢复后新 run 正常。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+
+    class BlockingCompatModel:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.was_cancelled = False
+
+        async def complete(self, request, *, cancellation):
+            del request, cancellation
+            self.started.set()
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                self.was_cancelled = True
+                raise
+            raise AssertionError("blocking model should have been cancelled")
+
+    first_model = BlockingCompatModel()
+    models = {"current": first_model}
+
+    async def fake_model(_db):
+        return models["current"]
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+
+    from pymysql.err import OperationalError
+
+    real_get_run = AgentRunRepository.get_run
+    get_run_calls = {"n": 0}
+
+    async def flaky_get_run(self, run_id):
+        get_run_calls["n"] += 1
+        if get_run_calls["n"] == 1:
+            # 模拟轮询查询时 MySQL 连接丢失
+            raise OperationalError(2013, "Lost connection to MySQL server during query")
+        return await real_get_run(self, run_id)
+
+    monkeypatch.setattr(AgentRunRepository, "get_run", flaky_get_run)
+    session = (await client.post("/sessions")).json()
+    run_id: str | None = None
+    second_run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "数据库断连测试",
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        assert [event["type"] for event in events] == ["run", "error"]
+        run_id = events[0]["run_id"]
+        assert "数据库暂时不可用" in events[1]["message"]
+
+        # 断连时 run 不伪造终态；生成器 finally 收敛（模型仍在运行 → 取消）
+        cancelled = False
+        for _ in range(100):
+            await db.rollback()
+            record = await db.get(AgentRunRecord, run_id)
+            assert record is not None
+            if record.status == "cancelled":
+                cancelled = True
+                break
+            await asyncio.sleep(0.05)
+        assert cancelled is True, "MySQL 断连后 run 必须被收敛"
+        messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
+        assert [message["role"] for message in messages] == ["user"]
+
+        # MySQL 恢复：还原 flaky，换快速模型，下一条消息正常完成
+        monkeypatch.setattr(AgentRunRepository, "get_run", real_get_run)
+        models["current"] = CompatModel()
+        second = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "恢复后的问题",
+                "knowledge_base": False,
+            },
+        )
+        assert second.status_code == 200
+        second_events = _parse_sse(second.text)
+        second_run_id = second_events[0]["run_id"]
+        assert second_events[-1]["type"] == "done"
+        await db.rollback()
+        record = await db.get(AgentRunRecord, second_run_id)
+        assert record is not None and record.status == "completed"
+    finally:
+        await db.execute(
+            delete(AgentRunRecord).where(
+                AgentRunRecord.id.in_([run_id, second_run_id])
+            )
+        )
         await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
         await db.commit()
 
