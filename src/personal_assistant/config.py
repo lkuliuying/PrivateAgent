@@ -119,8 +119,15 @@ class Settings(BaseSettings):
     # === 兼容遥测持久化（R3 §6.4 跨版本观察窗口） ===
     # 开启后 CompatibilityTelemetry 的窗口计数定期落库（compatibility_telemetry 表，
     # schema 0021+），进程退出标记 ended_at；跨窗口聚合用于 legacy 归零观察。
+    # 0.3.0 M1：下次启动时 reconcile 早于宽限期仍未 ended_at 的陈旧窗口
+    # （异常退出），满足 M0 门槛"异常退出在下次启动被 reconcile"。
     compatibility_telemetry_persist_enabled: bool = False
     compatibility_telemetry_flush_seconds: int = Field(default=60, ge=10, le=3_600)
+    compatibility_telemetry_reconcile_grace_seconds: int = Field(
+        default=7_200,
+        ge=60,
+        le=86_400,
+    )
 
     @model_validator(mode="after")
     def validate_summary_worker_limits(self) -> Settings:

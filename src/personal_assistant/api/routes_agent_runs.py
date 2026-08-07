@@ -43,6 +43,7 @@ from ..context import (
     context_event_payload,
     prepare_agent_context,
 )
+from ..core.compatibility import compatibility_telemetry
 from ..core.db import get_session
 from ..core.history import SessionRepository
 from ..core.models import AgentRun as AgentRunRecord
@@ -437,6 +438,12 @@ async def create_agent_run(
             tool_bundle.output_verifier_factory if tool_bundle is not None else None
         ),
         context_metadata=context_metadata,
+    )
+    # 0.3.0 M1：显式 Agent Runs API 与 chat 驱动的 run 分开计，观察脚本可区分。
+    compatibility_telemetry.record(
+        path="/agent-runs",
+        mode="agent_runs_api",
+        outcome="created",
     )
     return await _run_response(repository, run_id)
 
