@@ -12,6 +12,9 @@
 // .env 字段（与 src/personal_assistant/config.py 的 PA_ 前缀对齐）：
 //   PA_DB_HOST / PA_DB_PORT / PA_DB_USER / PA_DB_NAME / PA_DB_SECRET_REF
 //   PA_OLLAMA_BASE_URL=...   PA_LLM_MODEL=...   PA_EMBED_MODEL=...
+//   PA_CHAT_AGENT_RUNTIME_ENABLED=...   PA_CONVERSATION_SUMMARY_WORKER_ENABLED=...
+// 0.3.0 M1：两个 Agent Runtime 开关由桌面独立保存/加载，sidecar 启动时注入，
+// 修改后需重启 sidecar 才生效（与后端 Settings 的 PA_ 前缀对齐）。
 
 mod credential_prompt;
 mod credentials;
@@ -49,6 +52,8 @@ struct SidecarState {
 }
 
 /// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
+/// 0.3.0 M1 起显式承载 Agent Runtime 两个灰度开关，与后端 config.py 的
+/// PA_CHAT_AGENT_RUNTIME_ENABLED / PA_CONVERSATION_SUMMARY_WORKER_ENABLED 对齐。
 #[derive(Serialize, Deserialize, Clone)]
 struct ConfigData {
     db_host: String,
@@ -62,6 +67,10 @@ struct ConfigData {
     embed_model: String,
     #[serde(default)]
     mcp_enabled: bool,
+    #[serde(default)]
+    chat_agent_runtime_enabled: bool,
+    #[serde(default)]
+    conversation_summary_worker_enabled: bool,
 }
 
 impl Default for ConfigData {
@@ -76,6 +85,8 @@ impl Default for ConfigData {
             llm_model: "qwen2.5:14b-instruct-q4_K_M".into(),
             embed_model: "bge-m3".into(),
             mcp_enabled: false,
+            chat_agent_runtime_enabled: false,
+            conversation_summary_worker_enabled: false,
         }
     }
 }
@@ -407,6 +418,10 @@ fn parse_config_content(content: &str) -> LoadedConfig {
             cfg.embed_model = v.to_string();
         } else if let Some(v) = line.strip_prefix("PA_MCP_ENABLED=") {
             cfg.mcp_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CHAT_AGENT_RUNTIME_ENABLED=") {
+            cfg.chat_agent_runtime_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=") {
+            cfg.conversation_summary_worker_enabled = v.eq_ignore_ascii_case("true");
         }
     }
     LoadedConfig {
@@ -482,7 +497,7 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         ""
     };
     Ok(format!(
-        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\n",
+        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\n",
         cfg.db_host,
         cfg.db_port,
         cfg.db_user,
@@ -491,7 +506,9 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         cfg.ollama_base_url,
         cfg.llm_model,
         cfg.embed_model,
-        cfg.mcp_enabled
+        cfg.mcp_enabled,
+        cfg.chat_agent_runtime_enabled,
+        cfg.conversation_summary_worker_enabled
     ))
 }
 
@@ -584,6 +601,117 @@ fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
         .ok_or_else(|| "无响应头分隔".to_string())?;
     let body = &buf[sep + 4..];
     serde_json::from_slice(body).map_err(|e| format!("解析 JSON 失败: {}", e))
+}
+
+/// 手写 HTTP POST（无 body，Bearer 认证），用于请求 sidecar 优雅停机。
+/// 只关心 HTTP 状态是否 2xx；不解析响应体。
+fn http_post_bearer(url: &str, token: &str) -> Result<(), String> {
+    let no_scheme = url
+        .strip_prefix("http://")
+        .ok_or_else(|| "仅支持 http://".to_string())?;
+    let (host_port, path) = match no_scheme.find('/') {
+        Some(i) => (&no_scheme[..i], &no_scheme[i..]),
+        None => (no_scheme, "/"),
+    };
+    let socket_addr = host_port
+        .to_socket_addrs()
+        .map_err(|e| format!("解析地址失败: {}", e))?
+        .next()
+        .ok_or_else(|| "无法解析地址".to_string())?;
+    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3))
+        .map_err(|e| format!("连接失败: {}", e))?;
+    let rw_timeout = Some(Duration::from_secs(3));
+    stream
+        .set_read_timeout(rw_timeout)
+        .map_err(|e| format!("设置读超时失败: {}", e))?;
+    stream
+        .set_write_timeout(rw_timeout)
+        .map_err(|e| format!("设置写超时失败: {}", e))?;
+    let req = format!(
+        "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        path, host_port, token
+    );
+    stream
+        .write_all(req.as_bytes())
+        .map_err(|e| format!("发送失败: {}", e))?;
+    let mut buf = Vec::new();
+    stream
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("读取失败: {}", e))?;
+    let status_line = String::from_utf8_lossy(&buf);
+    let status = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(format!("shutdown 请求返回 HTTP {}", status))
+    }
+}
+
+/// 轮询进程是否已退出（最多 ``timeout_ms`` 毫秒）。
+fn wait_pid_exit(pid: u32, timeout_ms: u64) -> bool {
+    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if !pid_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
+        unsafe { CloseHandle(handle) };
+        ok != 0 && code == STILL_ACTIVE as u32
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    }
+}
+
+/// 先请求优雅停机（POST /internal/shutdown），等待进程退出；超时再强杀进程树。
+/// 优雅停机让 sidecar 的 lifespan finally 写入遥测 ended_at 并收拢 coordinator，
+/// 强杀（taskkill /T /F）会丢失这些收尾（M0 门槛：正常退出写 ended_at）。
+fn stop_sidecar(state: &SidecarState, child: CommandChild) {
+    let port = *state.port.lock().unwrap();
+    let token = state.token.lock().unwrap().clone();
+    let pid = child.pid();
+    if let (Some(port), Some(token)) = (port, token) {
+        let url = format!("http://127.0.0.1:{}/internal/shutdown", port);
+        if http_post_bearer(&url, &token).is_ok() {
+            if wait_pid_exit(pid, 5_000) {
+                println!("[sidecar] 已优雅停机 pid={}", pid);
+                return;
+            }
+            eprintln!("[sidecar] 优雅停机超时，改用强杀 pid={}", pid);
+        } else {
+            eprintln!("[sidecar] 优雅停机请求失败，改用强杀 pid={}", pid);
+        }
+    }
+    kill_sidecar_tree(child);
 }
 
 /// 绑定 127.0.0.1:0 让 OS 分配一个空闲端口，立即关闭监听供 sidecar 复用。
@@ -882,11 +1010,11 @@ async fn start_sidecar(
         Zeroizing::new("{}".to_string())
     };
 
-    // 若已有 sidecar 在跑（重试 / 重配），先终止旧的——CommandChild 不会在 Drop 时杀进程，
-    // 不主动 kill 会留下占用端口与 DB 连接的孤儿进程。用进程树终止，避免 sidecar 的
-    // 命令/git/MCP 子进程残留。
+    // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
+    // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
+    // 优雅停机同时让旧进程写入遥测 ended_at（M0 门槛）。
     if let Some(prev) = state.child.lock().unwrap().take() {
-        kill_sidecar_tree(prev);
+        stop_sidecar(&state, prev);
         *state.port.lock().unwrap() = None;
         *state.token.lock().unwrap() = None;
     }
@@ -932,6 +1060,16 @@ async fn start_sidecar(
             .env("PA_OPENAI_API_KEY", openai_api_key)
             .env("PA_CLAUDE_API_KEY", claude_api_key)
             .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
+            // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
+            // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
+            .env(
+                "PA_CHAT_AGENT_RUNTIME_ENABLED",
+                loaded.public.chat_agent_runtime_enabled.to_string(),
+            )
+            .env(
+                "PA_CONVERSATION_SUMMARY_WORKER_ENABLED",
+                loaded.public.conversation_summary_worker_enabled.to_string(),
+            )
             .spawn()
         {
             Ok((mut rx, child)) => {
@@ -1028,10 +1166,11 @@ async fn download_and_install_update(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "当前已是最新版本".to_string())?;
     // 安装会通过 std::process::exit 退出当前进程，绕过 RunEvent::Exit（sidecar 的唯一终止点），
-    // 因此先手动终止 sidecar（进程树），避免更新后留下孤儿进程。
+    // 因此先手动停 sidecar（优雅停机 + 强杀兜底），避免更新后留下孤儿进程。
     if let Some(child) = state.child.lock().unwrap().take() {
-        kill_sidecar_tree(child);
+        stop_sidecar(&state, child);
         *state.port.lock().unwrap() = None;
+        *state.token.lock().unwrap() = None;
     }
     update
         .download_and_install(|_chunk, _total| {}, || {})
@@ -1086,12 +1225,13 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
         .run(|app_handle, event| {
-            // 应用退出时终止 sidecar 子进程树
+            // 应用退出时停止 sidecar：先请求优雅停机（写遥测 ended_at、收拢
+            // coordinator），超时再强杀进程树兜底（0.2.1 QA 修复保留）。
             if let RunEvent::Exit = event {
                 if let Some(state) = app_handle.try_state::<SidecarState>() {
                     if let Some(child) = state.child.lock().unwrap().take() {
-                        kill_sidecar_tree(child);
-                        println!("[sidecar] 已终止子进程树");
+                        stop_sidecar(&state, child);
+                        println!("[sidecar] 已停止子进程树");
                     }
                 }
             }
@@ -1134,6 +1274,55 @@ mod tests {
         assert!(render_config(&loaded.public)
             .unwrap()
             .contains("PA_MCP_ENABLED=true"));
+    }
+
+    #[test]
+    fn agent_runtime_flags_survive_desktop_config_roundtrip() {
+        let loaded = parse_config_content(
+            "PA_CHAT_AGENT_RUNTIME_ENABLED=true\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n",
+        );
+        assert!(loaded.public.chat_agent_runtime_enabled);
+        assert!(loaded.public.conversation_summary_worker_enabled);
+        let rendered = render_config(&loaded.public).unwrap();
+        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=true"));
+        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true"));
+    }
+
+    #[test]
+    fn agent_runtime_flags_default_false_for_legacy_configs() {
+        // 0.2.1 及更早的 .env 没有这两个开关：解析与重写都必须保持关闭，
+        // 不能出现"升级后被静默切换"。
+        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
+        assert!(!loaded.public.chat_agent_runtime_enabled);
+        assert!(!loaded.public.conversation_summary_worker_enabled);
+        let rendered = render_config(&ConfigData::default()).unwrap();
+        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=false"));
+        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=false"));
+        // 旧配置（无开关行）经 render 后必须显式写出 false，保证 roundtrip 幂等。
+        let legacy = parse_config_content("PA_DB_HOST=127.0.0.1\n");
+        let rendered = render_config(&legacy.public).unwrap();
+        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=false"));
+        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=false"));
+        assert!(!rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=true"));
+    }
+
+    #[test]
+    fn agent_runtime_flags_are_independent_of_each_other() {
+        let chat_only =
+            parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
+        assert!(chat_only.public.chat_agent_runtime_enabled);
+        assert!(!chat_only.public.conversation_summary_worker_enabled);
+        let summary_only =
+            parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
+        assert!(!summary_only.public.chat_agent_runtime_enabled);
+        assert!(summary_only.public.conversation_summary_worker_enabled);
+    }
+
+    #[test]
+    fn nonexistent_pid_is_reported_dead() {
+        // 0.3.0 M0：优雅停机轮询的存活判定——不存在的 PID 应视为已退出。
+        assert!(!pid_alive(u32::MAX));
+        assert!(wait_pid_exit(u32::MAX, 200));
     }
 
     #[test]

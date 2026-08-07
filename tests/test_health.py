@@ -8,6 +8,7 @@ import pytest
 from personal_assistant.api import routes_health
 from personal_assistant.core import health as health_module
 from personal_assistant.core.health import HealthService
+from personal_assistant.main_api import register_managed_server
 
 
 @pytest.mark.asyncio
@@ -59,3 +60,118 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
     assert legacy.json()["chat_execution_mode"] == "legacy"
     assert legacy.json()["legacy_tool_planner_enabled"] is True
     assert legacy.json()["rag_chat_runtime_enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("runtime", "rag_tools", "verification", "read_only", "expected"),
+    [
+        # 组合 1：Runtime 全开（含 RAG 与验证）→ agent_runtime + RAG 就绪
+        (
+            True,
+            True,
+            True,
+            True,
+            {
+                "chat_execution_mode": "agent_runtime",
+                "legacy_tool_planner_enabled": False,
+                "agent_read_only_tools_enabled": True,
+                "rag_chat_runtime_enabled": True,
+            },
+        ),
+        # 组合 2：Runtime 开、RAG 工具关 → 普通聊天走 Runtime，RAG 不可用
+        (
+            True,
+            False,
+            True,
+            False,
+            {
+                "chat_execution_mode": "agent_runtime",
+                "legacy_tool_planner_enabled": False,
+                "agent_read_only_tools_enabled": False,
+                "rag_chat_runtime_enabled": False,
+            },
+        ),
+        # 组合 3：Runtime 开、输出验证关 → RAG 聊天拒绝进入 Runtime（缺验证）
+        (
+            True,
+            True,
+            False,
+            False,
+            {
+                "chat_execution_mode": "agent_runtime",
+                "legacy_tool_planner_enabled": False,
+                "agent_read_only_tools_enabled": False,
+                "rag_chat_runtime_enabled": False,
+            },
+        ),
+        # 组合 4：Runtime 关 → 全 legacy，planner 可用，RAG Runtime 关闭
+        (
+            False,
+            True,
+            True,
+            True,
+            {
+                "chat_execution_mode": "legacy",
+                "legacy_tool_planner_enabled": True,
+                "agent_read_only_tools_enabled": True,
+                "rag_chat_runtime_enabled": False,
+            },
+        ),
+    ],
+)
+async def test_capabilities_four_key_combinations(
+    client, monkeypatch, runtime, rag_tools, verification, read_only, expected
+):
+    """M1 §6.2：/capabilities 四种关键组合互斥且确定。"""
+    monkeypatch.setattr(routes_health.settings, "chat_agent_runtime_enabled", runtime)
+    monkeypatch.setattr(routes_health.settings, "agent_rag_tools_enabled", rag_tools)
+    monkeypatch.setattr(
+        routes_health.settings, "agent_output_verification_enabled", verification
+    )
+    monkeypatch.setattr(
+        routes_health.settings, "agent_run_read_only_tools_enabled", read_only
+    )
+
+    r = await client.get("/capabilities")
+
+    assert r.status_code == 200
+    assert r.json() == expected
+    # 互斥约束：legacy_tool_planner 只由 chat_execution_mode 决定
+    body = r.json()
+    assert body["legacy_tool_planner_enabled"] == (
+        body["chat_execution_mode"] == "legacy"
+    )
+
+
+@pytest.mark.asyncio
+async def test_internal_shutdown_requires_auth_and_accepts_registered_server(
+    client, monkeypatch
+):
+    """M0：/internal/shutdown 需认证；注册 server 后触发 should_exit 优雅停机。"""
+    import personal_assistant.main_api as main_api
+
+    unauth = await client.get(
+        "/internal/shutdown",
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert unauth.status_code == 401
+
+    monkeypatch.setattr(main_api, "_managed_server", None)
+    not_managed = await client.post("/internal/shutdown")
+    assert not_managed.status_code == 200
+    assert not_managed.json() == {"accepted": False}
+
+    class FakeServer:
+        def __init__(self) -> None:
+            self.should_exit = False
+
+    fake = FakeServer()
+    register_managed_server(fake)
+    try:
+        accepted = await client.post("/internal/shutdown")
+        assert accepted.status_code == 200
+        assert accepted.json() == {"accepted": True}
+        assert fake.should_exit is True
+    finally:
+        monkeypatch.setattr(main_api, "_managed_server", None)

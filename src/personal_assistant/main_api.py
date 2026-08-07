@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from . import __version__
 from .api.routes_activities import router as activities_router
 from .api.routes_agent_runs import agent_run_coordinator
 from .api.routes_agent_runs import router as agent_runs_router
@@ -135,13 +137,21 @@ async def lifespan(app: FastAPI):
         from .core.compatibility import (
             CompatibilityTelemetryPersister,
             compatibility_telemetry,
+            telemetry_scope,
         )
         from .core.db import async_session_factory
 
         telemetry_persister = CompatibilityTelemetryPersister(
             compatibility_telemetry,
             async_session_factory,
+            # 0.3.0 M1：scope 带 <origin>:<version>，观察脚本按版本/来源过滤，
+            # 并区分真实用户窗口（process）与 QA 窗口（qa，PA_QA_STATIC_TOKEN）。
+            scope=telemetry_scope(),
             flush_interval_seconds=settings.compatibility_telemetry_flush_seconds,
+            # 启动时 reconcile 陈旧窗口（异常退出在下次启动被 reconcile）。
+            reconcile_grace_seconds=(
+                settings.compatibility_telemetry_reconcile_grace_seconds
+            ),
         )
         telemetry_task = asyncio.create_task(telemetry_persister.run())
         logger.info(
@@ -154,10 +164,12 @@ async def lifespan(app: FastAPI):
     finally:
         await agent_run_coordinator.shutdown()
         if telemetry_task is not None:
-            await telemetry_persister.flush_now(ended=True)
+            # 先取消 run 循环再 flush，避免两个 flush 并发交错导致 ended_at 丢失
+            # （0.3.0 M1 竞态修复；_write 内也有 rowcount 兜底）。
             telemetry_task.cancel()
             with suppress(asyncio.CancelledError):
                 await telemetry_task
+            await telemetry_persister.flush_now(ended=True)
         if agent_guard_task is not None:
             agent_guard_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -181,7 +193,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="私人助手 Agent",
-    version="0.1.2",
+    version=__version__,
     description="本地优先、隐私可控的桌面私人助手后端",
     lifespan=lifespan,
 )
@@ -247,7 +259,35 @@ app.include_router(testing_router)
 
 @app.get("/")
 async def root() -> dict:
-    return {"name": "personal-assistant", "version": "0.1.2", "docs": "/docs"}
+    return {"name": "personal-assistant", "version": __version__, "docs": "/docs"}
+
+
+# 优雅停机钩子：server_entry.py 用显式 uvicorn.Server 启动后注册句柄，
+# 桌面退出前 POST /internal/shutdown 触发 lifespan finally
+# （telemetry flush ended=True / coordinator shutdown），避免强杀丢窗口。
+_managed_server: Any | None = None
+
+
+def register_managed_server(server: Any) -> None:
+    """由启动入口注册 uvicorn.Server 实例（不在入口则不注册）。"""
+    global _managed_server
+    _managed_server = server
+
+
+@app.post("/internal/shutdown")
+async def internal_shutdown() -> dict:
+    """请求当前进程优雅停机。仅限 loopback + Bearer token（中间件校验）。
+
+    返回 accepted=False 表示没有可管理的 server（如开发模式），调用方应
+    继续走强杀兜底，不应依赖本端点。
+    """
+    server = _managed_server
+    if server is None:
+        logger.info("internal shutdown requested but no managed server is registered")
+        return {"accepted": False}
+    logger.info("internal shutdown requested; triggering graceful exit")
+    server.should_exit = True
+    return {"accepted": True}
 
 
 if __name__ == "__main__":

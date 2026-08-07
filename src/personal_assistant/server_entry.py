@@ -137,13 +137,20 @@ def main() -> None:
     import uvicorn
 
     from personal_assistant.config import settings
+    from personal_assistant.main_api import app, register_managed_server
 
-    uvicorn.run(
-        "personal_assistant.main_api:app",
+    # 显式 Server 实例：把句柄注册给 /internal/shutdown，桌面退出前先请求
+    # 优雅停机（lifespan finally 会 flush 遥测 ended_at 并收拢 coordinator），
+    # 强杀只作为兜底（M0 门槛：正常退出写 ended_at）。
+    config = uvicorn.Config(
+        app,
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
     )
+    server = uvicorn.Server(config)
+    register_managed_server(server)
+    server.run()
 
 
 if __name__ == "__main__":
