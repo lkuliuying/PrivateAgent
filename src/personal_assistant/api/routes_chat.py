@@ -31,6 +31,11 @@ from ..api.routes_agent_runs import (
     require_agent_runtime_owner,
 )
 from ..config import settings as cfg
+from ..context import (
+    ContextBudgetExceededError,
+    context_event_payload,
+    prepare_agent_context,
+)
 from ..core.chat import ChatService
 from ..core.compatibility import compatibility_telemetry
 from ..core.db import get_session
@@ -62,7 +67,11 @@ class AgentChatOutputProjectionError(RuntimeError):
 
 
 def _chat_route_mode(req: ChatRequest) -> str:
-    """Return one fixed-label routing reason without inspecting message content."""
+    """Return one fixed-label routing reason without inspecting message content.
+
+    0.3.0 M1：agent_runtime（普通聊天）与 agent_runtime_rag（知识库聊天）
+    分开计，便于区分普通与 RAG 流量；两者都走 durable Runtime。
+    """
 
     if not cfg.chat_agent_runtime_enabled:
         return "legacy_runtime_disabled"
@@ -72,7 +81,7 @@ def _chat_route_mode(req: ChatRequest) -> str:
         return "legacy_rag_tools_disabled"
     if req.knowledge_base and not cfg.agent_output_verification_enabled:
         return "legacy_output_verification_disabled"
-    return "agent_runtime"
+    return "agent_runtime_rag" if req.knowledge_base else "agent_runtime"
 
 
 async def _project_agent_chat_output(
@@ -144,6 +153,49 @@ def _drain_agent_output(queue: asyncio.Queue[str] | None) -> list[str]:
             return deltas
 
 
+def _run_cleanup_finally(
+    run_id: str, output_queue: asyncio.Queue[str] | None
+) -> None:
+    """事件生成器 finally 的同步收尾（release_output_queue 幂等）。"""
+    agent_run_coordinator.release_output_queue(run_id, output_queue)
+
+
+async def _converge_disconnected_run(run_id: str) -> None:
+    """SSE 断线/客户端关闭时的收敛收尾（0.3.0 M2 修复）。
+
+    - 活跃 run：请求持久化取消并停止协调器任务；
+    - waiting_approval：拒绝待审审批并收敛为 cancelled——
+      否则断线后的等待审批 run 只能靠审批 TTL 过期才收敛；
+    - 其他终态：无需处理。
+    """
+    if agent_run_coordinator.is_active(run_id):
+        async with dbmod.async_session_factory() as cancel_db:
+            try:
+                await AgentRunRepository(cancel_db).request_cancellation(run_id)
+            except Exception:  # noqa: BLE001
+                await cancel_db.rollback()
+        agent_run_coordinator.cancel(run_id)
+        return
+    async with dbmod.async_session_factory() as pending_db:
+        try:
+            pending = await AgentRunRepository(pending_db).get_run(run_id)
+            if pending is not None and pending.status == "waiting_approval":
+                approvals = ToolApprovalRepository(pending_db)
+                for approval in await approvals.list_for_run(run_id):
+                    if approval.status == "pending":
+                        try:
+                            await approvals.reject(approval.id)
+                        except Exception:  # noqa: BLE001
+                            pass
+                await AgentRunRepository(pending_db).cancel_waiting_approval(
+                    run_id,
+                    error="SSE 断线，等待审批的运行已收敛",
+                    error_code="disconnected",
+                )
+        except Exception:  # noqa: BLE001
+            await pending_db.rollback()
+
+
 async def _build_agent_model(db: AsyncSession):
     provider_settings = await SettingsService(db).get_all()
     return ProviderRouter(provider_settings).model_gateway()
@@ -156,6 +208,63 @@ async def _agent_chat_stream(
     messages_repository = MessageRepository(db)
     history = await messages_repository.list_by_session(req.session_id)
     is_first_turn = len(history) == 0
+
+    system_prompt = AGENT_SYSTEM_PROMPT
+    if req.knowledge_base:
+        system_prompt += (
+            "用户已明确启用本地知识库。仅在问题需要本地资料时调用 "
+            "search_knowledge_base，并只使用工具实际返回且可引用的证据回答；"
+            "没有相关资料时应明确说明，不得编造来源。"
+        )
+
+    # 0.3.0 M2：会话历史经 ContextBuilder 预算与最近消息保留策略选择；
+    # 开启时记忆/摘要/RAG 片段受 budget 约束，敏感摘要被排除。预算超限时
+    # 明确报错，不创建 run、不把同一消息再交给 legacy 执行（先于 model/tool
+    # 构造做预算检查，快速失败）。
+    context_metadata = None
+    if cfg.agent_context_builder_enabled:
+        try:
+            prepared = await prepare_agent_context(
+                db,
+                system_policy=system_prompt,
+                current_request=req.message,
+                session_id=req.session_id,
+                knowledge_base=req.knowledge_base,
+            )
+        except ContextBudgetExceededError:
+            service = ChatService(db)
+
+            async def budget_error_events():
+                yield service.event_to_sse(
+                    {
+                        "type": "error",
+                        "run_id": None,
+                        "message": "上下文预算不足，无法执行本次请求，"
+                        "请新建会话或精简内容后重试",
+                    }
+                )
+
+            return StreamingResponse(
+                budget_error_events(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        runtime_messages = prepared.messages
+        context_metadata = context_event_payload(prepared)
+    else:
+        runtime_messages = [
+            ModelMessage(
+                role="system",
+                content=system_prompt,
+            )
+        ]
+        runtime_messages.extend(
+            ModelMessage(role=message.role, content=message.content)
+            for message in history
+            if message.role in {"user", "assistant", "system"}
+        )
+        runtime_messages.append(ModelMessage(role="user", content=req.message))
+
     model = await _build_agent_model(db)
     tool_bundle = await get_agent_tool_bundle(db)
     limits = AgentRunLimits()
@@ -168,25 +277,6 @@ async def _agent_chat_stream(
     )
     await messages_repository.add(req.session_id, "user", req.message)
 
-    system_prompt = AGENT_SYSTEM_PROMPT
-    if req.knowledge_base:
-        system_prompt += (
-            "用户已明确启用本地知识库。仅在问题需要本地资料时调用 "
-            "search_knowledge_base，并只使用工具实际返回且可引用的证据回答；"
-            "没有相关资料时应明确说明，不得编造来源。"
-        )
-    runtime_messages = [
-        ModelMessage(
-            role="system",
-            content=system_prompt,
-        )
-    ]
-    runtime_messages.extend(
-        ModelMessage(role=message.role, content=message.content)
-        for message in history
-        if message.role in {"user", "assistant", "system"}
-    )
-    runtime_messages.append(ModelMessage(role="user", content=req.message))
     structured_rag_output = bool(
         cfg.agent_output_verification_enabled
         and tool_bundle is not None
@@ -205,15 +295,18 @@ async def _agent_chat_stream(
             tool_bundle.output_verifier_factory if tool_bundle is not None else None
         ),
         stream_output=not structured_rag_output,
+        context_metadata=context_metadata,
     )
 
     service = ChatService(db)
 
     async def event_gen():
-        yield service.event_to_sse({"type": "run", "run_id": run_id})
         announced_approvals: set[str] = set()
         streamed_parts: list[str] = []
         try:
+            # 首个 yield 必须在 try 内：async generator 在 yield 处被注入
+            # 异常（断线取消）时，try/finally 之外的代码不会执行，收尾会丢失。
+            yield service.event_to_sse({"type": "run", "run_id": run_id})
             while True:
                 for delta in _drain_agent_output(output_queue):
                     streamed_parts.append(delta)
@@ -369,14 +462,22 @@ async def _agent_chat_stream(
                     return
                 await asyncio.sleep(0.05)
         finally:
-            if agent_run_coordinator.is_active(run_id):
-                async with dbmod.async_session_factory() as cancel_db:
-                    try:
-                        await AgentRunRepository(cancel_db).request_cancellation(run_id)
-                    except Exception:  # noqa: BLE001
-                        await cancel_db.rollback()
-                agent_run_coordinator.cancel(run_id)
-            agent_run_coordinator.release_output_queue(run_id, output_queue)
+            # 断线取消（CancelledError）会打断 finally 内的 await：先捕获取消、
+            # 完成收敛收尾，再重抛，保证 waiting_approval/活跃 run 都能收敛
+            # （0.3.0 M2 修复，不能只依赖审批 TTL 过期）。
+            cancelled: asyncio.CancelledError | None = None
+            try:
+                await _converge_disconnected_run(run_id)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                try:
+                    await _converge_disconnected_run(run_id)
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                _run_cleanup_finally(run_id, output_queue)
+            if cancelled is not None:
+                raise cancelled
 
     return StreamingResponse(
         event_gen(),
@@ -404,7 +505,7 @@ async def chat_stream(req: ChatRequest, db: AsyncSession = Depends(get_session))
         compatibility_mode=route_mode,
         compatibility_outcome="routed",
     )
-    if route_mode == "agent_runtime":
+    if route_mode in {"agent_runtime", "agent_runtime_rag"}:
         require_agent_runtime_owner()
         return await _agent_chat_stream(req, db)
 
@@ -441,15 +542,26 @@ async def continue_agent_chat_stream(
         raise HTTPException(status_code=404, detail="Not found")
     run = await AgentRunRepository(db).get_run(run_id)
     if run is None or run.session_id is None:
+        compatibility_telemetry.record(
+            path="/chat/agent-runs/:id/stream",
+            mode="agent_runtime",
+            outcome="not_found",
+        )
         raise HTTPException(status_code=404, detail="Agent chat run not found")
+    compatibility_telemetry.record(
+        path="/chat/agent-runs/:id/stream",
+        mode="agent_runtime",
+        outcome="reconnected",
+    )
     session_id = run.session_id
     service = ChatService(db)
     output_queue = agent_run_coordinator.output_queue(run_id)
 
     async def event_gen():
-        yield service.event_to_sse({"type": "run", "run_id": run_id})
         streamed_parts: list[str] = []
         try:
+            # 首个 yield 必须在 try 内（见 _agent_chat_stream 同注释）
+            yield service.event_to_sse({"type": "run", "run_id": run_id})
             while True:
                 for delta in _drain_agent_output(output_queue):
                     streamed_parts.append(delta)
@@ -546,14 +658,19 @@ async def continue_agent_chat_stream(
                     return
                 await asyncio.sleep(0.05)
         finally:
-            if agent_run_coordinator.is_active(run_id):
-                async with dbmod.async_session_factory() as cancel_db:
-                    try:
-                        await AgentRunRepository(cancel_db).request_cancellation(run_id)
-                    except Exception:  # noqa: BLE001
-                        await cancel_db.rollback()
-                agent_run_coordinator.cancel(run_id)
-            agent_run_coordinator.release_output_queue(run_id, output_queue)
+            cancelled: asyncio.CancelledError | None = None
+            try:
+                await _converge_disconnected_run(run_id)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+                try:
+                    await _converge_disconnected_run(run_id)
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                _run_cleanup_finally(run_id, output_queue)
+            if cancelled is not None:
+                raise cancelled
 
     return StreamingResponse(
         event_gen(),

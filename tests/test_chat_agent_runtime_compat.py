@@ -35,12 +35,15 @@ from personal_assistant.api.routes_agent_runs import (
 from personal_assistant.config import settings
 from personal_assistant.core.chat import ChatService
 from personal_assistant.core.compatibility import CompatibilityTelemetry
+from personal_assistant.core.history import MessageRepository
 from personal_assistant.core.models import AgentRun as AgentRunRecord
 from personal_assistant.core.models import AgentRunEvent as AgentRunEventRecord
 from personal_assistant.core.models import ChatSession
+from personal_assistant.core.models import ToolApproval as ToolApprovalRecord
 from personal_assistant.core.rag_citation_evidence import (
     load_durable_rag_citation_sources,
 )
+from personal_assistant.llm.contracts import ModelGatewayError
 from personal_assistant.main_api import app
 
 
@@ -53,6 +56,54 @@ class CompatModel:
             provider="fake",
             model="compat-model",
         )
+
+
+class RecordingChatContextModel:
+    def __init__(self) -> None:
+        self.requests = []
+
+    async def complete(self, request, *, cancellation):
+        del cancellation
+        self.requests.append(request)
+        return ModelResponse(text="context builder ok")
+
+
+class FailingChatModel:
+    """首个 delta 前抛错的模型（超时/连接拒绝等可重试类故障）。"""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def complete(self, request, *, cancellation):
+        del request, cancellation
+        self.calls += 1
+        raise self.error
+
+
+class MidStreamFailingChatModel:
+    """发出部分 delta 后中途失败的模型（首个 delta 后不允许自动重放）。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def complete_stream(self, request, *, cancellation, on_delta):
+        del request, cancellation
+        self.calls += 1
+        await on_delta("partial ")
+        await on_delta("answer")
+        raise ModelGatewayError(
+            "模型调用失败（timeout）", code="timeout", provider="ollama"
+        )
+
+
+class MismatchedStreamChatModel:
+    """流式 delta 与最终响应不一致（等价于缺终止帧/被截断的流）。"""
+
+    async def complete_stream(self, request, *, cancellation, on_delta):
+        del request, cancellation
+        await on_delta("partial")
+        return ModelResponse(text="completely different")
 
 
 class ApprovalCompatModel:
@@ -154,6 +205,13 @@ async def test_feature_gated_chat_maps_agent_run_back_to_legacy_sse(
     assert routes_chat._chat_route_mode(plain) == "agent_runtime"
     assert routes_chat._chat_route_mode(with_tool_result) == "legacy_tool_result"
     assert routes_chat._chat_route_mode(with_rag) == "legacy_rag_tools_disabled"
+    # 0.3.0 M1：知识库聊天在 RAG 工具与输出验证都开启时走 agent_runtime_rag
+    monkeypatch.setattr(settings, "agent_rag_tools_enabled", True)
+    monkeypatch.setattr(settings, "agent_output_verification_enabled", True)
+    assert routes_chat._chat_route_mode(with_rag) == "agent_runtime_rag"
+    assert routes_chat._chat_route_mode(plain) == "agent_runtime"
+    monkeypatch.setattr(settings, "agent_rag_tools_enabled", False)
+    monkeypatch.setattr(settings, "agent_output_verification_enabled", False)
     monkeypatch.setattr(settings, "chat_agent_runtime_enabled", False)
     assert routes_chat._chat_route_mode(plain) == "legacy_runtime_disabled"
     monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
@@ -215,6 +273,340 @@ async def test_feature_gated_chat_maps_agent_run_back_to_legacy_sse(
         assert persisted is not None
         assert persisted.status == "completed"
         assert persisted.session_id == session["id"]
+    finally:
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_context_builder_bounds_history_and_records_prepared_event(
+    client, db, monkeypatch
+):
+    """M2：聊天路径接入 ContextBuilder——历史受预算约束、事件可观测、无正文泄漏。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    monkeypatch.setattr(settings, "agent_context_builder_enabled", True)
+    model = RecordingChatContextModel()
+
+    async def fake_model(_db):
+        return model
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    session = (await client.post("/sessions")).json()
+    await MessageRepository(db).add(session["id"], "user", "prior unique question")
+    await MessageRepository(db).add(session["id"], "assistant", "prior unique answer")
+    run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "current unique question",
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        # 非流式模型回退 complete 时，完整文本作为单个 token 事件发出
+        assert [event["type"] for event in events] == ["run", "token", "done"]
+        run_id = events[0]["run_id"]
+        assert events[1]["content"] == "context builder ok"
+
+        assert len(model.requests) == 1
+        contents = [message.content for message in model.requests[0].messages]
+        assert contents[-1] == "current unique question"
+        assert "prior unique question" in contents
+        assert "prior unique answer" in contents
+
+        await db.rollback()
+        run_events = list(
+            (
+                await db.execute(
+                    select(AgentRunEventRecord).where(
+                        AgentRunEventRecord.run_id == run_id,
+                        AgentRunEventRecord.event_type == "context.prepared",
+                    )
+                )
+            ).scalars()
+        )
+        assert len(run_events) == 1
+        payload = run_events[0].payload_json
+        assert payload["history_included"] == 2
+        assert payload["estimated_tokens"] > 0
+        assert "prior unique answer" not in str(payload)
+        assert "current unique question" not in str(payload)
+    finally:
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_context_builder_off_passes_full_history(client, db, monkeypatch):
+    """M2：ContextBuilder 关闭时聊天路径保持原语义——完整历史透传。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    model = RecordingChatContextModel()
+
+    async def fake_model(_db):
+        return model
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    session = (await client.post("/sessions")).json()
+    await MessageRepository(db).add(session["id"], "user", "prior question")
+    await MessageRepository(db).add(session["id"], "assistant", "prior answer")
+    run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "current question",
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        run_id = events[0]["run_id"]
+
+        assert len(model.requests) == 1
+        messages = model.requests[0].messages
+        assert [message.role for message in messages] == [
+            "system",
+            "user",
+            "assistant",
+            "user",
+        ]
+        assert [message.content for message in messages] == [
+            messages[0].content,
+            "prior question",
+            "prior answer",
+            "current question",
+        ]
+        await db.rollback()
+        prepared = list(
+            (
+                await db.execute(
+                    select(AgentRunEventRecord).where(
+                        AgentRunEventRecord.run_id == run_id,
+                        AgentRunEventRecord.event_type == "context.prepared",
+                    )
+                )
+            ).scalars()
+        )
+        assert prepared == []
+    finally:
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_context_budget_exceeded_returns_error_without_run(
+    client, db, monkeypatch
+):
+    """M2：预算超限时返回明确 SSE 错误，不创建 run、不落用户消息、不重放 legacy。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    monkeypatch.setattr(settings, "agent_context_builder_enabled", True)
+    monkeypatch.setattr(settings, "agent_context_max_tokens", 128)
+
+    async def must_not_build_model(_db):
+        raise AssertionError("model must not be built when context budget is exceeded")
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", must_not_build_model)
+    session = (await client.post("/sessions")).json()
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "很长的请求" + "内容" * 200,
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        assert [event["type"] for event in events] == ["error"]
+        assert "预算" in events[0]["message"]
+        assert events[0]["run_id"] is None
+
+        await db.rollback()
+        runs = list(
+            (
+                await db.execute(
+                    select(AgentRunRecord).where(
+                        AgentRunRecord.session_id == session["id"]
+                    )
+                )
+            ).scalars()
+        )
+        assert runs == []
+        messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
+        assert messages == []
+    finally:
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("label", "error"),
+    [
+        (
+            "timeout",
+            ModelGatewayError(
+                "模型调用失败（timeout）", code="timeout", provider="ollama"
+            ),
+        ),
+        (
+            "network_error",
+            ModelGatewayError(
+                "模型调用失败（network_error）",
+                code="network_error",
+                provider="ollama",
+            ),
+        ),
+    ],
+)
+async def test_chat_route_pre_delta_failure_surfaces_error_without_legacy_replay(
+    client, db, monkeypatch, label, error
+):
+    """M2 故障注入：首个 delta 前的超时/连接拒绝 → SSE error、run.failed、无 legacy。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    model = FailingChatModel(error)
+
+    async def fake_model(_db):
+        return model
+
+    async def legacy_must_not_run(self, *args, **kwargs):
+        raise AssertionError(f"legacy executed after runtime failure: {self}")
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    monkeypatch.setattr(ChatService, "stream_reply", legacy_must_not_run)
+    session = (await client.post("/sessions")).json()
+    run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "触发" + label,
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        assert [event["type"] for event in events] == ["run", "error"]
+        run_id = events[0]["run_id"]
+        assert label in events[1]["message"]
+        assert events[1].get("content") is None
+
+        await db.rollback()
+        persisted = await db.get(AgentRunRecord, run_id)
+        assert persisted is not None
+        assert persisted.status == "failed"
+        assert persisted.output in (None, "")
+        messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
+        assert [message["role"] for message in messages] == ["user"]
+        assert model.calls == 1
+    finally:
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_route_mid_stream_failure_does_not_replay_or_persist_answer(
+    client, db, monkeypatch
+):
+    """M2 故障注入：首个 delta 后中途失败 → 已流出的 token 不回滚、错误明确、
+    不重放、不持久化助手消息。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    model = MidStreamFailingChatModel()
+
+    async def fake_model(_db):
+        return model
+
+    async def legacy_must_not_run(self, *args, **kwargs):
+        raise AssertionError(f"legacy executed after mid-stream failure: {self}")
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    monkeypatch.setattr(ChatService, "stream_reply", legacy_must_not_run)
+    session = (await client.post("/sessions")).json()
+    run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "中途失败",
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        types = [event["type"] for event in events]
+        assert types == ["run", "token", "token", "error"]
+        assert [event["content"] for event in events if event["type"] == "token"] == [
+            "partial ",
+            "answer",
+        ]
+        run_id = events[0]["run_id"]
+        assert "timeout" in events[-1]["message"]
+
+        await db.rollback()
+        persisted = await db.get(AgentRunRecord, run_id)
+        assert persisted is not None
+        assert persisted.status == "failed"
+        messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
+        assert [message["role"] for message in messages] == ["user"]
+        assert model.calls == 1  # 首个 delta 后失败不自动重放
+    finally:
+        if run_id is not None:
+            await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_chat_route_mismatched_stream_end_fails_closed(client, db, monkeypatch):
+    """M2 故障注入：流式 delta 与终止响应不一致（缺终止帧/截断）→ run.failed。"""
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+
+    async def fake_model(_db):
+        return MismatchedStreamChatModel()
+
+    async def legacy_must_not_run(self, *args, **kwargs):
+        raise AssertionError(f"legacy executed after protocol failure: {self}")
+
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    monkeypatch.setattr(ChatService, "stream_reply", legacy_must_not_run)
+    session = (await client.post("/sessions")).json()
+    run_id: str | None = None
+    try:
+        response = await client.post(
+            "/chat/stream",
+            json={
+                "session_id": session["id"],
+                "message": "截断的流",
+                "knowledge_base": False,
+            },
+        )
+        assert response.status_code == 200
+        events = _parse_sse(response.text)
+        assert [event["type"] for event in events] == ["run", "token", "error"]
+        run_id = events[0]["run_id"]
+        assert "not match" in events[-1]["message"].lower()
+
+        await db.rollback()
+        persisted = await db.get(AgentRunRecord, run_id)
+        assert persisted is not None
+        assert persisted.status == "failed"
+        messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
+        assert [message["role"] for message in messages] == ["user"]
     finally:
         if run_id is not None:
             await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
@@ -475,6 +867,8 @@ async def test_verified_rag_chat_uses_runtime_and_projects_trusted_sources(
     monkeypatch.setattr(settings, "agent_output_verification_enabled", True)
     monkeypatch.setattr(settings, "agent_output_verification_max_retries", 1)
     model = RagCompatModel()
+    telemetry = CompatibilityTelemetry()
+    monkeypatch.setattr(routes_chat, "compatibility_telemetry", telemetry)
 
     async def fake_model(_db):
         return model
@@ -646,6 +1040,11 @@ async def test_verified_rag_chat_uses_runtime_and_projects_trusted_sources(
         assert "citations" not in events[1]["content"]
         assert all(request.output_format is not None for request in model.requests)
         assert "本地知识库" in model.requests[0].messages[0].content
+        # 0.3.0 M1：知识库聊天在 Runtime 下以 agent_runtime_rag 计遥测
+        metric = telemetry.snapshot()["paths"]["/chat/stream"]
+        assert metric["calls"] == 1
+        assert metric["modes"]["agent_runtime_rag"] == 1
+        assert metric["modes"].get("agent_runtime") == 0
 
         messages = (await client.get(f"/sessions/{session['id']}/messages")).json()
         assert messages[-1]["content"] == "部署窗口从 09:30 UTC 开始。"
@@ -808,45 +1207,66 @@ async def test_sse_disconnect_cancels_active_run(client, db, monkeypatch):
 
     monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
     monkeypatch.setattr(routes_chat, "get_agent_tool_bundle", fake_bundle)
-    app.dependency_overrides[get_agent_model_client] = lambda: model
-    app.dependency_overrides[get_agent_tool_bundle] = lambda: bundle
     session = (await client.post("/sessions")).json()
     run_id: str | None = None
     try:
-        async with client.stream(
-            "POST",
-            "/chat/stream",
-            json={
-                "session_id": session["id"],
-                "message": "use approved tool then disconnect",
-                "knowledge_base": False,
-            },
-        ) as response:
-            assert response.status_code == 200
-            # 读取首个 SSE 块后立即断开（不等审批完成）
-            async for chunk in response.aiter_raw():
-                if chunk:
-                    break
-            run_id = None
-            for block in chunk.decode("utf-8", errors="ignore").split("\n\n"):
-                for line in block.splitlines():
-                    if line.startswith("data:"):
-                        run_id = json.loads(line.removeprefix("data:").strip())["run_id"]
+        # httpx ASGITransport 在响应未结束时不会投递 http.disconnect（receive()
+        # 只在 response_complete 后返回 disconnect），无法用 HTTP 层模拟断线；
+        # 直接驱动 StreamingResponse 的 body_iterator，注入 CancelledError 等价于
+        # uvicorn 收到断线后取消流任务（0.3.0 M2 测试基建修复）。
+        request = routes_chat.ChatRequest(
+            session_id=session["id"],
+            message="use approved tool then disconnect",
+            knowledge_base=False,
+        )
+        streaming = await routes_chat._agent_chat_stream(request, db)
+        generator = streaming.body_iterator
+        first = await generator.__anext__()
+        assert "data:" in first
+        run_id = json.loads(first.split("data:", 1)[1].strip())["run_id"]
+        assert json.loads(first.split("data:", 1)[1].strip())["type"] == "run"
 
-        assert run_id is not None
-        # 流关闭后 finally 应已请求取消；等待 coordinator 落地取消状态
+        # 等待 run 进入 waiting_approval（模型首轮返回 CONFIRM 工具调用）
+        for _ in range(200):
+            await db.rollback()
+            record = await db.get(AgentRunRecord, run_id)
+            if record is not None and record.status == "waiting_approval":
+                break
+            await asyncio.sleep(0.05)
+        await db.rollback()
+        record = await db.get(AgentRunRecord, run_id)
+        assert record is not None and record.status == "waiting_approval"
+
+        # 断线：注入 CancelledError（等价流任务被取消）
+        with pytest.raises(asyncio.CancelledError):
+            await generator.athrow(asyncio.CancelledError())
+
+        # finally 收尾必须立即收敛（不等审批 TTL 过期）：
+        # waiting_approval → 拒绝待审审批 + cancelled
         cancelled = False
         for _ in range(100):
+            await db.rollback()
             record = await db.get(AgentRunRecord, run_id)
             assert record is not None
             if record.status == "cancelled":
                 cancelled = True
                 break
             await asyncio.sleep(0.05)
-        assert cancelled is True, "SSE 断线后 run 必须被取消"
+        assert cancelled is True, "SSE 断线后 waiting_approval run 必须立即被取消"
+        approvals = list(
+            (
+                await db.execute(
+                    select(ToolApprovalRecord).where(
+                        ToolApprovalRecord.run_id == run_id
+                    )
+                )
+            ).scalars()
+        )
+        assert approvals, "run 应至少有一个审批记录"
+        assert all(
+            approval.status == "rejected" for approval in approvals
+        ), "断线后待审审批必须被拒绝"
     finally:
-        app.dependency_overrides.pop(get_agent_tool_bundle, None)
-        app.dependency_overrides.pop(get_agent_model_client, None)
         if run_id is not None:
             await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
         await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))

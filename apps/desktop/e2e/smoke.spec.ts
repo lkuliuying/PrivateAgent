@@ -138,6 +138,62 @@ test.describe("E2E smoke", () => {
     expect(plannerCalls).toBe(0);
   });
 
+  test("legacy 能力下新消息仍走旧规划器（回退契约不回退）", async ({ page }) => {
+    let plannerCalls = 0;
+    let chatStreamCalls = 0;
+    await page.route("**://127.0.0.1:8000/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/capabilities") {
+        await route.fulfill({
+          json: {
+            chat_execution_mode: "legacy",
+            legacy_tool_planner_enabled: true,
+            agent_read_only_tools_enabled: false,
+            rag_chat_runtime_enabled: false,
+          },
+        });
+        return;
+      }
+      if (path === "/sessions") {
+        await route.fulfill({
+          json: [
+            {
+              id: 1,
+              title: "Legacy route test",
+              created_at: "",
+              updated_at: "",
+            },
+          ],
+        });
+        return;
+      }
+      if (path === "/tools/plan") {
+        plannerCalls += 1;
+        await route.fulfill({ json: { tool_call: null } });
+        return;
+      }
+      if (path === "/chat/stream") {
+        chatStreamCalls += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "text/event-stream; charset=utf-8",
+          body:
+            'data: {"type":"done","message_id":11,"content":"Legacy E2E reply","sources":[],"memories":[]}\n\n',
+        });
+        return;
+      }
+      await route.fulfill({ json: [] });
+    });
+
+    await page.goto("/");
+    await page.getByTestId("task-composer-input").fill("Use legacy");
+    await page.getByTestId("task-composer-submit").click();
+
+    await expect(page.getByText("Legacy E2E reply")).toBeVisible();
+    expect(plannerCalls).toBe(1);
+    expect(chatStreamCalls).toBe(1);
+  });
+
   test("Today 首屏渲染", async ({ page }) => {
     await mockApi(page, (url) => {
       if (url.includes("/health")) return GREEN_HEALTH;
