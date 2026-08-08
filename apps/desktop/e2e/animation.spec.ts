@@ -199,10 +199,8 @@ test.describe("anime.js motion system", () => {
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
-    const before = await card.boundingBox();
     await card.hover();
     await page.waitForTimeout(320);
-    const after = await card.boundingBox();
     const style = await card.evaluate((element) => {
       const computed = getComputedStyle(element);
       return {
@@ -212,11 +210,13 @@ test.describe("anime.js motion system", () => {
       };
     });
 
-    expect(before).not.toBeNull();
-    expect(after).not.toBeNull();
-    expect(after!.y).toBeLessThan(before!.y - 4);
-    expect(after!.width).toBeGreaterThan(before!.width);
+    // D0 冻结：高密度卡片 hover 位移 0–2px 且不缩放（transform 仍生效）
     expect(style.transform).not.toBe("none");
+    const match = style.transform.match(/matrix3d\(([^)]+)\)|matrix\(([^)]+)\)/);
+    const values = (match?.[1] ?? match?.[2] ?? "").split(",").map(Number);
+    const ty = values.length === 16 ? values[13] : values.length === 6 ? values[5] : 0;
+    expect(Math.abs(ty)).toBeGreaterThan(0);
+    expect(Math.abs(ty)).toBeLessThanOrEqual(4);
     expect(style.shadow).not.toBe("none");
     expect(style.border).not.toBe("");
   });

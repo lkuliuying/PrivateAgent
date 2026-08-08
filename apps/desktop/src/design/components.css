@@ -51,18 +51,17 @@
 
 /* 主按钮 · 强调色（仅用于关键操作，不铺满） */
 .pa-btn--primary {
-  background: var(--color-accent);
+  background: var(--pa-btn-primary-bg);
   color: var(--color-accent-fg);
-  border-color: var(--color-accent);
+  border-color: var(--pa-btn-primary-bg);
 }
 .pa-btn--primary:hover {
-  background: var(--color-accent-hover);
-  border-color: var(--color-accent-hover);
-  box-shadow: 0 7px 18px color-mix(in srgb, var(--color-accent) 18%, transparent);
+  background: var(--pa-btn-primary-bg-hover);
+  border-color: var(--pa-btn-primary-bg-hover);
 }
 .pa-btn--primary:disabled:hover {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
+  background: var(--pa-btn-primary-bg);
+  border-color: var(--pa-btn-primary-bg);
 }
 
 /* 幽灵按钮 · 透明底带边 */
@@ -88,7 +87,7 @@
 /* 危险按钮 */
 .pa-btn--danger {
   background: var(--color-danger);
-  color: #fff;
+  color: var(--pa-btn-danger-fg);
   border-color: var(--color-danger);
 }
 .pa-btn--danger:hover {

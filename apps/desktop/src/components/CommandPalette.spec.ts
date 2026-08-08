@@ -39,12 +39,12 @@ describe("CommandPalette", () => {
   it("按查询过滤命令", async () => {
     const w = await mountPalette();
     const input = document.querySelector(".cp-input") as HTMLInputElement;
-    input.value = "提醒";
+    input.value = "收件箱项";
     input.dispatchEvent(new Event("input"));
     await nextTick();
     const items = document.querySelectorAll(".cp-item");
     expect(items.length).toBe(1);
-    expect(document.body.textContent).toContain("新建提醒");
+    expect(document.body.textContent).toContain("新建收件箱项");
     w.unmount();
   });
 
@@ -69,8 +69,10 @@ describe("CommandPalette", () => {
 
   it("点击「全局搜索」发出 open-search", async () => {
     const w = await mountPalette();
-    const firstItem = document.querySelectorAll(".cp-item")[0] as HTMLElement;
-    firstItem.click();
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".cp-item"));
+    const searchItem = items.find((item) => item.textContent?.includes("全局搜索"));
+    expect(searchItem).toBeTruthy();
+    searchItem!.click();
     await nextTick();
     expect(w.emitted("open-search")).toBeTruthy();
     w.unmount();

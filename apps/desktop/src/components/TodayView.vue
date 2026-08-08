@@ -1080,7 +1080,7 @@ onMounted(load);
   display: grid;
   place-items: center;
   background: var(--color-accent);
-  color: #fff;
+  color: var(--color-accent-fg);
   border-color: var(--color-accent);
 }
 .today-composer p {

@@ -23,8 +23,8 @@ function mountEntranceTimeline(root: AnimationRoot): AnimationHandle {
         logo,
         {
           opacity: [0, 1],
-          scale: [0.94, 1],
-          duration: 420,
+          scale: [0.97, 1],
+          duration: 240,
         },
         0
       );
@@ -35,10 +35,10 @@ function mountEntranceTimeline(root: AnimationRoot): AnimationHandle {
         hero,
         {
           opacity: [0, 1],
-          y: [20, 0],
-          duration: 560,
+          y: [8, 0],
+          duration: 280,
         },
-        80
+        40
       );
     }
 
@@ -48,12 +48,12 @@ function mountEntranceTimeline(root: AnimationRoot): AnimationHandle {
         cards,
         {
           opacity: [0, 1],
-          y: [16, 0],
-          scale: [0.985, 1],
-          delay: stagger(55),
-          duration: 480,
+          y: [8, 0],
+          scale: [0.99, 1],
+          delay: stagger(40),
+          duration: 240,
         },
-        160
+        80
       );
     }
 
@@ -66,10 +66,10 @@ function mountEntranceTimeline(root: AnimationRoot): AnimationHandle {
       scope.execute(() =>
         createTimeline({ defaults: { ease: "out(4)" } }).add(added, {
           opacity: [0, 1],
-          y: [12, 0],
-          scale: [0.99, 1],
-          delay: stagger(45),
-          duration: 420,
+          y: [6, 0],
+          scale: [0.995, 1],
+          delay: stagger(30),
+          duration: 200,
         })
       );
     };
@@ -89,9 +89,9 @@ function mountCardInteractions(root: AnimationRoot): AnimationHandle {
         interaction?.cancel();
         interaction = scope.execute(() =>
           animate(card, {
-            y: -6,
-            scale: 1.02,
-            duration: 260,
+            y: -2,
+            scale: 1,
+            duration: 160,
             ease: "out(4)",
           })
         );
@@ -103,7 +103,7 @@ function mountCardInteractions(root: AnimationRoot): AnimationHandle {
           animate(card, {
             y: 0,
             scale: 1,
-            duration: 360,
+            duration: 160,
             ease: "out(4)",
           })
         );

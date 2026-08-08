@@ -234,13 +234,13 @@ const saveLabel = props.mode === "reconfigure" ? "保存并重启应用" : "保�
   justify-content: center;
   padding: 40px 20px;
   overflow: auto;
-  background: #f7f7f8;
+  background: var(--color-surface-muted);
 }
 .wizard-card {
   width: 100%;
   max-width: 680px;
-  background: #fff;
-  border: 1px solid #e5e6e8;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
   border-radius: 12px;
   padding: 28px 32px;
 }
@@ -250,7 +250,7 @@ h1 {
 }
 .subtitle {
   margin: 0 0 18px;
-  color: #6a6b6e;
+  color: var(--color-fg-muted);
   font-size: 13px;
 }
 .steps {
@@ -261,14 +261,14 @@ h1 {
   font-size: 13px;
 }
 .step {
-  color: #9a9b9e;
+  color: var(--color-fg-subtle);
 }
 .step.active {
-  color: #1a1b1e;
+  color: var(--color-fg);
   font-weight: 600;
 }
 .sep {
-  color: #c0c1c4;
+  color: var(--color-fg-disabled);
 }
 .step-body {
   display: flex;
@@ -286,18 +286,18 @@ h1 {
   gap: 8px;
   padding: 8px 14px;
   border-radius: 8px;
-  border: 1px solid #e5e6e8;
+  border: 1px solid var(--color-border);
   font-size: 13px;
 }
 .dep-pill.ok {
-  color: #1b5e20;
-  border-color: #c8e6c9;
-  background: #f1f8f1;
+  color: var(--color-success-fg);
+  border-color: var(--color-success-soft);
+  background: var(--color-success-soft);
 }
 .dep-pill.bad {
-  color: #b71c1c;
-  border-color: #f5c6c2;
-  background: #fdf2f1;
+  color: var(--color-danger-fg);
+  border-color: var(--color-danger-soft);
+  background: var(--color-danger-soft);
 }
 .dot {
   width: 8px;
@@ -305,10 +305,10 @@ h1 {
   border-radius: 50%;
 }
 .dep-pill.ok .dot {
-  background: #2e7d32;
+  background: var(--color-success);
 }
 .dep-pill.bad .dot {
-  background: #c62828;
+  background: var(--color-danger);
 }
 .state {
   color: inherit;
@@ -318,18 +318,18 @@ h1 {
   align-self: flex-start;
   background: none;
   border: none;
-  color: #1a1b1e;
+  color: var(--color-fg);
   text-decoration: underline;
   cursor: pointer;
   font-size: 13px;
   padding: 0;
 }
 .warn {
-  color: #b71c1c;
+  color: var(--color-danger-fg);
   font-size: 13px;
 }
 .warn code {
-  background: #f0f0f1;
+  background: var(--color-surface-sunken);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 12px;
@@ -338,7 +338,7 @@ h1 {
   font-size: 14px;
   font-weight: 600;
   margin: 6px 0 4px;
-  color: #3a3b3e;
+  color: var(--color-fg-muted);
 }
 .grid {
   display: grid;
@@ -350,24 +350,25 @@ h1 {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: #545659;
+  color: var(--color-fg-muted);
 }
 .field-wide {
   grid-column: 1 / -1;
 }
 .field input {
   padding: 8px 12px;
-  border: 1px solid #d8d9da;
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   font-size: 14px;
   outline: none;
 }
 .field input:focus {
-  border-color: #1a1b1e;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
 }
 
 .secret-hint {
-  color: #6a6b6e;
+  color: var(--color-fg-muted);
   font-size: 11px;
 }
 .actions {
@@ -376,8 +377,8 @@ h1 {
   margin-top: 6px;
 }
 .primary-btn {
-  background: #1a1b1e;
-  color: #fff;
+  background: var(--pa-btn-primary-bg);
+  color: var(--color-accent-fg);
   border: none;
   border-radius: 8px;
   padding: 9px 20px;
@@ -385,20 +386,20 @@ h1 {
   cursor: pointer;
 }
 .primary-btn:disabled {
-  background: #c0c1c4;
+  background: var(--color-fg-disabled);
   cursor: not-allowed;
 }
 .ghost-btn {
-  background: #fff;
-  color: #1a1b1e;
-  border: 1px solid #d8d9da;
+  background: var(--color-surface);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   padding: 9px 18px;
   font-size: 14px;
   cursor: pointer;
 }
 .ghost-btn:disabled {
-  color: #c0c1c4;
+  color: var(--color-fg-disabled);
   cursor: not-allowed;
 }
 .secret-action {
@@ -408,8 +409,8 @@ h1 {
 .conn-result {
   margin-top: 6px;
   padding: 14px 16px;
-  background: #fafafa;
-  border: 1px solid #e5e6e8;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -430,20 +431,20 @@ h1 {
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  color: #fff;
+  color: var(--color-accent-fg);
 }
 .badge.ok {
-  background: #2e7d32;
+  background: var(--color-success);
 }
 .badge.bad {
-  background: #c62828;
+  background: var(--color-danger);
 }
 .err {
-  color: #b71c1c;
+  color: var(--color-danger-fg);
   font-size: 12px;
 }
 .models {
-  color: #3a3b3e;
+  color: var(--color-fg-muted);
   word-break: break-all;
 }
 </style>

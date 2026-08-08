@@ -206,15 +206,15 @@ textarea:disabled { cursor: not-allowed; }
 .execute-btn {
   min-width: 92px;
   padding: 0 var(--space-4);
-  border-color: var(--color-accent);
-  background: var(--color-accent);
+  border-color: var(--pa-btn-primary-bg);
+  background: var(--pa-btn-primary-bg);
   color: var(--color-accent-fg);
   font-weight: var(--font-semibold);
 }
-.execute-btn:hover:not(:disabled) { background: var(--color-accent-hover); transform: translateY(-1px); }
+.execute-btn:hover:not(:disabled) { background: var(--pa-btn-primary-bg-hover); transform: translateY(-1px); }
 .execute-btn:active:not(:disabled) { transform: translateY(0); }
 .execute-btn:disabled { border-color: var(--color-border); background: var(--color-surface-sunken); color: var(--color-fg-faint); cursor: not-allowed; }
-.execute-btn--stop { border-color: var(--color-danger); background: var(--color-danger); color: #fff; }
+.execute-btn--stop { border-color: var(--color-danger); background: var(--color-danger); color: var(--pa-btn-danger-fg); }
 .composer-icon:focus-visible, .composer-chip:focus-visible, .execute-btn:focus-visible, .context-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
 .composer-hint {
   display: flex;

@@ -484,8 +484,8 @@ onMounted(load);
 .server-card { display: grid; gap: 11px; padding: 14px; border: 1px solid var(--color-border); border-radius: 13px; background: var(--color-bg); }
 .server-title > div { display: flex; align-items: center; gap: 8px; }
 .transport, .health { font-size: 10px; padding: 3px 7px; border-radius: 999px; background: var(--color-surface); color: var(--color-fg-muted); }
-.health.healthy { color: #1d7a54; background: color-mix(in srgb, #2bb673 14%, transparent); }
-.health.error, .error-code { color: var(--color-danger, #b42318); }
+.health.healthy { color: var(--color-success-fg); background: var(--color-success-soft); }
+.health.error, .error-code { color: var(--color-danger-fg); }
 .endpoint { overflow-wrap: anywhere; color: var(--color-fg-muted); font-size: 11px; }
 .state-controls { justify-content: flex-start; }
 .state-controls .check-row { color: var(--color-fg-muted); font-size: 12px; }
@@ -498,7 +498,7 @@ onMounted(load);
 .tool-row small { color: var(--color-fg-muted); font-size: 11px; }
 .audit-actions { justify-content: flex-end; }
 .text-button { border: 0; background: transparent; color: var(--color-accent); cursor: pointer; font-size: 11px; }
-.text-button.danger { color: var(--color-danger, #b42318); }
+.text-button.danger { color: var(--color-danger-fg); }
 .call-list { display: grid; gap: 5px; padding-top: 8px; border-top: 1px solid var(--color-border); color: var(--color-fg-muted); font-size: 10px; }
 .call-row { display: grid; grid-template-columns: minmax(100px, 1fr) auto auto; gap: 8px; }
 @media (max-width: 720px) { .call-row { grid-template-columns: 1fr; } }

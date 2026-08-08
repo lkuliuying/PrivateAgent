@@ -5,21 +5,19 @@
  * 动作：新建会话/收件箱/提醒、导入文档、生成今日简报、运行健康检查、打开设置/诊断、全局搜索。
  */
 import { computed, nextTick, onMounted, ref, watch } from "vue";
+import type { Component } from "vue";
 import {
   PhChatCircle,
   PhTray,
   PhBell,
   PhUploadSimple,
   PhSparkle,
-  PhHeartbeat,
-  PhGearSix,
-  PhActivity,
   PhMagnifyingGlass,
-  PhPlus,
 } from "@phosphor-icons/vue";
 import { createInbox, createReminder, createTodayBriefing, createSession } from "../api";
 import { useNotifications } from "../stores/notifications";
 import type { View } from "../types";
+import { VIEW_REGISTRY } from "../models/viewRegistry";
 
 const emit = defineEmits<{
   navigate: [view: View];
@@ -36,12 +34,23 @@ interface Command {
   id: string;
   label: string;
   hint?: string;
-  icon: typeof PhPlus;
+  icon: Component;
   keywords: string;
   run: () => void | Promise<void>;
 }
 
+/** 视图注册表驱动的一级导航命令（D2：统一命令面板入口） */
+const viewCommands: Command[] = Object.values(VIEW_REGISTRY).map((meta) => ({
+  id: `view-${meta.key}`,
+  label: `打开${meta.label}`,
+  hint: meta.group === "system" ? "系统" : undefined,
+  icon: meta.icon,
+  keywords: meta.keywords.join(" "),
+  run: () => emit("navigate", meta.key),
+}));
+
 const commands = computed<Command[]>(() => [
+  ...viewCommands,
   {
     id: "search",
     label: "全局搜索",
@@ -100,7 +109,7 @@ const commands = computed<Command[]>(() => [
   },
   {
     id: "import-doc",
-    label: "导入文档",
+    label: "导入文档到知识库",
     icon: PhUploadSimple,
     keywords: "import 文档 knowledge kb",
     run: () => emit("navigate", "kb"),
@@ -119,27 +128,6 @@ const commands = computed<Command[]>(() => [
         notify.error("生成简报失败", String(e));
       }
     },
-  },
-  {
-    id: "health",
-    label: "运行健康检查",
-    icon: PhHeartbeat,
-    keywords: "health 健康 check",
-    run: () => emit("navigate", "diagnostics"),
-  },
-  {
-    id: "diagnostics",
-    label: "打开诊断中心",
-    icon: PhActivity,
-    keywords: "diagnostics 诊断",
-    run: () => emit("navigate", "diagnostics"),
-  },
-  {
-    id: "settings",
-    label: "打开设置",
-    icon: PhGearSix,
-    keywords: "settings 设置",
-    run: () => emit("navigate", "settings"),
   },
 ]);
 

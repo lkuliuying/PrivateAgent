@@ -179,21 +179,21 @@ async function install() {
   gap: 10px;
 }
 .ghost-btn {
-  background: #fff;
-  color: #1a1b1e;
-  border: 1px solid #d8d9da;
+  background: var(--color-surface);
+  color: var(--color-fg);
+  border: 1px solid var(--color-border-strong);
   border-radius: 8px;
   padding: 8px 16px;
   font-size: 14px;
   cursor: pointer;
 }
 .ghost-btn:disabled {
-  color: #c0c1c4;
+  color: var(--color-fg-disabled);
   cursor: not-allowed;
 }
 .primary-btn {
-  background: #1a1b1e;
-  color: #fff;
+  background: var(--pa-btn-primary-bg);
+  color: var(--color-accent-fg);
   border: none;
   border-radius: 8px;
   padding: 8px 16px;
@@ -201,7 +201,7 @@ async function install() {
   cursor: pointer;
 }
 .primary-btn:disabled {
-  background: #c0c1c4;
+  background: var(--color-fg-disabled);
   cursor: not-allowed;
 }
 .msg {
@@ -209,19 +209,19 @@ async function install() {
   margin: 0;
 }
 .msg.ok {
-  color: #2e7d32;
+  color: var(--color-success-fg);
 }
 .msg.err {
-  color: #b71c1c;
+  color: var(--color-danger-fg);
 }
 .hint {
-  color: #9a9b9e;
+  color: var(--color-fg-subtle);
   font-size: 12px;
 }
 .update-info {
   padding: 12px 14px;
-  background: #fafafa;
-  border: 1px solid #e5e6e8;
+  background: var(--color-surface-muted);
+  border: 1px solid var(--color-border);
   border-radius: 8px;
   display: flex;
   flex-direction: column;
@@ -230,7 +230,7 @@ async function install() {
 .k {
   display: inline-block;
   font-size: 12px;
-  color: #9a9b9e;
+  color: var(--color-fg-subtle);
   width: 64px;
 }
 .v {
@@ -238,9 +238,9 @@ async function install() {
 }
 .body {
   font-size: 13px;
-  color: #545659;
+  color: var(--color-fg-muted);
   white-space: pre-wrap;
-  border-top: 1px solid #eee;
+  border-top: 1px solid var(--color-border);
   padding-top: 6px;
   margin-top: 2px;
 }

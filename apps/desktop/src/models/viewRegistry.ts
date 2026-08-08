@@ -1,0 +1,165 @@
+/**
+ * 类型化视图注册表（0.4.0 D2）
+ *
+ * 统一维护：页面名称、图标、导航分组、命令面板关键词、壳行为。
+ * 替代 App.vue 中的标题 switch 与 NavRail 内散落的导航数组；
+ * 页面定位使用 NavigationTarget 类型化参数，不散落字符串 URL 或 hash。
+ */
+import type { Component } from "vue";
+import {
+  PhActivity,
+  PhBooks,
+  PhBrain,
+  PhChatsCircle,
+  PhDatabase,
+  PhFolderSimple,
+  PhGearSix,
+  PhGraduationCap,
+  PhListChecks,
+  PhPlugs,
+  PhPuzzlePiece,
+  PhSun,
+} from "@phosphor-icons/vue";
+import type { View } from "../types";
+
+/** 导航分组（D0 冻结，docs/ui-audit-0.4.0.md §4） */
+export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system";
+
+export interface ViewMeta {
+  key: View;
+  /** 导航/命令面板中的短名 */
+  label: string;
+  icon: Component;
+  group: ViewGroup;
+  /** 命令面板搜索关键词 */
+  keywords: string[];
+  /** 顶部栏行为 */
+  showTopbar?: boolean;
+  showStatusbar?: boolean;
+  /** chat 顶部栏展示任务状态徽标 */
+  showsTaskState?: boolean;
+}
+
+export const VIEW_GROUP_META: Record<ViewGroup, { label: string }> = {
+  daily: { label: "日常" },
+  agent: { label: "执行" },
+  work: { label: "工作" },
+  knowledge: { label: "知识" },
+  connect: { label: "连接" },
+  system: { label: "系统" },
+};
+
+export const VIEW_REGISTRY: Record<View, ViewMeta> = {
+  today: {
+    key: "today",
+    label: "今日",
+    icon: PhSun,
+    group: "daily",
+    keywords: ["today", "今日", "简报", "待办", "收件箱", "提醒"],
+    showTopbar: false,
+    showStatusbar: false,
+  },
+  chat: {
+    key: "chat",
+    label: "Agent",
+    icon: PhChatsCircle,
+    group: "agent",
+    keywords: ["agent", "任务", "对话", "chat", "审批"],
+    showsTaskState: true,
+  },
+  projects: {
+    key: "projects",
+    label: "项目",
+    icon: PhFolderSimple,
+    group: "work",
+    keywords: ["project", "项目", "目标", "代码"],
+  },
+  tasks: {
+    key: "tasks",
+    label: "任务",
+    icon: PhListChecks,
+    group: "work",
+    keywords: ["task", "任务", "目标", "工作区"],
+  },
+  kb: {
+    key: "kb",
+    label: "知识库",
+    icon: PhBooks,
+    group: "knowledge",
+    keywords: ["kb", "知识库", "文档", "集合", "搜索"],
+  },
+  learning: {
+    key: "learning",
+    label: "学习",
+    icon: PhGraduationCap,
+    group: "knowledge",
+    keywords: ["learning", "学习", "资料"],
+  },
+  memory: {
+    key: "memory",
+    label: "记忆",
+    icon: PhBrain,
+    group: "knowledge",
+    keywords: ["memory", "记忆", "draft"],
+  },
+  integrations: {
+    key: "integrations",
+    label: "集成",
+    icon: PhPlugs,
+    group: "connect",
+    keywords: ["integration", "集成", "ics", "日历", "导入"],
+  },
+  extensions: {
+    key: "extensions",
+    label: "扩展",
+    icon: PhPuzzlePiece,
+    group: "connect",
+    keywords: ["extension", "扩展", "mcp", "server"],
+  },
+  settings: {
+    key: "settings",
+    label: "设置",
+    icon: PhGearSix,
+    group: "system",
+    keywords: ["settings", "设置", "状态", "运行状态", "模型", "连接"],
+  },
+  diagnostics: {
+    key: "diagnostics",
+    label: "诊断",
+    icon: PhActivity,
+    group: "system",
+    keywords: ["diagnostics", "诊断", "健康", "检查"],
+  },
+  backup: {
+    key: "backup",
+    label: "备份",
+    icon: PhDatabase,
+    group: "system",
+    keywords: ["backup", "备份", "恢复", "升级", "更新"],
+  },
+};
+
+/** 顶部导航分组顺序（系统组固定在底部） */
+export const NAV_GROUPS: ViewGroup[] = ["daily", "agent", "work", "knowledge", "connect"];
+export const SYSTEM_GROUP: ViewGroup = "system";
+
+export function viewMeta(view: View): ViewMeta {
+  return VIEW_REGISTRY[view];
+}
+
+export function viewLabel(view: View): string {
+  return viewMeta(view).label;
+}
+
+export function groupViews(group: ViewGroup): ViewMeta[] {
+  return Object.values(VIEW_REGISTRY).filter((meta) => meta.group === group);
+}
+
+/** 类型化导航目标：需要定位具体对象时使用，组件不散落字符串 URL。 */
+export interface NavigationTarget {
+  view: View;
+  /** chat 视图定位会话 */
+  sessionId?: number;
+  /** 未来扩展：页面级定位参数（文档 id、项目 id 等） */
+  params?: Record<string, string | number>;
+}

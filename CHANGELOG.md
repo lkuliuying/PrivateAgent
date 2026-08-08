@@ -1,5 +1,50 @@
 # 更新日志
 
+## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
+
+> 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)；
+> 证据：`docs/v0.4.0-alpha.1-checkpoint-20260808.md`。仅内部 Alpha，不更新普通用户 `latest.json`。
+
+### D0 · 设计审计与范围冻结
+- 新增 `docs/ui-audit-0.4.0.md`：全量 UI 审计（54 组件、103 处硬编码颜色、135 处硬编码字号、动效时长分布、组件规模 Top10）；
+- 新增 `docs/ui-state-matrix-0.4.0.md`：Agent 任务/计划/工具/审批/SSE 恢复/右栏/页面级状态矩阵；
+- 新增 `src/dev/uiStateFixtures.ts`：13 个真实公开 DTO fixture（空任务/规划/流式/工具执行/审批/失败/停止/RAG/拒答/重连/产物），与状态矩阵一一对应；
+- 信息架构冻结：一级导航 6 分组（日常/执行/工作/知识/连接 + 底部系统），12 视图零下线；
+- 视觉方向冻结：Calm Workbench 2.0（浅色主题首轮交付，六级语义字号，动效四档）。
+
+### D1 · 设计系统 2.0
+- `tokens.css` 升级为三层令牌（Primitive/Semantic/Component），0.3.0 旧变量全部保留为别名，零破坏；
+- 新增 25 个 `pa-*` 基础组件（Button/Input/Textarea/Select/Checkbox/Switch/Field/Badge/StatusIndicator/Spinner/Progress/Tabs/SegmentedControl/Disclosure/Card/EmptyState/ErrorState/Skeleton/InlineNotice/Tooltip/DropdownMenu/Dialog/IconButton/PageHeader），全量覆盖 hover/focus-visible/active/disabled/loading/error；
+- 新增 `src/dev/UiLab.vue`（`?ui-lab=1` 开发模式）：全部组件状态 + Agent 13 场景 + 文本/无障碍检查，复用真实组件与 fixture；
+- 组件测试 +20（新增 21 项，累计 82 项单测）。
+
+### D2 · 应用壳与信息架构
+- 新增类型化视图注册表 `src/models/viewRegistry.ts`（12 视图 × 分组/图标/关键词/壳行为），命令面板改由注册表驱动；
+- 新增轻量导航历史 `src/composables/useViewHistory.ts`（返回/前进/恢复上次视图，localStorage 持久化）与全局快捷键 `useShortcuts`（Ctrl/Cmd+K、Ctrl/Cmd+N、Alt+←/→，不覆盖输入编辑）；
+- 新增 `AppShell v2`（三栏：分组导航/中央工作区/四 tab 上下文栏）与 `NavRailV2`（视图注册表驱动、系统组沉底）；
+- 新增 `ContextRail`：Files/Context/Sources/Artifacts 四 tab，与当前任务绑定，无任务时显示全局占位；
+- `ui_v2` 开关（`?ui=v2|v1` / `pa_ui_v2`）：alpha.1 默认兼容壳，新壳按开关启用，回退已验证（Playwright E2E）；
+- 启动流程统一：>500ms 才展示加载态；失败页说明依赖/数据影响并提供重试/重新配置/退出；
+- E2E +7（新壳分组导航、视图历史、上下文栏、命令面板、回退），累计 22 项。
+
+### D3 · Agent 核心工作流（`features/agent/` 领域完整迁移）
+- 统一活动流 `ActivityFeedV2`：用户请求/Agent 正文/工具摘要+折叠/审批卡/错误块/结果块；计划步骤点击定位活动；
+- 统一审批卡 `ApprovalCardV2`（Runtime + legacy 工具），原位状态转换与过期/取消/失败恢复提示；
+- 长活动流自动跟随 +「有新活动」入口（含异步竞态防护）；停止区分「正在停止…/已停止」；
+- 上下文栏接入真实数据（`listActivities` 5s 轮询 + `listTrustedPaths`，切换会话清理定时器）；
+- 修复续传回答丢失 RAG sources/memories 的真实缺陷（`continueAgentReply` done 事件未消费来源）；
+- 测试 +16（单测 14 + E2E 2：审批→批准→RAG 来源闭环、停止即时反馈）。
+
+### D4 · 业务页面迁移（首批）
+- SettingsView/StatusView/ConfigWizard/UpdateChecker/McpServersPanel/NavRail 等全部 103 处硬编码颜色清零（统一走语义/组件令牌）；
+- 新增 `PageHeader` 统一页面标题层级（面包屑/标题/状态摘要/操作）。
+
+### D5 · 动效与可访问性
+- 动效时长按四档收敛：page 入场 560→280ms、卡片 480→240ms、hover 位移 6px+scale1.02 → 2px 无缩放、chat 消息 360→200ms；E2E 断言更新为新规格；
+- 全局 `prefers-reduced-motion` 底线（动效只解释状态，不承载功能信息）；
+- 接入 `@axe-core/playwright`：v2 壳 + Agent 工作区 WCAG AA 无严重违规（修复主按钮对比度 → teal-700 白字 5.3:1、meta 文字 fg-subtle 校准 ≥5:1）；
+- E2E +2（axe 严重违规扫描、键盘 focus-visible 环）。
+
 ## 0.2.1（2026-08-06，稳定化发布候选）
 
 ### 数据库（schema `0021`）

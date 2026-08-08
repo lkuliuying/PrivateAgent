@@ -1,79 +1,141 @@
 /**
- * 设计令牌 · tokens.css
- * 第二阶段 M0 设计系统基础。所有颜色/字号/间距/圆角/阴影/动效/布局尺寸统一自此引用。
- * 视觉方向：Calm Agent Workbench；浅色生产力桌面 + 深色品牌 rail；青蓝仅作强调色。
+ * 设计令牌 · tokens.css（0.4.0 tokens v2 · 三层结构）
  *
- * 使用：在 main.ts 中先于 App 引入。组件内用 var(--token) 引用，禁止再硬编码 hex。
+ * 视觉方向：Calm Agent Workbench 2.0；浅色生产力桌面 + 深色品牌 rail；青蓝仅作强调色。
+ *
+ * 三层结构（D0 冻结，docs/ui-audit-0.4.0.md §5）：
+ *   1. Primitive  原始调色板与尺度（--pa-p-* / --pa-t-* / --pa-s-* / --pa-r-* / --pa-shadow-* / --pa-m-*）
+ *      —— 页面与组件禁止直接引用本层；
+ *   2. Semantic   语义角色（--color-* / --pa-text-* / --pa-motion-* / --focus-ring …）
+ *      —— 页面样式只允许引用本层与组件层；
+ *   3. Component  组件级令牌（--pa-btn-* / --pa-input-* / --pa-nav-* / --pa-card-* / --pa-approval-* …）
+ *      —— pa-* 基础组件内部使用，页面定制组件外观时只允许覆盖本层。
+ *
+ * 兼容：0.3.0 既有 --color-* / --text-* / --space-* / --radius-* / --duration-* / --shadow* /
+ * --rail-w 等变量全部保留（现归入语义层/布局层，值指向 primitive），旧页面零改动运行。
+ * 规则：禁止在页面中新增无说明的十六进制颜色、任意字号与任意 z-index。
  */
 
 :root {
-  /* ============ 字体 ============ */
+  /* ========================================================================
+   * Layer 1 · Primitive —— 原始值，仅限本文件内部与语义层引用
+   * ======================================================================== */
+
+  /* 冷灰（青灰调） */
+  --pa-p-gray-0: #ffffff;
+  --pa-p-gray-25: #f8fbfc;
+  --pa-p-gray-50: #f5f9fa;
+  --pa-p-gray-75: #f1f7f8;
+  --pa-p-gray-100: #edf5f6;
+  --pa-p-gray-150: #edf6f7;
+  --pa-p-gray-200: #dce8ea;
+  --pa-p-gray-300: #cbdcdf;
+  --pa-p-gray-400: #b9c8cc;
+  --pa-p-gray-500: #8ba0a6;
+  --pa-p-gray-600: #667b82;
+  --pa-p-gray-700: #4f666e;
+  --pa-p-gray-900: #172b32;
+
+  /* 青蓝（品牌/强调） */
+  --pa-p-teal-50: #dff7f7;
+  --pa-p-teal-300: #5fe0e5;
+  --pa-p-teal-500: #08aeb5;
+  --pa-p-teal-600: #07959c;
+  --pa-p-teal-700: #06777e;
+  --pa-p-teal-750: #066a70;
+  --pa-p-teal-800: #08777d;
+  --pa-p-teal-950: #082832;
+
+  /* 状态色 */
+  --pa-p-green-500: #21a67a;
+  --pa-p-green-50: #def5ec;
+  --pa-p-green-800: #157052;
+  --pa-p-amber-500: #d89a32;
+  --pa-p-amber-50: #fff3dc;
+  --pa-p-amber-800: #8e5d10;
+  --pa-p-red-500: #db5a65;
+  --pa-p-red-600: #b91c1c;
+  --pa-p-red-50: #fde8ea;
+  --pa-p-red-800: #a3313b;
+  --pa-p-blue-500: #2563eb;
+  --pa-p-blue-50: #dbeafe;
+  --pa-p-blue-800: #1e40af;
+
+  /* 字号尺度（primitive） */
+  --pa-t-11: 11px;
+  --pa-t-12: 12px;
+  --pa-t-13: 13px;
+  --pa-t-14: 14px;
+  --pa-t-15: 15px;
+  --pa-t-16: 16px;
+  --pa-t-17: 17px;
+  --pa-t-18: 18px;
+  --pa-t-22: 22px;
+  --pa-t-24: 24px;
+  --pa-t-28: 28px;
+  --pa-t-30: 30px;
+  --pa-t-32: 32px;
+
+  /* 间距尺度（4px 基础单位） */
+  --pa-s-1: 4px;
+  --pa-s-2: 8px;
+  --pa-s-3: 12px;
+  --pa-s-4: 16px;
+  --pa-s-5: 20px;
+  --pa-s-6: 24px;
+  --pa-s-8: 32px;
+  --pa-s-10: 40px;
+
+  /* 圆角 */
+  --pa-r-sm: 4px;
+  --pa-r-md: 6px;
+  --pa-r-lg: 10px;
+  --pa-r-xl: 14px;
+  --pa-r-full: 9999px;
+
+  /* 阴影 */
+  --pa-shadow-1: 0 1px 2px rgba(8, 40, 50, 0.04);
+  --pa-shadow-2: 0 8px 24px rgba(8, 40, 50, 0.06);
+  --pa-shadow-3: 0 18px 48px rgba(8, 40, 50, 0.1);
+
+  /* 动效时长（primitive，毫秒值） */
+  --pa-m-100: 100ms;
+  --pa-m-120: 120ms;
+  --pa-m-160: 160ms;
+  --pa-m-200: 200ms;
+  --pa-m-240: 240ms;
+  --pa-m-320: 320ms;
+  --pa-m-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --pa-m-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* ========================================================================
+   * Layer 2 · Semantic —— 页面可引用的语义角色
+   * ======================================================================== */
+
+  /* 字体 */
   --font-sans: "Segoe UI Variable", "Aptos", "PingFang SC", "Microsoft YaHei",
     sans-serif;
   --font-display: var(--font-sans);
   --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono",
     Menlo, monospace;
 
-  /* ============ 颜色 · 浅色主题（默认）============ */
-  /* 背景层 */
-  --color-bg: #f5f9fa; /* 冷灰白 · 应用底色 */
-  --color-surface: #ffffff; /* 主表面 */
-  --color-surface-sunken: #edf5f6; /* 输入与内陷区 */
-  --color-surface-muted: #f1f7f8;
-  --color-surface-raised: #ffffff; /* 抬升表面 */
-  --color-panel: #f8fbfc; /* 次级工作台表面 */
-  --color-surface-hover: #edf6f7;
+  /* 语义字号（D0 冻结六级；正文行高 ≥1.5） */
+  --pa-text-display: var(--pa-t-30); /* 28–32：少量空状态/首次引导 */
+  --pa-text-page-title: var(--pa-t-22); /* 22–24：页面/任务标题 */
+  --pa-text-section: var(--pa-t-17); /* 16–18：页面分区 */
+  --pa-text-body: var(--pa-t-14); /* 正文与主要列表 */
+  --pa-text-compact: var(--pa-t-13); /* 高密度元数据/次级列表 */
+  --pa-text-meta: var(--pa-t-12); /* 时间/状态/辅助信息 */
+  --pa-text-mono: var(--pa-t-13); /* 路径/命令/日志/Diff */
 
-  /* 文字层 */
-  --color-fg: #172b32; /* 主文字 */
-  --color-fg-muted: #4f666e; /* 次级文字 */
-  --color-fg-subtle: #667b82; /* 辅助文字 */
-  --color-fg-faint: #8ba0a6; /* 提示/占位 */
-  --color-fg-disabled: #b9c8cc; /* 禁用 */
-
-  /* 描边 */
-  --color-border: #dce8ea; /* 弱分割线 */
-  --color-border-strong: #cbdcdf; /* 输入框/强调边 */
-
-  /* 强调色 · 青蓝（仅用于激活态/链接/聚焦环，不铺满） */
-  --color-accent: #08aeb5;
-  --color-accent-hover: #07959c;
-  --color-accent-active: #06777e;
-  --color-accent-fg: #ffffff;
-  --color-accent-soft: #dff7f7;
-  --color-accent-soft-fg: #08777d;
-
-  /* 语义状态色 */
-  --color-success: #21a67a;
-  --color-success-soft: #def5ec;
-  --color-success-fg: #157052;
-  --color-warning: #d89a32; /* 琥珀 */
-  --color-warning-soft: #fff3dc;
-  --color-warning-fg: #8e5d10;
-  --color-danger: #db5a65; /* 危险操作 */
-  --color-danger-soft: #fde8ea;
-  --color-danger-fg: #a3313b;
-  --color-info: #2563eb;
-  --color-info-soft: #dbeafe;
-
-  /* 导航 rail · 深色（与浅色内容区对照） */
-  --color-rail-bg: #082832;
-  --color-rail-surface: rgba(255, 255, 255, 0.08); /* rail 内 hover */
-  --color-rail-active: rgba(8, 174, 181, 0.17); /* rail 内选中 */
-  --color-rail-border: rgba(255, 255, 255, 0.08);
-  --color-rail-fg: #dcebed;
-  --color-rail-fg-strong: #ffffff;
-  --color-rail-fg-muted: #91a9af;
-  --color-rail-accent: #5fe0e5; /* rail 内激活指示 */
-
-  /* ============ 字号 ============ */
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 14px;
-  --text-md: 15px;
-  --text-lg: 16px;
-  --text-xl: 18px;
-  --text-2xl: 22px;
+  /* 兼容字号别名（0.3.0 既有变量，逐步迁移到 --pa-text-*） */
+  --text-xs: var(--pa-t-11);
+  --text-sm: var(--pa-t-12);
+  --text-base: var(--pa-t-14);
+  --text-md: var(--pa-t-15);
+  --text-lg: var(--pa-t-16);
+  --text-xl: var(--pa-t-18);
+  --text-2xl: var(--pa-t-22);
 
   /* 字重 / 行高 */
   --font-normal: 400;
@@ -82,65 +144,178 @@
   --leading-tight: 1.25;
   --leading-normal: 1.5;
 
-  /* ============ 间距 ============ */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-10: 40px;
+  /* 背景层 */
+  --color-bg: var(--pa-p-gray-50); /* 冷灰白 · 应用底色 */
+  --color-surface: var(--pa-p-gray-0); /* 主表面 */
+  --color-surface-sunken: var(--pa-p-gray-100); /* 输入与内陷区 */
+  --color-surface-muted: var(--pa-p-gray-75);
+  --color-surface-raised: var(--pa-p-gray-0); /* 抬升表面 */
+  --color-panel: var(--pa-p-gray-25); /* 次级工作台表面 */
+  --color-surface-hover: var(--pa-p-gray-150);
 
-  /* ============ 圆角（plan 要求 6–8px）============ */
-  --radius-sm: 4px;
-  --radius: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-full: 9999px;
+  /* 文字层（fg-subtle 校准至白底 ≥5:1，满足 WCAG AA 12px 正文） */
+  --color-fg: var(--pa-p-gray-900);
+  --color-fg-muted: var(--pa-p-gray-700);
+  --color-fg-subtle: #5d7179;
+  --color-fg-faint: var(--pa-p-gray-500);
+  --color-fg-disabled: var(--pa-p-gray-400);
 
-  /* ============ 阴影（克制）============ */
-  --shadow-sm: 0 1px 2px rgba(8, 40, 50, 0.04);
-  --shadow: 0 8px 24px rgba(8, 40, 50, 0.06);
-  --shadow-lg: 0 18px 48px rgba(8, 40, 50, 0.1);
+  /* 描边 */
+  --color-border: var(--pa-p-gray-200);
+  --color-border-strong: var(--pa-p-gray-300);
 
-  /* ============ 动效（plan 要求 120–180ms）============ */
-  --duration-fast: 120ms;
-  --duration: 160ms;
-  --duration-slow: 220ms;
-  --ease: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* 强调色 · 青蓝（仅交互/状态强调，不铺满） */
+  --color-accent: var(--pa-p-teal-500);
+  --color-accent-hover: var(--pa-p-teal-600);
+  --color-accent-active: var(--pa-p-teal-700);
+  --color-accent-fg: var(--pa-p-gray-0);
+  --color-accent-soft: var(--pa-p-teal-50);
+  --color-accent-soft-fg: var(--pa-p-teal-800);
 
-  /* ============ 布局尺寸 ============ */
+  /* 语义状态色（独立于青色；组合对比度达 WCAG AA） */
+  --color-success: var(--pa-p-green-500);
+  --color-success-soft: var(--pa-p-green-50);
+  --color-success-fg: var(--pa-p-green-800);
+  --color-warning: var(--pa-p-amber-500);
+  --color-warning-soft: var(--pa-p-amber-50);
+  --color-warning-fg: var(--pa-p-amber-800);
+  --color-danger: var(--pa-p-red-500);
+  --color-danger-strong: var(--pa-p-red-600);
+  --color-danger-soft: var(--pa-p-red-50);
+  --color-danger-fg: var(--pa-p-red-800);
+  --color-info: var(--pa-p-blue-500);
+  --color-info-soft: var(--pa-p-blue-50);
+  --color-info-fg: var(--pa-p-blue-800);
+
+  /* 导航 rail · 深色品牌区 */
+  --color-rail-bg: var(--pa-p-teal-950);
+  --color-rail-surface: rgba(255, 255, 255, 0.08);
+  --color-rail-active: rgba(8, 174, 181, 0.17);
+  --color-rail-border: rgba(255, 255, 255, 0.08);
+  --color-rail-fg: #dcebed;
+  --color-rail-fg-strong: #ffffff;
+  --color-rail-fg-muted: #91a9af;
+  --color-rail-accent: var(--pa-p-teal-300);
+
+  /* 间距（语义别名 = primitive） */
+  --space-1: var(--pa-s-1);
+  --space-2: var(--pa-s-2);
+  --space-3: var(--pa-s-3);
+  --space-4: var(--pa-s-4);
+  --space-5: var(--pa-s-5);
+  --space-6: var(--pa-s-6);
+  --space-8: var(--pa-s-8);
+  --space-10: var(--pa-s-10);
+
+  /* 圆角（语义别名） */
+  --radius-sm: var(--pa-r-sm);
+  --radius: var(--pa-r-md);
+  --radius-md: var(--pa-r-lg);
+  --radius-lg: var(--pa-r-xl);
+  --radius-full: var(--pa-r-full);
+
+  /* 阴影（克制） */
+  --shadow-sm: var(--pa-shadow-1);
+  --shadow: var(--pa-shadow-2);
+  --shadow-lg: var(--pa-shadow-3);
+
+  /* 动效等级（D0 冻结四档；频繁页面切换不超过 320ms） */
+  --pa-motion-instant: var(--pa-m-100); /* 80–120：按压/颜色/轻量状态 */
+  --pa-motion-fast: var(--pa-m-160); /* 120–180：hover/focus/菜单/Tooltip */
+  --pa-motion-standard: var(--pa-m-200); /* 180–240：面板/页签/折叠/列表 */
+  --pa-motion-deliberate: var(--pa-m-320); /* 240–320：大型抽屉/任务完成 */
+  --ease: var(--pa-m-ease);
+  --ease-out: var(--pa-m-ease-out);
+  /* 兼容时长别名（0.3.0 既有变量） */
+  --duration-fast: var(--pa-m-120);
+  --duration: var(--pa-m-160);
+  --duration-slow: var(--pa-m-240);
+
+  /* 布局尺寸 */
   --rail-w: 240px;
   --rail-collapsed-w: 72px;
   --list-w: 0px;
   --inspector-w: 360px;
   --statusbar-h: 30px;
   --topbar-h: 72px;
+  /* 壳响应式断点（供 JS 与 CSS 注释参照；CSS 媒体查询仍需写字面量） */
+  --pa-shell-inspector-min: 1320px; /* 低于此宽度右栏默认关闭（抽屉打开） */
+  --pa-shell-rail-collapse: 960px; /* 低于此宽度左栏自动折叠 */
 
-  /* ============ z-index 层级 ============ */
+  /* z-index 层级（仅允许以下五级） */
   --z-base: 0;
   --z-raised: 10;
   --z-inspector: 20;
   --z-overlay: 100;
   --z-toast: 200;
 
-  /* 遮罩（模态/确认对话框/全局搜索/命令面板背景） */
+  /* 遮罩与焦点环 */
   --color-scrim: rgba(20, 22, 26, 0.42);
-
-  /* 聚焦环（无障碍） */
   --focus-ring: 0 0 0 2px var(--color-accent-soft), 0 0 0 3px var(--color-accent);
 
-  /* ============ 全局基础（接管自原 App.vue 非 Scoped 样式）============ */
+  /* ========================================================================
+   * Layer 3 · Component —— pa-* 组件级令牌
+   * ======================================================================== */
+
+  /* 按钮（主操作：白字 + teal-700 深底，保证 WCAG AA ≥4.5:1） */
+  --pa-btn-height: 36px;
+  --pa-btn-height-sm: 26px;
+  --pa-btn-padding-x: 14px;
+  --pa-btn-bg: var(--color-surface);
+  --pa-btn-fg: var(--color-fg);
+  --pa-btn-bg-hover: var(--color-surface-sunken);
+  --pa-btn-primary-bg: var(--pa-p-teal-700);
+  --pa-btn-primary-bg-hover: var(--pa-p-teal-750);
+  --pa-btn-primary-fg: var(--color-accent-fg);
+  --pa-btn-danger-bg: var(--color-danger-strong);
+  --pa-btn-danger-bg-hover: var(--color-danger-strong);
+  --pa-btn-danger-fg: #ffffff;
+  --pa-btn-radius: var(--radius-md);
+
+  /* 输入 */
+  --pa-input-height: 36px;
+  --pa-input-bg: var(--color-surface);
+  --pa-input-border: var(--color-border-strong);
+  --pa-input-border-focus: var(--color-accent);
+  --pa-input-ring: 0 0 0 3px var(--color-accent-soft);
+  --pa-input-radius: var(--radius-md);
+
+  /* 导航 */
+  --pa-nav-item-height: 38px;
+  --pa-nav-item-height-compact: 32px;
+  --pa-nav-item-radius: var(--radius-md);
+  --pa-nav-indicator-w: 2px;
+
+  /* 卡片 */
+  --pa-card-bg: var(--color-surface);
+  --pa-card-border: var(--color-border);
+  --pa-card-radius: var(--radius-lg);
+  --pa-card-padding: var(--space-4);
+  --pa-card-hover-lift: 2px; /* D0 冻结：高密度卡片 hover 位移 0–2px，不默认缩放 */
+
+  /* 审批卡（高优先级确认） */
+  --pa-approval-border: color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  --pa-approval-bg: var(--color-surface);
+  --pa-approval-accent-bg: var(--color-warning-soft);
+
+  /* 活动流条目 */
+  --pa-activity-gap: var(--space-3);
+  --pa-activity-marker-size: 24px;
+  --pa-activity-enter-distance: 6px; /* 新活动 120–180ms 轻微淡入 + 短位移 */
+
+  /* 面板/页面 */
+  --pa-page-padding: var(--space-6);
+  --pa-page-max-w: 1060px;
+  --pa-section-gap: var(--space-6);
+
+  /* ============ 全局基础 ============ */
   font-family: var(--font-sans);
   font-size: var(--text-base);
   color: var(--color-fg);
   background-color: var(--color-bg);
 }
 
-/* ============ 深色主题预留（M0 仅 scaffold，未完整适配所有视图）============
- * 通过在 <html data-theme="dark"> 启用。M0 不默认开启，留待后续阶段逐页适配。 */
+/* ============ 深色主题预留（首轮不发布；仅在全部核心页面通过验收后开放）============ */
 [data-theme="dark"] {
   --color-bg: #1a1b1e;
   --color-surface: #232428;
@@ -217,4 +392,16 @@ a:hover {
 }
 *::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 全局 reduced-motion 底线：动效只解释状态，不承载功能信息 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

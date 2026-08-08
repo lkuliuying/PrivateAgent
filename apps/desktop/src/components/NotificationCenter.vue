@@ -151,7 +151,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 }
 .nc-badge {
   background: var(--color-danger);
-  color: #fff;
+  color: var(--pa-btn-danger-fg);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   border-radius: var(--radius-full);

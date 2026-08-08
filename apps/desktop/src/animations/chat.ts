@@ -26,23 +26,23 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
 
       scope.execute(() => {
         const timeline = createTimeline({ defaults: { ease: "out(4)" } });
-        timeline.add(message, { opacity: [0, 1], y: [12, 0], duration: 360 });
+        timeline.add(message, { opacity: [0, 1], y: [8, 0], duration: 200 });
         if (avatar) {
-          timeline.add(avatar, { opacity: [0, 1], scale: [0.86, 1], duration: 300 }, 40);
+          timeline.add(avatar, { opacity: [0, 1], scale: [0.9, 1], duration: 200 }, 20);
         }
         if (content) {
-          timeline.add(content, { opacity: [0, 1], x: [8, 0], duration: 360 }, 70);
+          timeline.add(content, { opacity: [0, 1], x: [6, 0], duration: 200 }, 40);
         }
         if (toolSections.length) {
           timeline.add(
             toolSections,
             {
               opacity: [0, 1],
-              y: [6, 0],
-              delay: stagger(45),
-              duration: 280,
+              y: [4, 0],
+              delay: stagger(30),
+              duration: 200,
             },
-            120
+            60
           );
         }
       });
@@ -57,8 +57,8 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
         scope.execute(() =>
           animate(panel, {
             opacity: [0, 1],
-            y: [-5, 0],
-            duration: 260,
+            y: [-3, 0],
+            duration: 200,
             ease: "out(4)",
           })
         );
@@ -101,7 +101,7 @@ export function mountChatAnimations(root: AnimationRoot): AnimationHandle {
           const animation = scope.execute(() =>
             animate(bubble, {
               opacity: [0.94, 1],
-              duration: 150,
+              duration: 120,
               ease: "out(2)",
             })
           );

@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
 import InspectorPanel from "./components/InspectorPanel.vue";
 import StatusBar from "./components/StatusBar.vue";
+import AppShell from "./components/AppShell.vue";
+import NavRailV2 from "./components/NavRailV2.vue";
+import ContextRail from "./components/ContextRail.vue";
 import TaskWorkspace from "./components/TaskWorkspace.vue";
 import ChatView from "./components/ChatView.vue";
 import KnowledgeView from "./components/KnowledgeView.vue";
@@ -27,6 +31,8 @@ import {
   createSession,
   getMessages,
   listSessions,
+  listActivities,
+  listTrustedPaths,
   setApiBase,
   setApiBaseDefault,
   streamChat,
@@ -48,7 +54,8 @@ import {
   getRuntimeCapabilities,
   shouldUseLegacyToolPlanner,
 } from "./api";
-import type { Session, View } from "./types";
+import type { Session, View, Activity, TrustedPath } from "./types";
+import { viewLabel } from "./models/viewRegistry";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
 import {
@@ -56,10 +63,21 @@ import {
   type AgentWorkspaceMessage,
 } from "./models/agentWorkspace";
 import { createAgentWorkspacePreview } from "./dev/agentWorkspacePreview";
+import { isUiV2 } from "./config/uiFlags";
+import { useViewHistory } from "./composables/useViewHistory";
+import { useShortcuts } from "./composables/useShortcuts";
+import { AgentWorkspace } from "./features/agent";
+import UiLab from "./dev/UiLab.vue";
 
 // 统一通知/确认/toast store（第七阶段 M4 基建）
 const notify = useNotifications();
-// 命令面板开关（Ctrl/Cmd+K）；CommandPalette 组件在 M2 接入。
+// UI Lab：仅开发模式且显式开启（?ui-lab=1），生产构建不可达。
+const uiLabEnabled =
+  import.meta.env.DEV &&
+  new URLSearchParams(window.location.search).get("ui-lab") === "1";
+// ui_v2：alpha.1 默认兼容壳，新壳按开关开启（?ui=v2 / pa_ui_v2=1）。
+const uiV2 = isUiV2();
+// 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
 const searchOpen = ref(false);
@@ -70,12 +88,35 @@ type BootState = "checking" | "wizard" | "starting" | "done" | "dev" | "error";
 const bootState = ref<BootState>("checking");
 const wizardMode = ref<"first" | "reconfigure">("first");
 const bootError = ref("");
+// 加载态延迟：长于 500ms 才展示，避免快速启动闪屏
+const bootLoadingVisible = ref(false);
+let bootLoadingTimer: number | null = null;
+function showBootLoadingAfterDelay() {
+  if (bootLoadingTimer !== null) window.clearTimeout(bootLoadingTimer);
+  bootLoadingTimer = window.setTimeout(() => {
+    bootLoadingVisible.value = true;
+  }, 500);
+}
+function clearBootLoading() {
+  if (bootLoadingTimer !== null) window.clearTimeout(bootLoadingTimer);
+  bootLoadingTimer = null;
+  bootLoadingVisible.value = false;
+}
 
 const sessions = ref<Session[]>([]);
 const currentSessionId = ref<number | null>(null);
 const messages = ref<AgentWorkspaceMessage[]>([]);
-const view = ref<View>("chat");
 const streaming = ref(false);
+// v2 上下文栏数据：会话活动（5s 轮询）与授权路径，与当前任务绑定
+const sessionActivities = ref<Activity[]>([]);
+const trustedPaths = ref<TrustedPath[]>([]);
+let activityTimer: number | null = null;
+// 上下文加载请求序号：快速切换会话时，旧调用在任一 await 后检查所有权，放弃自身并
+// 不建立定时器，保证任意时刻最多存在一个活动轮询。
+let contextSeq = 0;
+// 导航历史：视图切换/返回/前进/恢复上次视图（本地存储）
+const history = useViewHistory("chat");
+const view = history.current;
 // Capability discovery is backward-compatible: unknown/old backends retain the legacy planner.
 const useLegacyToolPlanner = ref(true);
 const knowledgeBase = ref(false);
@@ -84,10 +125,9 @@ const previewMode =
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("workspace-preview") === "running";
 const workspacePreview = previewMode ? createAgentWorkspacePreview() : null;
-// 当前在检查器中展示的引用片段 id（点击来源后设置）
+// 当前在上下文中展示的引用片段 id（点击来源后设置）
 const currentChunkId = ref<number | null>(null);
-// 右侧检查器折叠状态：宽屏默认展开，窄屏默认收起。
-// rail(60)+list(280)+inspector(340)=680；低于 INSPECTOR_MIN_W 展开会挤压主工作区。
+// 右侧上下文栏折叠状态：宽屏默认展开，窄屏默认收起
 const INSPECTOR_MIN_W = 1320;
 const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280
@@ -95,7 +135,6 @@ const viewportWidth = ref(
 const inspectorOpen = ref(
   typeof window !== "undefined" && window.innerWidth >= INSPECTOR_MIN_W
 );
-// 仅在 chat 视图且视口足够宽时允许切换检查器，避免窄屏挤压主工作区
 const inspectorToggleable = computed(
   () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
 );
@@ -108,85 +147,76 @@ function nextChatKey(kind: "user" | "assistant" | "tool"): string {
   chatMessageSeq += 1;
   return `${kind}-${Date.now()}-${chatMessageSeq}`;
 }
-// plan 请求序号：每次 sendMessage 自增，旧 plan 解析回来时若序号不匹配则放弃，
-// 避免「停止 planning 后立即发新消息」时旧 plan 结果交错插入。
+// plan 请求序号：每次 sendMessage 自增，旧 plan 解析回来时若序号不匹配则放弃
 let planSeq = 0;
-// plan-then-reply：toolCallId -> 原始用户消息（批准后用于流式总结，按 id 索引避免单槽覆盖）
+// plan-then-reply：toolCallId -> 原始用户消息（批准后用于流式总结）
 const pendingToolText = ref<Map<number, string>>(new Map());
 // 用户在 planning 阶段点停止时置 true，阻止 plan 完成后继续回复
 const planningCancelled = ref(false);
-// 是否有未决工具调用（待审批时阻止发送新消息，避免交错持久化/单槽覆盖）
+// 是否有未决工具调用（待审批时阻止发送新消息）
 const hasPendingTool = computed(
-  () => messages.value.some(
-    (m) =>
-      m.tool_call?.status === "pending_approval" ||
-      m.agent_approval?.status === "pending"
-  )
+  () =>
+    messages.value.some(
+      (m) =>
+        m.tool_call?.status === "pending_approval" ||
+        m.agent_approval?.status === "pending"
+    )
 );
-const taskState = computed(() => deriveTaskState(messages.value, streaming.value));
+const taskState = computed(() =>
+  deriveTaskState(messages.value, streaming.value)
+);
 
 const currentSession = computed(
   () => sessions.value.find((s) => s.id === currentSessionId.value) ?? null
 );
 
-// 顶栏标题
+// 顶栏标题（视图注册表 + 会话标题）
 const pageTitle = computed(() => {
-  switch (view.value) {
-    case "chat":
-      return currentSession.value?.title || "新任务";
-    case "today":
-      return "今日";
-    case "kb":
-      return "知识库";
-    case "projects":
-      return "项目";
-    case "learning":
-      return "学习";
-    case "tasks":
-      return "任务";
-    case "memory":
-      return "记忆";
-    case "settings":
-      return "设置 / 状态";
-    case "diagnostics":
-      return "诊断中心";
-    case "extensions":
-      return "扩展注册表";
-    case "integrations":
-      return "本地集成";
-    case "backup":
-      return "备份恢复";
-  }
+  if (view.value === "chat") return currentSession.value?.title || "新任务";
+  return viewLabel(view.value);
 });
 
 function onResize() {
   viewportWidth.value = window.innerWidth;
-  // 缩窄到阈值以下时强制收起检查器，防止挤压主工作区
   if (window.innerWidth < INSPECTOR_MIN_W) inspectorOpen.value = false;
-}
-
-/** 全局快捷键：Ctrl/Cmd+K 打开命令面板（M2 接入 CommandPalette 组件）。 */
-function onKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-    e.preventDefault();
-    commandPaletteOpen.value = !commandPaletteOpen.value;
-  }
 }
 
 onMounted(() => {
   window.addEventListener("resize", onResize);
-  window.addEventListener("keydown", onKeydown);
   boot();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
-  window.removeEventListener("keydown", onKeydown);
+  clearBootLoading();
+  contextSeq += 1; // 使在途上下文加载/轮询失效
+  if (activityTimer !== null) {
+    window.clearInterval(activityTimer);
+    activityTimer = null;
+  }
   planningCancelled.value = true;
   streamSeq += 1;
   controller?.abort();
   controller = null;
   pageAnimations?.destroy();
   pageAnimations = null;
+});
+
+// 全局快捷键：Ctrl/Cmd+K 命令面板；Ctrl/Cmd+N 新建任务；Alt+←/→ 视图历史
+useShortcuts({
+  openCommand: () => (commandPaletteOpen.value = true),
+  newSession: () => void newSession(),
+  goBack: () => {
+    const target = history.back();
+    if (target?.sessionId && target.view === "chat") {
+      void selectSession(target.sessionId, false);
+    }
+  },
+  goForward: () => {
+    const target = history.forward();
+    if (target?.sessionId && target.view === "chat") {
+      void selectSession(target.sessionId, false);
+    }
+  },
 });
 
 watch(
@@ -225,10 +255,12 @@ async function boot() {
   }
 
   bootState.value = "checking";
+  showBootLoadingAfterDelay();
   let res;
   try {
     res = await cmdStartSidecar();
   } catch {
+    clearBootLoading();
     bootError.value = "无法与桌面壳通信";
     bootState.value = "error";
     return;
@@ -238,6 +270,7 @@ async function boot() {
   if (res.dev_mode) {
     setApiBaseDefault();
     bootState.value = "dev";
+    clearBootLoading();
     await initializeConnectedWorkspace();
     return;
   }
@@ -247,6 +280,7 @@ async function boot() {
     bootState.value = "starting";
     setApiBase(res.port, res.token);
     const ready = await pollApiReady(90);
+    clearBootLoading();
     if (ready) {
       bootState.value = "done";
       await initializeConnectedWorkspace();
@@ -259,6 +293,7 @@ async function boot() {
 
   // ok:false —— 通常尚未配置连接；也可能是 spawn 失败。
   const exists = await cmdConfigExists().catch(() => false);
+  clearBootLoading();
   if (!exists) {
     wizardMode.value = "first";
     bootState.value = "wizard";
@@ -268,8 +303,7 @@ async function boot() {
   }
 }
 
-/** 轮询轻量 API 根路径直到后端 HTTP 服务可用。
- * 依赖健康（MySQL/Ollama/Chroma）交给状态页展示，不阻塞进入主界面。 */
+/** 轮询轻量 API 根路径直到后端 HTTP 服务可用。 */
 async function pollApiReady(seconds: number): Promise<boolean> {
   for (let i = 0; i < seconds * 5; i++) {
     try {
@@ -286,7 +320,6 @@ async function pollApiReady(seconds: number): Promise<boolean> {
 /** 向导完成（配置已写入）后：首次运行→启动 sidecar；重新配置→重启应用。 */
 async function onWizardDone() {
   if (wizardMode.value === "reconfigure") {
-    // 新配置需重启应用才能让 sidecar 重新加载 .env。
     try {
       await cmdRelaunchApp();
     } catch {
@@ -295,12 +328,13 @@ async function onWizardDone() {
     }
     return;
   }
-  // 首次运行：启动 sidecar。
   bootState.value = "starting";
+  showBootLoadingAfterDelay();
   const res = await cmdStartSidecar().catch(() => null);
   if (res && res.ok && res.port && res.token) {
     setApiBase(res.port, res.token);
     const ready = await pollApiReady(90);
+    clearBootLoading();
     if (ready) {
       bootState.value = "done";
       await initializeConnectedWorkspace();
@@ -309,6 +343,7 @@ async function onWizardDone() {
       bootState.value = "error";
     }
   } else {
+    clearBootLoading();
     bootError.value = res?.error || "后端启动失败";
     bootState.value = "error";
   }
@@ -324,10 +359,34 @@ async function retryBoot() {
   await boot();
 }
 
+/** 退出应用（Tauri 窗口关闭）；浏览器开发模式仅提示。 */
+async function quitApp() {
+  if (isDesktopRuntime()) {
+    try {
+      await getCurrentWindow().close();
+    } catch {
+      bootError.value = "退出失败，请手动关闭窗口";
+    }
+  }
+}
+
 // ============ 导航 ============
 
 function onNavigate(v: View) {
-  view.value = v;
+  history.navigate({ view: v });
+}
+
+function onGoBack() {
+  const target = history.back();
+  if (target?.sessionId && target.view === "chat") {
+    void selectSession(target.sessionId, false);
+  }
+}
+function onGoForward() {
+  const target = history.forward();
+  if (target?.sessionId && target.view === "chat") {
+    void selectSession(target.sessionId, false);
+  }
 }
 
 // 命令面板 / 全局搜索 跳转
@@ -351,7 +410,6 @@ async function initializeConnectedWorkspace() {
     const capabilities = await getRuntimeCapabilities();
     useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(capabilities);
   } catch {
-    // A pre-capabilities backend still owns planning through /tools/plan.
     useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(null);
   }
   await loadSessions();
@@ -371,19 +429,46 @@ async function loadSessions() {
 async function selectSession(id: number, switchToChat = true) {
   if (streaming.value) return;
   currentSessionId.value = id;
-  if (switchToChat) view.value = "chat";
+  if (switchToChat) history.navigate({ view: "chat", sessionId: id });
   try {
     messages.value = await getMessages(id);
   } catch {
     messages.value = [];
   }
-  // 重水合未决工具调用卡片（重载/切换会话后仍可审批，避免 pending_approval 行孤立）
+  // 重水合未决工具调用卡片（重载/切换会话后仍可审批）
   await rehydrateToolCalls(id);
+  loadSessionContext(id);
+}
+
+/** v2 上下文栏：加载授权路径并轮询会话活动；切换会话/卸载时清理旧定时器。 */
+async function loadSessionContext(sessionId: number) {
+  const mine = ++contextSeq;
+  if (activityTimer !== null) {
+    window.clearInterval(activityTimer);
+    activityTimer = null;
+  }
+  try {
+    trustedPaths.value = await listTrustedPaths();
+  } catch {
+    trustedPaths.value = [];
+  }
+  // 期间发生了更新的会话切换：放弃本次调用，不建立定时器
+  if (mine !== contextSeq) return;
+  const refreshActivities = async () => {
+    if (mine !== contextSeq || currentSessionId.value !== sessionId) return;
+    try {
+      sessionActivities.value = await listActivities(sessionId);
+    } catch {
+      // 后端未连接时保留现有数据，不因瞬时失败清空
+    }
+  };
+  await refreshActivities();
+  if (mine !== contextSeq) return;
+  activityTimer = window.setInterval(() => void refreshActivities(), 5000);
 }
 
 /** 加载会话的工具调用，把未决（pending_approval）的重新渲染为审批卡片。 */
-async function rehydrateToolCalls(sessionId: number) {
-  try {
+async function rehydrateToolCalls(sessionId: number) {  try {
     const calls = await listToolCalls(sessionId);
     for (const tc of calls) {
       if (
@@ -399,7 +484,6 @@ async function rehydrateToolCalls(sessionId: number) {
           tool_call: tc,
           clientKey: `tool-${tc.id}`,
         });
-        // 原始用户消息可能未持久化（仅在 /chat/stream 时持久化），留空由批准时用默认提示
         pendingToolText.value.set(tc.id, "");
       }
     }
@@ -409,7 +493,9 @@ async function rehydrateToolCalls(sessionId: number) {
   try {
     const approvals = await listPendingAgentApprovals(sessionId);
     for (const approval of approvals) {
-      if (!messages.value.some((message) => message.agent_approval?.id === approval.id)) {
+      if (
+        !messages.value.some((message) => message.agent_approval?.id === approval.id)
+      ) {
         messages.value.push({
           id: -Date.now() - messages.value.length,
           session_id: sessionId,
@@ -456,7 +542,7 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
     code: "请作为代码助手协助我：",
   };
   knowledgeBase.value = mode === "knowledge";
-  view.value = "chat";
+  history.navigate({ view: "chat" });
   sendMessage(`${prefixes[mode]}${value}`);
 }
 
@@ -493,7 +579,6 @@ function sendMessage(text: string) {
       }
       const tc = res?.tool_call ?? null;
       if (tc) {
-        // 插入工具卡片，等待用户审批
         messages.value.push({
           id: -Date.now() - 1,
           session_id: sid,
@@ -515,7 +600,6 @@ function sendMessage(text: string) {
         if (mySeq === planSeq) streaming.value = false;
         return;
       }
-      // plan 失败，降级普通回复
       streamAssistantReply(sid, text, kb);
     });
 }
@@ -586,7 +670,10 @@ function streamAssistantReply(
               message.agent_approval?.run_id === e.run_id &&
               message.agent_approval.status === "approved"
             ) {
-              message.agent_approval = { ...message.agent_approval, status: "consumed" };
+              message.agent_approval = {
+                ...message.agent_approval,
+                status: "consumed",
+              };
             }
           }
         }
@@ -643,9 +730,14 @@ function continueAgentReply(runId: string, sid: number) {
       } else if (event.type === "done") {
         if (event.message_id) assistantMessage.id = event.message_id;
         if (event.content) assistantMessage.content = event.content;
+        if (event.sources) assistantMessage.sources = event.sources;
+        if (event.memories) assistantMessage.memories = event.memories;
         for (const message of messages.value) {
           if (message.agent_approval?.run_id === runId) {
-            message.agent_approval = { ...message.agent_approval, status: "consumed" };
+            message.agent_approval = {
+              ...message.agent_approval,
+              status: "consumed",
+            };
           }
         }
       } else if (event.type === "error" && event.message) {
@@ -704,7 +796,6 @@ async function onApproveToolCall(id: number) {
   const sid = currentSession.value.id;
   const msgIdx = messages.value.findIndex((m) => m.tool_call?.id === id);
   if (msgIdx < 0) return;
-  // 乐观更新为执行中
   messages.value[msgIdx].tool_call = {
     ...messages.value[msgIdx].tool_call!,
     status: "running",
@@ -714,7 +805,6 @@ async function onApproveToolCall(id: number) {
     const updated = await approveToolCall(id);
     messages.value[msgIdx].tool_call = updated;
     if (updated.status === "succeeded" && updated.output_json) {
-      // 重水合的卡片可能无原始用户消息，用默认提示
       const text =
         pendingToolText.value.get(id) || "请基于以下工具结果回答。";
       pendingToolText.value.delete(id);
@@ -723,7 +813,6 @@ async function onApproveToolCall(id: number) {
         output: updated.output_json,
       });
     } else {
-      // failed
       streaming.value = false;
       pendingToolText.value.delete(id);
     }
@@ -759,7 +848,8 @@ async function onApproveAgentRunTool(runId: string, approvalId: string) {
   const sessionId = currentSession.value.id;
   const hasLiveStream = controller !== null && streaming.value;
   const message = messages.value.find(
-    (item) => item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
+    (item) =>
+      item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
   );
   if (!message?.agent_approval) return;
   message.agent_approval = { ...message.agent_approval, status: "approved" };
@@ -774,7 +864,8 @@ async function onApproveAgentRunTool(runId: string, approvalId: string) {
 
 async function onRejectAgentRunTool(runId: string, approvalId: string) {
   const message = messages.value.find(
-    (item) => item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
+    (item) =>
+      item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
   );
   if (!message?.agent_approval) return;
   try {
@@ -786,7 +877,6 @@ async function onRejectAgentRunTool(runId: string, approvalId: string) {
 }
 
 function stopGenerate() {
-  // 标记 planning 取消，阻止 plan 完成后继续回复（plan 阶段 controller 尚未赋值）
   planningCancelled.value = true;
   streamSeq += 1;
   const activeController = controller;
@@ -797,9 +887,15 @@ function stopGenerate() {
 </script>
 
 <template>
+  <!-- UI Lab：仅开发模式（?ui-lab=1），独立于工作台壳层 -->
+  <UiLab v-if="uiLabEnabled" />
+
   <!-- 启动引导覆盖层 -->
-  <div v-if="bootState !== 'done' && bootState !== 'dev'" class="boot">
-    <div v-if="bootState === 'checking' || bootState === 'starting'" class="boot-card">
+  <div v-else-if="bootState !== 'done' && bootState !== 'dev'" class="boot">
+    <div
+      v-if="(bootState === 'checking' || bootState === 'starting') && bootLoadingVisible"
+      class="boot-card"
+    >
       <div class="spinner" />
       <p>{{ bootState === "checking" ? "正在检测环境…" : "正在启动本地后端…" }}</p>
       <p class="hint">首次启动可能需要数秒</p>
@@ -811,106 +907,208 @@ function stopGenerate() {
       @done="onWizardDone"
     />
 
-    <div v-else class="boot-card">
+    <div v-else-if="bootState === 'error'" class="boot-card">
       <p class="boot-err">⚠ 启动失败</p>
       <p class="hint">{{ bootError }}</p>
-      <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
-      <button
-        v-if="isDesktopRuntime()"
-        class="pa-btn pa-btn--ghost"
-        @click="reconfigure"
-      >
-        重新配置连接
-      </button>
+      <p class="hint">本地数据未受影响；你可以重试启动，或重新配置连接。</p>
+      <div class="boot-actions">
+        <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
+        <button
+          v-if="isDesktopRuntime()"
+          class="pa-btn pa-btn--ghost"
+          @click="reconfigure"
+        >
+          重新配置连接
+        </button>
+        <button
+          v-if="isDesktopRuntime()"
+          class="pa-btn pa-btn--ghost"
+          @click="quitApp"
+        >
+          退出应用
+        </button>
+      </div>
     </div>
   </div>
 
-  <!-- 主应用 · 四区工作台 -->
-  <WorkspaceShell
-    v-else
-    data-animation-root
-    :title="pageTitle"
-    :task-state="taskState"
-    :show-dev-tag="bootState === 'dev' || previewMode"
-    :inspector-open="view === 'chat' && inspectorOpen"
-    :inspector-toggleable="inspectorToggleable"
-    :show-topbar="view === 'chat'"
-    :show-statusbar="view !== 'today'"
-    :rail-collapsed="railCollapsed"
-    @toggle-inspector="inspectorOpen = !inspectorOpen"
-  >
-    <template #rail>
-      <NavRail
-        :active="view"
-        :sessions="sessions"
-        :current-id="currentSessionId"
-        :collapsed="railCollapsed"
+  <!-- ============ 主应用 · v2 三栏工作台（ui_v2）============ -->
+  <template v-else-if="uiV2">
+    <AppShell
+      data-animation-root
+      :view="view"
+      :title="pageTitle"
+      :task-state="taskState"
+      :show-dev-tag="bootState === 'dev' || previewMode"
+      :context-open="view === 'chat' && inspectorOpen"
+      :context-toggleable="inspectorToggleable"
+      :rail-collapsed="railCollapsed"
+      :can-go-back="history.state().canGoBack"
+      :can-go-forward="history.state().canGoForward"
+      @toggle-context="inspectorOpen = !inspectorOpen"
+      @go-back="onGoBack"
+      @go-forward="onGoForward"
+    >
+      <template #rail>
+        <NavRailV2
+          :active="view"
+          :sessions="sessions"
+          :current-id="currentSessionId"
+          :collapsed="railCollapsed"
+          @navigate="onNavigate"
+          @open-command="commandPaletteOpen = true"
+          @new-session="newSession"
+          @select-session="selectSession"
+          @toggle-collapse="railCollapsed = !railCollapsed"
+        />
+      </template>
+
+      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <DiagnosticsView v-else-if="view === 'diagnostics'" />
+      <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
+      <IntegrationImportPanel v-else-if="view === 'integrations'" />
+      <BackupUpgradePanel v-else-if="view === 'backup'" />
+      <TodayView
+        v-else-if="view === 'today'"
         @navigate="onNavigate"
+        @submit="onTodaySubmit"
         @open-command="commandPaletteOpen = true"
-        @new-session="newSession"
-        @select-session="selectSession"
-        @toggle-collapse="railCollapsed = !railCollapsed"
       />
-    </template>
-
-    <!-- 主工作区 -->
-    <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
-    <DiagnosticsView v-else-if="view === 'diagnostics'" />
-    <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
-    <IntegrationImportPanel v-else-if="view === 'integrations'" />
-    <BackupUpgradePanel v-else-if="view === 'backup'" />
-    <TodayView
-      v-else-if="view === 'today'"
-      @navigate="onNavigate"
-      @submit="onTodaySubmit"
-      @open-command="commandPaletteOpen = true"
-    />
-    <KnowledgeView v-else-if="view === 'kb'" />
-    <ProjectWorkspace v-else-if="view === 'projects'" />
-    <LearningWorkspace v-else-if="view === 'learning'" />
-    <TaskWorkspace v-else-if="view === 'tasks'" />
-    <MemoryWorkspace v-else-if="view === 'memory'" />
-    <ChatView
-      v-else-if="view === 'chat' && currentSession"
-      :messages="messages"
-      :streaming="streaming"
-      :knowledge-base="knowledgeBase"
-      :pending-tool="hasPendingTool"
-      @send="sendMessage"
-      @stop="stopGenerate"
-      @toggle-kb="knowledgeBase = !knowledgeBase"
-      @approve="onApproveToolCall"
-      @reject="onRejectToolCall"
-      @approve-agent="onApproveAgentRunTool"
-      @reject-agent="onRejectAgentRunTool"
-      @select-chunk="currentChunkId = $event"
-      @gen-candidates="onGenCandidates"
-      @save-inbox="onSaveMessageToInbox"
-    />
-    <div v-else class="welcome">
-      <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
-      <p class="welcome-title">准备好开始一个新任务</p>
-      <p class="hint">PrivateAgent 会先建立计划，再清晰展示执行过程、工具调用与结果。</p>
-      <button class="pa-btn pa-btn--primary" :disabled="streaming" @click="newSession">
-        新建任务
-      </button>
-    </div>
-
-    <template #inspector>
-      <InspectorPanel
-        :session="currentSession"
-        :message-count="messages.length"
-        :chunk-id="currentChunkId"
-        :preview-trusted="workspacePreview?.trusted"
-        :preview-activities="workspacePreview?.activities"
-        @close="inspectorOpen = false"
+      <KnowledgeView v-else-if="view === 'kb'" />
+      <ProjectWorkspace v-else-if="view === 'projects'" />
+      <LearningWorkspace v-else-if="view === 'learning'" />
+      <TaskWorkspace v-else-if="view === 'tasks'" />
+      <MemoryWorkspace v-else-if="view === 'memory'" />
+      <AgentWorkspace
+        v-else-if="view === 'chat' && currentSession"
+        :messages="messages"
+        :streaming="streaming"
+        :knowledge-base="knowledgeBase"
+        :pending-tool="hasPendingTool"
+        :task-state="taskState"
+        @send="sendMessage"
+        @stop="stopGenerate"
+        @toggle-kb="knowledgeBase = !knowledgeBase"
+        @approve="onApproveToolCall"
+        @reject="onRejectToolCall"
+        @approve-agent="onApproveAgentRunTool"
+        @reject-agent="onRejectAgentRunTool"
+        @select-chunk="currentChunkId = $event"
+        @gen-candidates="onGenCandidates"
+        @save-inbox="onSaveMessageToInbox"
       />
-    </template>
+      <div v-else class="welcome">
+        <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
+        <p class="welcome-title">准备好开始一个新任务</p>
+        <p class="hint">PrivateAgent 会先建立计划，再清晰展示执行过程、工具调用与结果。</p>
+        <button class="pa-btn pa-btn--primary" :disabled="streaming" @click="newSession">
+          新建任务
+        </button>
+      </div>
 
-    <template #statusbar>
-      <StatusBar :task-label="streaming ? '生成中…' : '空闲'" />
-    </template>
-  </WorkspaceShell>
+      <template #context>
+        <ContextRail
+          :session="currentSession"
+          :messages="messages"
+          :activities="workspacePreview?.activities ?? sessionActivities"
+          :trusted="workspacePreview?.trusted ?? trustedPaths"
+          :chunk-id="currentChunkId"
+          @close="inspectorOpen = false"
+          @select-chunk="currentChunkId = $event"
+        />
+      </template>
+
+      <template #statusbar>
+        <StatusBar :task-label="streaming ? '生成中…' : '空闲'" />
+      </template>
+    </AppShell>
+  </template>
+
+  <!-- ============ 主应用 · 兼容壳（legacy，ui_v2 关闭时回退）============ -->
+  <template v-else>
+    <WorkspaceShell
+      data-animation-root
+      :title="pageTitle"
+      :task-state="taskState"
+      :show-dev-tag="bootState === 'dev' || previewMode"
+      :inspector-open="view === 'chat' && inspectorOpen"
+      :inspector-toggleable="inspectorToggleable"
+      :show-topbar="view === 'chat'"
+      :show-statusbar="view !== 'today'"
+      :rail-collapsed="railCollapsed"
+      @toggle-inspector="inspectorOpen = !inspectorOpen"
+    >
+      <template #rail>
+        <NavRail
+          :active="view"
+          :sessions="sessions"
+          :current-id="currentSessionId"
+          :collapsed="railCollapsed"
+          @navigate="onNavigate"
+          @open-command="commandPaletteOpen = true"
+          @new-session="newSession"
+          @select-session="selectSession"
+          @toggle-collapse="railCollapsed = !railCollapsed"
+        />
+      </template>
+
+      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <DiagnosticsView v-else-if="view === 'diagnostics'" />
+      <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
+      <IntegrationImportPanel v-else-if="view === 'integrations'" />
+      <BackupUpgradePanel v-else-if="view === 'backup'" />
+      <TodayView
+        v-else-if="view === 'today'"
+        @navigate="onNavigate"
+        @submit="onTodaySubmit"
+        @open-command="commandPaletteOpen = true"
+      />
+      <KnowledgeView v-else-if="view === 'kb'" />
+      <ProjectWorkspace v-else-if="view === 'projects'" />
+      <LearningWorkspace v-else-if="view === 'learning'" />
+      <TaskWorkspace v-else-if="view === 'tasks'" />
+      <MemoryWorkspace v-else-if="view === 'memory'" />
+      <ChatView
+        v-else-if="view === 'chat' && currentSession"
+        :messages="messages"
+        :streaming="streaming"
+        :knowledge-base="knowledgeBase"
+        :pending-tool="hasPendingTool"
+        @send="sendMessage"
+        @stop="stopGenerate"
+        @toggle-kb="knowledgeBase = !knowledgeBase"
+        @approve="onApproveToolCall"
+        @reject="onRejectToolCall"
+        @approve-agent="onApproveAgentRunTool"
+        @reject-agent="onRejectAgentRunTool"
+        @select-chunk="currentChunkId = $event"
+        @gen-candidates="onGenCandidates"
+        @save-inbox="onSaveMessageToInbox"
+      />
+      <div v-else class="welcome">
+        <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
+        <p class="welcome-title">准备好开始一个新任务</p>
+        <p class="hint">PrivateAgent 会先建立计划，再清晰展示执行过程、工具调用与结果。</p>
+        <button class="pa-btn pa-btn--primary" :disabled="streaming" @click="newSession">
+          新建任务
+        </button>
+      </div>
+
+      <template #inspector>
+        <InspectorPanel
+          :session="currentSession"
+          :message-count="messages.length"
+          :chunk-id="currentChunkId"
+          :preview-trusted="workspacePreview?.trusted"
+          :preview-activities="workspacePreview?.activities"
+          @close="inspectorOpen = false"
+        />
+      </template>
+
+      <template #statusbar>
+        <StatusBar :task-label="streaming ? '生成中…' : '空闲'" />
+      </template>
+    </WorkspaceShell>
+  </template>
 
   <!-- 第七阶段全局覆盖层：toast / 确认对话框 / 通知中心（Teleport 到 body） -->
   <ToastHost />
@@ -959,6 +1157,10 @@ function stopGenerate() {
 }
 .boot-card .pa-btn {
   margin-top: var(--space-3);
+}
+.boot-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 .spinner {
   width: 32px;
