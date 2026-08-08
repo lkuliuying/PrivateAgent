@@ -43,9 +43,25 @@
   MemoryWorkspace 716 → ~580 行；单测 +4。
 
 ### D6 · alpha.2 检查点
-- 版本统一 `0.4.0-alpha.2`（七处，UTF-8 无 BOM），telemetry 测试同步；
+- 版本统一 `0.4.0-alpha.2`（八处含 package-lock.json，UTF-8 无 BOM），telemetry 测试同步；
 - `docs/v0.4.0-alpha.2-checkpoint-20260808.md`；
-- **release-check-full：14/14，绑定 `8018f2a`，`worktree_dirty=False`**（`dist/release-check-0.4.0-alpha.2.md`）。
+- **release-check-full：14/14，绑定 `8c50900`，`worktree_dirty=False`，`installer_built=True`**。
+
+### D4 · 全生产页面验收（验收修复轮）
+- `e2e/pages-smoke.spec.ts` 13/13：12 视图导航/主体渲染/空态/无横向溢出/键盘 Tab + 断连错误态；
+- `docs/v0.4.0-alpha.2-function-comparison.md` 完整功能对照表（逐页功能/证据/状态覆盖）。
+
+### D5 · 性能与资源清理（验收修复轮）
+- `e2e/performance-resource.spec.ts` 3/3：页面切换长任务 **0 个（p95=0ms）**、
+  150 帧 SSE 长流压力、重复切换后定时器 4→4 / 存活监听器 41→41 零残留。
+
+### D6 · 安装/升级/回滚证据（验收修复轮）
+- 构建 `PrivateAgent_0.4.0-alpha.2_x64-setup.exe` + `.sig`（updater 签名）；
+- `dist/alpha-0.4.0-alpha.2-manifest.json`（installer/sidecar SHA-256，绑定 `8c50900`）、
+  `dist/alpha-0.4.0-alpha.2-flags.json`（19 项快照）；
+- 实机演练：0.3.0 → alpha.2 覆盖升级（DB 10 表计数一致）、全新安装（首次启动 smoke）、
+  卸载重装回滚（数据保留），证据 `dist/alpha-0.4.0-alpha.2-install/`；
+- Playwright 累计 46/46。
 
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
