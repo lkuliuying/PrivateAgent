@@ -11,8 +11,6 @@ import {
   PhPlus,
   PhSparkle,
   PhTarget,
-  PhUploadSimple,
-  PhLightning,
   PhMagnifyingGlass,
   PhListBullets,
   PhCode,
@@ -36,6 +34,7 @@ import type {
   View,
 } from "../types";
 import { useNotifications } from "../stores/notifications";
+import { OverviewCards, PriorityList } from "../features/today";
 import BriefingPanel from "./BriefingPanel.vue";
 import GoalsWorkspace from "./GoalsWorkspace.vue";
 import InboxPanel from "./InboxPanel.vue";
@@ -206,6 +205,19 @@ const topPriorityItems = computed(() =>
       }))
     )
     .slice(0, 2)
+);
+
+/** 优先事项展示字段（供 PriorityList 消费，标题/元数据在此预计算） */
+const priorityEntries = computed(() =>
+  topPriorityItems.value.map((entry) => ({
+    key: `${entry.sectionKey}-${entry.item.id}`,
+    title: cardTitle(entry.item),
+    meta: cardMeta(entry.item),
+    sectionTitle: entry.sectionTitle,
+    error: entry.item.error_message,
+    item: entry.item,
+    itemType: entry.itemType,
+  }))
 );
 
 const weekdayLabel = computed(() =>
@@ -403,59 +415,17 @@ onMounted(load);
 
         <div v-if="error" class="error-line" role="alert">{{ error }}</div>
 
-        <section v-if="snap" class="today-overview" aria-label="今日概览">
-          <button v-for="item in overviewItems" :key="item.label" :class="['overview-item', item.tone]" data-agent-card @click="emit('navigate', item.view)">
-            <span class="overview-label">{{ item.label }}</span>
-            <strong>{{ item.value }}</strong>
-            <small>{{ item.hint }}</small>
-          </button>
-        </section>
+        <OverviewCards v-if="snap" :items="overviewItems" @navigate="emit('navigate', $event)" />
 
-        <section class="focus-section priority-card">
-          <div class="section-head">
-            <h2>优先事项</h2>
-            <button class="text-action" @click="emit('navigate', 'tasks')">
-              <span>添加任务</span>
-              <PhPlus :size="14" />
-            </button>
-          </div>
-
-          <div v-if="topPriorityItems.length" class="priority-list">
-              <div
-                v-for="entry in topPriorityItems"
-                :key="`${entry.sectionKey}-${entry.item.id}`"
-                class="priority-row"
-              >
-                <span class="fake-check" aria-hidden="true" />
-                <div class="priority-copy">
-                  <strong>{{ cardTitle(entry.item) }}</strong>
-                  <span>{{ entry.sectionTitle }} · {{ cardMeta(entry.item) || "需要处理" }}</span>
-                  <em v-if="entry.item.error_message">{{ entry.item.error_message }}</em>
-                </div>
-                <button
-                  class="row-action"
-                  :disabled="busy"
-                  title="保存到收件箱"
-                  @click="saveToInbox(entry.item, entry.itemType)"
-                >
-                  收件箱
-                </button>
-              </div>
-          </div>
-
-          <div v-else class="quiet-empty">
-            <PhCheckCircle :size="20" weight="fill" />
-            <div>
-              <strong>当前没有必须马上处理的事项。</strong>
-              <span>你可以从提醒、捕获或简报开始今天。</span>
-            </div>
-            <div class="quiet-actions">
-              <button title="新建提醒" @click="newReminder"><PhBell :size="15" />提醒</button>
-              <button title="快速捕获" @click="quickCapture"><PhLightning :size="15" />捕获</button>
-              <button title="导入文档" @click="importDocument"><PhUploadSimple :size="15" />文档</button>
-            </div>
-          </div>
-        </section>
+        <PriorityList
+          :entries="priorityEntries"
+          :busy="busy"
+          @save-inbox="saveToInbox"
+          @new-reminder="newReminder"
+          @quick-capture="quickCapture"
+          @import-document="importDocument"
+          @navigate="emit('navigate', $event)"
+        />
 
         <details v-if="snap" class="overview-disclosure">
           <summary>

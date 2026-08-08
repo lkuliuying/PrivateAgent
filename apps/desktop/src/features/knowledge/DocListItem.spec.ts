@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { mount } from "@vue/test-utils";
 import DocListItem from "./DocListItem.vue";
 import type { DocumentItem } from "../../types";
@@ -63,13 +63,13 @@ describe("DocListItem", () => {
     const buttons = wrapper.findAll("button");
     const byText = (text: string) => buttons.find((b) => b.text() === text)!;
     await byText("摘要").trigger("click");
-    expect(wrapper.emitted("summary")?.[0]?.[0]?.id).toBe(1);
+    expect((wrapper.emitted("summary")?.[0]?.[0] as DocumentItem).id).toBe(1);
     await byText("删除").trigger("click");
     expect(wrapper.emitted("remove")?.[0]).toEqual([1]);
     await byText("重建").trigger("click");
-    expect(wrapper.emitted("reindex")?.[0]?.[0]?.id).toBe(1);
+    expect((wrapper.emitted("reindex")?.[0]?.[0] as DocumentItem).id).toBe(1);
     await byText("OCR").trigger("click");
-    expect(wrapper.emitted("ocr")?.[0]?.[0]?.id).toBe(1);
+    expect((wrapper.emitted("ocr")?.[0]?.[0] as DocumentItem).id).toBe(1);
   });
 
   it("选择框切换与禁用态", async () => {

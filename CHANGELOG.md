@@ -33,6 +33,11 @@
   （v2 Agent 1280/1440/1920、今日 1440、v1 回退），确定性采集 + maxDiffPixelRatio 0.02；
   基线已提交，复验通过；更新命令 `--update-snapshots`。
 
+### D4 · 今日视图组件化（`features/today/`）
+- 新增 `OverviewCards`（概览卡片）与 `PriorityList`（优先事项/空态引导），
+  展示字段父层预计算后传入；TodayView 2057 → ~1980 行；
+- 单测 +4；视觉回归基线无变化（样式原样迁移），30/30 通过。
+
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
 > 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)；
