@@ -113,6 +113,28 @@ test.describe("0.4.0 D4 全生产页面验收", () => {
     });
   }
 
+  test("加载态：知识库数据未返回时显示加载提示", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await mockApi(page);
+    // 延迟 /documents 响应，制造可观察的加载窗口
+    await page.route("**://127.0.0.1:8000/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === "/documents" || path.includes("/documents?")) {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await route.fulfill({ json: [] });
+        return;
+      }
+      await route.fallback();
+    });
+    await page.goto("/?ui=v2");
+    await expect(page.getByTestId("nav-chat")).toBeVisible();
+    await page.getByTestId("nav-kb").click();
+    // 数据未返回期间加载态可见
+    await expect(page.getByText("正在加载文档")).toBeVisible({ timeout: 5000 });
+    // 数据返回后收敛为空态
+    await expect(page.getByText("知识库为空")).toBeVisible({ timeout: 10000 });
+  });
+
   test("后端断开：设置页展示未连接错误态（错误态覆盖）", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await mockApi(page);

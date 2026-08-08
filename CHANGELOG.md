@@ -59,9 +59,11 @@
 - 构建 `PrivateAgent_0.4.0-alpha.2_x64-setup.exe` + `.sig`（updater 签名）；
 - `dist/alpha-0.4.0-alpha.2-manifest.json`（installer/sidecar SHA-256，绑定 `8c50900`）、
   `dist/alpha-0.4.0-alpha.2-flags.json`（19 项快照）；
-- 实机演练：0.3.0 → alpha.2 覆盖升级（DB 10 表计数一致）、全新安装（首次启动 smoke）、
-  卸载重装回滚（数据保留），证据 `dist/alpha-0.4.0-alpha.2-install/`；
-- Playwright 累计 46/46。
+- 实机演练（证据 `dist/alpha-0.4.0-alpha.2-install/`，成对计数文件可审计）：
+  0.3.0 → alpha.2 **覆盖升级**（pre/post 计数一致）、**真实降版回滚** alpha.2 → 0.3.0
+  （重建自 e6da3ee 的 0.3.0 安装包，归档 `dist/rollback-archive/`）、全新安装（首次启动 smoke）、
+  卸载数据保留；四次 DB 快照逐项一致；
+- Playwright 累计 47/47（pages-smoke 增加载态断言）。
 
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
