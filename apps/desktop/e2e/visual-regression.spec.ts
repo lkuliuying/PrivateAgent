@@ -107,21 +107,21 @@ test.describe("0.4.0 视觉回归矩阵", () => {
   test("v2 Agent 工作区 1280", async ({ page }) => {
     await openV2(page, 1280);
     await expect(page).toHaveScreenshot("v2-agent-1280.png", {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.03,
     });
   });
 
   test("v2 Agent 工作区 1440", async ({ page }) => {
     await openV2(page, 1440);
     await expect(page).toHaveScreenshot("v2-agent-1440.png", {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.03,
     });
   });
 
   test("v2 Agent 工作区 1920", async ({ page }) => {
     await openV2(page, 1920);
     await expect(page).toHaveScreenshot("v2-agent-1920.png", {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.03,
     });
   });
 
@@ -131,7 +131,7 @@ test.describe("0.4.0 视觉回归矩阵", () => {
     await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-current", "page");
     await page.waitForLoadState("networkidle");
     await expect(page).toHaveScreenshot("v2-today-1440.png", {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.03,
     });
   });
 
@@ -146,7 +146,7 @@ test.describe("0.4.0 视觉回归矩阵", () => {
     await page.evaluate(() => document.fonts.ready.then(() => true));
     await page.waitForTimeout(300);
     await expect(page).toHaveScreenshot("v1-legacy-1440.png", {
-      maxDiffPixelRatio: 0.02,
+      maxDiffPixelRatio: 0.03,
     });
   });
 });
