@@ -38,6 +38,15 @@
   展示字段父层预计算后传入；TodayView 2057 → ~1980 行；
 - 单测 +4；视觉回归基线无变化（样式原样迁移），30/30 通过。
 
+### D4 · 记忆领域迁移（`features/memory/`）
+- 新增 `MemoryRow`（列表项）与 `MemoryEditorForm`（新建/编辑表单）；
+  MemoryWorkspace 716 → ~580 行；单测 +4。
+
+### D6 · alpha.2 检查点
+- 版本统一 `0.4.0-alpha.2`（七处，UTF-8 无 BOM），telemetry 测试同步；
+- `docs/v0.4.0-alpha.2-checkpoint-20260808.md`；
+- **release-check-full：14/14，绑定 `8018f2a`，`worktree_dirty=False`**（`dist/release-check-0.4.0-alpha.2.md`）。
+
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
 > 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)；
