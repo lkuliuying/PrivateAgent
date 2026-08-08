@@ -3,7 +3,6 @@
 ## 0.4.0-alpha.2（2026-08-08，Workbench UX 2.0 收口 · 开发中）
 
 > 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)。
-> 本轮：alpha.2 启动 + 验收遗留处置（默认新 UI、Python 警告、rail 令牌收敛）。
 
 ### ui_v2 默认开启（alpha.2 契约切换）
 - `src/config/uiFlags.ts`：`DEFAULT_UI_V2 = true`——默认进入新 UI，`?ui=v1` / `pa_ui_v2=0` 回退兼容壳；
@@ -20,6 +19,19 @@
 - NavRailV2 / NavRail 4+4 处 RGBA 字面量收敛为组件令牌 `--pa-rail-brand-border/-bg`、
   `--pa-rail-active-border`、`--pa-rail-icon-bg`、`--pa-rail-running-glow`；
   `src/` 组件无新增裸 RGBA/hex。
+
+### D4 · 知识库页面组件化（`features/knowledge/` 首个领域迁移）
+- 新增 `DocListItem`：文档行整体拆分（状态徽标/元数据/操作区内聚，focus-visible 补齐）；
+- 空态/加载/错误态改用 `PaEmptyState`/`PaErrorState`；KnowledgeView 767 → ~540 行；
+- 单测 +4，E2E 知识库窄窗口通过。
+
+### D5 · 包体基线
+- 前端生产资源 vs 0.3.0-alpha.2 基线：index gzip +10.6%、vendor +2.2%、合计 +6.2%，**在 ≤15% 门槛内**。
+
+### D6 · 视觉回归矩阵
+- `e2e/visual-regression.spec.ts`：5 个 `toHaveScreenshot` 断言基线
+  （v2 Agent 1280/1440/1920、今日 1440、v1 回退），确定性采集 + maxDiffPixelRatio 0.02；
+  基线已提交，复验通过；更新命令 `--update-snapshots`。
 
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 

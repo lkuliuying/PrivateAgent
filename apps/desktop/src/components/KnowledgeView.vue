@@ -17,6 +17,10 @@ import type { CompareResult, DocumentItem, SectionSummary } from "../types";
 import DocumentComparePanel from "./DocumentComparePanel.vue";
 import CollectionWorkspace from "./CollectionWorkspace.vue";
 import { useNotifications } from "../stores/notifications";
+import { DocListItem } from "../features/knowledge";
+import PaEmptyState from "../design/PaEmptyState.vue";
+import PaErrorState from "../design/PaErrorState.vue";
+import { PhBooks } from "@phosphor-icons/vue";
 
 const notify = useNotifications();
 
@@ -270,30 +274,6 @@ async function runOcr(d: DocumentItem) {
     notify.error("OCR 失败", String(e));
   }
 }
-
-const STATUS_TEXT: Record<string, string> = {
-  pending: "等待中",
-  processing: "处理中",
-  ready: "已就绪",
-  failed: "失败",
-  deleting: "删除中",
-  needs_ocr: "需要 OCR",
-};
-const STATUS_CLASS: Record<string, string> = {
-  ready: "ok",
-  failed: "bad",
-  processing: "warn",
-  pending: "warn",
-  deleting: "warn",
-  needs_ocr: "warn",
-};
-
-function fmtSize(b: number | null): string {
-  if (!b) return "-";
-  if (b < 1024) return b + " B";
-  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + " KB";
-  return (b / 1024 / 1024).toFixed(1) + " MB";
-}
 </script>
 
 <template>
@@ -378,50 +358,34 @@ function fmtSize(b: number | null): string {
       批量导入完成：{{ batchResult.imported }} 个导入，{{ batchResult.duplicate }} 个重复跳过<template v-if="batchResult.error">，{{ batchResult.error }} 个失败</template>
     </div>
 
-    <div v-if="loadError" class="load-error" role="alert">
-      <span>知识库刷新失败：{{ loadError }}</span>
-      <button class="pa-btn pa-btn--ghost pa-btn--sm" @click="load">重试</button>
+    <div v-if="loadError" class="load-error-wrap">
+      <PaErrorState title="知识库刷新失败" :message="loadError" @retry="load" />
     </div>
-    <div v-if="loading && !loadedOnce" class="empty">正在加载文档…</div>
-    <div v-else-if="docs.length === 0 && !loadError" class="empty">
-      暂无文档，点击上方按钮导入
+    <div v-else-if="loading && !loadedOnce" class="empty-state">
+      <PaEmptyState :icon="PhBooks" title="正在加载文档…" description="读取本地知识库索引中" />
+    </div>
+    <div v-else-if="docs.length === 0" class="empty-state">
+      <PaEmptyState
+        :icon="PhBooks"
+        title="知识库为空"
+        description="导入本地资料后，Agent 的回答将有据可查、来源可追溯。"
+      />
     </div>
     <div v-else class="doc-list">
-      <div v-for="d in docs" :key="d.id" class="doc-item" :class="{ disabled: !d.enabled, selected: selectedIds.has(d.id) }">
-        <div class="doc-select">
-          <input
-            type="checkbox"
-            :checked="selectedIds.has(d.id)"
-            @change="toggleSelect(d.id)"
-            title="选择以对比"
-          />
-        </div>
-        <div class="doc-main">
-          <div class="doc-name">{{ d.name }}</div>
-          <div class="doc-meta">
-            <span class="status" :class="STATUS_CLASS[d.status]">{{ STATUS_TEXT[d.status] || d.status }}</span>
-            <span v-if="d.doc_type" class="meta-chip">{{ d.doc_type }}</span>
-            <span>{{ fmtSize(d.size_bytes) }}</span>
-            <span v-if="d.chunk_count">切片 {{ d.chunk_count }}</span>
-            <span v-if="d.topic" class="meta-chip topic">主题：{{ d.topic }}</span>
-            <span v-if="d.language" class="meta-chip">{{ d.language }}</span>
-            <span v-for="t in d.tags_json || []" :key="t" class="meta-chip tag">#{{ t }}</span>
-          </div>
-          <div v-if="d.error_message" class="doc-err">失败原因：{{ d.error_message }}</div>
-        </div>
-        <div class="doc-actions">
-          <button class="icon-btn" title="章节摘要" @click="runSummary(d)">摘要</button>
-          <button class="icon-btn" title="OCR（预留接口）" @click="runOcr(d)">OCR</button>
-          <button class="icon-btn" title="编辑元数据" @click="editMetadata(d)">元数据</button>
-          <label class="enable-toggle" :title="d.enabled ? '已启用，参与检索' : '已禁用，不参与检索'">
-            <input type="checkbox" :checked="d.enabled" @change="toggleEnabled(d)" />
-            <span>{{ d.enabled ? "启用" : "禁用" }}</span>
-          </label>
-          <button v-if="d.status === 'ready'" class="icon-btn" title="重建索引" @click="reindex(d)">重建</button>
-          <button v-if="d.status === 'failed'" class="icon-btn" title="重试" @click="retry(d.id)">重试</button>
-          <button class="icon-btn del" title="删除" @click="remove(d.id)">删除</button>
-        </div>
-      </div>
+      <DocListItem
+        v-for="d in docs"
+        :key="d.id"
+        :doc="d"
+        :selected="selectedIds.has(d.id)"
+        @toggle-select="toggleSelect"
+        @summary="runSummary"
+        @ocr="runOcr"
+        @edit-metadata="editMetadata"
+        @toggle-enabled="toggleEnabled"
+        @reindex="reindex"
+        @retry="retry"
+        @remove="remove"
+      />
     </div>
     </div>
 
@@ -552,59 +516,19 @@ h1 {
   font-size: var(--text-sm);
   margin-bottom: var(--space-4);
 }
-.load-error {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
+.load-error-wrap {
   margin-bottom: var(--space-4);
-  padding: var(--space-3);
-  color: var(--color-danger-fg);
-  background: var(--color-danger-soft);
   border: 1px solid color-mix(in srgb, var(--color-danger) 25%, transparent);
   border-radius: var(--radius-md);
-  word-break: break-word;
+  background: var(--color-danger-soft);
 }
-.empty {
-  text-align: center;
-  color: var(--color-fg-faint);
-  padding: 60px 0;
-  font-size: var(--text-base);
+.empty-state {
+  padding: var(--space-4) 0;
 }
 .doc-list {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-}
-.doc-item {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: var(--space-3) var(--space-4);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-.doc-item.disabled {
-  opacity: 0.55;
-}
-.doc-item.selected {
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
-}
-.doc-select {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-}
-.doc-main {
-  flex: 1;
-  min-width: 0;
-}
-.doc-select input {
-  margin: 0;
-  cursor: pointer;
 }
 .modal-overlay {
   position: fixed;
@@ -663,88 +587,6 @@ h1 {
   text-align: center;
   padding: var(--space-4);
 }
-.doc-name {
-  font-weight: var(--font-medium);
-  font-size: var(--text-base);
-  word-break: break-all;
-}
-.doc-meta {
-  display: flex;
-  gap: var(--space-3);
-  font-size: var(--text-sm);
-  color: var(--color-fg-subtle);
-  margin-top: var(--space-1);
-  flex-wrap: wrap;
-}
-.status {
-  font-weight: var(--font-medium);
-}
-.status.ok {
-  color: var(--color-success-fg);
-}
-.status.bad {
-  color: var(--color-danger-fg);
-}
-.status.warn {
-  color: var(--color-warning-fg);
-}
-.meta-chip {
-  font-size: var(--text-xs);
-  color: var(--color-fg-muted);
-  background: var(--color-surface-sunken);
-  padding: 1px 6px;
-  border-radius: var(--radius-full);
-}
-.meta-chip.topic {
-  color: var(--color-accent-soft-fg);
-  background: var(--color-accent-soft);
-}
-.meta-chip.tag {
-  color: var(--color-fg-subtle);
-}
-.doc-err {
-  font-size: var(--text-sm);
-  color: var(--color-danger-fg);
-  margin-top: var(--space-1);
-}
-.doc-actions {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.enable-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: var(--text-sm);
-  color: var(--color-fg-muted);
-  cursor: pointer;
-  user-select: none;
-  padding: 4px var(--space-2);
-  border-radius: var(--radius);
-  border: 1px solid var(--color-border);
-}
-.enable-toggle input {
-  margin: 0;
-}
-.icon-btn {
-  border-radius: var(--radius);
-  padding: 5px 10px;
-  font-size: var(--text-sm);
-  cursor: pointer;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-fg-muted);
-}
-.icon-btn:hover {
-  background: var(--color-surface-sunken);
-}
-.icon-btn.del {
-  color: var(--color-danger-fg);
-}
 @media (max-width: 920px) {
   .kv-head,
   .docs-view {
@@ -753,15 +595,6 @@ h1 {
   }
   .toolbar-spacer {
     display: none;
-  }
-  .doc-item {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .doc-actions {
-    width: 100%;
-    padding-left: 28px;
-    justify-content: flex-start;
   }
 }
 </style>
