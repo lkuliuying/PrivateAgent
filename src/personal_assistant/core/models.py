@@ -2112,6 +2112,9 @@ class AgentRun(Base):
         BIGINT, ForeignKey("sessions.id", ondelete="SET NULL"), nullable=True
     )
     trace_id: Mapped[str] = mapped_column(VARCHAR(64), nullable=False, unique=True)
+    knowledge_base: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
     status: Mapped[str] = mapped_column(
         VARCHAR(32), nullable=False, default="created", server_default="created"
     )

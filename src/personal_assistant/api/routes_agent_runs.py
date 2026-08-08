@@ -424,6 +424,7 @@ async def create_agent_run(
         run_id=run_id,
         limits=request.limits,
         session_id=request.session_id,
+        knowledge_base=request.knowledge_base,
     )
     agent_run_coordinator.start(
         run_id=run_id,
@@ -435,7 +436,11 @@ async def create_agent_run(
             tool_bundle.dispatcher_factory if tool_bundle is not None else None
         ),
         output_verifier_factory=(
-            tool_bundle.output_verifier_factory if tool_bundle is not None else None
+            # 0.3.0 A3 修复：RAG 引用验证器只对知识库 run 注入，避免普通
+            # run 被强制 JSON 输出而抑制工具调用（与 chat 路由保持一致）。
+            tool_bundle.output_verifier_factory
+            if request.knowledge_base and tool_bundle is not None
+            else None
         ),
         context_metadata=context_metadata,
     )
@@ -587,7 +592,13 @@ async def approve_agent_run_tool(
             model=model,
             tool_definitions=tool_bundle.definitions,
             tool_dispatcher_factory=tool_bundle.resume_dispatcher_factory,
-            output_verifier_factory=tool_bundle.output_verifier_factory,
+            output_verifier_factory=(
+                # 与创建路径一致：RAG 引用验证器只对知识库 run 注入
+                # （0.3.0 A3 修复，见 create_agent_run 注释）。
+                tool_bundle.output_verifier_factory
+                if run.knowledge_base
+                else None
+            ),
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail="Agent run is already active") from exc

@@ -1376,3 +1376,99 @@ async def test_sse_disconnect_cancels_active_run(client, db, monkeypatch):
             await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
         await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
         await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_plain_chat_does_not_inject_rag_verifier_but_rag_chat_does(
+    client, db, monkeypatch
+):
+    """0.3.0 A3 回归：RAG 引用验证器只对 knowledge_base=true 注入。
+
+    修复前 RAG 开关开启时普通聊天也带 strict JSON output_format，真实模型
+    被强制 JSON 输出并抑制工具调用，CONFIRM 工具审批永远无法触发；修复后
+    普通聊天 output_format 为 None，RAG 聊天保持注入，且 knowledge_base
+    持久化供审批恢复路径一致判断。
+    """
+    monkeypatch.setattr(settings, "chat_agent_runtime_enabled", True)
+    monkeypatch.setattr(settings, "agent_rag_tools_enabled", True)
+    monkeypatch.setattr(settings, "agent_output_verification_enabled", True)
+    monkeypatch.setattr(settings, "agent_output_verification_max_retries", 1)
+
+    captured: list[tuple[str, object]] = []
+
+    async def fake_bundle(_db):
+        return AgentToolBundle(
+            definitions=(),
+            dispatcher_factory=None,
+            resume_dispatcher_factory=None,
+            output_verifier_factory=(
+                lambda run_db, run_id: ReloadingRagCitationOutputVerifier(
+                    lambda: []
+                )
+            ),
+        )
+
+    def recording_coordinator_start(
+        *,
+        run_id,
+        model,
+        messages,
+        limits,
+        tool_definitions=(),
+        tool_dispatcher_factory=None,
+        output_verifier_factory=None,
+        context_metadata=None,
+        stream_output=False,
+        output_queue=None,
+    ):
+        del model, messages, limits, tool_definitions, tool_dispatcher_factory
+        del context_metadata, stream_output, output_queue
+        captured.append((run_id, output_verifier_factory))
+        return None
+
+    async def fake_model(_db):
+        class _Model:
+            async def complete(self, request, *, cancellation):
+                del request, cancellation
+                return ModelResponse(text="ok")
+
+        return _Model()
+
+    monkeypatch.setattr(routes_chat, "get_agent_tool_bundle", fake_bundle)
+    monkeypatch.setattr(routes_chat, "_build_agent_model", fake_model)
+    monkeypatch.setattr(
+        routes_chat.agent_run_coordinator, "start", recording_coordinator_start
+    )
+    app.dependency_overrides[get_agent_tool_bundle] = fake_bundle
+    app.dependency_overrides[get_agent_model_client] = fake_model
+    session: dict | None = None
+    try:
+        session = (await client.post("/sessions")).json()
+        for knowledge_base in (False, True):
+            created = await client.post(
+                "/chat/stream",
+                json={
+                    "session_id": session["id"],
+                    "message": "hello",
+                    "knowledge_base": knowledge_base,
+                },
+            )
+            assert created.status_code == 200
+        assert len(captured) == 2, "普通与 RAG 两个 run 都必须被创建"
+        plain_run, rag_run = captured
+        assert plain_run[1] is None, "普通聊天不得注入 RAG 引用验证器"
+        assert rag_run[1] is not None, "RAG 聊天必须注入 RAG 引用验证器"
+        await db.rollback()
+        plain_record = await db.get(AgentRunRecord, plain_run[0])
+        rag_record = await db.get(AgentRunRecord, rag_run[0])
+        assert plain_record is not None and plain_record.knowledge_base is False
+        assert rag_record is not None and rag_record.knowledge_base is True
+    finally:
+        app.dependency_overrides.pop(get_agent_tool_bundle, None)
+        app.dependency_overrides.pop(get_agent_model_client, None)
+        if session is not None:
+            await db.execute(delete(ChatSession).where(ChatSession.id == session["id"]))
+        await db.execute(
+            delete(AgentRunRecord).where(AgentRunRecord.id.in_([r for r, _ in captured]))
+        )
+        await db.commit()

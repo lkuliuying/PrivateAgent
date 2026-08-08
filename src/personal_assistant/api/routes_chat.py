@@ -274,11 +274,13 @@ async def _agent_chat_stream(
         run_id=run_id,
         limits=limits,
         session_id=req.session_id,
+        knowledge_base=req.knowledge_base,
     )
     await messages_repository.add(req.session_id, "user", req.message)
 
     structured_rag_output = bool(
-        cfg.agent_output_verification_enabled
+        req.knowledge_base
+        and cfg.agent_output_verification_enabled
         and tool_bundle is not None
         and tool_bundle.output_verifier_factory is not None
     )
@@ -292,7 +294,12 @@ async def _agent_chat_stream(
             tool_bundle.dispatcher_factory if tool_bundle is not None else None
         ),
         output_verifier_factory=(
-            tool_bundle.output_verifier_factory if tool_bundle is not None else None
+            # 0.3.0 A3 修复：RAG 引用验证器带 strict JSON output_schema，
+            # 只对知识库聊天注入；普通聊天注入会让模型被强制 JSON 输出并
+            # 抑制工具调用，真实模型审批（CONFIRM 工具）无法触发。
+            tool_bundle.output_verifier_factory
+            if req.knowledge_base and tool_bundle is not None
+            else None
         ),
         stream_output=not structured_rag_output,
         context_metadata=context_metadata,

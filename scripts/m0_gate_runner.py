@@ -71,6 +71,10 @@ SHUTDOWN_WAIT_S = 10
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 DETACHED_PROCESS = 0x00000008
 BINARY_IDENTITY_REPORT_KEY = "binary_identity"
+# 演练宽限期：与 sidecar 的 PA_COMPATIBILITY_TELEMETRY_RECONCILE_GRACE_SECONDS
+# 保持一致（config 下限 60s），保证"崩溃窗口在下次启动被 reconcile"能在
+# 单次演练内验证；生产默认仍为 7200s。
+RECONCILE_GRACE_SECONDS = 60
 
 
 def _free_port() -> int:
@@ -110,6 +114,27 @@ def _git_head() -> str:
 def _read_project_env() -> dict[str, str]:
     """项目 .env 的 PA_*（--config project-env 用；installed 模式不调用）。"""
     env_path = PROJECT_ROOT / ".env"
+    out: dict[str, str] = {}
+    if not env_path.exists():
+        return out
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.startswith("PA_"):
+            out[key] = value.strip()
+    return out
+
+
+def _read_dir_env(data_dir: str) -> dict[str, str]:
+    """读取 ``PA_DATA_DIR/.env`` 的 PA_*（安装版 frozen 模式配置源）。
+
+    config 的 ``_default_env_file`` 固定读 ``_default_data_dir()/.env``，不读
+    ``PA_DATA_DIR`` 环境变量；本函数让 ``--data-dir`` 的安装版演练能注入
+    与全新数据目录一致的完整配置（DB 由 --db-url 覆盖优先）。
+    """
+    env_path = Path(data_dir) / ".env"
     out: dict[str, str] = {}
     if not env_path.exists():
         return out
@@ -225,7 +250,12 @@ class SpawnedSidecar:
 
 
 def _spawn_sidecar(
-    sidecar: Path, config_mode: str, db_url: str | None
+    sidecar: Path,
+    config_mode: str,
+    db_url: str | None,
+    *,
+    data_dir: str | None = None,
+    migrate: bool = False,
 ) -> SpawnedSidecar:
     port = _free_port()
     token = secrets.token_hex(32)
@@ -233,14 +263,27 @@ def _spawn_sidecar(
         **os.environ,
         "PA_API_PORT": str(port),
         "PA_API_TOKEN": token,
-        # 主库已在 head（0021）；跳过迁移避免并发迁移写入。
-        "PA_SKIP_MIGRATIONS": "1",
+        # 演练用短宽限期（与 _reconcile_stale 一致），使崩溃窗口能在本次
+        # 演练内被"下次启动"的 reconcile 关闭并验证。
+        "PA_COMPATIBILITY_TELEMETRY_RECONCILE_GRACE_SECONDS": str(
+            RECONCILE_GRACE_SECONDS
+        ),
     }
+    if not migrate:
+        # 主库已在 head（0022）；跳过迁移避免并发迁移写入。
+        env["PA_SKIP_MIGRATIONS"] = "1"
+    if data_dir:
+        env["PA_DATA_DIR"] = data_dir
     if config_mode == "project-env":
         env.update(_read_project_env())
-    elif db_url:
+    elif data_dir:
+        # installed + --data-dir：注入全新数据目录 .env 的完整配置
+        # （config frozen 模式只读 _default_data_dir()/.env，忽略 PA_DATA_DIR）。
+        env.update(_read_dir_env(data_dir))
+    if db_url:
         # installed：安装版 %APPDATA%/.env 的 DB 密码在 Windows 凭据库
         # （PA_DB_SECRET_REF），直接 spawn 无法解析，需显式连接串。
+        # 显式连接串始终覆盖数据目录 .env 的 PA_DB_URL。
         env["PA_DB_URL"] = db_url
     proc = subprocess.Popen(
         [str(sidecar)],
@@ -356,6 +399,19 @@ async def _drive_batch(
         session = await client.post(f"{base}/sessions")
         session.raise_for_status()
         session_id = session.json()["id"]
+        if approval_one:
+            # read_file 是 CONFIRM 工具且需要已授权路径；先授权，保证审批
+            # 触发后工具执行不会因未授权失败（M0 审批样本可信度）。
+            authorized = await client.post(
+                f"{base}/files/authorize",
+                json={"path": str(PROJECT_ROOT), "kind": "directory"},
+            )
+            if authorized.status_code not in {200, 201}:
+                print(
+                    f"[m0-runner] 警告：授权路径失败 {authorized.status_code}，"
+                    "审批样本可能不可用",
+                    file=sys.stderr,
+                )
         knowledge_target = max(0, min(count, int(count * knowledge)))
         kb_indexes = {
             i
@@ -369,31 +425,43 @@ async def _drive_batch(
             use_kb = index in kb_indexes
             pool = [p for p in driver.PROMPT_POOL if p["knowledge_base"] == use_kb]
             prompt = pool[index % len(pool)]
+            approval_prompt_used = False
             if not approval_done and index == count - 1:
+                approval_prompt_used = True
                 prompt = {
                     "id": "approval:01",
                     "knowledge_base": False,
-                    "text": "请用 read_file 工具读取项目 README.md 的第一段内容，"
-                    "并简要说明文件用途。",
+                    "text": (
+                        "你只能通过调用 read_file 工具完成任务：参数为 "
+                        '{"path": "F:/Program/Agent/README.md"}，读取该文件前 5 行。'
+                        "必须先调用工具，再根据工具返回内容说明文件用途。"
+                        "禁止直接回答内容。"
+                    ),
                 }
             run = await driver._run_one(client, base, prompt, session_id)
             if run.get("status") == "owner_unavailable":
                 results.append(run)
                 break
-            if not cancel_done and run.get("status") in {"running", "waiting_approval"}:
+            if not cancel_done and run.get("status") in {
+                "created",
+                "running",
+                "waiting_approval",
+            }:
                 run = await driver._cancel_one(client, base, run)
                 cancel_done = True
-            if not approval_done:
+            if approval_prompt_used:
                 approval_done = True  # 仅尝试一次
-                if run.get("id"):
-                    approval = await _approve_one(client, base, run["id"])
-                    if approval is not None:
-                        results.append(approval)
-                        continue
+                approval = await _approve_one(client, base, run["id"])
+                if approval is not None:
+                    results.append(approval)
+                    continue
+                # 未触发审批：按普通 run 记录并标记
             terminal = await driver._wait_for_terminal(client, base, run["id"])
             terminal["prompt_id"] = run["prompt_id"]
             terminal["knowledge_base"] = run["knowledge_base"]
             terminal["cancel_note"] = run.get("cancel_note")
+            if approval_prompt_used:
+                terminal["approval_note"] = "not_triggered"
             events = await driver._events_if_available(client, base, run["id"])
             terminal["validation_passed"] = any(
                 e.get("type") == "output.validation_passed" for e in events
@@ -413,18 +481,19 @@ async def _drive_batch(
 async def _approve_one(
     client: httpx.AsyncClient, base: str, run_id: str
 ) -> dict | None:
-    """等待 run 进入 waiting_approval，批准后恢复并等待完成。"""
+    """等待 run 进入 waiting_approval，批准后恢复并等待完成。
+
+    未触发审批（模型未调用工具）时返回 None，由调用方按普通 run 记录
+    并附 approval_note="not_triggered"；避免把未触发的 run 记录吞掉。
+    """
+    body = {}
     for _ in range(120):
         body = (await client.get(f"{base}/agent-runs/{run_id}")).json()
         if body.get("status") in {"waiting_approval", "completed", "failed", "cancelled"}:
             break
         await asyncio.sleep(1)
     if body.get("status") != "waiting_approval":
-        return {
-            "prompt_id": "approval:01",
-            "status": "approval_not_triggered",
-            "run_status": body.get("status"),
-        }
+        return None
     approvals = (await client.get(f"{base}/agent-runs/{run_id}/approvals")).json()
     pending = [a for a in approvals if a.get("status") == "pending"]
     if not pending:
@@ -454,9 +523,14 @@ async def _approve_one(
 
 
 async def _reconcile_stale(db_engine, grace_seconds: int = 7_200) -> int:
-    """直接执行与 sidecar 启动相同的 reconcile 逻辑（DB 层验证）。"""
+    """直接执行与 sidecar 启动相同的 reconcile 逻辑（DB 层验证）。
+
+    grace_seconds 必须与 sidecar 的 PA_COMPATIBILITY_TELEMETRY_RECONCILE_GRACE_SECONDS
+    一致：只有超过宽限期仍未写 ended_at 的窗口才会被下次启动关闭。演练用短宽限期
+    （默认 60s）才能在单次演练内验证；生产默认 7200s。
+    """
     async with async_sessionmaker(db_engine, expire_on_commit=False)() as db:
-        await db.execute(
+        result = await db.execute(
             text(
                 "UPDATE compatibility_telemetry SET ended_at = UTC_TIMESTAMP(3) "
                 "WHERE ended_at IS NULL AND started_at < "
@@ -465,21 +539,32 @@ async def _reconcile_stale(db_engine, grace_seconds: int = 7_200) -> int:
             {"grace": grace_seconds},
         )
         await db.commit()
-        rows = await db.execute(
-            text(
-                "SELECT COUNT(DISTINCT scope_key) FROM compatibility_telemetry "
-                "WHERE ended_at IS NOT NULL AND ended_at >= started_at "
-                "AND ended_at > UTC_TIMESTAMP(3) - INTERVAL 120 SECOND"
-            )
-        )
-        return int(rows.scalar() or 0)
+        # 返回本次 UPDATE 实际关闭的行数（0 表示没有过期窗口，验证必然失败）
+        return int(result.rowcount or 0)
 
 
-async def _lock_contention_sample(sidecar: Path, config_mode: str, db_url: str | None) -> dict:
-    """第二个 sidecar 尝试获取 owner lock：必须拒绝启动（无双 coordinator）。"""
-    second = _spawn_sidecar(sidecar, config_mode, db_url)
+async def _lock_contention_sample(
+    sidecar: Path,
+    config_mode: str,
+    db_url: str | None,
+    *,
+    data_dir: str | None = None,
+    migrate: bool = False,
+) -> dict:
+    """第二个 sidecar 尝试获取 owner lock：必须拒绝启动（无双 coordinator）。
+
+    调用时机：第一个 sidecar 仍存活且持有 MySQL named lock 时（cycle 0 内）。
+    第二个实例的 lifespan acquire 失败 → 进程退出且 /health 不可达。
+    """
+    second = _spawn_sidecar(
+        sidecar, config_mode, db_url, data_dir=data_dir, migrate=migrate
+    )
     try:
-        await asyncio.sleep(20)
+        # 等待进程自行退出（acquire 失败路径）；正常退出应在数十秒内发生
+        for _ in range(90):
+            if second.proc.poll() is not None:
+                break
+            await asyncio.sleep(1)
         exited = second.proc.poll() is not None
         health = _health_ok(second.base, second.token) if not exited else False
         return {
@@ -520,6 +605,16 @@ async def main() -> int:
         "--config", choices=["installed", "project-env"], default="project-env"
     )
     parser.add_argument("--db-url", default=None, help="installed 模式显式 DB 连接串")
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="设置 PA_DATA_DIR（安装版全新 QA 数据目录 smoke 用）",
+    )
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="不设置 PA_SKIP_MIGRATIONS，验证安装版首次启动执行迁移到 head",
+    )
     parser.add_argument("--out", type=Path, required=True, help="报告 JSON 输出路径")
     args = parser.parse_args()
 
@@ -566,7 +661,10 @@ async def main() -> int:
         )
 
     started_at = datetime.now(timezone.utc)
-    engine = create_async_engine(settings.db_url, pool_pre_ping=True)
+    # 窗口/reconcile 审计必须指向被演练 sidecar 使用的同一个库：
+    # installed 模式用 --db-url；project-env 用项目 .env 的 PA_DB_URL。
+    audit_db_url = args.db_url or settings.db_url
+    engine = create_async_engine(audit_db_url, pool_pre_ping=True)
     cycles: list[dict] = []
     all_runs: list[dict] = []
     outage_record: dict | None = None
@@ -583,6 +681,8 @@ async def main() -> int:
             "git_commit": _git_head(),
             "config_mode": args.config,
             "config_origin": "installed(%APPDATA%/.env)" if args.config == "installed" else "project-env(.env)",
+            "data_dir": args.data_dir,
+            "migrate_on_first_boot": args.migrate,
         },
         "started_at": started_at.isoformat(),
     }
@@ -600,7 +700,13 @@ async def main() -> int:
             cycle_start = datetime.now(timezone.utc)
             crash_this = args.crash_one and cycle_index == args.cycles - 1
             print(f"\n[m0-runner] === cycle {cycle_index + 1}/{args.cycles} ==={ ' (crash)' if crash_this else ''}")
-            sidecar_inst = _spawn_sidecar(sidecar, args.config, args.db_url)
+            sidecar_inst = _spawn_sidecar(
+                sidecar,
+                args.config,
+                args.db_url,
+                data_dir=args.data_dir,
+                migrate=args.migrate,
+            )
             cycle: dict[str, object] = {
                 "spawned_pid": sidecar_inst.proc.pid,
                 "started_at": cycle_start.isoformat(),
@@ -655,7 +761,22 @@ async def main() -> int:
                         "crash_cycle_index": cycle_index,
                         "force_killed": True,
                     }
+                    # 等待崩溃窗口超过 reconcile 宽限期，模拟"下次启动时"的
+                    # 陈旧窗口（宽限期由 RECONCILE_GRACE_SECONDS 控制，60s）。
+                    await asyncio.sleep(RECONCILE_GRACE_SECONDS + 5)
                 else:
+                    # 0.3.0 A3：owner lock 竞争必须在第一个 sidecar 仍持有
+                    # MySQL named lock 时执行；此前放在 cycle 结束后才运行，
+                    # 锁已被释放，第二个实例自然能存活，样本无效。
+                    if args.lock_contention and cycle_index == 0:
+                        lock_record = await _lock_contention_sample(
+                            sidecar,
+                            args.config,
+                            args.db_url,
+                            data_dir=args.data_dir,
+                            migrate=args.migrate,
+                        )
+                        print(f"[m0-runner] lock contention: {lock_record}")
                     cycle.update(await _graceful_stop(sidecar_inst))
 
                 window_keys = await _windows_started_since(engine, cycle_start)
@@ -674,8 +795,12 @@ async def main() -> int:
                     f"closed={status['closed']} negative={status['negative']}"
                 )
                 if crash_this:
-                    # 下次"启动"的 reconcile：直接执行相同 DB 逻辑并验证
-                    reconciled = await _reconcile_stale(engine)
+                    # 下次"启动"的 reconcile：直接执行相同 DB 逻辑并验证。
+                    # grace 与 sidecar 环境一致（RECONCILE_GRACE_SECONDS），
+                    # 崩溃窗口已超过宽限期，UPDATE 必须关闭它。
+                    reconciled = await _reconcile_stale(
+                        engine, grace_seconds=RECONCILE_GRACE_SECONDS
+                    )
                     after = await _windows_status(engine, window_keys)
                     crash_record["reconciled_windows"] = reconciled
                     crash_record["windows_closed_after_reconcile"] = after["closed"]
@@ -690,12 +815,6 @@ async def main() -> int:
                 if sidecar_inst.proc.poll() is None:
                     _kill_tree(sidecar_inst.proc.pid)
             cycles.append(cycle)
-
-            if args.lock_contention and cycle_index == 0:
-                lock_record = await _lock_contention_sample(sidecar, args.config, args.db_url)
-                print(
-                    f"[m0-runner] lock contention: {lock_record}"
-                )
 
             summary = _summarize(
                 started_at, cycles, all_runs, outage_record, crash_record, lock_record

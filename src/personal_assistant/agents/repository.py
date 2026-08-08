@@ -121,6 +121,7 @@ class AgentRunRepository:
         limits: AgentRunLimits,
         session_id: int | None = None,
         trace_id: str | None = None,
+        knowledge_base: bool = False,
     ) -> AgentRunRecord:
         if not run_id or len(run_id) > 36:
             raise ValueError("run_id must contain 1-36 characters")
@@ -132,6 +133,7 @@ class AgentRunRepository:
             id=run_id,
             session_id=session_id,
             trace_id=effective_trace_id,
+            knowledge_base=knowledge_base,
             status="created",
             max_steps=limits.max_steps,
             max_tool_calls=limits.max_tool_calls,

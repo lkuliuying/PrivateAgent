@@ -466,7 +466,10 @@ async def test_agent_rag_workflow_verifies_only_durable_retrieved_citations(
     try:
         created = await client.post(
             "/agent-runs",
-            json={"message": "When is the deployment window?"},
+            json={
+                "message": "When is the deployment window?",
+                "knowledge_base": True,
+            },
         )
         assert created.status_code == 202
         run_id = created.json()["id"]

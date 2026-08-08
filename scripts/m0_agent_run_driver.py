@@ -206,6 +206,7 @@ async def main() -> int:
                 results.append(run)
                 break
             if not cancel_done and run["status"] in {
+                "created",
                 "running",
                 "waiting_approval",
             }:
