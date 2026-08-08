@@ -207,7 +207,7 @@ function formatRelative(value: string): string {
   color: var(--color-rail-fg);
 }
 .rail-brand { display: flex; min-width: 0; flex-shrink: 0; align-items: center; gap: var(--space-3); padding: 0 var(--space-1); }
-.brand-mark { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border: 1px solid rgba(95, 224, 229, 0.24); border-radius: 11px; background: rgba(8, 174, 181, 0.13); color: var(--color-rail-accent); }
+.brand-mark { display: grid; width: 36px; height: 36px; flex: 0 0 36px; place-items: center; border: 1px solid var(--pa-rail-brand-border); border-radius: 11px; background: var(--pa-rail-brand-bg); color: var(--color-rail-accent); }
 .brand-copy { display: flex; min-width: 0; flex-direction: column; }
 .brand-copy strong { overflow: hidden; color: var(--color-rail-fg-strong); font-size: var(--pa-text-section); letter-spacing: 0.01em; text-overflow: ellipsis; white-space: nowrap; }
 .brand-copy span { margin-top: 1px; color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); font-weight: var(--font-semibold); letter-spacing: 0.13em; }
@@ -291,13 +291,13 @@ function formatRelative(value: string): string {
 .recent-empty { padding: var(--space-2); color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); line-height: 1.5; }
 .recent-task { display: flex; width: 100%; min-width: 0; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg-muted); text-align: left; cursor: pointer; }
 .recent-task:hover { background: var(--color-rail-surface); color: var(--color-rail-fg); }
-.recent-task.active { border-color: rgba(95, 224, 229, 0.14); background: var(--color-rail-active); color: var(--color-rail-fg-strong); }
-.recent-icon { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border-radius: var(--radius); background: rgba(255, 255, 255, 0.055); }
+.recent-task.active { border-color: var(--pa-rail-active-border); background: var(--color-rail-active); color: var(--color-rail-fg-strong); }
+.recent-icon { display: grid; width: 25px; height: 25px; flex: 0 0 25px; place-items: center; border-radius: var(--radius); background: var(--pa-rail-icon-bg); }
 .recent-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
 .recent-copy strong { overflow: hidden; font-size: var(--pa-t-11); font-weight: var(--font-medium); text-overflow: ellipsis; white-space: nowrap; }
 .recent-copy small { color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); }
 .recent-status { width: 7px; height: 7px; flex: 0 0 7px; border-radius: var(--radius-full); background: var(--color-success); }
-.recent-status.running { background: var(--color-rail-accent); box-shadow: 0 0 0 3px rgba(95, 224, 229, 0.12); }
+.recent-status.running { background: var(--color-rail-accent); box-shadow: 0 0 0 3px var(--pa-rail-running-glow); }
 .rail-footer { flex-shrink: 0; padding-top: var(--space-2); border-top: 1px solid var(--color-rail-border); }
 .profile-entry { display: flex; width: 100%; align-items: center; gap: var(--space-2); padding: var(--space-2); border: none; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg); text-align: left; cursor: pointer; }
 .profile-entry:hover { background: var(--color-rail-surface); }

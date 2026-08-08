@@ -5,7 +5,7 @@
  * alpha.2：默认新 UI，关闭开关可回退（?ui=v1 或 pa_ui_v2=0）。
  * 开关只影响 renderer 呈现，不改变后端数据与执行路径。
  */
-const DEFAULT_UI_V2 = false;
+const DEFAULT_UI_V2 = true;
 
 export type UiMode = "v1" | "v2";
 

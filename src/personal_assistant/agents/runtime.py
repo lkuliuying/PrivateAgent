@@ -255,8 +255,19 @@ async def _await_with_cancellation(
     awaitable: Awaitable[_T],
     cancellation: CancellationToken,
 ) -> _T:
-    cancellation.raise_if_cancelled()
+    """Await an awaitable, racing a cancellation token.
+
+    The awaitable is scheduled (ensure_future) immediately, before any
+    cancellation check, so a token cancelled in the window between coroutine
+    creation and this function's entry can never leave a bare coroutine
+    unawaited (avoids "coroutine was never awaited" on GC).
+    """
     operation = asyncio.ensure_future(awaitable)
+    if cancellation.is_cancelled:
+        operation.cancel()
+        with suppress(asyncio.CancelledError):
+            await operation
+        raise _RunCancelled
     cancelled = asyncio.create_task(cancellation.wait())
     try:
         done, _ = await asyncio.wait(

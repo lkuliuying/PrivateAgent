@@ -228,6 +228,8 @@ test.describe("anime.js motion system", () => {
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
+    // 先滚动到可见再测量，避免 hover 隐式滚动改变坐标
+    await card.scrollIntoViewIfNeeded();
     const before = await card.boundingBox();
     await card.hover();
     await page.waitForTimeout(320);
@@ -268,7 +270,7 @@ test.describe("anime.js motion system", () => {
 
   test("chat messages and tool calls mount through the isolated animation layer", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/");
+    await page.goto("/?ui=v1");
     await navigate(page, "chat");
 
     await expect(page.locator("[data-chat-message]")).toHaveCount(3);
@@ -300,7 +302,7 @@ test.describe("anime.js motion system", () => {
       includePendingTool: false,
       streamDelayMs: 650,
     });
-    await page.goto("/");
+    await page.goto("/?ui=v1");
     await navigate(page, "chat");
 
     await page.getByTestId("task-composer-input").fill("触发 Thinking 状态");
@@ -323,7 +325,7 @@ test.describe("anime.js motion system", () => {
       approveDelayMs: 650,
       streamDelayMs: 1_200,
     });
-    await page.goto("/");
+    await page.goto("/?ui=v1");
     await navigate(page, "chat");
     await page.getByRole("button", { name: "批准执行" }).click();
 

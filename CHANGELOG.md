@@ -1,5 +1,26 @@
 # 更新日志
 
+## 0.4.0-alpha.2（2026-08-08，Workbench UX 2.0 收口 · 开发中）
+
+> 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)。
+> 本轮：alpha.2 启动 + 验收遗留处置（默认新 UI、Python 警告、rail 令牌收敛）。
+
+### ui_v2 默认开启（alpha.2 契约切换）
+- `src/config/uiFlags.ts`：`DEFAULT_UI_V2 = true`——默认进入新 UI，`?ui=v1` / `pa_ui_v2=0` 回退兼容壳；
+- E2E 适配默认壳切换：legacy 动画模块回归测试（`chat.ts`/`agent.ts`）固定 `?ui=v1` 运行；
+  共享行为测试（Today/KB/布局溢出）改为壳无关断言（nav testid、heading `.first()`、hover 前先 `scrollIntoViewIfNeeded`）；
+- E2E 25/25 通过（默认壳 = v2）。
+
+### Python 运行时修复
+- `agents/runtime.py` `_await_with_cancellation`：协程先 `ensure_future` 调度、后做取消检查，
+  消除取消窗口内"协程未等待"（`RuntimeWarning: coroutine ... was never awaited`）；
+  `-W always::RuntimeWarning` 全量 pytest 零警告，637 passed。
+
+### 令牌收敛
+- NavRailV2 / NavRail 4+4 处 RGBA 字面量收敛为组件令牌 `--pa-rail-brand-border/-bg`、
+  `--pa-rail-active-border`、`--pa-rail-icon-bg`、`--pa-rail-running-glow`；
+  `src/` 组件无新增裸 RGBA/hex。
+
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
 > 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)；

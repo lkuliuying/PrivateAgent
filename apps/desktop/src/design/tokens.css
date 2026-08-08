@@ -285,6 +285,12 @@
   --pa-nav-item-height-compact: 32px;
   --pa-nav-item-radius: var(--radius-md);
   --pa-nav-indicator-w: 2px;
+  /* 导航 rail · 品牌与状态装饰（深色区透明叠加） */
+  --pa-rail-brand-border: rgba(95, 224, 229, 0.24);
+  --pa-rail-brand-bg: rgba(8, 174, 181, 0.13);
+  --pa-rail-active-border: rgba(95, 224, 229, 0.14);
+  --pa-rail-icon-bg: rgba(255, 255, 255, 0.055);
+  --pa-rail-running-glow: rgba(95, 224, 229, 0.12);
 
   /* 卡片 */
   --pa-card-bg: var(--color-surface);

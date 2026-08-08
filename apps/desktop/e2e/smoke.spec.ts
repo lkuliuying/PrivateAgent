@@ -222,8 +222,8 @@ test.describe("E2E smoke", () => {
     });
 
     await page.goto("/");
-    // 应用外壳启动（NavRail 品牌）
-    await expect(page.locator(".navrail-brand")).toBeVisible();
+    // 应用外壳启动（两种壳均有主导航，v2 为 .rail-brand；等待 nav 项更稳）
+    await expect(page.getByTestId("nav-chat")).toBeVisible();
     // 当前产品默认进入 Agent 工作区；显式进入 Today 后再验证首屏。
     await navigate(page, "today");
     await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-current", "page");
@@ -239,7 +239,7 @@ test.describe("E2E smoke", () => {
     );
 
     await page.goto("/");
-    await expect(page.locator(".navrail-brand")).toBeVisible();
+    await expect(page.getByTestId("nav-chat")).toBeVisible();
     // 进入设置页，应显示后端未连接提示
     await navigate(page, "settings");
     await expect(page.getByText(/本地后端.*未连接|无法获取状态/).first()).toBeVisible({
@@ -280,7 +280,8 @@ test.describe("E2E smoke", () => {
 
     await page.goto("/");
     await navigate(page, "kb");
-    await expect(page.getByRole("heading", { name: "知识库" })).toBeVisible();
+    // v2 壳顶部栏与知识库页各有一个「知识库」标题
+    await expect(page.getByRole("heading", { name: "知识库" }).first()).toBeVisible();
     await expect(page.getByText(/一份用于验证超长文档名称/)).toBeVisible();
     const metrics = await page.evaluate(() => ({
       body: document.body.scrollWidth,
