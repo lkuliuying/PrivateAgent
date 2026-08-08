@@ -414,8 +414,18 @@ def sidecar_smoke_step() -> dict:
     )
 
 
+def _version_key(value: str) -> tuple[int, ...]:
+    """把版本字符串映射为可比较的数字元组（忽略预发布后缀）。"""
+    return tuple(int(part) for part in re.findall(r"\d+", value) or [0])
+
+
 def validate_latest_json(dist: Path | None = None) -> dict:
-    """校验 dist/latest.json：version 匹配 tauri.conf.json，platforms 各项 signature/url 非空。"""
+    """校验 dist/latest.json：version 匹配 tauri.conf.json，platforms 各项 signature/url 非空。
+
+    内部预发布检查点（版本含 alpha/beta/rc）不上传正式 updater 渠道：
+    latest.json 保持较旧（数字版本不高于当前）的稳定版本视为合法，仅当
+    latest.json 版本高于当前版本时才失败；platforms 完整性始终校验。
+    """
     t0 = time.perf_counter()
     base = dist or DIST
     path = base / "latest.json"
@@ -431,8 +441,16 @@ def validate_latest_json(dist: Path | None = None) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         version = read_version()
         issues: list[str] = []
-        if data.get("version") != version:
-            issues.append(f"version 不匹配: {data.get('version')} vs {version}")
+        is_prerelease = re.search(r"(?i)(alpha|beta|rc)", version) is not None
+        latest_version = str(data.get("version") or "")
+        if latest_version != version:
+            if is_prerelease and _version_key(latest_version) <= _version_key(version):
+                issues.append(
+                    f"预发布检查点 {version} 不更新正式渠道 "
+                    f"(latest.json 保持 {latest_version})"
+                )
+            else:
+                issues.append(f"version 不匹配 {latest_version} vs {version}")
         platforms = data.get("platforms", {})
         if not platforms:
             issues.append("platforms 为空")
@@ -441,10 +459,15 @@ def validate_latest_json(dist: Path | None = None) -> dict:
                 issues.append(f"{key} signature 为空")
             if not entry.get("url"):
                 issues.append(f"{key} url 为空")
+        passed = not issues or (
+            is_prerelease
+            and len(issues) == 1
+            and issues[0].startswith("预发布检查点")
+        )
         return {
             "name": "latest_json_validation",
             "kind": "python",
-            "status": "failed" if issues else "passed",
+            "status": "passed" if passed else "failed",
             "duration_ms": round((time.perf_counter() - t0) * 1000, 1),
             "detail": "; ".join(issues) or "latest.json 结构与签名 OK",
         }

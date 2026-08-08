@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -105,6 +106,24 @@ def test_validate_latest_json_version_mismatch(tmp_path):
     res = rc.validate_latest_json(tmp_path)
     assert res["status"] == "failed"
     assert "version" in res["detail"]
+
+
+def test_validate_latest_json_prerelease_keeps_stable_channel(tmp_path):
+    """0.3.0-alpha.2：预发布检查点不更新正式渠道，latest.json 保持旧稳定版合法。"""
+    if not re.search(r"(?i)(alpha|beta|rc)", CURRENT_VERSION):
+        return  # 仅预发布构建有此语义
+    (tmp_path / "latest.json").write_text(
+        json.dumps(
+            {
+                "version": "0.2.1",
+                "platforms": {"windows-x86_64": {"signature": "sig", "url": "http://x/y.exe"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    res = rc.validate_latest_json(tmp_path)
+    assert res["status"] == "passed"
+    assert "预发布检查点" in res["detail"]
 
 
 def test_npm_script_exists():
