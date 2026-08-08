@@ -18,6 +18,14 @@ const GREEN_HEALTH = {
   chroma: { ok: true },
 };
 
+/** 固定浏览器时钟，保证证据截图字节稳定（相对时间/状态栏不随运行时刻漂移）。 */
+const FIXED_NOW = new Date("2026-08-08T10:00:00.000Z");
+
+async function freezeClock(page: Page) {
+  await page.clock.install({ time: FIXED_NOW });
+  await page.clock.setFixedTime(FIXED_NOW);
+}
+
 function mockApi(page: Page, title = "证据采集会话") {
   return page.route("**://127.0.0.1:8000/**", async (route) => {
     const request = route.request();
@@ -86,6 +94,7 @@ function mockApi(page: Page, title = "证据采集会话") {
 
 async function openV2(page: Page, width: number, height = 900) {
   await page.setViewportSize({ width, height });
+  await freezeClock(page);
   await mockApi(page);
   await page.goto("/?ui=v2");
   await expect(page.getByTestId("nav-chat")).toBeVisible();
@@ -106,6 +115,7 @@ test.describe("0.4.0 视觉证据", () => {
 
   test("新壳今日视图 1440", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await freezeClock(page);
     await mockApi(page);
     await page.goto("/?ui=v2");
     await page.getByTestId("nav-today").click();
@@ -115,6 +125,7 @@ test.describe("0.4.0 视觉证据", () => {
 
   test("UI Lab 1440", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await freezeClock(page);
     await page.goto("/?ui-lab=1");
     await expect(page.getByText("设计系统 2.0 · UI 状态展厅")).toBeVisible();
     await page.screenshot({ path: `${EVIDENCE_DIR}/ui-lab-1440.png`, fullPage: true });
@@ -122,6 +133,7 @@ test.describe("0.4.0 视觉证据", () => {
 
   test("ui=v1 回退壳 1440", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await freezeClock(page);
     await mockApi(page);
     await page.goto("/?ui=v1");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
