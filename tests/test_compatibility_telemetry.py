@@ -221,9 +221,9 @@ def test_unknown_m1_label_is_still_rejected():
 
 def test_telemetry_scope_carries_origin_and_version(monkeypatch):
     monkeypatch.delenv("PA_QA_STATIC_TOKEN", raising=False)
-    assert telemetry_scope() == "process:0.4.0-alpha.1"
+    assert telemetry_scope() == "process:0.4.0-alpha.2"
     monkeypatch.setenv("PA_QA_STATIC_TOKEN", "qa-token-0123456789abcdef0123456789")
-    assert telemetry_scope() == "qa:0.4.0-alpha.1"
+    assert telemetry_scope() == "qa:0.4.0-alpha.2"
     assert telemetry_scope(origin="process", version="0.3.0") == "process:0.3.0"
 
 

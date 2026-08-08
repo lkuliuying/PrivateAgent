@@ -14,6 +14,7 @@ import type {
   MemoryKind,
 } from "../types";
 import { useNotifications } from "../stores/notifications";
+import { MemoryEditorForm, MemoryRow, type MemoryFormState } from "../features/memory";
 
 const notify = useNotifications();
 
@@ -30,17 +31,7 @@ const filterSearch = ref<string>("");
 const events = ref<MemoryEvent[]>([]);
 const mode = ref<"view" | "edit" | "new">("view");
 
-interface FormState {
-  id?: number;
-  kind: MemoryKind;
-  title: string;
-  content_md: string;
-  summary: string;
-  tags: string;
-  sensitive: boolean;
-  confidence: string;
-}
-const form = ref<FormState>({
+const form = ref<MemoryFormState>({
   kind: "preference",
   title: "",
   content_md: "",
@@ -278,70 +269,30 @@ onMounted(load);
 
       <div v-if="error" class="error-line">{{ error }}</div>
 
-      <button
+      <MemoryRow
         v-for="m in memories"
         :key="m.id"
-        class="mem-row"
-        :class="{ active: selected?.id === m.id, disabled: !m.enabled }"
-        @click="selectMemory(m.id)"
-      >
-        <span class="mem-title">{{ m.title }}</span>
-        <span class="mem-meta">
-          <span class="status-dot" :class="statusClass(m.status)" />
-          {{ KIND_LABEL[m.kind] }} · {{ statusLabel(m.status) }}
-          <span v-if="!m.enabled"> · 已禁用</span>
-          <span v-if="m.sensitive"> · 敏感</span>
-        </span>
-      </button>
+        :memory="m"
+        :active="selected?.id === m.id"
+        :kind-label="KIND_LABEL[m.kind] ?? m.kind"
+        :status-label="statusLabel(m.status)"
+        :status-tone="statusClass(m.status)"
+        @select="selectMemory"
+      />
       <div v-if="!loading && memories.length === 0" class="empty-list">暂无记忆</div>
     </aside>
 
     <main class="mem-main">
       <!-- 编辑 / 新建表单 -->
-      <div v-if="mode === 'new' || mode === 'edit'" class="editor">
-        <h2>{{ mode === "new" ? "新建记忆" : "编辑记忆" }}</h2>
-        <div class="form-grid">
-          <label class="field">
-            <span>类型</span>
-            <select v-model="form.kind" class="pa-input">
-              <option v-for="k in KINDS" :key="k" :value="k">{{ KIND_LABEL[k] }}</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>标题</span>
-            <input v-model="form.title" class="pa-input" placeholder="简短标题" />
-          </label>
-          <label class="field field--full">
-            <span>内容（Markdown）</span>
-            <textarea v-model="form.content_md" class="pa-input" rows="8" placeholder="详细内容…"></textarea>
-          </label>
-          <label class="field field--full">
-            <span>摘要（可选）</span>
-            <input v-model="form.summary" class="pa-input" placeholder="一句话摘要" />
-          </label>
-          <label class="field field--full">
-            <span>标签（逗号分隔）</span>
-            <input v-model="form.tags" class="pa-input" placeholder="os, 类比, 进程" />
-          </label>
-          <label class="field">
-            <span>把握度（0-1，可选）</span>
-            <input v-model="form.confidence" class="pa-input" placeholder="0.8" />
-          </label>
-          <label class="field field--full checkbox">
-            <input type="checkbox" v-model="form.sensitive" />
-            <span>敏感记忆（不自动进入聊天 prompt）</span>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button class="pa-btn pa-btn--primary" :disabled="busy" @click="saveForm">
-            <PhCheck :size="15" />
-            <span>保存</span>
-          </button>
-          <button class="pa-btn pa-btn--subtle" :disabled="busy" @click="mode = 'view'">
-            取消
-          </button>
-        </div>
-      </div>
+      <MemoryEditorForm
+        v-if="mode === 'new' || mode === 'edit'"
+        :form="form"
+        :busy="busy"
+        :kinds="KINDS"
+        :kind-labels="KIND_LABEL"
+        @save="saveForm"
+        @cancel="mode = 'view'"
+      />
 
       <!-- 详情视图 -->
       <template v-else-if="selected">
@@ -505,49 +456,6 @@ h3 {
   margin-bottom: var(--space-3);
   font-size: var(--text-sm);
 }
-.mem-row {
-  width: 100%;
-  border: 1px solid var(--color-border);
-  border-radius: 14px;
-  background: var(--color-surface);
-  color: var(--color-fg);
-  display: grid;
-  gap: 4px;
-  padding: 13px 14px;
-  margin-bottom: var(--space-2);
-  text-align: left;
-  cursor: pointer;
-}
-.mem-row.active,
-.mem-row:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
-}
-.mem-row.active { box-shadow: inset 3px 0 0 var(--color-accent); }
-.mem-row.disabled {
-  opacity: 0.55;
-}
-.mem-title {
-  font-weight: var(--font-medium);
-}
-.status-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--color-fg-faint);
-  vertical-align: middle;
-  margin-right: 4px;
-}
-.status-dot.ok {
-  background: var(--color-success-fg);
-}
-.status-dot.warn {
-  background: var(--color-warning-fg);
-}
-.status-dot.muted {
-  background: var(--color-fg-faint);
-}
 .empty-list {
   text-align: center;
   color: var(--color-fg-faint);
@@ -664,41 +572,6 @@ pre {
 .block {
   max-width: 920px;
 }
-.editor h2 {
-  margin-bottom: var(--space-4);
-}
-.form-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-3);
-}
-.field {
-  display: grid;
-  gap: 4px;
-  font-size: var(--text-sm);
-  color: var(--color-fg-muted);
-}
-.field--full {
-  grid-column: 1 / -1;
-}
-.field--full textarea {
-  resize: vertical;
-  min-height: 160px;
-  font-family: var(--font-mono);
-}
-.checkbox {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--space-2);
-}
-.checkbox input {
-  margin: 0;
-}
-.form-actions {
-  display: flex;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
 
 @media (max-width: 900px) {
   .mem-shell {
@@ -708,9 +581,6 @@ pre {
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
     max-height: 420px;
-  }
-  .form-grid {
-    grid-template-columns: 1fr;
   }
 }
 </style>
