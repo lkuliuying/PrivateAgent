@@ -1,4 +1,4 @@
-import type { SqlReadonlyProfile } from "../types";
+import type { SqlProfileDeleteResult, SqlReadonlyProfile } from "../types";
 import { apiFetch as fetch, ensureApiBase } from "./http";
 
 async function requireOk(response: Response): Promise<void> {
@@ -43,10 +43,13 @@ export async function updateSqlProfile(
   return response.json();
 }
 
-export async function deleteSqlProfile(profileId: number): Promise<void> {
+export async function deleteSqlProfile(
+  profileId: number
+): Promise<SqlProfileDeleteResult> {
   const base = await ensureApiBase();
   const response = await fetch(`${base}/sql-profiles/${profileId}`, {
     method: "DELETE",
   });
   await requireOk(response);
+  return response.json();
 }

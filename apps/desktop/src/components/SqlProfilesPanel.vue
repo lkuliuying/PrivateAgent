@@ -1,8 +1,10 @@
 <script setup lang="ts">
 /**
- * SqlProfilesPanel · v0.5.0 B4 只读 SQL 连接 profile 管理
- * 只展示非敏感连接元数据与 keyring 密码引用状态；明文密码经桌面壳
- * OS keyring 存储（set_sql_profile_secret），前端不接触明文。
+ * SqlProfilesPanel · v0.5.0 rc.2 只读 SQL 连接 profile 管理
+ *
+ * 安全边界（验收修复）：数据库密码只经桌面壳原生系统凭据对话框（CredUI）
+ * 写入 OS keyring，不进入 Vue 状态、API 请求或数据库；keyring 引用由后端
+ * 生成。配置后需重启应用使密码注入生效。
  */
 import { onMounted, ref } from "vue";
 import { PhDatabase, PhKey, PhPlus, PhTrash } from "@phosphor-icons/vue";
@@ -27,6 +29,7 @@ const showEditor = ref(false);
 const saving = ref(false);
 const editorError = ref("");
 const isDesktop = ref(false);
+const confirmDelete = ref<SqlReadonlyProfile | null>(null);
 
 const editing = ref<SqlReadonlyProfile | null>(null);
 const form = ref({
@@ -40,7 +43,8 @@ const form = ref({
   timeout_ms: 30000,
   enabled: true,
 });
-const password = ref("");
+/** 密码 keyring 配置状态（仅布尔，不含明文） */
+const passwordConfigured = ref(false);
 
 async function load() {
   loading.value = true;
@@ -67,7 +71,7 @@ function openCreate() {
     timeout_ms: 30000,
     enabled: true,
   };
-  password.value = "";
+  passwordConfigured.value = false;
   editorError.value = "";
   showEditor.value = true;
 }
@@ -85,22 +89,47 @@ function openEdit(profile: SqlReadonlyProfile) {
     timeout_ms: profile.timeout_ms,
     enabled: profile.enabled,
   };
-  password.value = "";
+  passwordConfigured.value = false;
   editorError.value = "";
   showEditor.value = true;
+  if (isDesktop.value) {
+    void refreshPasswordStatus(profile.name);
+  }
 }
 
-function passwordReference(name: string): string {
-  return `secret://os-keyring/sql/${name}/password`;
-}
-
-async function saveSecret(name: string): Promise<void> {
-  if (!isDesktop.value || !password.value) return;
+async function refreshPasswordStatus(name: string) {
+  if (!isDesktop.value) return;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_sql_profile_secret", { name, secret: password.value });
+    const status = await invoke<{ configured: boolean }>("sql_profile_secret_status", {
+      name,
+    });
+    passwordConfigured.value = status.configured;
+  } catch {
+    passwordConfigured.value = false;
+  }
+}
+
+/** 原生系统凭据对话框写入 keyring（明文不经 Vue） */
+async function promptPassword() {
+  if (!isDesktop.value) {
+    editorError.value = "仅桌面版可配置系统凭据";
+    return;
+  }
+  const name = form.value.name.trim();
+  if (!name) {
+    editorError.value = "请先填写名称并保存连接";
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke<{ configured: boolean; cancelled: boolean }>(
+      "prompt_sql_profile_secret",
+      { name }
+    );
+    passwordConfigured.value = result.configured;
   } catch (error) {
-    throw new Error(`写入系统凭据库失败：${String(error)}`);
+    editorError.value = `写入系统凭据失败：${String(error)}`;
   }
 }
 
@@ -108,14 +137,12 @@ async function save() {
   saving.value = true;
   editorError.value = "";
   try {
-    const name = form.value.name.trim();
     const payload = {
       dialect: "mysql",
       host: form.value.host.trim(),
       port: form.value.port,
       database: form.value.database.trim(),
       username: form.value.username.trim() || null,
-      password_secret_ref: passwordReference(name),
       max_rows: form.value.max_rows,
       max_bytes: form.value.max_bytes,
       timeout_ms: form.value.timeout_ms,
@@ -123,10 +150,8 @@ async function save() {
     };
     if (editing.value) {
       await updateSqlProfile(editing.value.id, payload);
-      await saveSecret(name);
     } else {
       await createSqlProfile(payload);
-      await saveSecret(name);
     }
     showEditor.value = false;
     await load();
@@ -138,14 +163,21 @@ async function save() {
 }
 
 async function remove(profile: SqlReadonlyProfile) {
-  if (!window.confirm(`删除只读连接「${profile.name}」？删除后模型将无法查询它。`)) {
-    return;
-  }
   try {
-    await deleteSqlProfile(profile.id);
+    const result = await deleteSqlProfile(profile.id);
+    if (isDesktop.value && result.password_secret_ref) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("clear_sql_profile_secret", { name: profile.name });
+      } catch {
+        // keyring 清理失败不阻断删除
+      }
+    }
+    confirmDelete.value = null;
     await load();
   } catch (error) {
     loadError.value = String(error);
+    confirmDelete.value = null;
   }
 }
 
@@ -179,7 +211,8 @@ onMounted(async () => {
     </div>
     <p class="panel-hint">
       Agent 只能查询这里保存且已启用的连接，且仅允许 SELECT/EXPLAIN/SHOW 等只读
-      语句（解析 + 只读事务双重限制）。密码只存入系统凭据库（OS keyring）。
+      语句（解析 + 只读事务双重限制）。密码只存入系统凭据库（OS keyring），
+      不进入数据库、日志、模型参数或界面状态。
     </p>
 
     <PaSpinner v-if="loading" :label="'加载连接配置'" />
@@ -205,7 +238,7 @@ onMounted(async () => {
             · 行数上限 {{ profile.max_rows }}
             · 超时 {{ Math.round(profile.timeout_ms / 1000) }}s
             <template v-if="profile.password_secret_ref">
-              · <PhKey :size="11" /> 密码已存系统凭据库
+              · <PhKey :size="11" /> 密码存系统凭据库
             </template>
           </span>
         </div>
@@ -217,7 +250,7 @@ onMounted(async () => {
             {{ profile.enabled ? "禁用" : "启用" }}
           </button>
           <button class="text-btn" @click="openEdit(profile)">编辑</button>
-          <button class="text-btn danger" @click="remove(profile)">
+          <button class="text-btn danger" @click="confirmDelete = profile">
             <PhTrash :size="13" />
           </button>
         </div>
@@ -250,16 +283,37 @@ onMounted(async () => {
           <span>数据库</span>
           <input v-model="form.database" required maxlength="255" />
         </label>
-        <div class="form-row">
+        <div class="form-row two">
           <label>
             <span>用户名</span>
             <input v-model="form.username" maxlength="255" />
           </label>
-          <label>
-            <span>密码（存入系统凭据库）</span>
-            <input v-model="password" type="password" :placeholder="editing ? '留空保持不变' : '输入数据库密码'" />
-          </label>
         </div>
+
+        <div class="secret-section">
+          <div class="secret-row">
+            <PhKey :size="13" />
+            <span class="secret-label">数据库密码</span>
+            <PaBadge :tone="passwordConfigured ? 'success' : 'warning'">
+              {{ passwordConfigured ? "已存入系统凭据库" : "未配置" }}
+            </PaBadge>
+            <PaButton
+              v-if="isDesktop"
+              size="sm"
+              type="button"
+              variant="ghost"
+              :disabled="!form.name.trim()"
+              @click="promptPassword"
+            >
+              {{ passwordConfigured ? "更新密码" : "设置密码" }}
+            </PaButton>
+          </div>
+          <p class="secret-hint">
+            点击按钮会打开系统凭据对话框；明文不进入界面。配置后需重启应用
+            使密码注入生效。
+          </p>
+        </div>
+
         <div class="form-row">
           <label>
             <span>行数上限</span>
@@ -278,13 +332,6 @@ onMounted(async () => {
         <PaInlineNotice v-if="editorError" tone="danger" title="保存失败">
           {{ editorError }}
         </PaInlineNotice>
-        <PaInlineNotice
-          v-if="!isDesktop && password"
-          tone="warning"
-          title="非桌面环境无法写入系统凭据库"
-        >
-          密码将不会保存；桌面版（Tauri）会直接写入 OS keyring。
-        </PaInlineNotice>
 
         <div class="form-actions">
           <PaButton type="button" variant="ghost" @click="showEditor = false">取消</PaButton>
@@ -293,6 +340,25 @@ onMounted(async () => {
           </PaButton>
         </div>
       </form>
+    </PaDialog>
+
+    <PaDialog
+      v-if="confirmDelete"
+      :open="true"
+      :title="`删除连接 · ${confirmDelete.name}`"
+      :width="480"
+      @close="confirmDelete = null"
+    >
+      <p class="confirm-copy">
+        删除后模型将无法查询该连接；对应的系统凭据库条目也会被清理。
+        此操作不可撤销。
+      </p>
+      <div class="form-actions">
+        <PaButton type="button" variant="ghost" @click="confirmDelete = null">取消</PaButton>
+        <PaButton type="button" variant="primary" @click="remove(confirmDelete)">
+          确认删除
+        </PaButton>
+      </div>
     </PaDialog>
   </section>
 </template>
@@ -344,6 +410,11 @@ onMounted(async () => {
   font-size: var(--pa-text-compact);
 }
 .form-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--space-2); }
-.form-row:has(label:first-child:nth-last-child(2)) { grid-template-columns: repeat(2, 1fr); }
+.form-row.two { grid-template-columns: repeat(2, 1fr); }
+.secret-section { display: grid; gap: var(--space-2); padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.secret-row { display: flex; align-items: center; gap: var(--space-2); font-size: var(--pa-t-12); }
+.secret-label { color: var(--color-fg); }
+.secret-hint { margin: 0; color: var(--color-fg-faint); font-size: var(--pa-t-12); line-height: 1.5; }
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.confirm-copy { margin: 0; color: var(--color-fg-muted); font-size: var(--pa-text-compact); line-height: 1.6; }
 </style>

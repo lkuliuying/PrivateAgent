@@ -368,6 +368,18 @@ async def get_agent_tool_bundle(
     ):
         return None
 
+    # rc.2：HTTP/SQL 工具按可用 profile 注册——未配置任何已启用 profile 时
+    # 对应工具不注册（模型不可见）。查询在 async 层完成，闭包传入同步 dispatcher。
+    from ..core.http_profiles import HttpProfileService
+    from ..core.sql_profiles import SqlProfileService
+
+    has_http_profiles = bool(
+        await HttpProfileService(db).repo.list(enabled_only=True)
+    ) if cfg.agent_http_workflow_enabled else False
+    has_sql_profiles = bool(
+        await SqlProfileService(db).repo.list(enabled_only=True)
+    ) if cfg.agent_sql_readonly_workflow_enabled else False
+
     def build_dispatcher(
         run_db: AsyncSession,
         run_id: str,
@@ -423,39 +435,43 @@ async def get_agent_tool_bundle(
                 else CompositeToolResultVerifier([result_verifier, command_verifier])
             )
         if cfg.agent_http_workflow_enabled:
-            for spec in build_http_tool_registry(run_db).list():
-                registry.register(spec)
-            # B3：API 结果验证器——状态码范围/重试/幂等结构检查（可信代码固定注入）。
-            from ..agents.result_verification import ApiResultVerifier
+            # rc.2：未配置任何已启用 endpoint profile 时工具不注册（模型不可见）。
+            if has_http_profiles:
+                for spec in build_http_tool_registry(run_db).list():
+                    registry.register(spec)
+                # B3：API 结果验证器——状态码范围/重试/幂等结构检查（可信代码固定注入）。
+                from ..agents.result_verification import ApiResultVerifier
 
-            http_verifier = ApiResultVerifier(
-                supported=("call_allowlisted_api",),
-                allowed_status_ranges=((200, 299),),
-                max_attempts=3,
-                reject_schema_invalid=True,
-            )
-            result_verifier = (
-                http_verifier
-                if result_verifier is None
-                else CompositeToolResultVerifier([result_verifier, http_verifier])
-            )
+                http_verifier = ApiResultVerifier(
+                    supported=("call_allowlisted_api",),
+                    allowed_status_ranges=((200, 299),),
+                    max_attempts=3,
+                    reject_schema_invalid=True,
+                )
+                result_verifier = (
+                    http_verifier
+                    if result_verifier is None
+                    else CompositeToolResultVerifier([result_verifier, http_verifier])
+                )
         if cfg.agent_sql_readonly_workflow_enabled:
-            for spec in build_sql_tool_registry(run_db).list():
-                registry.register(spec)
-            # B4：只读数据库验证器——只读事务确认/行数/截断结构检查
-            # （可信代码固定注入；解析层+只读事务双重限制在 executor 内）。
-            from ..agents.result_verification import DatabaseResultVerifier
+            # rc.2：未配置任何已启用只读连接 profile 时工具不注册（模型不可见）。
+            if has_sql_profiles:
+                for spec in build_sql_tool_registry(run_db).list():
+                    registry.register(spec)
+                # B4：只读数据库验证器——只读事务确认/行数/截断结构检查
+                # （可信代码固定注入；解析层+只读事务双重限制在 executor 内）。
+                from ..agents.result_verification import DatabaseResultVerifier
 
-            sql_verifier = DatabaseResultVerifier(
-                supported=("query_readonly_sql",),
-                require_commit=False,
-                require_read_only=True,
-            )
-            result_verifier = (
-                sql_verifier
-                if result_verifier is None
-                else CompositeToolResultVerifier([result_verifier, sql_verifier])
-            )
+                sql_verifier = DatabaseResultVerifier(
+                    supported=("query_readonly_sql",),
+                    require_commit=False,
+                    require_read_only=True,
+                )
+                result_verifier = (
+                    sql_verifier
+                    if result_verifier is None
+                    else CompositeToolResultVerifier([result_verifier, sql_verifier])
+                )
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
                 registry.register(spec)

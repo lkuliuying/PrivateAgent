@@ -532,7 +532,9 @@ def signing_status(version: str) -> dict:
     }
 
 
-def assemble_report(steps: list[dict], version: str) -> dict:
+def assemble_report(
+    steps: list[dict], version: str, *, strict_gates: bool = True
+) -> dict:
     failed = [s for s in steps if s["status"] == "failed"]
     skipped = [s for s in steps if s["status"] == "skipped"]
     passed = [s for s in steps if s["status"] == "passed"]
@@ -549,17 +551,67 @@ def assemble_report(steps: list[dict], version: str) -> dict:
             )
             if m:
                 tests = m.group(1).strip(" =")
+    commit = git_commit_info()
+    signing = signing_status(version)
+    # rc.2：发布门槛不再只看步骤成败——脏工作区/版本不一致/安装包缺失/
+    # 证据未绑定当前提交都视为不通过（issue 记录原因）。
+    # strict_gates=False 仅供单元测试隔离步骤汇总逻辑。
+    gate_issues: list[str] = []
+    if strict_gates:
+        if commit.get("dirty"):
+            gate_issues.append("worktree_dirty")
+        if not version_consistent(version):
+            gate_issues.append("version_inconsistent")
+        if not signing["installer_built"]:
+            gate_issues.append("installer_missing")
+        if not evidence_bound(version, commit.get("head")):
+            gate_issues.append("evidence_not_bound")
+    ok = len(failed) == 0 and not gate_issues
     return {
         "version": version,
         "generated_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "commit": git_commit_info(),
+        "commit": commit,
         "database_schema": schema,
         "pytest_summary": tests,
-        "signing": signing_status(version),
+        "signing": signing,
+        "release_gate_issues": gate_issues,
         "summary": {"passed": len(passed), "failed": len(failed), "skipped": len(skipped)},
-        "ok": len(failed) == 0,
+        "ok": ok,
         "steps": steps,
     }
+
+
+def version_consistent(version: str) -> bool:
+    """rc.2：五处版本源（Python/Vue/Tauri/Cargo）必须与报告版本一致。"""
+    sources = [
+        PROJECT_ROOT / "src" / "personal_assistant" / "__init__.py",
+        PROJECT_ROOT / "pyproject.toml",
+        PROJECT_ROOT / "apps" / "desktop" / "package.json",
+        PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json",
+        PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "Cargo.toml",
+    ]
+    for path in sources:
+        if not path.exists():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return False
+        if version not in text:
+            return False
+    return True
+
+
+def evidence_bound(version: str, head: str | None) -> bool:
+    """rc.2：qa-evidence-<version>.json 必须存在且绑定当前 HEAD。"""
+    evidence = DIST / f"qa-evidence-{version}.json"
+    if not evidence.exists():
+        return False
+    try:
+        data = json.loads(evidence.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(head) and data.get("git_commit") == head
 
 
 def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
@@ -578,6 +630,7 @@ def write_report(report: dict, out_dir: Path) -> tuple[Path, Path]:
         f"- database_schema: {report['database_schema']}",
         f"- pytest_summary: {report['pytest_summary']}",
         f"- signing: installer_built={report['signing']['installer_built']}, code_signed={report['signing']['code_signed']}, evidence={report['signing']['evidence']}",
+        f"- release_gate_issues: {report.get('release_gate_issues') or 'none'}",
         f"- passed: {report['summary']['passed']}",
         f"- failed: {report['summary']['failed']}",
         f"- skipped: {report['summary']['skipped']}",

@@ -112,18 +112,41 @@ def _validate_target(scheme: str, host: str, port: int, *, allow_insecure_local:
         raise HttpProfileError("http 仅允许在 allow_insecure_local 且目标为环回时使用")
 
 
-def _validate_headers(headers: dict[str, str], secret_refs: dict[str, str]) -> None:
+def _validate_headers(headers: dict[str, str], secret_slots: list[str]) -> None:
     for name in headers:
         normalized = name.casefold().strip()
         if not normalized or not re.fullmatch(r"[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}", normalized):
             raise HttpProfileError(f"请求头名无效: {name!r}")
         if normalized in _BLOCKED_HEADERS:
             raise HttpProfileError(f"请求头被禁止: {name}")
-    for header, reference in secret_refs.items():
-        if not isinstance(reference, str) or not is_http_secret_reference(reference):
-            raise HttpProfileError(f"secret 引用格式无效: {reference!r}")
-        if header.casefold() in _BLOCKED_HEADERS:
+    for header in secret_slots:
+        if not isinstance(header, str):
+            raise HttpProfileError("secret slot 必须是字符串")
+        normalized = header.casefold().strip()
+        if not normalized or not re.fullmatch(r"[A-Za-z0-9!#$%&'*+\-.^_`|~]{1,128}", normalized):
+            raise HttpProfileError(f"secret 头名无效: {header!r}")
+        if normalized in _BLOCKED_HEADERS:
             raise HttpProfileError(f"secret 目标头被禁止: {header}")
+
+
+def slot_from_header(header: str) -> str:
+    """从请求头名派生 keyring slot（字母数字与 ._-，其余转 -）。"""
+    normalized = header.casefold().strip()
+    slot = re.sub(r"[^a-z0-9._-]", "-", normalized)
+    return slot[:64] or "header"
+
+
+def build_secret_refs(name: str, secret_slots: list[str]) -> dict[str, str]:
+    """后端为声明的 secret slot 生成 keyring 引用（明文只进 OS keyring）。
+
+    UI 只提交请求头名；引用格式与 Rust 侧 ``http_profile_reference`` 同构。
+    """
+    refs: dict[str, str] = {}
+    for header in secret_slots:
+        refs[header] = (
+            f"secret://os-keyring/http/{name}/{slot_from_header(header)}"
+        )
+    return refs
 
 
 def _validate_methods(methods: list[str]) -> None:
@@ -229,18 +252,19 @@ class HttpProfileService:
         self.repo = HttpProfileRepository(db)
 
     async def create(self, payload: dict[str, Any]) -> HttpEndpointProfile:
+        name = payload["name"].strip()
         _validate_target(
             payload["scheme"],
             payload["host"],
             payload["port"],
             allow_insecure_local=payload.get("allow_insecure_local", False),
         )
-        _validate_headers(
-            payload.get("headers") or {}, payload.get("secret_refs") or {}
-        )
+        secret_slots = list(payload.get("secret_slots") or [])
+        _validate_headers(payload.get("headers") or {}, secret_slots)
         _validate_methods(payload["allowed_methods"])
+        secret_refs = build_secret_refs(name, secret_slots)
         return await self.repo.create(
-            name=payload["name"],
+            name=name,
             scheme=payload["scheme"],
             host=payload["host"],
             port=payload["port"],
@@ -252,12 +276,57 @@ class HttpProfileService:
             max_response_bytes=int(payload.get("max_response_bytes", 1_048_576)),
             timeout_ms=int(payload.get("timeout_ms", 30_000)),
             headers=payload.get("headers") or {},
-            secret_refs=payload.get("secret_refs") or {},
+            secret_refs=secret_refs,
             retry_policy=payload.get("retry_policy"),
             allow_insecure_local=payload.get("allow_insecure_local", False),
             allow_private_network=payload.get("allow_private_network", False),
             enabled=payload.get("enabled", False),
         )
+
+    async def update(
+        self, profile_id: int, payload: dict[str, Any]
+    ) -> HttpEndpointProfile:
+        profile = await self.repo.get(profile_id)
+        if profile is None:
+            raise HttpProfileNotFound(f"endpoint profile 不存在: {profile_id}")
+        if "secret_slots" in payload:
+            secret_slots = list(payload.pop("secret_slots") or [])
+            _validate_headers(
+                payload.get("headers") or profile.headers_json or {}, secret_slots
+            )
+            payload["secret_refs"] = build_secret_refs(profile.name, secret_slots)
+        if "scheme" in payload or "host" in payload or "port" in payload:
+            _validate_target(
+                payload.get("scheme", profile.scheme),
+                payload.get("host", profile.host),
+                payload.get("port", profile.port),
+                allow_insecure_local=payload.get(
+                    "allow_insecure_local", profile.allow_insecure_local
+                ),
+            )
+        if "allowed_methods" in payload:
+            _validate_methods(payload["allowed_methods"])
+        # payload 字段名 → ORM 列名映射（避免 setattr 静默无效）
+        mapped: dict[str, Any] = {
+            "scheme": payload.get("scheme"),
+            "host": payload.get("host"),
+            "port": payload.get("port"),
+            "path_prefix": payload.get("path_prefix"),
+            "allowed_methods_json": payload.get("allowed_methods"),
+            "headers_json": payload.get("headers"),
+            "secret_refs_json": payload.get("secret_refs"),
+            "retry_policy_json": payload.get("retry_policy"),
+            "request_schema_json": payload.get("request_schema"),
+            "response_schema_json": payload.get("response_schema"),
+            "max_request_bytes": payload.get("max_request_bytes"),
+            "max_response_bytes": payload.get("max_response_bytes"),
+            "timeout_ms": payload.get("timeout_ms"),
+            "allow_insecure_local": payload.get("allow_insecure_local"),
+            "allow_private_network": payload.get("allow_private_network"),
+            "enabled": payload.get("enabled"),
+        }
+        values = {key: value for key, value in mapped.items() if value is not None}
+        return await self.repo.update(profile_id, **values)
 
     async def require_enabled(self, profile_id: int) -> HttpEndpointProfile:
         profile = await self.repo.get(profile_id)

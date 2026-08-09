@@ -435,6 +435,44 @@ fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSe
     read_http_profile_secret_status(&name, &slot)
 }
 
+#[tauri::command]
+fn prompt_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretPromptResult, String> {
+    let account = credentials::http_profile_account(&name, &slot)?;
+    let outcome = credential_prompt::prompt_and_store(
+        &account,
+        "PrivateAgent HTTP endpoint credential",
+        "Enter the API key for this HTTP endpoint. It will be stored in the system credential store.",
+    )?;
+    if credentials::exists(&account)? {
+        let mut entries = read_http_profile_secret_entries()?;
+        entries.insert(HttpProfileSecretEntry {
+            name: name.clone(),
+            slot: slot.clone(),
+        });
+        write_http_profile_secret_entries(&entries)?;
+    }
+    let status = read_http_profile_secret_status(&name, &slot)?;
+    Ok(HttpProfileSecretPromptResult {
+        reference: status.reference,
+        configured: status.configured,
+        cancelled: outcome == PromptOutcome::Cancelled,
+    })
+}
+
+#[derive(Serialize)]
+struct HttpProfileSecretPromptResult {
+    reference: String,
+    configured: bool,
+    cancelled: bool,
+}
+
+#[derive(Serialize)]
+struct SqlProfileSecretPromptResult {
+    reference: String,
+    configured: bool,
+    cancelled: bool,
+}
+
 // ============ v0.5.0 B4：只读 SQL profile 凭据通道 ============
 // 与 HTTP 同构：密码引用 secret://os-keyring/sql/<name>/password，
 // 桌面壳收集后注入 PA_SQL_PROFILES_SECRETS_JSON。
@@ -529,6 +567,27 @@ fn clear_sql_profile_secret(name: String) -> Result<SqlProfileSecretStatus, Stri
     names.remove(&name);
     write_sql_profile_secret_names(&names)?;
     read_sql_profile_secret_status(&name)
+}
+
+#[tauri::command]
+fn prompt_sql_profile_secret(name: String) -> Result<SqlProfileSecretPromptResult, String> {
+    let account = credentials::sql_profile_account(&name)?;
+    let outcome = credential_prompt::prompt_and_store(
+        &account,
+        "PrivateAgent readonly database credential",
+        "Enter the database password for this readonly connection. It will be stored in the system credential store.",
+    )?;
+    if credentials::exists(&account)? {
+        let mut names = read_sql_profile_secret_names()?;
+        names.insert(name.clone());
+        write_sql_profile_secret_names(&names)?;
+    }
+    let status = read_sql_profile_secret_status(&name)?;
+    Ok(SqlProfileSecretPromptResult {
+        reference: status.reference,
+        configured: status.configured,
+        cancelled: outcome == PromptOutcome::Cancelled,
+    })
 }
 
 // ============ .env 读写 ============
@@ -1467,9 +1526,11 @@ pub fn run() {
             http_profile_secret_status,
             set_http_profile_secret,
             clear_http_profile_secret,
+            prompt_http_profile_secret,
             sql_profile_secret_status,
             set_sql_profile_secret,
             clear_sql_profile_secret,
+            prompt_sql_profile_secret,
             check_dependencies,
             test_connections,
             start_sidecar,

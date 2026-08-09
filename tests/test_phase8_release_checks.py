@@ -26,9 +26,22 @@ def test_assemble_report_ok():
         {"name": "a", "status": "passed", "duration_ms": 1, "detail": ""},
         {"name": "b", "status": "skipped", "duration_ms": 0, "detail": ""},
     ]
-    rep = rc.assemble_report(steps, "0.1.1")
+    rep = rc.assemble_report(steps, "0.1.1", strict_gates=False)
     assert rep["ok"] is True
     assert rep["summary"] == {"passed": 1, "failed": 0, "skipped": 1}
+
+
+def test_assemble_report_strict_gates_fail_without_evidence():
+    """rc.2：严格门槛下，无安装包/证据且工作区脏 → 即使步骤全过也 ok=False。"""
+    steps = [
+        {"name": "a", "status": "passed", "duration_ms": 1, "detail": ""},
+    ]
+    rep = rc.assemble_report(steps, "0.1.1", strict_gates=True)
+    assert rep["ok"] is False
+    issues = rep["release_gate_issues"]
+    assert "version_inconsistent" in issues
+    assert "installer_missing" in issues
+    assert "evidence_not_bound" in issues
 
 
 def test_assemble_report_failed():
@@ -48,6 +61,7 @@ def test_write_report(tmp_path):
             {"name": "npm_e2e", "status": "skipped", "duration_ms": 0, "detail": "M1 未接入"},
         ],
         "0.1.1",
+        strict_gates=False,
     )
     jp, mp = rc.write_report(rep, tmp_path)
     data = json.loads(jp.read_text(encoding="utf-8"))

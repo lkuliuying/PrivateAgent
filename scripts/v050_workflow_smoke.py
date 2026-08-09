@@ -29,6 +29,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from personal_assistant import __version__
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SIDECAR = (
     PROJECT_ROOT
@@ -38,7 +40,7 @@ SIDECAR = (
     / "binaries"
     / "personal-assistant-server-x86_64-pc-windows-msvc.exe"
 )
-EVIDENCE_PATH = PROJECT_ROOT / "dist" / "qa-evidence-0.5.0-beta.2.json"
+EVIDENCE_PATH = PROJECT_ROOT / "dist" / f"qa-evidence-{__version__}.json"
 STARTUP_TIMEOUT_S = 120
 RUN_TIMEOUT_S = 240
 POLL_INTERVAL_S = 2
@@ -77,6 +79,20 @@ def free_port() -> int:
     port = s.getsockname()[1]
     s.close()
     return port
+
+
+def _git_head() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def kill_tree(pid: int) -> None:
@@ -212,7 +228,8 @@ def main() -> int:
         return 0
 
     evidence: dict = {
-        "scenario": "v0.5.0-beta.2 安装版运行时可信工作流 smoke",
+        "scenario": f"v{__version__} 安装版运行时可信工作流 smoke",
+        "git_commit": _git_head(),
         "checks": [],
     }
     port = free_port()
@@ -525,16 +542,28 @@ def main() -> int:
 
             # ---------- 场景 3：只读 SQL 工作流（真实 LLM） ----------
             print("[v050-smoke] run C: 只读 SQL 工作流...")
+            # name 固定（无后缀）：keyring 通道引用与 profile 名一致；
+            # 先清理测试库同名残留避免 409。
+            for leftover in api.get("/sql-profiles") or []:
+                if leftover["name"] == "beta2-sql":
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{port}/sql-profiles/{leftover['id']}",
+                        method="DELETE",
+                        headers={"Authorization": f"Bearer {token}"},
+                    )
+                    try:
+                        urllib.request.urlopen(req, timeout=15).read()
+                    except urllib.error.HTTPError:
+                        pass
             sql_profile = api.post(
                 "/sql-profiles",
                 {
-                    "name": f"beta2-sql-{run_suffix}",
+                    "name": "beta2-sql",
                     "dialect": "mysql",
                     "host": "127.0.0.1",
                     "port": 3306,
                     "database": "personal_assistant_test",
                     "username": "root",
-                    "password_secret_ref": "secret://os-keyring/sql/beta2-sql/password",
                     "max_rows": 5,
                     "max_bytes": 1048576,
                     "timeout_ms": 15000,
@@ -571,6 +600,7 @@ def main() -> int:
                 "status": final_c.get("status"),
                 "sql_exec": {
                     "status": sql_exec["status"] if sql_exec else None,
+                    "error": sql_exec.get("error_message") if sql_exec else None,
                     "read_only": (sql_exec.get("output") or {}).get("read_only_confirmed"),
                     "rows": (sql_exec.get("output") or {}).get("rows"),
                     "statement": (sql_exec.get("output") or {}).get("statement_type"),

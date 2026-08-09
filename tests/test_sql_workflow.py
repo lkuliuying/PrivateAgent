@@ -388,28 +388,51 @@ async def test_disabled_or_deleted_profile_cannot_be_called(db):
 
 
 @pytest.mark.asyncio
-async def test_sql_flag_controls_tool_visibility(db, monkeypatch):
-    """关闭 SQL flag：工具不可见；主库流程不受影响。"""
+async def test_sql_flag_and_profile_control_tool_visibility(db, monkeypatch):
+    """rc.2：flag 关闭或无已启用 profile 时工具不可见；开启且有 profile 时可见。"""
+    from personal_assistant.core.models import SqlReadonlyProfile
+
+    await db.execute(delete(SqlReadonlyProfile))
+    await db.commit()
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_sql_readonly_workflow_enabled", False)
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", False)
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is None
 
+    # flag 开启但无已启用 profile → 工具不可见
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_sql_readonly_workflow_enabled", True)
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is not None
     names = {definition.name for definition in bundle.definitions}
-    assert "query_readonly_sql" in names
+    assert "query_readonly_sql" not in names
 
-    spec = build_sql_tool_registry(db, resolver=_TEST_RESOLVER).get("query_readonly_sql")
-    from personal_assistant.agents.tools import ToolPolicyDecision
+    # 存在已启用 profile → 工具可见
+    profile = await _make_profile(db)
+    try:
+        bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+        names = {definition.name for definition in bundle.definitions}
+        assert "query_readonly_sql" in names
 
-    policy = ToolCapabilityPolicy(
-        granted_capabilities=frozenset({ToolCapability.DATABASE_QUERY})
-    )
-    assert policy.evaluate(spec) == ToolPolicyDecision.REQUIRE_APPROVAL
-    denied = ToolCapabilityPolicy(granted_capabilities=frozenset())
-    assert denied.evaluate(spec) == ToolPolicyDecision.DENY
+        # 禁用 profile → 工具再次不可见
+        profile.enabled = False
+        await db.commit()
+        bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+        names = {definition.name for definition in bundle.definitions}
+        assert "query_readonly_sql" not in names
+
+        profile.enabled = True
+        await db.commit()
+        spec = build_sql_tool_registry(db, resolver=_TEST_RESOLVER).get("query_readonly_sql")
+        from personal_assistant.agents.tools import ToolPolicyDecision
+
+        policy = ToolCapabilityPolicy(
+            granted_capabilities=frozenset({ToolCapability.DATABASE_QUERY})
+        )
+        assert policy.evaluate(spec) == ToolPolicyDecision.REQUIRE_APPROVAL
+        denied = ToolCapabilityPolicy(granted_capabilities=frozenset())
+        assert denied.evaluate(spec) == ToolPolicyDecision.DENY
+    finally:
+        await _cleanup(db, None, [profile.id])
 
 
 @pytest.mark.asyncio

@@ -37,7 +37,9 @@ class HttpProfilePayload(BaseModel):
     max_response_bytes: int = Field(default=1_048_576, ge=1_024, le=8 * 1_048_576)
     timeout_ms: int = Field(default=30_000, ge=1_000, le=60_000)
     headers: dict[str, str] = Field(default_factory=dict, max_length=16)
-    secret_refs: dict[str, str] = Field(default_factory=dict, max_length=8)
+    # v0.5.0 rc.2：只声明需要密钥的请求头名；keyring 引用由后端生成，
+    # 明文只经 OS keyring（Rust CredUI prompt），不进入 Vue/API/DB。
+    secret_slots: list[str] = Field(default_factory=list, max_length=8)
     retry_policy: dict[str, Any] | None = None
     allow_insecure_local: bool = False
     allow_private_network: bool = False
@@ -64,6 +66,7 @@ class HttpProfileOut(BaseModel):
     max_response_bytes: int
     timeout_ms: int
     headers: dict[str, str]
+    secret_slots: list[str]
     secret_refs: dict[str, str]
     allow_insecure_local: bool
     allow_private_network: bool
@@ -86,6 +89,7 @@ def _to_out(profile) -> HttpProfileOut:
         max_response_bytes=profile.max_response_bytes,
         timeout_ms=profile.timeout_ms,
         headers=dict(profile.headers_json or {}),
+        secret_slots=[header for header in (profile.secret_refs_json or {})],
         secret_refs=dict(profile.secret_refs_json or {}),
         allow_insecure_local=profile.allow_insecure_local,
         allow_private_network=profile.allow_private_network,
@@ -160,8 +164,7 @@ async def update_http_profile(
 ) -> HttpProfileOut:
     service = HttpProfileService(db)
     try:
-        values = payload.model_dump(exclude={"name"})
-        updated = await service.repo.update(profile_id, **values)
+        updated = await service.update(profile_id, payload.model_dump(exclude={"name"}))
     except HttpProfileNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except HttpProfileError as exc:
@@ -169,16 +172,27 @@ async def update_http_profile(
     return _to_out(updated)
 
 
+class HttpProfileDeleteResponse(BaseModel):
+    """删除结果；secret_refs 供桌面壳清理对应 OS keyring 条目。"""
+
+    secret_refs: dict[str, str]
+
+
 @router.delete(
     "/{profile_id}",
-    status_code=204,
+    response_model=HttpProfileDeleteResponse,
     dependencies=[Depends(require_http_profiles_api)],
 )
 async def delete_http_profile(
     profile_id: int,
     db: AsyncSession = Depends(get_session),
-) -> None:
+) -> HttpProfileDeleteResponse:
+    profile = await HttpProfileService(db).repo.get(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="endpoint profile not found")
+    secret_refs = dict(profile.secret_refs_json or {})
     try:
         await HttpProfileService(db).repo.delete(profile_id)
     except HttpProfileNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return HttpProfileDeleteResponse(secret_refs=secret_refs)

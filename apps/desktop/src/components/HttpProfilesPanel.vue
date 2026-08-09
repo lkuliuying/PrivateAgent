@@ -1,8 +1,13 @@
 <script setup lang="ts">
 /**
- * HttpProfilesPanel · v0.5.0 B3 HTTP endpoint profile 管理
- * 只展示非敏感元数据与 keyring secret 引用状态；明文 secret 通过
- * 桌面壳 OS keyring 存储（set_http_profile_secret），前端不接触明文。
+ * HttpProfilesPanel · v0.5.0 rc.2 HTTP endpoint profile 管理
+ *
+ * 安全边界（验收修复）：
+ * - 明文 API key 只经桌面壳原生系统凭据对话框（CredUI）写入 OS keyring，
+ *   不进入 Vue 状态、API 请求或数据库；
+ * - 前端只声明需要密钥的请求头名（secret_slots）；keyring 引用由后端生成
+ *   并保存（secret_refs）；executor 运行时从 keyring 通道解析注入；
+ * - 删除 profile 时同步清理对应 keyring 条目；重新配置后重启 sidecar 生效。
  */
 import { computed, onMounted, ref } from "vue";
 import { PhGlobe, PhKey, PhPlus, PhTrash } from "@phosphor-icons/vue";
@@ -26,6 +31,8 @@ const loadError = ref("");
 const showEditor = ref(false);
 const saving = ref(false);
 const editorError = ref("");
+const isDesktop = ref(false);
+const confirmDelete = ref<HttpEndpointProfile | null>(null);
 
 const editing = ref<HttpEndpointProfile | null>(null);
 const form = ref({
@@ -34,18 +41,18 @@ const form = ref({
   host: "",
   port: 443,
   path_prefix: "/",
-  allowed_methods: ["GET"],
+  allowed_methods: ["GET"] as string[],
   timeout_ms: 30000,
-  max_response_bytes: 1048576,
+  max_response_bytes_kb: 1024,
   allow_insecure_local: false,
   allow_private_network: false,
   enabled: true,
 });
-
-/** secret slot 输入（header → 明文，仅桌面壳可写 keyring） */
-const secretSlots = ref<Record<string, string>>({});
-const secretStatus = ref<Record<string, "ok" | "missing" | "error">>({});
-const isDesktop = ref(false);
+/** 需要密钥的请求头名（仅声明，不含任何明文） */
+const secretSlots = ref<string[]>([]);
+/** header → keyring 配置状态（桌面环境经 status command 查询） */
+const secretStatus = ref<Record<string, "configured" | "missing" | "unknown">>({});
+const newSecretHeader = ref("");
 
 async function load() {
   loading.value = true;
@@ -69,12 +76,13 @@ function openCreate() {
     path_prefix: "/",
     allowed_methods: ["GET"],
     timeout_ms: 30000,
-    max_response_bytes: 1048576,
+    max_response_bytes_kb: 1024,
     allow_insecure_local: false,
     allow_private_network: false,
     enabled: true,
   };
-  secretSlots.value = {};
+  secretSlots.value = [];
+  secretStatus.value = {};
   editorError.value = "";
   showEditor.value = true;
 }
@@ -89,14 +97,18 @@ function openEdit(profile: HttpEndpointProfile) {
     path_prefix: profile.path_prefix,
     allowed_methods: [...profile.allowed_methods],
     timeout_ms: profile.timeout_ms,
-    max_response_bytes: profile.max_response_bytes,
+    max_response_bytes_kb: Math.round(profile.max_response_bytes / 1024),
     allow_insecure_local: profile.allow_insecure_local,
     allow_private_network: profile.allow_private_network,
     enabled: profile.enabled,
   };
-  secretSlots.value = {};
+  secretSlots.value = [...profile.secret_slots];
+  secretStatus.value = {};
   editorError.value = "";
   showEditor.value = true;
+  if (isDesktop.value) {
+    void refreshSecretStatus(profile.name);
+  }
 }
 
 function toggleMethod(method: string) {
@@ -110,21 +122,58 @@ function toggleMethod(method: string) {
   }
 }
 
-async function saveSecretSlots(): Promise<void> {
+function addSecretSlot() {
+  const header = newSecretHeader.value.trim();
+  if (!header || secretSlots.value.includes(header)) return;
+  secretSlots.value.push(header);
+  secretStatus.value[header] = "unknown";
+  newSecretHeader.value = "";
+}
+
+function removeSecretSlot(header: string) {
+  secretSlots.value = secretSlots.value.filter((item) => item !== header);
+  delete secretStatus.value[header];
+}
+
+function slotForHeader(header: string): string {
+  return header.toLowerCase().replace(/[^a-z0-9.-]/g, "-").slice(0, 64) || "header";
+}
+
+async function refreshSecretStatus(name: string) {
   if (!isDesktop.value) return;
-  const { invoke } = await import("@tauri-apps/api/core");
-  for (const [header, plaintext] of Object.entries(secretSlots.value)) {
-    if (!plaintext) continue;
-    try {
-      await invoke("set_http_profile_secret", {
-        name: form.value.name,
-        slot: header.toLowerCase().replace(/[^a-z0-9.-]/g, "-"),
-        secret: plaintext,
-      });
-      secretStatus.value[header] = "ok";
-    } catch {
-      secretStatus.value[header] = "error";
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    for (const header of secretSlots.value) {
+      try {
+        const status = await invoke<{ configured: boolean }>(
+          "http_profile_secret_status",
+          { name, slot: slotForHeader(header) }
+        );
+        secretStatus.value[header] = status.configured ? "configured" : "missing";
+      } catch {
+        secretStatus.value[header] = "unknown";
+      }
     }
+  } catch {
+    // 非桌面环境静默
+  }
+}
+
+/** 原生系统凭据对话框写入 keyring（明文不经 Vue） */
+async function promptSecret(header: string) {
+  if (!isDesktop.value) {
+    editorError.value = "仅桌面版可配置系统凭据";
+    return;
+  }
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const result = await invoke<{ configured: boolean; cancelled: boolean }>(
+      "prompt_http_profile_secret",
+      { name: form.value.name.trim(), slot: slotForHeader(header) }
+    );
+    secretStatus.value[header] = result.configured ? "configured" : "missing";
+  } catch (error) {
+    editorError.value = `写入系统凭据失败：${String(error)}`;
   }
 }
 
@@ -133,27 +182,24 @@ async function save() {
   editorError.value = "";
   try {
     const payload: Record<string, unknown> = {
-      name: form.value.name.trim(),
       scheme: form.value.scheme,
       host: form.value.host.trim(),
       port: form.value.port,
       path_prefix: form.value.path_prefix || "/",
       allowed_methods: form.value.allowed_methods,
       timeout_ms: form.value.timeout_ms,
-      max_response_bytes: form.value.max_response_bytes,
+      max_response_bytes: form.value.max_response_bytes_kb * 1024,
       allow_insecure_local: form.value.allow_insecure_local,
       allow_private_network: form.value.allow_private_network,
       enabled: form.value.enabled,
       headers: {},
-      secret_refs: {},
+      secret_slots: secretSlots.value,
     };
     if (editing.value) {
       await updateHttpProfile(editing.value.id, payload);
     } else {
+      payload.name = form.value.name.trim();
       await createHttpProfile(payload);
-    }
-    if (editing.value) {
-      await saveSecretSlots();
     }
     showEditor.value = false;
     await load();
@@ -165,14 +211,32 @@ async function save() {
 }
 
 async function remove(profile: HttpEndpointProfile) {
-  if (!window.confirm(`删除 endpoint profile「${profile.name}」？删除后模型将无法调用它。`)) {
-    return;
-  }
   try {
-    await deleteHttpProfile(profile.id);
+    const result = await deleteHttpProfile(profile.id);
+    // 同步清理对应 OS keyring 条目（引用 → slot）
+    if (isDesktop.value) {
+      const { invoke } = await import("@tauri-apps/api/core");
+      for (const reference of Object.values(result.secret_refs ?? {})) {
+        const match = /^secret:\/\/os-keyring\/http\/[^/]+\/([^/]+)$/.exec(
+          reference
+        );
+        if (match) {
+          try {
+            await invoke("clear_http_profile_secret", {
+              name: profile.name,
+              slot: match[1],
+            });
+          } catch {
+            // keyring 清理失败不阻断删除
+          }
+        }
+      }
+    }
+    confirmDelete.value = null;
     await load();
   } catch (error) {
     loadError.value = String(error);
+    confirmDelete.value = null;
   }
 }
 
@@ -185,16 +249,7 @@ async function toggleEnabled(profile: HttpEndpointProfile) {
   }
 }
 
-const hasSecretSlots = computed(() => Object.keys(secretSlots.value).length > 0);
-const newSecretHeader = ref("");
-
-function addSecretSlot() {
-  const header = newSecretHeader.value.trim();
-  if (!header) return;
-  if (header in secretSlots.value) return;
-  secretSlots.value[header] = "";
-  newSecretHeader.value = "";
-}
+const hasSecretSlots = computed(() => secretSlots.value.length > 0);
 
 onMounted(async () => {
   try {
@@ -217,17 +272,12 @@ onMounted(async () => {
     </div>
     <p class="panel-hint">
       Agent 只能调用这里保存且已启用的端点；目标、方法、Schema、大小与超时均由
-      profile 固定。API key 只存入系统凭据库（OS keyring），不会出现在数据库、
-      日志或模型参数中。
+      profile 固定。API key 只存入系统凭据库（OS keyring），不进入数据库、日志、
+      模型参数或界面状态。
     </p>
 
     <PaSpinner v-if="loading" :label="'加载端点配置'" />
-    <PaInlineNotice
-      v-else-if="loadError"
-      tone="danger"
-      title="加载失败"
-      @click="load"
-    >
+    <PaInlineNotice v-else-if="loadError" tone="danger" title="加载失败" @click="load">
       {{ loadError }}
     </PaInlineNotice>
     <PaEmptyState
@@ -248,6 +298,9 @@ onMounted(async () => {
             {{ profile.allowed_methods.join(" · ") }}
             · 超时 {{ Math.round(profile.timeout_ms / 1000) }}s
             · 响应上限 {{ Math.round(profile.max_response_bytes / 1024) }}KB
+            <template v-if="profile.secret_slots.length">
+              · <PhKey :size="11" /> {{ profile.secret_slots.length }} 个密钥槽位
+            </template>
           </span>
         </div>
         <div class="profile-actions">
@@ -258,7 +311,7 @@ onMounted(async () => {
             {{ profile.enabled ? "禁用" : "启用" }}
           </button>
           <button class="text-btn" @click="openEdit(profile)">编辑</button>
-          <button class="text-btn danger" @click="remove(profile)">
+          <button class="text-btn danger" @click="confirmDelete = profile">
             <PhTrash :size="13" />
           </button>
         </div>
@@ -323,11 +376,10 @@ onMounted(async () => {
           <label>
             <span>响应上限（KB）</span>
             <input
-              v-model.number="form.max_response_bytes"
+              v-model.number="form.max_response_bytes_kb"
               type="number"
               min="1"
               max="8192"
-              @change="form.max_response_bytes = Math.round(form.max_response_bytes * 1024)"
             />
           </label>
         </div>
@@ -346,31 +398,53 @@ onMounted(async () => {
           </label>
         </div>
 
-        <details class="secret-section">
+        <details class="secret-section" :open="hasSecretSlots">
           <summary>
-            <PhKey :size="13" /> API key（存入系统凭据库，不落库）
+            <PhKey :size="13" /> API key（存入系统凭据库，明文不进界面）
           </summary>
-          <label v-for="header in Object.keys(secretSlots)" :key="header">
-            <span>请求头 {{ header }}</span>
-            <div class="secret-input">
-              <input
-                v-model="secretSlots[header]"
-                type="password"
-                :placeholder="secretStatus[header] === 'ok' ? '已保存（重新输入以更新）' : '输入明文 key'"
-              />
-              <button
-                type="button"
-                class="text-btn"
-                @click="delete secretSlots[header]"
-              >
-                移除
-              </button>
-            </div>
-          </label>
+          <p class="secret-hint">
+            先声明需要密钥的请求头名并保存 profile，然后在桌面版中点「设置密钥」
+            打开系统凭据对话框。配置后需重启应用使密钥注入生效。
+          </p>
+          <div v-for="header in secretSlots" :key="header" class="secret-row">
+            <code>{{ header }}</code>
+            <PaBadge
+              :tone="
+                secretStatus[header] === 'configured'
+                  ? 'success'
+                  : secretStatus[header] === 'missing'
+                    ? 'warning'
+                    : 'muted'
+              "
+            >
+              {{
+                secretStatus[header] === "configured"
+                  ? "已配置"
+                  : secretStatus[header] === "missing"
+                    ? "未配置"
+                    : isDesktop
+                      ? "未知"
+                      : "桌面版可配置"
+              }}
+            </PaBadge>
+            <PaButton
+              v-if="isDesktop"
+              size="sm"
+              type="button"
+              variant="ghost"
+              :disabled="!form.name.trim()"
+              @click="promptSecret(header)"
+            >
+              设置密钥
+            </PaButton>
+            <button type="button" class="text-btn" @click="removeSecretSlot(header)">
+              移除
+            </button>
+          </div>
           <div class="secret-add">
             <input
               v-model="newSecretHeader"
-              placeholder="如 X-Api-Key"
+              placeholder="请求头名，如 X-Api-Key"
               @keyup.enter="addSecretSlot"
             />
             <PaButton size="sm" type="button" @click="addSecretSlot">添加</PaButton>
@@ -380,13 +454,6 @@ onMounted(async () => {
         <PaInlineNotice v-if="editorError" tone="danger" title="保存失败">
           {{ editorError }}
         </PaInlineNotice>
-        <PaInlineNotice
-          v-if="!isDesktop && hasSecretSlots"
-          tone="warning"
-          title="非桌面环境无法写入系统凭据库"
-        >
-          API key 将不会保存；桌面版（Tauri）会直接写入 OS keyring。
-        </PaInlineNotice>
 
         <div class="form-actions">
           <PaButton type="button" variant="ghost" @click="showEditor = false">取消</PaButton>
@@ -395,6 +462,30 @@ onMounted(async () => {
           </PaButton>
         </div>
       </form>
+    </PaDialog>
+
+    <PaDialog
+      v-if="confirmDelete"
+      :open="true"
+      :title="`删除端点 · ${confirmDelete.name}`"
+      :width="480"
+      @close="confirmDelete = null"
+    >
+      <p class="confirm-copy">
+        删除后模型将无法调用该端点；对应的系统凭据库条目也会被清理。
+        此操作不可撤销。
+      </p>
+      <div class="form-actions">
+        <PaButton type="button" variant="ghost" @click="confirmDelete = null">取消</PaButton>
+        <PaButton
+          type="button"
+          variant="primary"
+          tone="danger"
+          @click="remove(confirmDelete)"
+        >
+          确认删除
+        </PaButton>
+      </div>
     </PaDialog>
   </section>
 </template>
@@ -419,7 +510,7 @@ onMounted(async () => {
 .profile-copy { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
 .profile-copy strong { color: var(--color-fg); font-size: var(--pa-text-compact); }
 .profile-copy code { color: var(--color-fg-muted); font-family: var(--font-mono); font-size: var(--pa-t-12); }
-.profile-meta { color: var(--color-fg-faint); font-size: var(--pa-t-12); }
+.profile-meta { display: inline-flex; align-items: center; gap: 4px; color: var(--color-fg-faint); font-size: var(--pa-t-12); }
 .profile-actions { display: flex; flex-shrink: 0; align-items: center; gap: var(--space-2); }
 .text-btn {
   display: inline-flex;
@@ -436,9 +527,7 @@ onMounted(async () => {
 .text-btn.danger { color: var(--color-danger); }
 .editor-form { display: grid; gap: var(--space-3); }
 .editor-form label { display: grid; gap: 4px; font-size: var(--pa-t-12); color: var(--color-fg-muted); }
-.editor-form input[type="text"],
-.editor-form input[type="password"],
-.editor-form input:not([type]),
+.editor-form input:not([type="checkbox"]),
 .editor-form select {
   padding: 7px 9px;
   border: 1px solid var(--color-border);
@@ -465,9 +554,11 @@ onMounted(async () => {
 .method-pill.active { border-color: var(--color-accent); color: var(--color-accent); }
 .secret-section { display: grid; gap: var(--space-2); }
 .secret-section summary { cursor: pointer; color: var(--color-fg-muted); font-size: var(--pa-t-12); }
-.secret-input { display: flex; gap: 6px; }
-.secret-input input { flex: 1; }
+.secret-hint { margin: 0; color: var(--color-fg-faint); font-size: var(--pa-t-12); line-height: 1.5; }
+.secret-row { display: flex; align-items: center; gap: var(--space-2); font-size: var(--pa-t-12); }
+.secret-row code { color: var(--color-fg); font-family: var(--font-mono); }
 .secret-add { display: flex; gap: 6px; }
 .secret-add input { flex: 1; }
 .form-actions { display: flex; justify-content: flex-end; gap: var(--space-2); }
+.confirm-copy { margin: 0; color: var(--color-fg-muted); font-size: var(--pa-text-compact); line-height: 1.6; }
 </style>

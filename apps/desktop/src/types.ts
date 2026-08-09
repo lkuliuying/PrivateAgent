@@ -159,6 +159,9 @@ export interface HttpEndpointProfile {
   max_response_bytes: number;
   timeout_ms: number;
   headers: Record<string, string>;
+  /** 需要密钥的请求头名（仅声明；keyring 引用见 secret_refs） */
+  secret_slots: string[];
+  /** 后端生成的 keyring 引用（header → secret://os-keyring/...） */
   secret_refs: Record<string, string>;
   allow_insecure_local: boolean;
   allow_private_network: boolean;
@@ -166,6 +169,14 @@ export interface HttpEndpointProfile {
   version: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface HttpProfileDeleteResult {
+  secret_refs: Record<string, string>;
+}
+
+export interface SqlProfileDeleteResult {
+  password_secret_ref: string | null;
 }
 
 /** v0.5.0 B4：只读 SQL 连接 profile（非敏感元数据 + keyring 密码引用）。 */

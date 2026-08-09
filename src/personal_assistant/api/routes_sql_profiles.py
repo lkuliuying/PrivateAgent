@@ -31,7 +31,6 @@ class SqlProfilePayload(BaseModel):
     port: int = Field(ge=1, le=65535)
     database: str = Field(min_length=1, max_length=255)
     username: str | None = Field(default=None, max_length=255)
-    password_secret_ref: str = Field(min_length=1, max_length=512)
     connect_args: dict[str, Any] | None = None
     max_rows: int = Field(default=1000, ge=1, le=100_000)
     max_bytes: int = Field(default=1_048_576, ge=1_024, le=8 * 1_048_576)
@@ -55,6 +54,7 @@ class SqlProfileOut(BaseModel):
     port: int
     database: str
     username: str | None
+    # keyring 引用（明文密码只经 OS keyring，Rust CredUI prompt）
     password_secret_ref: str
     max_rows: int
     max_bytes: int
@@ -90,6 +90,11 @@ def require_sql_profiles_api() -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _password_ref(name: str) -> str:
+    """后端为 profile 生成 keyring 密码引用（与 Rust 侧 sql_profile_reference 同构）。"""
+    return f"secret://os-keyring/sql/{name}/password"
+
+
 @router.get(
     "",
     response_model=list[SqlProfileOut],
@@ -114,7 +119,9 @@ async def create_sql_profile(
     db: AsyncSession = Depends(get_session),
 ) -> SqlProfileOut:
     try:
-        profile = await SqlProfileService(db).create(payload.model_dump())
+        profile = await SqlProfileService(db).create(
+            {**payload.model_dump(), "password_secret_ref": _password_ref(payload.name)}
+        )
     except SqlProfileConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except SqlProfileError as exc:
@@ -147,26 +154,39 @@ async def update_sql_profile(
     payload: SqlProfilePayload,
     db: AsyncSession = Depends(get_session),
 ) -> SqlProfileOut:
+    service = SqlProfileService(db)
+    profile = await service.repo.get(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="SQL profile not found")
     try:
         values = payload.model_dump(exclude={"name"})
-        updated = await SqlProfileService(db).repo.update(profile_id, **values)
-    except SqlProfileNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        updated = await service.repo.update(profile_id, **values)
     except SqlProfileError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _to_out(updated)
 
 
+class SqlProfileDeleteResponse(BaseModel):
+    """删除结果；password_secret_ref 供桌面壳清理对应 OS keyring 条目。"""
+
+    password_secret_ref: str | None
+
+
 @router.delete(
     "/{profile_id}",
-    status_code=204,
+    response_model=SqlProfileDeleteResponse,
     dependencies=[Depends(require_sql_profiles_api)],
 )
 async def delete_sql_profile(
     profile_id: int,
     db: AsyncSession = Depends(get_session),
-) -> None:
+) -> SqlProfileDeleteResponse:
+    profile = await SqlProfileService(db).repo.get(profile_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="SQL profile not found")
+    reference = profile.password_secret_ref
     try:
         await SqlProfileService(db).repo.delete(profile_id)
     except SqlProfileNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return SqlProfileDeleteResponse(password_secret_ref=reference)

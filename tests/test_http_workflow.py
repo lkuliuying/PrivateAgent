@@ -140,7 +140,7 @@ async def _make_profile(db, base: str, **overrides: Any) -> HttpEndpointProfile:
         "response_schema": None,
         "timeout_ms": 3000,
         "headers": {},
-        "secret_refs": {},
+        "secret_slots": [],
         "allow_insecure_local": True,
         "allow_private_network": True,
         "enabled": True,
@@ -249,7 +249,7 @@ async def _execute_approved(db, run_id: str, call: ToolCall, *, with_verifier: b
 
 @pytest.mark.asyncio
 async def test_profile_requires_valid_target_and_blocks_sensitive_headers(db):
-    """配置校验：http 非环回拒绝、敏感头/坏引用拒绝。"""
+    """配置校验：http 非环回拒绝、敏感头/敏感 secret slot 拒绝。"""
     service = HttpProfileService(db)
     with pytest.raises(ValueError, match="http 仅允许"):
         await service.create(
@@ -260,7 +260,7 @@ async def test_profile_requires_valid_target_and_blocks_sensitive_headers(db):
                 "port": 80,
                 "allowed_methods": ["GET"],
                 "headers": {},
-                "secret_refs": {},
+                "secret_slots": [],
             }
         )
     with pytest.raises(ValueError, match="禁止"):
@@ -272,19 +272,19 @@ async def test_profile_requires_valid_target_and_blocks_sensitive_headers(db):
                 "port": 443,
                 "allowed_methods": ["GET"],
                 "headers": {"Authorization": "Bearer x"},
-                "secret_refs": {},
+                "secret_slots": [],
             }
         )
-    with pytest.raises(ValueError, match="引用格式无效"):
+    with pytest.raises(ValueError, match="secret 目标头被禁止"):
         await service.create(
             {
-                "name": "bad-ref",
+                "name": "bad-slot",
                 "scheme": "https",
                 "host": "api.example.test",
                 "port": 443,
                 "allowed_methods": ["GET"],
                 "headers": {},
-                "secret_refs": {"X-Api-Key": "plaintext-key"},
+                "secret_slots": ["Authorization"],
             }
         )
     with pytest.raises(ValueError, match="PUT"):
@@ -296,9 +296,28 @@ async def test_profile_requires_valid_target_and_blocks_sensitive_headers(db):
                 "port": 443,
                 "allowed_methods": ["PUT"],
                 "headers": {},
-                "secret_refs": {},
+                "secret_slots": [],
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_secret_slots_generate_keyring_references(db, loopback_server):
+    """rc.2：secret_slots 由后端生成 keyring 引用（明文不经 API）。"""
+    profile = await _make_profile(
+        db, loopback_server, secret_slots=["X-Api-Key"]
+    )
+    try:
+        refs = profile.secret_refs_json or {}
+        assert refs["X-Api-Key"] == (
+            f"secret://os-keyring/http/{profile.name}/x-api-key"
+        )
+        assert is_http_secret_reference(refs["X-Api-Key"])
+        assert "secret" not in str(profile.secret_refs_json).lower().replace(
+            "secret://", ""
+        )
+    finally:
+        await _cleanup(db, None, [profile.id])
 
 
 def test_http_secret_reference_format_and_env_channel(monkeypatch):
@@ -479,13 +498,12 @@ async def test_secret_injected_via_keyring_channel_and_absent_from_output(db, lo
     profile = await _make_profile(
         db,
         loopback_server,
-        secret_refs={"X-Api-Key": "secret://os-keyring/http/weather/api-key"},
+        secret_slots=["X-Api-Key"],
     )
+    reference = f"secret://os-keyring/http/{profile.name}/x-api-key"
     run_id = await _create_run(db)
     try:
-        resolver = MappingHttpSecretResolver(
-            {"secret://os-keyring/http/weather/api-key": "super-secret-token-9"}
-        )
+        resolver = MappingHttpSecretResolver({reference: "super-secret-token-9"})
         call = ToolCall(
             id="call-http-1",
             name="call_allowlisted_api",
@@ -571,21 +589,41 @@ async def test_disabled_or_deleted_profile_cannot_be_called(db, loopback_server)
 
 
 @pytest.mark.asyncio
-async def test_http_flag_controls_tool_visibility(db, monkeypatch, loopback_server):
-    """未配置/未开启时模型看不到 HTTP 工具；开启且有 profile 时可见。"""
+async def test_http_flag_and_profile_control_tool_visibility(db, monkeypatch, loopback_server):
+    """rc.2：flag 关闭或无已启用 profile 时模型看不到 HTTP 工具；
+    flag 开启且存在已启用 profile 时可见。"""
+    from personal_assistant.core.models import HttpEndpointProfile
+
+    await db.execute(delete(HttpEndpointProfile))
+    await db.commit()
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_http_workflow_enabled", False)
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", False)
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is None
 
+    # flag 开启但无任何已启用 profile → 工具不可见
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_http_workflow_enabled", True)
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is not None
     names = {definition.name for definition in bundle.definitions}
-    assert "call_allowlisted_api" in names
+    assert "call_allowlisted_api" not in names
 
+    # 存在已启用 profile → 工具可见
     profile = await _make_profile(db, loopback_server)
     try:
+        bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+        names = {definition.name for definition in bundle.definitions}
+        assert "call_allowlisted_api" in names
+
+        # 禁用 profile → 工具再次不可见
+        profile.enabled = False
+        await db.commit()
+        bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+        names = {definition.name for definition in bundle.definitions}
+        assert "call_allowlisted_api" not in names
+
+        profile.enabled = True
+        await db.commit()
         spec = build_http_tool_registry(db).get("call_allowlisted_api")
         from personal_assistant.agents.tools import ToolPolicyDecision
 

@@ -504,7 +504,10 @@ async def test_resolve_unknown_execution_manual_disposition(db, tmp_path, client
 
 @pytest.mark.asyncio
 async def test_http_and_sql_tools_register_together(db, monkeypatch):
-    """四类工作流工具可同时注册（独立 flag 组合，无总开关）。"""
+    """四类工作流工具可同时注册（独立 flag 组合 + 已启用 profile，无总开关）。"""
+    from personal_assistant.core.http_profiles import HttpProfileService
+    from personal_assistant.core.sql_profiles import SqlProfileService
+
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_command_workflow_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_http_workflow_enabled", True)
@@ -514,14 +517,55 @@ async def test_http_and_sql_tools_register_together(db, monkeypatch):
     monkeypatch.setattr(
         routes_agent_runs.cfg, "agent_run_read_only_tools_enabled", True
     )
-    bundle = await routes_agent_runs.get_agent_tool_bundle(db)
-    assert bundle is not None
-    names = {definition.name for definition in bundle.definitions}
-    for expected in (
-        "propose_patch",
-        "apply_patch_to_workspace",
-        "run_whitelisted_command",
-        "call_allowlisted_api",
-        "query_readonly_sql",
-    ):
-        assert expected in names, expected
+    # HTTP/SQL 工具要求存在已启用 profile；先创建
+    from sqlalchemy import delete as sql_delete
+
+    from personal_assistant.core.models import HttpEndpointProfile, SqlReadonlyProfile
+
+    http_profile = await HttpProfileService(db).create(
+        {
+            "name": f"b5-http-{uuid4().hex[:6]}",
+            "scheme": "https",
+            "host": "api.example.test",
+            "port": 443,
+            "allowed_methods": ["GET"],
+            "headers": {},
+            "secret_slots": [],
+            "enabled": True,
+        }
+    )
+    sql_profile = await SqlProfileService(db).create(
+        {
+            "name": f"b5-sql-{uuid4().hex[:6]}",
+            "dialect": "mysql",
+            "host": "127.0.0.1",
+            "port": 3306,
+            "database": "app",
+            "username": "root",
+            "password_secret_ref": "secret://os-keyring/sql/b5-x/password",
+            "max_rows": 100,
+            "max_bytes": 262144,
+            "timeout_ms": 3000,
+            "enabled": True,
+        }
+    )
+    try:
+        bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+        assert bundle is not None
+        names = {definition.name for definition in bundle.definitions}
+        for expected in (
+            "propose_patch",
+            "apply_patch_to_workspace",
+            "run_whitelisted_command",
+            "call_allowlisted_api",
+            "query_readonly_sql",
+        ):
+            assert expected in names, expected
+    finally:
+        await db.execute(
+            sql_delete(HttpEndpointProfile).where(HttpEndpointProfile.id == http_profile.id)
+        )
+        await db.execute(
+            sql_delete(SqlReadonlyProfile).where(SqlReadonlyProfile.id == sql_profile.id)
+        )
+        await db.commit()
