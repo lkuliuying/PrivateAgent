@@ -24,6 +24,13 @@ import PaDialog from "../design/PaDialog.vue";
 import PaEmptyState from "../design/PaEmptyState.vue";
 import PaInlineNotice from "../design/PaInlineNotice.vue";
 import PaSpinner from "../design/PaSpinner.vue";
+import {
+  clearHttpProfileSecret,
+  desktopCapable,
+  httpProfileSecretStatus,
+  promptHttpProfileSecret,
+  slotFromHttpReference,
+} from "../api/credentials";
 
 const profiles = ref<HttpEndpointProfile[]>([]);
 const loading = ref(true);
@@ -141,35 +148,33 @@ function slotForHeader(header: string): string {
 
 async function refreshSecretStatus(name: string) {
   if (!isDesktop.value) return;
-  try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    for (const header of secretSlots.value) {
-      try {
-        const status = await invoke<{ configured: boolean }>(
-          "http_profile_secret_status",
-          { name, slot: slotForHeader(header) }
-        );
-        secretStatus.value[header] = status.configured ? "configured" : "missing";
-      } catch {
-        secretStatus.value[header] = "unknown";
-      }
+  for (const header of secretSlots.value) {
+    try {
+      const status = await httpProfileSecretStatus(name, slotForHeader(header));
+      secretStatus.value[header] = status.configured ? "configured" : "missing";
+    } catch {
+      secretStatus.value[header] = "unknown";
     }
-  } catch {
-    // 非桌面环境静默
   }
 }
 
-/** 原生系统凭据对话框写入 keyring（明文不经 Vue） */
+/**
+ * 原生系统凭据对话框写入 keyring（明文不经 Vue）。
+ * 仅在已保存 profile（编辑模式）下可用，避免取消/保存失败留下孤立凭据。
+ */
 async function promptSecret(header: string) {
   if (!isDesktop.value) {
     editorError.value = "仅桌面版可配置系统凭据";
     return;
   }
+  if (!editing.value) {
+    editorError.value = "请先保存 profile，再设置密钥（避免孤立凭据）";
+    return;
+  }
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const result = await invoke<{ configured: boolean; cancelled: boolean }>(
-      "prompt_http_profile_secret",
-      { name: form.value.name.trim(), slot: slotForHeader(header) }
+    const result = await promptHttpProfileSecret(
+      form.value.name.trim(),
+      slotForHeader(header)
     );
     secretStatus.value[header] = result.configured ? "configured" : "missing";
   } catch (error) {
@@ -213,30 +218,34 @@ async function save() {
 async function remove(profile: HttpEndpointProfile) {
   try {
     const result = await deleteHttpProfile(profile.id);
-    // 同步清理对应 OS keyring 条目（引用 → slot）
+    // 同步清理 OS keyring（删除失败可重试，见 cleanupError）
     if (isDesktop.value) {
-      const { invoke } = await import("@tauri-apps/api/core");
-      for (const reference of Object.values(result.secret_refs ?? {})) {
-        const match = /^secret:\/\/os-keyring\/http\/[^/]+\/([^/]+)$/.exec(
-          reference
-        );
-        if (match) {
-          try {
-            await invoke("clear_http_profile_secret", {
-              name: profile.name,
-              slot: match[1],
-            });
-          } catch {
-            // keyring 清理失败不阻断删除
-          }
-        }
-      }
+      await cleanupKeyring(profile.name, Object.values(result.secret_refs ?? {}));
     }
     confirmDelete.value = null;
     await load();
   } catch (error) {
     loadError.value = String(error);
     confirmDelete.value = null;
+  }
+}
+
+const cleanupError = ref("");
+
+async function cleanupKeyring(name: string, references: string[]) {
+  cleanupError.value = "";
+  const failures: string[] = [];
+  for (const reference of references) {
+    const slot = slotFromHttpReference(reference);
+    if (!slot) continue;
+    try {
+      await clearHttpProfileSecret(name, slot);
+    } catch {
+      failures.push(slot);
+    }
+  }
+  if (failures.length) {
+    cleanupError.value = `以下凭据清理失败：${failures.join(", ")}（重试或手动在系统凭据库中删除）`;
   }
 }
 
@@ -250,14 +259,11 @@ async function toggleEnabled(profile: HttpEndpointProfile) {
 }
 
 const hasSecretSlots = computed(() => secretSlots.value.length > 0);
+/** 新建模式（未保存）下禁止设置密钥，避免孤立凭据 */
+const canManageSecrets = computed(() => isDesktop.value && Boolean(editing.value));
 
 onMounted(async () => {
-  try {
-    const { isTauri } = await import("@tauri-apps/api/core");
-    isDesktop.value = Boolean(isTauri());
-  } catch {
-    isDesktop.value = false;
-  }
+  isDesktop.value = await desktopCapable();
   await load();
 });
 </script>
@@ -277,8 +283,12 @@ onMounted(async () => {
     </p>
 
     <PaSpinner v-if="loading" :label="'加载端点配置'" />
-    <PaInlineNotice v-else-if="loadError" tone="danger" title="加载失败" @click="load">
+    <PaInlineNotice v-if="loadError" tone="danger" title="操作失败" @click="load">
       {{ loadError }}
+    </PaInlineNotice>
+    <PaInlineNotice v-if="cleanupError" tone="warning" title="凭据清理未完成">
+      {{ cleanupError }}
+      <button class="text-btn" @click="confirmDelete && remove(confirmDelete)">重试</button>
     </PaInlineNotice>
     <PaEmptyState
       v-else-if="profiles.length === 0"
@@ -403,8 +413,7 @@ onMounted(async () => {
             <PhKey :size="13" /> API key（存入系统凭据库，明文不进界面）
           </summary>
           <p class="secret-hint">
-            先声明需要密钥的请求头名并保存 profile，然后在桌面版中点「设置密钥」
-            打开系统凭据对话框。配置后需重启应用使密钥注入生效。
+            {{ canManageSecrets ? "点「设置密钥」打开系统凭据对话框；明文不进入界面。" : "先保存 profile，再打开编辑设置密钥（避免孤立凭据）。" }}
           </p>
           <div v-for="header in secretSlots" :key="header" class="secret-row">
             <code>{{ header }}</code>
@@ -422,9 +431,9 @@ onMounted(async () => {
                   ? "已配置"
                   : secretStatus[header] === "missing"
                     ? "未配置"
-                    : isDesktop
+                    : canManageSecrets
                       ? "未知"
-                      : "桌面版可配置"
+                      : "保存后配置"
               }}
             </PaBadge>
             <PaButton
@@ -432,7 +441,7 @@ onMounted(async () => {
               size="sm"
               type="button"
               variant="ghost"
-              :disabled="!form.name.trim()"
+              :disabled="!canManageSecrets"
               @click="promptSecret(header)"
             >
               设置密钥

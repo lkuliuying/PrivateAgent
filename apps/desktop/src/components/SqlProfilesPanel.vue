@@ -21,6 +21,12 @@ import PaDialog from "../design/PaDialog.vue";
 import PaEmptyState from "../design/PaEmptyState.vue";
 import PaInlineNotice from "../design/PaInlineNotice.vue";
 import PaSpinner from "../design/PaSpinner.vue";
+import {
+  clearSqlProfileSecret,
+  desktopCapable,
+  promptSqlProfileSecret,
+  sqlProfileSecretStatus,
+} from "../api/credentials";
 
 const profiles = ref<SqlReadonlyProfile[]>([]);
 const loading = ref(true);
@@ -100,33 +106,28 @@ function openEdit(profile: SqlReadonlyProfile) {
 async function refreshPasswordStatus(name: string) {
   if (!isDesktop.value) return;
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const status = await invoke<{ configured: boolean }>("sql_profile_secret_status", {
-      name,
-    });
+    const status = await sqlProfileSecretStatus(name);
     passwordConfigured.value = status.configured;
   } catch {
     passwordConfigured.value = false;
   }
 }
 
-/** 原生系统凭据对话框写入 keyring（明文不经 Vue） */
+/**
+ * 原生系统凭据对话框写入 keyring（明文不经 Vue）。
+ * 仅在已保存 profile（编辑模式）下可用，避免取消/保存失败留下孤立凭据。
+ */
 async function promptPassword() {
   if (!isDesktop.value) {
     editorError.value = "仅桌面版可配置系统凭据";
     return;
   }
-  const name = form.value.name.trim();
-  if (!name) {
-    editorError.value = "请先填写名称并保存连接";
+  if (!editing.value) {
+    editorError.value = "请先保存连接，再设置密码（避免孤立凭据）";
     return;
   }
   try {
-    const { invoke } = await import("@tauri-apps/api/core");
-    const result = await invoke<{ configured: boolean; cancelled: boolean }>(
-      "prompt_sql_profile_secret",
-      { name }
-    );
+    const result = await promptSqlProfileSecret(form.value.name.trim());
     passwordConfigured.value = result.configured;
   } catch (error) {
     editorError.value = `写入系统凭据失败：${String(error)}`;
@@ -162,15 +163,18 @@ async function save() {
   }
 }
 
+const cleanupError = ref("");
+
 async function remove(profile: SqlReadonlyProfile) {
   try {
     const result = await deleteSqlProfile(profile.id);
     if (isDesktop.value && result.password_secret_ref) {
+      cleanupError.value = "";
       try {
-        const { invoke } = await import("@tauri-apps/api/core");
-        await invoke("clear_sql_profile_secret", { name: profile.name });
+        await clearSqlProfileSecret(profile.name);
       } catch {
-        // keyring 清理失败不阻断删除
+        cleanupError.value =
+          "系统凭据清理失败（重试或手动在系统凭据库中删除该条目）";
       }
     }
     confirmDelete.value = null;
@@ -191,12 +195,7 @@ async function toggleEnabled(profile: SqlReadonlyProfile) {
 }
 
 onMounted(async () => {
-  try {
-    const { isTauri } = await import("@tauri-apps/api/core");
-    isDesktop.value = Boolean(isTauri());
-  } catch {
-    isDesktop.value = false;
-  }
+  isDesktop.value = await desktopCapable();
   await load();
 });
 </script>
@@ -216,8 +215,12 @@ onMounted(async () => {
     </p>
 
     <PaSpinner v-if="loading" :label="'加载连接配置'" />
-    <PaInlineNotice v-else-if="loadError" tone="danger" title="加载失败" @click="load">
+    <PaInlineNotice v-if="loadError" tone="danger" title="操作失败" @click="load">
       {{ loadError }}
+    </PaInlineNotice>
+    <PaInlineNotice v-if="cleanupError" tone="warning" title="凭据清理未完成">
+      {{ cleanupError }}
+      <button class="text-btn" @click="confirmDelete && remove(confirmDelete)">重试</button>
     </PaInlineNotice>
     <PaEmptyState
       v-else-if="profiles.length === 0"
@@ -302,15 +305,18 @@ onMounted(async () => {
               size="sm"
               type="button"
               variant="ghost"
-              :disabled="!form.name.trim()"
+              :disabled="!editing"
               @click="promptPassword"
             >
               {{ passwordConfigured ? "更新密码" : "设置密码" }}
             </PaButton>
           </div>
           <p class="secret-hint">
-            点击按钮会打开系统凭据对话框；明文不进入界面。配置后需重启应用
-            使密码注入生效。
+            {{
+              editing
+                ? "点击按钮会打开系统凭据对话框；明文不进入界面。配置后需重启应用使密码注入生效。"
+                : "先保存连接，再打开编辑设置密码（避免孤立凭据）。"
+            }}
           </p>
         </div>
 

@@ -1873,7 +1873,7 @@ wheels = [
 
 [[package]]
 name = "personal-assistant"
-version = "0.5.0rc2"
+version = "0.5.0rc3"
 source = { editable = "." }
 dependencies = [
     { name = "aiomysql" },

@@ -114,6 +114,7 @@ function mockApi(page: Page, sseMode: "pending" | "approved" = "pending") {
           'data: {"type":"run","run_id":"run-kb"}\n\n' +
           `data: {"type":"approval","approval":{"id":"ap-1","run_id":"run-kb","tool_call_id":"tc-1","tool_name":"apply_patch_to_workspace","tool_version":"1.0.0","arguments_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","risk_level":"confirm","required_capabilities":["filesystem.write"],"status":"${approvalStatus}","expires_at":"2026-08-10T00:00:00Z","created_at":"2026-08-09T00:00:00Z"}}\n\n` +
           `data: {"type":"approval","approval":{"id":"ap-2","run_id":"run-kb","tool_call_id":"tc-2","tool_name":"query_readonly_sql","tool_version":"1.0.0","arguments_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","risk_level":"confirm","required_capabilities":["database.query"],"status":"${approvalStatus}","expires_at":"2026-08-10T00:00:00Z","created_at":"2026-08-09T00:00:00Z"}}\n\n` +
+          `data: {"type":"approval","approval":{"id":"ap-3","run_id":"run-kb","tool_call_id":"tc-3","tool_name":"run_whitelisted_command","tool_version":"1.0.0","arguments_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","risk_level":"confirm","required_capabilities":["process.execute"],"status":"${approvalStatus}","expires_at":"2026-08-10T00:00:00Z","created_at":"2026-08-09T00:00:00Z"}}\n\n` +
           'data: {"type":"done","run_id":"run-kb","message_id":10,"content":"完成"}\n\n',
       });
       return;
@@ -190,7 +191,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
     await expect(page.getByText("只读事务")).toBeVisible();
   });
 
-  test("Diff 弹窗 Esc 关闭后焦点恢复", async ({ page }) => {
+  test("Diff 弹窗 Esc 关闭后焦点回到触发按钮", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockApi(page, "approved");
     await page.goto("/?ui=v2");
@@ -214,45 +215,98 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
     await expect(dialog).toContainText("src/main.py");
     await page.keyboard.press("Escape");
     await expect(dialog).not.toBeVisible();
-    // 焦点回到可交互元素（不滞留在已关闭弹窗）
-    const active = await page.evaluate(() => document.activeElement?.tagName ?? "");
-    expect(active.length).toBeGreaterThan(0);
+    // 焦点必须回到触发按钮（PaDialog 卸载时恢复 previousFocus）
+    await expect(diffTrigger).toBeFocused();
   });
 
-  test("命令长输出（5000 行）渲染不卡死且页面可交互", async ({ page }) => {
-    const lines = Array.from({ length: 5000 }, (_, index) => `flood-line-${index}`).join("\n");
-    await mockApi(page);
+  test("命令 5000 行输出经真实审批卡渲染且页面可交互", async ({ page }) => {
+    const longLines = Array.from(
+      { length: 5000 },
+      (_, index) => `flood-line-${index}`
+    ).join("\n");
+    await mockApi(page, "approved");
+    await page.route("**://127.0.0.1:8000/agent-runs/run-kb/executions/exec-cmd/output*", async (route) => {
+      await route.fulfill({
+        json: {
+          lines: longLines.split("\n").map((text, index) => ({ seq: index, kind: "stdout", text })),
+          last_seq: 4999,
+          finished: true,
+        },
+      });
+      return;
+    });
+    // executions 路由在 mockApi 中定义，这里补充 command execution
+    await page.route("**://127.0.0.1:8000/agent-runs/run-kb/executions", async (route) => {
+      await route.fulfill({
+        json: [
+          {
+            id: "exec-cmd",
+            tool_name: "run_whitelisted_command",
+            tool_version: "1.0.0",
+            status: "succeeded",
+            error_code: null,
+            error_message: null,
+            output: {
+              args: ["python", "-c", "flood"],
+              cwd: "F:\\project",
+              returncode: 0,
+              succeeded: true,
+              processes_remaining: 0,
+            },
+            created_at: "2026-08-09T00:00:00Z",
+            completed_at: "2026-08-09T00:00:05Z",
+          },
+        ],
+      });
+    });
     await page.goto("/?ui=v2");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
+    await page.getByRole("button", { name: "键盘检查会话" }).first().click();
+    await page.getByTestId("task-composer-input").fill("运行长命令");
+    await page.getByTestId("task-composer-submit").click();
 
-    // 经真实命令输出组件路径渲染长文本（审批卡 command-output）
-    await page.evaluate((payload) => {
-      const host = document.createElement("div");
-      host.innerHTML = `<section class="command-section"><pre class="command-output" data-testid="command-output">${payload}</pre></section>`;
-      document.body.appendChild(host);
-    }, lines);
-    const text = await page.getByTestId("command-output").innerText();
+    // 命令输出组件（ApprovalCardV2 command-output）真实渲染长文本
+    const output = page.getByTestId("command-output");
+    await expect(output).toBeVisible({ timeout: 10_000 });
+    const text = await output.innerText();
     expect(text.length).toBeGreaterThan(50_000);
+    expect(text).toContain("flood-line-4999");
     // 渲染后页面仍响应导航点击
     await page.getByTestId("nav-today").click();
     await expect(page.getByTestId("nav-today")).toBeVisible();
   });
 
-  test("HTTP/SQL 配置面板键盘 Tab 可达（Settings 页面）", async ({ page }) => {
+  test("HTTP/SQL 配置面板真实 Tab 焦点顺序", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
     await mockApi(page);
+    await page.route("**://127.0.0.1:8000/http-profiles*", async (route) => {
+      await route.fulfill({ json: [] });
+    });
     await page.goto("/?ui=v2");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
-    // 打开 Settings 视图（v2 壳导航）
-    await page.getByTestId("nav-settings").click().catch(async () => {
-      await page.getByRole("button", { name: /设置/ }).first().click();
-    });
+    // 打开设置页（v2 壳导航）
+    const settingsNav = page.getByTestId("nav-settings");
+    await settingsNav.click();
     await page.waitForTimeout(500);
-    const bodyText = await page.evaluate(() => document.body.innerText);
-    // 设置页包含 HTTP 端点与只读数据库面板标题（v2 设置视图）
-    const hasHttp = bodyText.includes("HTTP 端点");
-    const hasSql = bodyText.includes("只读数据库");
-    // 若设置页可达则断言面板存在；否则明确失败（不允许跳过）
-    expect(hasHttp || hasSql).toBe(true);
+
+    // 断言 HTTP 面板存在并打开新建表单
+    await expect(page.getByRole("button", { name: "新建端点" })).toBeVisible();
+    await page.getByRole("button", { name: "新建端点" }).click();
+    const form = page.getByRole("dialog");
+    await expect(form).toBeVisible();
+
+    // 表单 Tab 顺序：名称 → Scheme → Host → Port → Path 前缀
+    const nameInput = form.locator("input[placeholder='如 weather-api']");
+    await nameInput.focus();
+    await page.keyboard.press("Tab");
+    const scheme = await page.evaluate(() => (document.activeElement as HTMLSelectElement)?.tagName);
+    expect(scheme).toBe("SELECT");
+    await page.keyboard.press("Tab");
+    const hostTag = await page.evaluate(() => (document.activeElement as HTMLElement)?.tagName);
+    expect(hostTag).toBe("INPUT");
+    // Esc 关闭弹窗，焦点恢复
+    await page.keyboard.press("Escape");
+    await expect(form).not.toBeVisible();
   });
 });
