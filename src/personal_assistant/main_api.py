@@ -50,6 +50,7 @@ from .api.routes_reminders import router as reminders_router
 from .api.routes_search import router as search_router
 from .api.routes_sessions import router as sessions_router
 from .api.routes_settings import router as settings_router
+from .api.routes_sql_profiles import router as sql_profiles_router
 from .api.routes_testing import router as testing_router
 from .api.routes_today import router as today_router
 from .api.routes_tools import router as tools_router
@@ -222,6 +223,7 @@ app.add_middleware(
 
 app.include_router(health_router)
 app.include_router(http_profiles_router)
+app.include_router(sql_profiles_router)
 app.include_router(today_router)
 app.include_router(inbox_router)
 app.include_router(goals_router)

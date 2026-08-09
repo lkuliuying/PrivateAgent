@@ -7,6 +7,7 @@ pub const OPENAI_API_KEY_ACCOUNT: &str = "provider.openai.api-key";
 pub const CLAUDE_API_KEY_ACCOUNT: &str = "provider.claude.api-key";
 const MCP_ACCOUNT_PREFIX: &str = "mcp.";
 const HTTP_PROFILE_ACCOUNT_PREFIX: &str = "http.";
+const SQL_PROFILE_ACCOUNT_PREFIX: &str = "sql.";
 
 fn entry(account: &str) -> Result<Entry, String> {
     Entry::new(SERVICE, account).map_err(|_| credential_error("open"))
@@ -106,6 +107,16 @@ pub fn http_profile_reference(name: &str, slot: &str) -> Result<String, String> 
     Ok(format!("secret://os-keyring/http/{name}/{slot}"))
 }
 
+pub fn sql_profile_account(name: &str) -> Result<String, String> {
+    validate_mcp_secret_alias(name)?;
+    Ok(format!("{SQL_PROFILE_ACCOUNT_PREFIX}{name}.password"))
+}
+
+pub fn sql_profile_reference(name: &str) -> Result<String, String> {
+    validate_mcp_secret_alias(name)?;
+    Ok(format!("secret://os-keyring/sql/{name}/password"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +160,22 @@ mod tests {
         for slot in ["", "/x", "a b", "x/y", "line\nbreak"] {
             assert!(http_profile_account("name", slot).is_err(), "{slot:?}");
             assert!(http_profile_reference("name", slot).is_err(), "{slot:?}");
+        }
+    }
+
+    #[test]
+    fn sql_profile_accounts_are_fixed_and_bounded() {
+        assert_eq!(
+            sql_profile_account("reports").unwrap(),
+            "sql.reports.password"
+        );
+        assert_eq!(
+            sql_profile_reference("reports").unwrap(),
+            "secret://os-keyring/sql/reports/password"
+        );
+        for name in ["", "/x", "a b", "x/y", "line\nbreak"] {
+            assert!(sql_profile_account(name).is_err(), "{name:?}");
+            assert!(sql_profile_reference(name).is_err(), "{name:?}");
         }
     }
 }

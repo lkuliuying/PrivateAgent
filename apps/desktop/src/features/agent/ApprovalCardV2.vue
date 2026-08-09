@@ -9,6 +9,7 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import {
   PhCheck,
   PhClock,
+  PhDatabase,
   PhFilePlus,
   PhShieldWarning,
   PhTerminal,
@@ -299,6 +300,72 @@ const commandArgv = computed(() => {
   return Array.isArray(args) ? args.join(" ") : props.approval?.tool_name ?? "";
 });
 
+/**
+ * v0.5.0 B4：只读 SQL 查询结果表格（已脱敏列/有界行；executions output 事实源）。
+ */
+const isSqlTool = computed(
+  () => props.approval?.tool_name === "query_readonly_sql"
+);
+const sqlExec = ref<AgentToolExecution | null>(null);
+let sqlTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopSqlPolling() {
+  if (sqlTimer !== null) {
+    clearTimeout(sqlTimer);
+    sqlTimer = null;
+  }
+}
+
+async function pollSqlResult() {
+  if (!props.approval) return;
+  try {
+    if (!sqlExec.value) {
+      const executions = await listAgentRunExecutions(props.approval.run_id);
+      const candidates = executions.filter(
+        (execution) => execution.tool_name === "query_readonly_sql"
+      );
+      if (!candidates.length) return;
+      const running = candidates.find((execution) => execution.status === "running");
+      sqlExec.value = running ?? candidates[candidates.length - 1];
+    }
+    if (["succeeded", "failed", "timed_out", "cancelled"].includes(sqlExec.value.status)) {
+      return;
+    }
+    sqlTimer = setTimeout(pollSqlResult, 600);
+  } catch {
+    // 静默降级：结果缺失不影响审批流程
+  }
+}
+
+function resetSqlResult() {
+  sqlExec.value = null;
+  stopSqlPolling();
+}
+
+watch(
+  () => [props.approval?.id, props.approval?.status],
+  ([, status]) => {
+    resetSqlResult();
+    if (isSqlTool.value && props.approval && (status === "approved" || status === "consumed")) {
+      void pollSqlResult();
+    }
+  },
+  { immediate: true }
+);
+
+const sqlResultTable = computed(() => {
+  const output = sqlExec.value?.output ?? {};
+  const columns = Array.isArray(output.columns) ? (output.columns as string[]) : [];
+  const rows = Array.isArray(output.rows) ? (output.rows as unknown[][]) : [];
+  return {
+    columns,
+    rows,
+    rowCount: typeof output.row_count === "number" ? output.row_count : rows.length,
+    truncated: output.truncated === true,
+    readOnly: output.read_only_confirmed === true,
+  };
+});
+
 </script>
 
 <template>
@@ -408,6 +475,38 @@ const commandArgv = computed(() => {
       <pre class="command-output" data-testid="command-output">{{
         outputError || outputLines.map((line) => line.text).join("\n")
       }}</pre>
+    </section>
+
+    <!-- v0.5.0 B4：只读 SQL 查询结果（脱敏列/有界行表格） -->
+    <section
+      v-if="isSqlTool && sqlExec && sqlResultTable.columns.length"
+      class="sql-section"
+      aria-label="只读查询结果"
+    >
+      <header class="sql-head">
+        <PaBadge tone="info">
+          <PhDatabase :size="11" />
+          {{ sqlResultTable.readOnly ? "只读事务" : "未确认" }}
+        </PaBadge>
+        <span class="sql-meta">
+          {{ sqlResultTable.rowCount }} 行
+          <template v-if="sqlResultTable.truncated">（已截断）</template>
+        </span>
+      </header>
+      <div class="sql-table-wrap">
+        <table class="sql-table" data-testid="sql-result-table">
+          <thead>
+            <tr>
+              <th v-for="column in sqlResultTable.columns" :key="column">{{ column }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(row, index) in sqlResultTable.rows" :key="index">
+              <td v-for="(value, cell) in row" :key="cell">{{ String(value) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <PaDisclosure
@@ -651,5 +750,52 @@ const commandArgv = computed(() => {
   font-size: var(--pa-t-12);
   line-height: 1.5;
   white-space: pre-wrap;
+}
+.sql-section {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.sql-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.sql-meta {
+  color: var(--color-fg-faint);
+  font-size: var(--pa-t-12);
+}
+.sql-table-wrap {
+  max-height: 220px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+}
+.sql-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--color-surface);
+  font-size: var(--pa-t-12);
+}
+.sql-table th,
+.sql-table td {
+  max-width: 220px;
+  overflow: hidden;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sql-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-muted);
+  color: var(--color-fg);
+  font-weight: var(--font-semibold);
 }
 </style>

@@ -411,6 +411,10 @@ _QUERY_SQL_OUTPUT: Mapping[str, Any] = {
             "description": "执行路径确认为只读事务/单语句的结果",
         },
         "message": {"type": "string", "description": "EXPLAIN/SHOW 等文本结果"},
+        "statement_type": {
+            "type": "string",
+            "description": "规范化语句类型（SELECT/EXPLAIN/SHOW/DESCRIBE/WITH；B4 additive）",
+        },
     },
     "required": [
         "profile_id",

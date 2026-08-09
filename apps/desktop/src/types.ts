@@ -168,6 +168,25 @@ export interface HttpEndpointProfile {
   updated_at: string;
 }
 
+/** v0.5.0 B4：只读 SQL 连接 profile（非敏感元数据 + keyring 密码引用）。 */
+export interface SqlReadonlyProfile {
+  id: number;
+  name: string;
+  dialect: string;
+  host: string;
+  port: number;
+  database: string;
+  username: string | null;
+  password_secret_ref: string;
+  max_rows: number;
+  max_bytes: number;
+  timeout_ms: number;
+  enabled: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type DocStatus =
   | "pending"
   | "processing"

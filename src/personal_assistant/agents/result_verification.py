@@ -434,12 +434,15 @@ class DatabaseResultVerifier:
         affected_min: int | None = None,
         affected_max: int | None = None,
         readback: Mapping[str, Any] | None = None,
+        require_read_only: bool = False,
     ) -> None:
         self._supported = frozenset(supported)
         self._require_commit = bool(require_commit)
         self._affected_min = int(affected_min) if affected_min is not None else None
         self._affected_max = int(affected_max) if affected_max is not None else None
         self._readback = dict(readback) if readback else None
+        # v0.5.0 B4：只读查询工作流——结果必须声明只读事务确认且行数/截断受限。
+        self._require_read_only = bool(require_read_only)
 
     def supports(self, tool_name: str) -> bool:
         return tool_name in self._supported
@@ -452,6 +455,29 @@ class DatabaseResultVerifier:
             return ResultVerification.fail(
                 "result_not_object", "数据库执行结果必须是对象"
             )
+        if self._require_read_only:
+            if result.get("read_only_confirmed") is not True:
+                return ResultVerification.fail(
+                    "db_not_read_only",
+                    "查询未确认为只读事务，结果不可信",
+                    "只允许经过只读事务确认的查询结果。",
+                )
+            row_count = result.get("row_count")
+            if not isinstance(row_count, int) or row_count < 0:
+                return ResultVerification.fail(
+                    "db_row_count_missing", "只读查询结果缺少 row_count"
+                )
+            columns = result.get("columns")
+            rows = result.get("rows")
+            if not isinstance(columns, list) or not isinstance(rows, list):
+                return ResultVerification.fail(
+                    "db_result_shape_invalid", "只读查询结果缺少 columns/rows"
+                )
+            if len(rows) != min(row_count, len(rows)) or row_count > len(rows) + 1:
+                return ResultVerification.fail(
+                    "db_row_count_inconsistent",
+                    f"row_count {row_count} 与返回行数 {len(rows)} 不一致",
+                )
         if self._require_commit and result.get("committed") is not True:
             return ResultVerification.fail(
                 "db_not_committed",

@@ -73,6 +73,8 @@ struct ConfigData {
     conversation_summary_worker_enabled: bool,
     #[serde(default)]
     http_workflow_enabled: bool,
+    #[serde(default)]
+    sql_readonly_workflow_enabled: bool,
 }
 
 impl Default for ConfigData {
@@ -90,6 +92,7 @@ impl Default for ConfigData {
             chat_agent_runtime_enabled: false,
             conversation_summary_worker_enabled: false,
             http_workflow_enabled: false,
+            sql_readonly_workflow_enabled: false,
         }
     }
 }
@@ -162,6 +165,17 @@ struct HttpProfileSecretIndex {
 
 #[derive(Serialize)]
 struct HttpProfileSecretStatus {
+    reference: String,
+    configured: bool,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct SqlProfileSecretIndex {
+    names: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct SqlProfileSecretStatus {
     reference: String,
     configured: bool,
 }
@@ -421,6 +435,102 @@ fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSe
     read_http_profile_secret_status(&name, &slot)
 }
 
+// ============ v0.5.0 B4：只读 SQL profile 凭据通道 ============
+// 与 HTTP 同构：密码引用 secret://os-keyring/sql/<name>/password，
+// 桌面壳收集后注入 PA_SQL_PROFILES_SECRETS_JSON。
+
+fn sql_profile_secret_index_path() -> PathBuf {
+    config_dir().join("sql-profile-secret-index.json")
+}
+
+fn read_sql_profile_secret_names() -> Result<BTreeSet<String>, String> {
+    let path = sql_profile_secret_index_path();
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|_| "SQL profile credential index read failed")?;
+    let index: SqlProfileSecretIndex =
+        serde_json::from_str(&raw).map_err(|_| "SQL profile credential index is invalid")?;
+    if index.names.len() > 32 {
+        return Err("too many SQL profile credentials".to_string());
+    }
+    let mut names = BTreeSet::new();
+    for name in index.names {
+        credentials::sql_profile_account(&name)?;
+        names.insert(name);
+    }
+    Ok(names)
+}
+
+fn write_sql_profile_secret_names(names: &BTreeSet<String>) -> Result<(), String> {
+    if names.len() > 32 {
+        return Err("too many SQL profile credentials".to_string());
+    }
+    fs::create_dir_all(config_dir())
+        .map_err(|_| "SQL profile credential index directory failed")?;
+    let encoded = serde_json::to_vec(&SqlProfileSecretIndex {
+        names: names.iter().cloned().collect(),
+    })
+    .map_err(|_| "SQL profile credential index serialization failed")?;
+    fs::write(sql_profile_secret_index_path(), encoded)
+        .map_err(|_| "SQL profile credential index write failed".to_string())
+}
+
+fn collect_sql_profile_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
+    let mut values = BTreeMap::new();
+    for name in read_sql_profile_secret_names()? {
+        let account = credentials::sql_profile_account(&name)?;
+        if let Some(secret) = credentials::get(&account)? {
+            values.insert(credentials::sql_profile_reference(&name)?, secret);
+        }
+    }
+    let mut encoded = serde_json::to_string(&values)
+        .map_err(|_| "SQL profile credential injection serialization failed")?;
+    for secret in values.values_mut() {
+        secret.zeroize();
+    }
+    if encoded.len() > 24 * 1024 {
+        encoded.zeroize();
+        return Err("SQL profile credential injection exceeds the process limit".to_string());
+    }
+    Ok(Zeroizing::new(encoded))
+}
+
+fn read_sql_profile_secret_status(name: &str) -> Result<SqlProfileSecretStatus, String> {
+    let account = credentials::sql_profile_account(name)?;
+    let names = read_sql_profile_secret_names()?;
+    Ok(SqlProfileSecretStatus {
+        reference: credentials::sql_profile_reference(name)?,
+        configured: credentials::exists(&account)? && names.contains(name),
+    })
+}
+
+#[tauri::command]
+fn sql_profile_secret_status(name: String) -> Result<SqlProfileSecretStatus, String> {
+    read_sql_profile_secret_status(&name)
+}
+
+#[tauri::command]
+fn set_sql_profile_secret(name: String, secret: String) -> Result<SqlProfileSecretStatus, String> {
+    let account = credentials::sql_profile_account(&name)?;
+    credentials::set(&account, &secret)?;
+    let mut names = read_sql_profile_secret_names()?;
+    names.insert(name.clone());
+    write_sql_profile_secret_names(&names)?;
+    read_sql_profile_secret_status(&name)
+}
+
+#[tauri::command]
+fn clear_sql_profile_secret(name: String) -> Result<SqlProfileSecretStatus, String> {
+    let account = credentials::sql_profile_account(&name)?;
+    credentials::delete(&account)?;
+    let mut names = read_sql_profile_secret_names()?;
+    names.remove(&name);
+    write_sql_profile_secret_names(&names)?;
+    read_sql_profile_secret_status(&name)
+}
+
 // ============ .env 读写 ============
 
 fn percent_encode_component(value: &str) -> String {
@@ -558,6 +668,8 @@ fn parse_config_content(content: &str) -> LoadedConfig {
             cfg.conversation_summary_worker_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_AGENT_HTTP_WORKFLOW_ENABLED=") {
             cfg.http_workflow_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_SQL_READONLY_WORKFLOW_ENABLED=") {
+            cfg.sql_readonly_workflow_enabled = v.eq_ignore_ascii_case("true");
         }
     }
     LoadedConfig {
@@ -1150,6 +1262,11 @@ async fn start_sidecar(
     } else {
         Zeroizing::new("{}".to_string())
     };
+    let sql_profile_secrets_json = if loaded.public.sql_readonly_workflow_enabled {
+        collect_sql_profile_secrets_for_sidecar()?
+    } else {
+        Zeroizing::new("{}".to_string())
+    };
 
     // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
     // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
@@ -1202,6 +1319,7 @@ async fn start_sidecar(
             .env("PA_CLAUDE_API_KEY", claude_api_key)
             .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
             .env("PA_HTTP_PROFILES_SECRETS_JSON", http_profile_secrets_json.as_str())
+            .env("PA_SQL_PROFILES_SECRETS_JSON", sql_profile_secrets_json.as_str())
             // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
             // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
             .env(
@@ -1349,6 +1467,9 @@ pub fn run() {
             http_profile_secret_status,
             set_http_profile_secret,
             clear_http_profile_secret,
+            sql_profile_secret_status,
+            set_sql_profile_secret,
+            clear_sql_profile_secret,
             check_dependencies,
             test_connections,
             start_sidecar,

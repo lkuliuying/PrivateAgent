@@ -229,7 +229,7 @@ def test_frozen_schema_hashes_are_stable():
         },
         "query_readonly_sql": {
             "input": "2d1713442fb72f62c4998f5b2a0628ff860ad0a097a5fb37a6e7559a30906d39",
-            "output": "0c9fcc7f24c531e174a2b2d128c48dd0ff51fab4a25025ff1c16697ec88320c6",
+            "output": "1971c20b124d92c649382cedc22feed123418bd2d208a531e33a44f942d712f9",
         },
     }
     for name, parts in expected.items():

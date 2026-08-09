@@ -22,6 +22,7 @@ import type { BackupExportResult, BackupRestorePreview, ProviderStatus } from ".
 import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import HttpProfilesPanel from "./HttpProfilesPanel.vue";
+import SqlProfilesPanel from "./SqlProfilesPanel.vue";
 import { useHealth } from "../stores/health";
 import { useNotifications } from "../stores/notifications";
 
@@ -435,9 +436,15 @@ const statusItems = computed(() => {
       <HttpProfilesPanel />
     </section>
 
+    <!-- v0.5.0 B4：只读数据库 -->
+    <section class="setting-card wide">
+      <div class="card-heading"><span>07</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
+      <SqlProfilesPanel />
+    </section>
+
     <!-- 备份 -->
     <section class="setting-card">
-      <div class="card-heading"><span>07</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+      <div class="card-heading"><span>08</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
       <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
@@ -467,14 +474,14 @@ const statusItems = computed(() => {
 
     <!-- 连接配置 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>08</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
+      <div class="card-heading"><span>09</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
       <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
       <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
     </section>
 
     <!-- 关于 / 更新 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>09</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <div class="card-heading"><span>10</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>

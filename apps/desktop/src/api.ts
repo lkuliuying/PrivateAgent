@@ -170,6 +170,12 @@ export {
   updateHttpProfile,
 } from "./api/httpProfiles";
 export {
+  createSqlProfile,
+  deleteSqlProfile,
+  listSqlProfiles,
+  updateSqlProfile,
+} from "./api/sqlProfiles";
+export {
   createIntegrationSource,
   listIntegrationImports,
   listIntegrationSources,

@@ -57,6 +57,7 @@ from ..core.provider import ProviderRouter
 from ..core.rag_citation_evidence import load_durable_rag_citation_sources
 from ..core.rag_tool_adapter import build_rag_tool_registry
 from ..core.settings import SettingsService
+from ..core.sql_workflow import build_sql_tool_registry
 from ..core.tool_adapter import build_read_only_tool_registry
 from ..mcp.manager import build_mcp_tool_registry
 from ..mcp.repository import McpRepository
@@ -252,6 +253,7 @@ async def get_agent_tool_bundle(
         and not cfg.agent_patch_workflow_enabled
         and not cfg.agent_command_workflow_enabled
         and not cfg.agent_http_workflow_enabled
+        and not cfg.agent_sql_readonly_workflow_enabled
         and not cfg.agent_rag_tools_enabled
         and not mcp_records
     ):
@@ -327,6 +329,23 @@ async def get_agent_tool_bundle(
                 http_verifier
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, http_verifier])
+            )
+        if cfg.agent_sql_readonly_workflow_enabled:
+            for spec in build_sql_tool_registry(run_db).list():
+                registry.register(spec)
+            # B4：只读数据库验证器——只读事务确认/行数/截断结构检查
+            # （可信代码固定注入；解析层+只读事务双重限制在 executor 内）。
+            from ..agents.result_verification import DatabaseResultVerifier
+
+            sql_verifier = DatabaseResultVerifier(
+                supported=("query_readonly_sql",),
+                require_commit=False,
+                require_read_only=True,
+            )
+            result_verifier = (
+                sql_verifier
+                if result_verifier is None
+                else CompositeToolResultVerifier([result_verifier, sql_verifier])
             )
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
