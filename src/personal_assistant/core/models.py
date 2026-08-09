@@ -2115,6 +2115,9 @@ class AgentRun(Base):
     knowledge_base: Mapped[bool] = mapped_column(
         BOOLEAN, nullable=False, default=False, server_default="0"
     )
+    # v0.5.0 B5：可选可信完成条件（must_succeed_tools/max_failed_tools/
+    # require_verified），持久化使审批恢复/重启续跑路径与创建路径一致。
+    completion_conditions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     status: Mapped[str] = mapped_column(
         VARCHAR(32), nullable=False, default="created", server_default="created"
     )

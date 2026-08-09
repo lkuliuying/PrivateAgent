@@ -329,6 +329,66 @@ class ToolExecutionRepository:
         )
         return list(result.scalars().all())
 
+    async def resolve_unknown(
+        self,
+        execution_id: str,
+        *,
+        decision: str,
+        output: Any = None,
+        note: str = "",
+    ) -> ExecutionRecord:
+        """v0.5.0 B5：人工处置未知状态执行（不自动猜测成功或重跑）。
+
+        仅 ``unknown`` 状态可处置：``succeeded`` 必须提供人工确认的输出
+        （限长、脱敏后由调用方持久化）；``failed`` 标记为失败终态。
+        处置记录写入 error_message 以保留审计事实。
+        """
+        record = await self.db.get(ExecutionRecord, execution_id)
+        if record is None:
+            raise ToolExecutionConflictError(f"execution not found: {execution_id}")
+        if record.run_id != self.run_id:
+            raise ToolExecutionConflictError("execution does not belong to this run")
+        if record.status != "unknown":
+            raise ToolExecutionConflictError(
+                f"execution is not unknown: {record.status}"
+            )
+        now = _utc_naive(self._clock())
+        if decision == "succeeded":
+            if not isinstance(output, Mapping) or not output:
+                raise ToolExecutionConflictError(
+                    "人工确认成功必须提供输出事实 output"
+                )
+            try:
+                serialized = json.dumps(
+                    output,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            except (TypeError, ValueError) as exc:
+                raise ToolExecutionConflictError(
+                    "人工输出必须是有效 JSON"
+                ) from exc
+            record.output_json = output
+            record.output_sha256 = hashlib.sha256(serialized).hexdigest()
+            record.output_size_bytes = len(serialized)
+            record.status = "succeeded"
+        elif decision == "failed":
+            record.status = "failed"
+        else:
+            raise ToolExecutionConflictError(f"unsupported decision: {decision}")
+        record.error_code = "resolved_manually"
+        record.error_message = (
+            f"[人工处置] {decision}：{note}"[:2_000]
+        )
+        record.completed_at = now
+        record.lease_expires_at = None
+        record.claim_token_sha256 = None
+        record.updated_at = now
+        await self.db.commit()
+        await self.db.refresh(record)
+        return record
+
     async def _find_step(self, tool_call_id: str) -> RunStepRecord:
         step = (
             await self.db.execute(

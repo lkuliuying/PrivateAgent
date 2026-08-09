@@ -81,6 +81,8 @@ from .verification import (
     RagCitationOutputVerifier,
     RagCitationSource,
     ReloadingRagCitationOutputVerifier,
+    WorkflowCompletionFacts,
+    WorkflowCompletionOutputVerifier,
 )
 from .workflow_contracts import (
     COMMAND_WORKFLOW_FLAG_ENV,
@@ -172,6 +174,8 @@ __all__ = [
     "VersionedToolRegistry",
     "WorkflowKind",
     "WorkflowToolContract",
+    "WorkflowCompletionFacts",
+    "WorkflowCompletionOutputVerifier",
     "WORKFLOW_CONTRACT_BY_NAME",
     "WORKFLOW_KIND_BY_FLAG_ENV",
     "WORKFLOW_TOOL_CONTRACTS",

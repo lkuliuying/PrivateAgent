@@ -100,7 +100,9 @@ _READ_ONLY_TOOL_DEFAULTS: Mapping[str, _ReadOnlyToolDefaults] = {
         20_000,
         512 * 1024,
         False,
-        frozenset({ToolCapability.FILESYSTEM_READ, ToolCapability.DATABASE_QUERY}),
+        # B0 契约：propose_patch 只声明 filesystem.read（只读 diff 预览，
+        # 不查询数据库）。与 agents/workflow_contracts.py 保持一致。
+        frozenset({ToolCapability.FILESYSTEM_READ}),
     ),
 }
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -77,6 +78,40 @@ class AgentRunCreateRequest(BaseModel):
     message: str = Field(min_length=1, max_length=100_000)
     knowledge_base: bool = False
     limits: AgentRunLimits = Field(default_factory=AgentRunLimits)
+    # v0.5.0 B5：多步骤工作流可信完成条件（可选，默认不注入）。
+    # 条件基于 durable executions 事实求值；不满足则 run 失败关闭。
+    completion_conditions: dict | None = Field(default=None, max_length=4096)
+
+    @field_validator("completion_conditions")
+    @classmethod
+    def _check_completion_conditions(cls, value: dict | None) -> dict | None:
+        if value is None:
+            return None
+        allowed = {"must_succeed_tools", "max_failed_tools", "require_verified"}
+        unknown = set(value) - allowed
+        if unknown:
+            raise ValueError(f"completion_conditions 含未知字段：{sorted(unknown)}")
+        must_succeed = value.get("must_succeed_tools")
+        if must_succeed is not None:
+            if (
+                not isinstance(must_succeed, list)
+                or not must_succeed
+                or len(must_succeed) > 16
+                or not all(
+                    isinstance(item, str) and 1 <= len(item) <= 64
+                    for item in must_succeed
+                )
+            ):
+                raise ValueError("must_succeed_tools 必须是 1..16 个工具名")
+        max_failed = value.get("max_failed_tools")
+        if max_failed is not None:
+            if not isinstance(max_failed, int) or not 0 <= max_failed <= 100:
+                raise ValueError("max_failed_tools 必须在 0..100")
+        if "require_verified" in value and not isinstance(
+            value["require_verified"], bool
+        ):
+            raise ValueError("require_verified 必须是布尔值")
+        return value
 
 
 class RunStepResponse(BaseModel):
@@ -233,6 +268,80 @@ def require_agent_runtime_owner() -> None:
             status_code=503,
             detail="Agent runtime process ownership is unavailable",
         )
+
+
+def _build_output_verifier_factory(
+    db: AsyncSession,
+    *,
+    run_id: str,
+    knowledge_base: bool,
+    tool_bundle: AgentToolBundle | None,
+    completion_conditions: dict | None,
+):
+    """v0.5.0 B5：按 run 事实组合输出验证器工厂（RAG 引用 + 完成条件）。
+
+    完成条件基于 durable executions 事实（executions 表）求值，模型不能
+    通过自由填写"完成"宣称完成；条件不满足 → run 以 output_validation_failed
+    失败关闭。
+    """
+    from ..agents import (
+        CompositeOutputVerifier,
+        WorkflowCompletionFacts,
+        WorkflowCompletionOutputVerifier,
+    )
+
+    def factory(run_db: AsyncSession, target_run_id: str) -> OutputVerifier | None:
+        verifiers: list[OutputVerifier] = []
+        # 0.3.0 A3：RAG 引用验证器只对知识库 run 注入（避免强制 JSON 输出
+        # 抑制工具调用）。
+        if knowledge_base and tool_bundle is not None and tool_bundle.output_verifier_factory is not None:
+            rag = tool_bundle.output_verifier_factory(run_db, target_run_id)
+            if rag is not None:
+                verifiers.append(rag)
+        if completion_conditions:
+            from ..agents.executions import ToolExecutionRepository
+
+            async def load_facts() -> WorkflowCompletionFacts:
+                records = await ToolExecutionRepository(
+                    run_db, run_id=target_run_id
+                ).list_for_run()
+                return WorkflowCompletionFacts(
+                    executions=[
+                        {
+                            "tool_name": record.tool_name,
+                            "status": record.status,
+                            "error_code": record.error_code,
+                            "verified": (
+                                record.output_json.get("verified")
+                                if isinstance(record.output_json, dict)
+                                else None
+                            ),
+                        }
+                        for record in records
+                    ]
+                )
+
+            verifiers.append(
+                WorkflowCompletionOutputVerifier(
+                    load_facts,
+                    must_succeed_tools=tuple(
+                        completion_conditions.get("must_succeed_tools") or ()
+                    ),
+                    max_failed_tools=int(
+                        completion_conditions.get("max_failed_tools", 0) or 0
+                    ),
+                    require_verified=bool(
+                        completion_conditions.get("require_verified", False)
+                    ),
+                )
+            )
+        if not verifiers:
+            return None
+        if len(verifiers) == 1:
+            return verifiers[0]
+        return CompositeOutputVerifier(verifiers)
+
+    return factory
 
 
 async def get_agent_model_client(
@@ -555,6 +664,7 @@ async def create_agent_run(
         limits=request.limits,
         session_id=request.session_id,
         knowledge_base=request.knowledge_base,
+        completion_conditions=request.completion_conditions,
     )
     agent_run_coordinator.start(
         run_id=run_id,
@@ -565,12 +675,12 @@ async def create_agent_run(
         tool_dispatcher_factory=(
             tool_bundle.dispatcher_factory if tool_bundle is not None else None
         ),
-        output_verifier_factory=(
-            # 0.3.0 A3 修复：RAG 引用验证器只对知识库 run 注入，避免普通
-            # run 被强制 JSON 输出而抑制工具调用（与 chat 路由保持一致）。
-            tool_bundle.output_verifier_factory
-            if request.knowledge_base and tool_bundle is not None
-            else None
+        output_verifier_factory=_build_output_verifier_factory(
+            db,
+            run_id=run_id,
+            knowledge_base=request.knowledge_base,
+            tool_bundle=tool_bundle,
+            completion_conditions=request.completion_conditions,
         ),
         context_metadata=context_metadata,
     )
@@ -671,6 +781,56 @@ async def list_agent_run_executions(
         )
         for record in records
     ]
+
+
+class AgentExecutionResolveRequest(BaseModel):
+    """v0.5.0 B5：unknown execution 的人工处置（不自动猜测成功或重跑）。"""
+
+    decision: Literal["succeeded", "failed"]
+    output: dict | None = None
+    note: str = Field(default="", max_length=200)
+
+
+@router.post(
+    "/{run_id}/executions/{execution_id}/resolve",
+    response_model=AgentToolExecutionResponse,
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def resolve_agent_run_execution(
+    run_id: str,
+    execution_id: str,
+    request: AgentExecutionResolveRequest,
+    db: AsyncSession = Depends(get_session),
+) -> AgentToolExecutionResponse:
+    """B5：人工处置未知状态执行——只有用户确认事实后才能进入终态。
+
+    ``succeeded`` 必须提供用户确认的输出事实（限长、脱敏后持久化）；
+    ``failed`` 标记为失败终态。处置记录写入 error_message 保留审计。
+    """
+    if await AgentRunRepository(db).get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    from ..agents.executions import ToolExecutionConflictError
+
+    try:
+        record = await ToolExecutionRepository(db, run_id=run_id).resolve_unknown(
+            execution_id,
+            decision=request.decision,
+            output=request.output,
+            note=request.note,
+        )
+    except ToolExecutionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return AgentToolExecutionResponse(
+        id=record.id,
+        tool_name=record.tool_name,
+        tool_version=record.tool_version,
+        status=record.status,
+        error_code=record.error_code,
+        error_message=record.error_message,
+        output=record.output_json if isinstance(record.output_json, dict) else None,
+        created_at=_timestamp(record.created_at) or "",
+        completed_at=_timestamp(record.completed_at),
+    )
 
 
 @router.get(
@@ -876,12 +1036,14 @@ async def approve_agent_run_tool(
             model=model,
             tool_definitions=tool_bundle.definitions,
             tool_dispatcher_factory=tool_bundle.resume_dispatcher_factory,
-            output_verifier_factory=(
-                # 与创建路径一致：RAG 引用验证器只对知识库 run 注入
-                # （0.3.0 A3 修复，见 create_agent_run 注释）。
-                tool_bundle.output_verifier_factory
-                if run.knowledge_base
-                else None
+            output_verifier_factory=_build_output_verifier_factory(
+                db,
+                run_id=run_id,
+                knowledge_base=bool(run.knowledge_base),
+                tool_bundle=tool_bundle,
+                # 与创建路径一致：完成条件从 run 记录读取（B5 持久化），
+                # 审批恢复/sidecar 重启后续跑使用同一组条件。
+                completion_conditions=run.completion_conditions_json,
             ),
         )
     except RuntimeError as exc:

@@ -341,3 +341,105 @@ class CompositeOutputVerifier:
             code="ok",
             message="All configured output verifiers passed.",
         )
+
+
+# ============ v0.5.0 B5：多步骤工作流完成条件 ============
+
+
+class WorkflowCompletionFacts(BaseModel):
+    """Durable tool execution facts evaluated by the completion verifier."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    executions: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+
+
+WorkflowCompletionFactLoader = Callable[[], Awaitable[WorkflowCompletionFacts]]
+
+
+class WorkflowCompletionOutputVerifier:
+    """v0.5.0 B5：多步骤工作流的可信完成条件验证。
+
+    完成条件由可信调用方（run 创建方）固定注入，模型不能通过自由填写
+    "完成"宣称完成。验证基于 durable executions 事实：
+
+    - ``must_succeed_tools``：这些工具必须存在 succeeded 执行；
+    - ``max_failed_tools``：允许的失败工具数上限（默认 0）；
+    - ``require_verified``：存在 ``verified`` 字段的工具必须为 True。
+
+    条件未满足 → run 以 output_validation_failed 失败关闭，不进入 completed。
+    """
+
+    name = "workflow_completion"
+    output_schema: ClassVar[dict[str, Any] | None] = None
+
+    def __init__(
+        self,
+        fact_loader: WorkflowCompletionFactLoader,
+        *,
+        must_succeed_tools: tuple[str, ...] = (),
+        max_failed_tools: int = 0,
+        require_verified: bool = False,
+    ) -> None:
+        if not callable(fact_loader):
+            raise TypeError("workflow completion fact loader must be callable")
+        if max_failed_tools < 0:
+            raise ValueError("max_failed_tools must be non-negative")
+        self._loader = fact_loader
+        self._must_succeed = tuple(must_succeed_tools)
+        self._max_failed = int(max_failed_tools)
+        self._require_verified = bool(require_verified)
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        del output, attempt
+        try:
+            facts = await self._loader()
+        except Exception:  # noqa: BLE001
+            return OutputVerification(
+                passed=False,
+                code="completion_evidence_unavailable",
+                message="多步骤工作流完成条件证据不可用。",
+                correction="确认执行事实持久化后重试，不要宣称已完成。",
+            )
+        by_tool: dict[str, list[dict[str, Any]]] = {}
+        for execution in facts.executions:
+            name = str(execution.get("tool_name") or "")
+            by_tool.setdefault(name, []).append(execution)
+
+        unmet: list[str] = []
+        for tool_name in self._must_succeed:
+            records = by_tool.get(tool_name, [])
+            if not any(record.get("status") == "succeeded" for record in records):
+                unmet.append(f"{tool_name} 无 succeeded 执行")
+        failed_count = sum(
+            1
+            for records in by_tool.values()
+            for record in records
+            if record.get("status") in {"failed", "timed_out", "cancelled"}
+        )
+        if failed_count > self._max_failed:
+            unmet.append(f"失败工具数 {failed_count} 超过上限 {self._max_failed}")
+        if self._require_verified:
+            # 只有 succeeded 且显式声明 verified=False 的工具被拒绝（缺失该
+            # 字段的工具无回读验证语义，不检查）；失败工具由 max_failed 覆盖。
+            unverified = [
+                f"{record.get('tool_name')}({record.get('status')})"
+                for records in by_tool.values()
+                for record in records
+                if record.get("status") == "succeeded"
+                and record.get("verified") is False
+            ]
+            if unverified:
+                unmet.append("存在未通过回读验证的工具：" + ", ".join(unverified[:5]))
+        if unmet:
+            return OutputVerification(
+                passed=False,
+                code="completion_not_met",
+                message="工作流完成条件未满足：" + "；".join(unmet)[:2_000],
+                correction="继续执行未完成步骤或修正失败工具后重试。",
+            )
+        return OutputVerification(
+            passed=True,
+            code="ok",
+            message="工作流完成条件已满足（工具执行事实核对通过）。",
+        )
