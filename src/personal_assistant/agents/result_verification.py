@@ -2,7 +2,7 @@
 
 与 ``verification.py`` 的 ``OutputVerifier``（验证模型最终输出）不同，本模块验证
 **工具执行结果**：工具完成后、结果返回模型前，由可信代码对磁盘/命令/API/数据库
-事实做复核。约束（`docs/remaining-work-plan-20260806.md` §7.2）：
+事实做复核。约束（`docs/archive/planning/remaining-work-plan-20260806.md` §7.2）：
 
 - 验证器由可信代码固定：``ValidatedToolDispatcher`` 注入，模型不能选择或宣称通过；
 - 验证器本身不增加 capability、不消费审批、不执行未审批副作用（只读复核）；

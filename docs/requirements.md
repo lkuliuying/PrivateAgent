@@ -1,7 +1,7 @@
-﻿# 私人助手 Agent · 项目需求文档
+# 私人助手 Agent · 项目需求文档
 
 > 版本：v0.2 · 日期：2026-07-09
-> 对应计划：`docs/phase1-plan.md` / `docs/phase2-plan.md` / `docs/phase3-plan.md` / `docs/phase4-plan.md` / `docs/phase5-plan.md` / `docs/phase6-plan.md` / `docs/phase7-plan.md` / `docs/phase8-plan.md`
+> 对应计划：`docs/archive/phases/phase1-plan.md` / `docs/archive/phases/phase2-plan.md` / `docs/archive/phases/phase3-plan.md` / `docs/archive/phases/phase4-plan.md` / `docs/archive/phases/phase5-plan.md` / `docs/archive/phases/phase6-plan.md` / `docs/archive/phases/phase7-plan.md` / `docs/archive/phases/phase8-plan.md`
 > 项目定位：本地优先、隐私可控的桌面私人助手。当前已完成到第八阶段，从“可信赖日常操作层”演进为“发布级质量与可扩展集成层”：桌面 E2E、发布检查 2.0、代码签名、跨平台实测、性能基线、扩展注册表、本地集成与备份恢复硬化。
 
 ---
@@ -436,7 +436,7 @@ API 要求：
 - `npm run build` 通过；`npm run test`（Vitest 13）/ `npm run e2e`（Playwright 2）通过。
 - `cargo check` 通过。
 - `uv run alembic current` 返回 `0011 (head)`。
-- README、`docs/usage-guide.md`、`docs/release-checklist.md`、`docs/phase8-plan.md`、`docs/phase8-requirements.md` 与当前完成态一致。
+- README、`docs/usage-guide.md`、`docs/release-checklist.md`、`docs/archive/phases/phase8-plan.md`、`docs/archive/phases/phase8-requirements.md` 与当前完成态一致。
 - 第八阶段验收清单 13/14 已勾选；桌面 E2E（Vitest + Playwright）已接入；真实升级 smoke / 代码签名实签 / macOS·Linux 实机构建标注「待真实环境执行」。
 
 ---

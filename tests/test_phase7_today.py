@@ -1,6 +1,6 @@
 """第七阶段 M1 测试：今日页真实数据化 + 筛选。
 
-覆盖（对齐 docs/phase7-plan.md §M1 / docs/phase7-requirements.md §5.1）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M1 / docs/archive/phases/phase7-requirements.md §5.1）：
 - snapshot 新增字段（recent_checkins/briefings/docs/sessions/maintenance）空数据为零/空。
 - 有数据时 recent_* 返回真实来源（目标 check-in / 简报 / 文档 / 会话）。
 - 筛选 type/priority/time/status 仅过滤展示列表，summary 计数始终为真实全量。

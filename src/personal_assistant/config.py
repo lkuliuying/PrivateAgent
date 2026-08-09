@@ -118,7 +118,7 @@ class Settings(BaseSettings):
 
     # === v0.5.0 可信工作流独立开关（B0 冻结，全部默认关闭） ===
     # 四类高风险工作流各有独立 flag；不存在同时开启多类工作流的总开关。
-    # 开启规则见 docs/v0.5.0-b0-contracts-20260809.md §3：
+    # 开启规则见 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §3：
     # - 未配置授权项目/endpoint profile/只读 SQL profile 时，对应工具不注册；
     # - 单开关关闭不需要数据库 downgrade。
     agent_patch_workflow_enabled: bool = False

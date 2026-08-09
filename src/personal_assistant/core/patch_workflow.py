@@ -5,7 +5,7 @@
 Runtime 的 versioned 路径；legacy 注册表与 ``routes_coding.py`` 继续使用
 ``code_tools`` 旧实现。
 
-安全边界（威胁清单 docs/v0.5.0-b0-contracts-20260809.md §4.1）：
+安全边界（威胁清单 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §4.1）：
 
 - 只允许授权项目根内相对路径；拒绝绝对路径、``..``、符号链接、目录联接与
   Windows 重解析点越界；

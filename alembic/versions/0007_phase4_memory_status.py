@@ -4,7 +4,7 @@ Revision ID: 0007
 Revises: 0006
 Create Date: 2026-07-07
 
-对齐 docs/phase4-plan.md M1 与用户决策「候选记忆落库为 draft 待确认」：
+对齐 docs/archive/phases/phase4-plan.md M1 与用户决策「候选记忆落库为 draft 待确认」：
 - memory_items 增列 status ENUM('draft','confirmed','archived') NOT NULL DEFAULT 'confirmed'。
 - status 为生命周期（draft=候选待确认 / confirmed=已确认 / archived=已归档），
   与 enabled（运行时禁用开关）正交：检索默认取 status='confirmed' AND enabled=True。

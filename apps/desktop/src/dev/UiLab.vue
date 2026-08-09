@@ -364,7 +364,7 @@ const logText = "14:02:31.482 [info] sidecar spawned pid=2841 port=51731\n14:02:
       <section v-else-if="section === 'agent'" class="uilab-section">
         <h2>Agent 工作流状态（真实 fixture）</h2>
         <p class="lab-muted">
-          来源：<code>src/dev/uiStateFixtures.ts</code>，与 <code>docs/ui-state-matrix-0.4.0.md</code> 一一对应。
+          来源：<code>src/dev/uiStateFixtures.ts</code>，与 <code>docs/releases/v0.4.0/ui-state-matrix-0.4.0.md</code> 一一对应。
         </p>
         <PaTabs
           v-model="segmentValue"

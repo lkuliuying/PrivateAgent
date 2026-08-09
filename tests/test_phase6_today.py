@@ -1,6 +1,6 @@
 """第六阶段 M1 测试：今日聚合服务 + 新增仓储。
 
-覆盖（对齐 docs/phase6-plan.md §5 M1）：
+覆盖（对齐 docs/archive/phases/phase6-plan.md §5 M1）：
 - TodayService.snapshot 空数据不报错、结构完整、summary 计数与列表长度一致。
 - TodayService.snapshot 有数据时各来源项按 id 出现。
 - 五个新仓储基本 CRUD / 状态流转：inbox / reminders / goals / briefings / privacy。

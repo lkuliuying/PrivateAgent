@@ -7,7 +7,7 @@
 - GET    /integrations/imports           列出导入记录
 - DELETE /integrations/imports/{id}      撤销一次导入
 
-对齐 docs/phase8-requirements.md §7。导入复用 trusted paths 与隐私预览，不默认外发。
+对齐 docs/archive/phases/phase8-requirements.md §7。导入复用 trusted paths 与隐私预览，不默认外发。
 """
 from __future__ import annotations
 

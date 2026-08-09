@@ -9,7 +9,7 @@ MySQL FULLTEXT 可加速，但默认分词器不支持 CJK 子串（中文需 ng
 （如「第七阶段」子串匹配），贸然切 FULLTEXT 会破坏中文搜索。故当前保留 LIKE，
 后续可在确认 ngram 可用后对 latin/CJK 混合列加 ngram FULLTEXT 索引优化。
 
-搜索对象（对齐 docs/phase7-requirements.md §5.2）：
+搜索对象（对齐 docs/archive/phases/phase7-requirements.md §5.2）：
 会话/消息、文档/切片、文档集合、项目、学习主题/笔记、Agent 任务/证据、
 记忆、收件箱、提醒、目标、简报。
 

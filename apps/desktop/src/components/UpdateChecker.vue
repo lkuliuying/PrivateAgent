@@ -156,7 +156,7 @@ async function install() {
     <p v-if="error" class="msg err">
       ⚠ {{ error }}
       <span v-if="errorDetail" class="hint">（{{ errorDetail }}）</span>
-      <span class="hint">详见 docs/phase5-plan.md 与 docs/signing-and-keys.md</span>
+      <span class="hint">详见 docs/archive/phases/phase5-plan.md 与 docs/signing-and-keys.md</span>
     </p>
     <p v-if="note" class="msg ok">{{ note }}</p>
 

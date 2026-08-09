@@ -3,7 +3,7 @@
  *
  * 视觉方向：Calm Agent Workbench 2.0；浅色生产力桌面 + 深色品牌 rail；青蓝仅作强调色。
  *
- * 三层结构（D0 冻结，docs/ui-audit-0.4.0.md §5）：
+ * 三层结构（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §5）：
  *   1. Primitive  原始调色板与尺度（--pa-p-* / --pa-t-* / --pa-s-* / --pa-r-* / --pa-shadow-* / --pa-m-*）
  *      —— 页面与组件禁止直接引用本层；
  *   2. Semantic   语义角色（--color-* / --pa-text-* / --pa-motion-* / --focus-ring …）

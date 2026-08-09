@@ -1,6 +1,6 @@
 """第八阶段 M5 测试：跨平台 updater 清单生成逻辑。
 
-覆盖（对齐 docs/phase8-plan.md §M5 / docs/phase8-requirements.md §5.5）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M5 / docs/archive/phases/phase8-requirements.md §5.5）：
 - build_platform_entry：signature + 百分号编码 URL（含非 ASCII 文件名）。
 - 空 .sig 报错。
 - assemble_manifest：多平台 platforms 结构（windows/darwin/linux）。

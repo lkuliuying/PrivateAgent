@@ -1,6 +1,6 @@
 # 发布检查清单（第五阶段 M4）
 
-> 对应 `docs/phase5-plan.md` M4 与 `docs/phase5-requirements.md` 5.7。
+> 对应 `docs/archive/phases/phase5-plan.md` M4 与 `docs/archive/phases/phase5-requirements.md` 5.7。
 > 每次发布按本清单逐项执行并留存结果。发布失败时按 §7 回滚。
 
 > **0.2.1 候选 QA 记录（2026-08-06）**：升级 smoke run #27 `0.2.0 → 0.2.1` passed
@@ -197,4 +197,4 @@ rollback_plan:
 - ✅ **第七阶段自动化验证**：2026-07-08 已验证 `pytest -q` 197 通过、`npm run build` 通过、`cargo check` 通过、`alembic current -> 0010 (head)`。桌面窗口级 Playwright/Tauri E2E 尚未接入，发布前按 §5.5.1 做人工 smoke 或补自动化脚本。
 - 安装包未代码签名：SmartScreen 拦截，需手动绕过（见 `docs/signing-and-keys.md` §2）。
 - macOS / Linux 仅有构建脚本与差异清单，未实测（见 `docs/cross-platform.md`）。
-- onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/phase5-plan.md` M5，结论暂不切换。
+- onefile sidecar 真冷首启（重启后首次）较慢，主要成本是 ChromaDB lifespan 初始化（非解压）；onedir 评估见 `docs/archive/phases/phase5-plan.md` M5，结论暂不切换。

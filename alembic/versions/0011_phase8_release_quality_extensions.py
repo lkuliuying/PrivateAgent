@@ -4,7 +4,7 @@ Revision ID: 0011
 Revises: 0010
 Create Date: 2026-07-09
 
-对齐 docs/phase8-plan.md §6 与 docs/phase8-requirements.md §6/§7：
+对齐 docs/archive/phases/phase8-plan.md §6 与 docs/archive/phases/phase8-requirements.md §6/§7：
 - test_runs：发布检查 / E2E / 性能基线 / 升级 smoke / 诊断包脱敏 smoke 的运行摘要。
   只保存摘要、状态、路径与 hash，不保存完整日志中的敏感内容。
 - release_artifacts：安装包 / sidecar / latest.json / 签名 / 清单的 sha256、平台与签名状态。

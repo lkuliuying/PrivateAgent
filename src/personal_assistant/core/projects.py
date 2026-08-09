@@ -25,7 +25,7 @@ from .timeutil import utcnow
 
 logger = get_logger(__name__)
 
-# 默认忽略目录（docs/phase3-requirements.md §4.1）
+# 默认忽略目录（docs/archive/phases/phase3-requirements.md §4.1）
 IGNORED_DIRS: set[str] = {
     ".git",
     "node_modules",

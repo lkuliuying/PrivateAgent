@@ -29,7 +29,7 @@ class ProviderError(RuntimeError):
         self.error_code = error_code
 
 
-# 第七阶段 M6 失败分类（对齐 docs/phase7-requirements.md §5.6）
+# 第七阶段 M6 失败分类（对齐 docs/archive/phases/phase7-requirements.md §5.6）
 PROVIDER_ERROR_CODES = (
     "missing_api_key",
     "unauthorized",

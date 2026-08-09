@@ -4,7 +4,7 @@ import AxeBuilder from "@axe-core/playwright";
 /**
  * 0.4.0 D5：可访问性检查（@axe-core/playwright）
  * 扫描 v2 壳 + Agent 工作区的 WCAG AA 违规；规则基于文档计划 10.3。
- * 已知且允许的 P2 项记录在 docs/v0.4.0-alpha.1-checkpoint-20260808.md。
+ * 已知且允许的 P2 项记录在 docs/releases/v0.4.0/v0.4.0-alpha.1-checkpoint-20260808.md。
  */
 
 const GREEN_HEALTH = {

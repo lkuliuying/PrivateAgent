@@ -1,6 +1,6 @@
 # 跨平台打包预研（第五阶段 M6 / 第八阶段 M5 更新）
 
-> 对应 `docs/phase5-plan.md` M6、`docs/phase8-plan.md` M5 与 `docs/phase8-requirements.md` 5.5。
+> 对应 `docs/archive/phases/phase5-plan.md` M6、`docs/archive/phases/phase8-plan.md` M5 与 `docs/archive/phases/phase8-requirements.md` 5.5。
 >
 > **状态边界**：Windows 为硬验收目标。macOS / Linux 在第八阶段 M5 已修正数据目录与多平台清单逻辑，但**仍未实机构建或 smoke**（本机无 macOS/Linux 环境）。本文不宣称 macOS/Linux 已可用。
 
@@ -108,6 +108,6 @@ Tauri `externalBin` 要求 sidecar 命名为 `<name>-<target-triple>[.exe]`：
 
 ## 6. 当前结论
 
-- Windows 是第五阶段硬验收目标，已完成（见 `docs/phase5-plan.md` M1–M5 与 `docs/release-checklist.md`）。
+- Windows 是第五阶段硬验收目标，已完成（见 `docs/archive/phases/phase5-plan.md` M1–M5 与 `docs/release-checklist.md`）。
 - macOS / Linux 有 `build-sidecar.sh` 与差异清单，但**未构建、未 smoke**，不宣称可用。
 - 跨平台发布列入后续阶段；优先级低于 Windows 发布闭环稳定。

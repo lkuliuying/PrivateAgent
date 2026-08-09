@@ -4,7 +4,7 @@ Revision ID: 0001
 Revises:
 Create Date: 2026-07-04
 
-表结构对齐 docs/phase1-plan.md §4.2：utf8mb4 / utf8mb4_unicode_ci / InnoDB。
+表结构对齐 docs/archive/phases/phase1-plan.md §4.2：utf8mb4 / utf8mb4_unicode_ci / InnoDB。
 """
 from __future__ import annotations
 

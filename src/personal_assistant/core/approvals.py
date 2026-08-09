@@ -1,6 +1,6 @@
 """工具调用审批状态机。
 
-状态流转（docs/phase2-plan.md M1）::
+状态流转（docs/archive/phases/phase2-plan.md M1）::
 
     pending_approval → approved → running → succeeded | failed
     pending_approval → rejected

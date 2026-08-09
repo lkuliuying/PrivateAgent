@@ -4,7 +4,7 @@ Revision ID: 0009
 Revises: 0008
 Create Date: 2026-07-08
 
-对齐 docs/phase6-plan.md §3 M1 与 docs/phase6-requirements.md §6：
+对齐 docs/archive/phases/phase6-plan.md §3 M1 与 docs/archive/phases/phase6-requirements.md §6：
 - inbox_items：统一收件箱，聚合聊天/任务/学习/活动/记忆等待处理项。
 - reminders：通用提醒（一次性/重复），due_at + recurrence_rule + next_fire_at。
 - personal_goals / goal_links / goal_checkins：跨模块长期目标层 + 关联对象 + 周回顾。

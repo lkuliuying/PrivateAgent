@@ -4,7 +4,7 @@ Revision ID: 0010
 Revises: 0009
 Create Date: 2026-07-08
 
-对齐 docs/phase7-plan.md §6 与 docs/phase7-requirements.md §6/§7：
+对齐 docs/archive/phases/phase7-plan.md §6 与 docs/archive/phases/phase7-requirements.md §6/§7：
 - app_notifications：统一通知中心，记录异步操作结果与可跳转来源（只存摘要，不存敏感正文）。
 - capture_items：快速捕获草稿，保存来源、候选类型、处理状态与转化目标。
 - ocr_jobs：OCR 队列，记录文档/文件、状态、引擎、输出与错误。

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 
@@ -37,7 +37,7 @@ def _summary_payload() -> dict:
         "constraints": ["Do not delete production rows."],
         "important_facts": ["The source revision is 0012."],
         "errors": [],
-        "files": ["docs/migration-plan.md"],
+        "files": ["docs/archive/planning/migration-plan.md"],
         "tools": ["pytest"],
         "next_steps": ["Run the final read-only snapshot."],
     }

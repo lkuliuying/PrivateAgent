@@ -1,6 +1,6 @@
 """第八阶段 M9 测试：备份恢复硬化。
 
-覆盖（对齐 docs/phase8-plan.md §M9 / docs/phase8-requirements.md §5.9/§10.1）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M9 / docs/archive/phases/phase8-requirements.md §5.9/§10.1）：
 - 备份 manifest 含 app_version / schema_head / checksum / modules。
 - checksum = sha256(tables.json 字节)，篡改可检测。
 - BACKUP_TABLES 覆盖 phase6/7/8 表（inbox/reminders/notifications/capture/ocr/integration）。

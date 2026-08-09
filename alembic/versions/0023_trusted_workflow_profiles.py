@@ -4,7 +4,7 @@ Revision ID: 0023
 Revises: 0022
 Create Date: 2026-08-09
 
-v0.5.0 B0 决策（docs/v0.5.0-b0-contracts-20260809.md §6）：0014–0016 已
+v0.5.0 B0 决策（docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §6）：0014–0016 已
 承载 approvals / checkpoints / executions，Patch 与命令工作流直接复用；
 HTTP 与只读 SQL 工作流需要持久化非敏感 profile，新增本 additive 迁移：
 

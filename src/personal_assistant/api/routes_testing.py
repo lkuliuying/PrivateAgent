@@ -3,7 +3,7 @@
 - GET /testing/runs                最近测试运行摘要（release_check/e2e/performance/upgrade_smoke/diagnostic_smoke）
 - GET /testing/upgrade-smoke-runs  升级 smoke 运行列表
 
-对齐 docs/phase8-requirements.md §7。只读摘要，不泄露敏感正文。
+对齐 docs/archive/phases/phase8-requirements.md §7。只读摘要，不泄露敏感正文。
 """
 from __future__ import annotations
 

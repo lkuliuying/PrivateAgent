@@ -1,6 +1,6 @@
 # 签名、信任与密钥治理（第五阶段 M3）
 
-> 对应 `docs/phase5-plan.md` M3 与 `docs/phase5-requirements.md` 5.5。
+> 对应 `docs/archive/phases/phase5-plan.md` M3 与 `docs/archive/phases/phase5-requirements.md` 5.5。
 > 私人助手有两层独立的"签名"，职责不同，必须分清：
 
 | 层 | 作用 | 当前状态 | 失败后果 |

@@ -1,6 +1,6 @@
 """0.3.0 A5 公开契约冻结测试。
 
-固定文档 ``docs/v0.3.0-public-contracts.md`` 声明的公开契约：
+固定文档 ``docs/releases/v0.3.0/v0.3.0-public-contracts.md`` 声明的公开契约：
 capabilities 字段、SSE 事件、run 状态、run 事件类型、审批对象、
 RAG 引用键、上下文元数据键、compatibility telemetry 标签、错误码词汇、
 摘要元数据键。任何破坏性变更必须先更新冻结文档与相关 E2E。
@@ -32,7 +32,7 @@ def test_capabilities_fields_frozen():
     """§1：/capabilities 字段集合与互斥语义固定。
 
     v0.5.0 B0 additive 扩展：新增四个可信工作流开关字段（默认 False），
-    既有字段不变。见 docs/v0.5.0-b0-contracts-20260809.md §2。
+    既有字段不变。见 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §2。
     """
     assert set(RuntimeCapabilities.model_fields) == {
         "chat_execution_mode",

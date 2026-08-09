@@ -4,7 +4,7 @@ Revision ID: 0003
 Revises: 0002
 Create Date: 2026-07-05
 
-对齐 docs/phase2-plan.md §4.2 与 docs/phase2-requirements.md §5：
+对齐 docs/archive/phases/phase2-plan.md §4.2 与 docs/archive/phases/phase2-requirements.md §5：
 documents 增加 enabled（启用/禁用，参与 RAG 检索过滤）与 last_error_at（最近失败时间）。
 0002 迁移遗漏了 documents 表增强，本迁移补齐。
 """

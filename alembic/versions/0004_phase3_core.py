@@ -4,7 +4,7 @@ Revision ID: 0004
 Revises: 0003
 Create Date: 2026-07-05
 
-对齐 docs/phase3-plan.md §4 与 docs/phase3-requirements.md §5（M0–M4 范围）：
+对齐 docs/archive/phases/phase3-plan.md §4 与 docs/archive/phases/phase3-requirements.md §5（M0–M4 范围）：
 - projects / project_files：项目授权与文件索引。
 - learning_topics / learning_nodes / learning_notes / learning_cards / learning_quizzes / learning_quiz_attempts：学习系统。
 - documents 增列：doc_type / topic / tags_json / language / project_id（M2 元数据过滤）。

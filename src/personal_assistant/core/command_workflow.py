@@ -2,7 +2,7 @@
 
 把 legacy ``run_whitelisted_command`` 包装为 versioned ``ToolSpec``
 （契约见 ``agents/workflow_contracts.py``，B0 冻结）。安全边界
-（威胁清单 docs/v0.5.0-b0-contracts-20260809.md §4.2）：
+（威胁清单 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §4.2）：
 
 - 只接受参数数组，不经 shell；拒绝 shell 控制符与非白名单命令（全局默认
   前缀 + 项目 command profile 前缀合并）；

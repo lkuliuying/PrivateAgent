@@ -2,7 +2,7 @@
 
 > **当前状态（2026-08-06）**：6 类验证器全部实现并通过测试（`tests/test_result_verification.py`，
 > 18 个用例），文件 Diff 验证器已接入真实只读工作流（`propose_patch` 预览复核）。实现与约束见
-> `docs/remaining-work-plan-20260806.md` §7。
+> `docs/archive/planning/remaining-work-plan-20260806.md` §7。
 
 ## 1. 与输出验证器的区别
 

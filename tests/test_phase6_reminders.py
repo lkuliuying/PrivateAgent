@@ -1,6 +1,6 @@
 """第六阶段 M3 测试：提醒服务 / tick / snooze / 重复规则 / 持久化。
 
-覆盖（对齐 docs/phase6-plan.md §5 M3）：
+覆盖（对齐 docs/archive/phases/phase6-plan.md §5 M3）：
 - create：next_fire_at = due_at，status=active。
 - snooze：next_fire_at 延后、due_at 保留、status=snoozed。
 - mark_done：一次性 -> done；重复 -> active 且 next_fire_at > now。

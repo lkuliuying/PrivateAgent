@@ -1,6 +1,6 @@
 """第七阶段 M3 测试：快速捕获 + OCR 队列。
 
-覆盖（对齐 docs/phase7-plan.md §M3 / docs/phase7-requirements.md §5.3）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M3 / docs/archive/phases/phase7-requirements.md §5.3）：
 - 捕获草稿 CRUD + 转 inbox/reminder/memory。
 - OCR 引擎可用性检测端点。
 - /documents/{id}/ocr 创建 OCR job（取代 unavailable 桩）。

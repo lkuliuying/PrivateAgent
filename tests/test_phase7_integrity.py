@@ -1,6 +1,6 @@
 """第七阶段 M7 测试：数据完整性体检与修复计划。
 
-覆盖（对齐 docs/phase7-plan.md §M7 / docs/phase7-requirements.md §5.7）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M7 / docs/archive/phases/phase7-requirements.md §5.7）：
 - goal_links 悬空（target_id 失效）能被检测。
 - document_collection_items.doc_id 悬空能被检测。
 - 修复计划预览（不执行破坏性操作）。

@@ -6,7 +6,7 @@ Patch / 命令 / HTTP / SQL 适配（B1–B4）与桌面 UI 消费的唯一事�
 
 变更规则：
 - 任何字段改动必须先更新 ``tests/test_workflow_contracts.py`` 与
-  ``docs/v0.5.0-b0-contracts-20260809.md``；
+  ``docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md``；
 - 不新增开启多类工作流的总开关，一类高风险能力只能借用自己类别的 flag；
 - 高风险工具默认关闭（flag 默认 False，见 ``config.Settings``）。
 """

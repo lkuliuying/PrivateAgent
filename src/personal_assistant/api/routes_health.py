@@ -20,7 +20,7 @@ class RuntimeCapabilities(BaseModel):
 
     v0.5.0 B0 additive extension：四个可信工作流开关（均默认 False），
     保持对既有字段的向后兼容。字段集合由 tests/test_public_contracts.py
-    与 docs/v0.3.0-public-contracts.md 冻结。
+    与 docs/releases/v0.3.0/v0.3.0-public-contracts.md 冻结。
     """
 
     chat_execution_mode: Literal["agent_runtime", "legacy"]

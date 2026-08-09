@@ -125,7 +125,7 @@ export function createAgentWorkspacePreview(): {
       },
       {
         id: -9303,
-        path: "F:\\Program\\Agent\\docs\\personal-agent-ui-refactor-prompt.md",
+        path: "F:\\Program\\Agent\\docs\\archive\\ui\\personal-agent-ui-refactor-prompt.md",
         kind: "file",
         granted_at: at(2),
       },

@@ -4,7 +4,7 @@
 > `0020`、2026-08-06 新增 `0021` telemetry 表，回滚克隆 `personal_assistant_preupgrade_20260805111304`
 > 与 `personal_assistant_preupgrade_20260806070435` 保留）。Agent Runtime **批 A** 已生产开启
 > （Agent API、只读工具、ContextBuilder、输出验证、RAG 工具）；聊天接管（批 B）与 MCP、自动摘要
-> worker 保持默认关闭。灰度、故障门禁与旧链退出的工作见 `docs/remaining-work-plan-20260806.md`
+> worker 保持默认关闭。灰度、故障门禁与旧链退出的工作见 `docs/archive/planning/remaining-work-plan-20260806.md`
 > §6（R3）与 `docs/agent-runtime-gray-verification.md`，不在本设计中重复。
 
 ## 1. 目标与边界

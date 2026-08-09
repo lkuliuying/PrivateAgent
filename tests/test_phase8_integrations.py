@@ -1,6 +1,6 @@
 """第八阶段 M8 测试：本地集成样板（ICS 日历导入）。
 
-覆盖（对齐 docs/phase8-plan.md §M8 / docs/phase8-requirements.md §5.8/§10.1）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M8 / docs/archive/phases/phase8-requirements.md §5.8/§10.1）：
 - ICS 解析：基本事件、行展开、转义、全天事件。
 - 隐私预览：解析摘要（事件数/标题），不建对象。
 - trusted paths：未授权路径 preview/import 返回 403。

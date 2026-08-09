@@ -1,6 +1,6 @@
 """第七阶段 M4 测试：统一通知中心。
 
-覆盖（对齐 docs/phase7-plan.md §M4 / docs/phase7-requirements.md §5.4）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M4 / docs/archive/phases/phase7-requirements.md §5.4）：
 - NotificationService notify/list/mark/mark_all_read CRUD + 状态流转。
 - GET/POST/PATCH /notifications 路由 + read-all。
 - 通知只存摘要（不存敏感正文字段）。

@@ -1,6 +1,6 @@
 """第七阶段 M2 测试：全局搜索。
 
-覆盖（对齐 docs/phase7-plan.md §M2 / docs/phase7-requirements.md §5.2）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M2 / docs/archive/phases/phase7-requirements.md §5.2）：
 - 搜索文档名命中文档；搜索切片内容命中切片。
 - 搜索任务关键词命中任务与证据。
 - 搜索跨对象（会话/消息/记忆/收件箱/提醒/目标/简报）。

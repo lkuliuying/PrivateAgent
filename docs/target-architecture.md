@@ -2,7 +2,7 @@
 
 > 状态：Phase 0 基线设计
 > 日期：2026-08-02
-> 依据：[现代化审计](./modernization-audit.md) 与现有代码、数据库、构建和测试证据
+> 依据：[现代化审计](./analysis/modernization-audit.md) 与现有代码、数据库、构建和测试证据
 
 ## 1. 架构结论
 

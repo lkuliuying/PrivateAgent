@@ -1,6 +1,6 @@
 """混合检索：向量召回 + MySQL FULLTEXT/BM25 + RRF + embedding 重排。
 
-设计（docs/phase3-plan.md M2 / requirements §4.5）：
+设计（docs/archive/phases/phase3-plan.md M2 / requirements §4.5）：
 - 向量召回：embed query → ChromaDB top_n → 回查 MySQL 切片与文档。
 - 词法召回：MySQL FULLTEXT ngram 索引 + 自然语言相关性（BM25）。
 - 融合：RRF（Reciprocal Rank Fusion），score = Σ 1/(k+rank)，k=60。

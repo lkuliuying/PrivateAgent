@@ -1,6 +1,6 @@
 """第七阶段 M6 测试：Provider 生产化治理。
 
-覆盖（对齐 docs/phase7-plan.md §M6 / docs/phase7-requirements.md §5.6）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M6 / docs/archive/phases/phase7-requirements.md §5.6）：
 - classify_error 把异常/状态码映射到 7 类失败分类。
 - ProviderError 携带 error_code；各远程 Provider 缺 key -> missing_api_key。
 - ProviderCallAuditRepository create/transition/finish 记录 M6 字段

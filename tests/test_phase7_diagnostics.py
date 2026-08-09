@@ -1,6 +1,6 @@
 """第七阶段 M5 测试：诊断中心 + 脱敏诊断包。
 
-覆盖（对齐 docs/phase7-plan.md §M5 / docs/phase7-requirements.md §5.5/§9）：
+覆盖（对齐 docs/archive/phases/phase7-plan.md §M5 / docs/archive/phases/phase7-requirements.md §5.5/§9）：
 - snapshot 聚合健康/版本/迁移/失败活动/Provider 失败/提醒/导入/备份/体检/错误。
 - 脱敏：API key / Provider key / DB 密码不泄露原文。
 - export 生成 zip，含 diagnostics.json/health.json/settings.redacted.json/

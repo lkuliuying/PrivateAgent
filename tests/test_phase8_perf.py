@@ -1,6 +1,6 @@
 """第八阶段 M6 测试：性能基线阈值与报告逻辑。
 
-覆盖（对齐 docs/phase8-plan.md §M6 / docs/phase8-requirements.md §5.6）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M6 / docs/archive/phases/phase8-requirements.md §5.6）：
 - check_thresholds：ok / warning / blocker 分类正确。
 - write_report：输出 JSON + Markdown，含关键路径与阈值状态。
 - THRESHOLDS 覆盖 Today / 搜索 / 诊断 / 完整性 / 备份。

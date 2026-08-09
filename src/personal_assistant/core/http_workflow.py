@@ -2,7 +2,7 @@
 
 ``call_allowlisted_api``（契约见 ``agents/workflow_contracts.py``）只允许引用
 用户已保存并启用的 endpoint profile；模型不能提供任意 URL。安全边界
-（威胁清单 docs/v0.5.0-b0-contracts-20260809.md §4.3）：
+（威胁清单 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §4.3）：
 
 - 目标固定：scheme/host/port/path 前缀由 profile 决定，模型只能提供
   profile 内的相对 path；

@@ -1,6 +1,6 @@
 """第八阶段 M2 测试：发布检查 2.0 证据管线逻辑。
 
-覆盖（对齐 docs/phase8-plan.md §M2 / docs/phase8-requirements.md §5.2）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M2 / docs/archive/phases/phase8-requirements.md §5.2）：
 - assemble_report：passed/failed/skipped 汇总 + ok 判定。
 - write_report：输出 JSON + Markdown。
 - validate_latest_json：合法 / 缺失（skipped）/ 签名空（failed）。

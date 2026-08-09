@@ -1,6 +1,6 @@
 """本地集成样板（第八阶段 M8）：ICS 日历导入 -> 提醒 / 收件箱。
 
-设计要点（对齐 docs/phase8-requirements.md §5.8/§9）：
+设计要点（对齐 docs/archive/phases/phase8-requirements.md §5.8/§9）：
 - 本地只读：只读用户授权的本地文件，不联网、不外发。
 - 隐私预览：preview() 解析并展示事件摘要（标题/时间/数量），确认后才创建对象。
 - 来源追踪：创建的 reminder/inbox 带 source_type="integration:ics"、source_id=导入记录 id。

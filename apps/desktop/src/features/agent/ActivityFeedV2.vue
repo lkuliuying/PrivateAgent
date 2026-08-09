@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * ActivityFeedV2 · 统一活动流（0.4.0 D3）
- * 消息类型与表达（docs/ui-state-matrix-0.4.0.md §6）：
+ * 消息类型与表达（docs/releases/v0.4.0/ui-state-matrix-0.4.0.md §6）：
  *   user 简洁任务输入 / agent 正文（流式光标、来源、记忆）/
  *   tool 动作摘要+折叠参数结果 / approval 审批卡 / error 原因·影响·恢复 /
  *   result 高层级结果块。

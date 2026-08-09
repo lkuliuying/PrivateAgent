@@ -169,7 +169,7 @@ building -> validated -> active -> retired
 uv run python scripts/profile_rag_data_quality.py --output data/analysis/rag-profile.json
 uv run python scripts/plan_rag_canonicalization.py --output data/analysis/rag-plan.json
 uv run python scripts/migrate_versioned_rag.py --limit 25
-uv run python scripts/evaluate_rag.py --cases docs/rag-evaluation-cases.example.json --retrieval versioned
+uv run python scripts/evaluate_rag.py --cases docs/examples/rag-evaluation-cases.example.json --retrieval versioned
 ```
 
 真实迁移和独立演练必须先确认目标数据库、隔离 `PA_DATA_DIR` 和报告路径。完整顺序见 `docs/deployment-guide.md` 和 `docs/database-upgrade-runbook.md`。

@@ -4,7 +4,7 @@
 发现项持久化到 data_integrity_findings（支持 ignored/resolved 避免重复打扰）。
 修复计划只预览，apply 不默认删除用户数据（phase7 §7 风险控制）。
 
-检查项（对齐 docs/phase7-requirements.md §5.7）：
+检查项（对齐 docs/archive/phases/phase7-requirements.md §5.7）：
 - goal_links 悬空（goal_id 或 target_id 失效）
 - briefings.sources_json 悬空
 - inbox source/target 悬空

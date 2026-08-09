@@ -2,7 +2,7 @@
 
 ``query_readonly_sql``（契约见 ``agents/workflow_contracts.py``）只允许引用
 用户已保存并启用的只读连接 profile。安全边界
-（威胁清单 docs/v0.5.0-b0-contracts-20260809.md §4.4）：
+（威胁清单 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §4.4）：
 
 - 模型不能提供 DSN/用户名/密码；密码只经 OS keyring 通道
   （``PA_SQL_PROFILES_SECRETS_JSON``）注入进程内存；

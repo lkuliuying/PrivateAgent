@@ -3,7 +3,7 @@
 把分散在各模块的「待处理事项」聚合成一个快照，供今日入口一屏看清。
 **零 UI 依赖**：只依赖 core 仓储与服务，不 import FastAPI / Vue，可被任意 async 调用方复用。
 
-聚合来源（对齐 docs/phase6-requirements.md §5.1 + docs/phase7-requirements.md §5.1）：
+聚合来源（对齐 docs/archive/phases/phase6-requirements.md §5.1 + docs/archive/phases/phase7-requirements.md §5.1）：
 - 到期学习复习：LearningCardRepository.list_due（due_at 为空或 <= now）。
 - 待关注 Agent 任务：AgentTaskRepository.list_by_status（待审批 + 失败 + 暂停）。
 - 失败活动：ActivityService.list(status="failed")（文档导入/索引/工具失败）。

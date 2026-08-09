@@ -3,7 +3,7 @@
 > **当前状态（2026-08-06）**：R2.2 选定 Windows 交付模式为**外部 Ollama 由用户管理**
 > （不托管 CLI 子进程、不引入容器 GPU profile）。本页定义该模式的安装检测、启动、
 > 故障分类、测量与退出残留检查，并如实记录边界。容器 GPU profile 的真实 GPU
-> healthcheck 未完成前，不宣称容器 GPU 交付完成（`docs/remaining-work-plan-20260806.md` §9）。
+> healthcheck 未完成前，不宣称容器 GPU 交付完成（`docs/archive/planning/remaining-work-plan-20260806.md` §9）。
 
 ## 1. 模式边界
 

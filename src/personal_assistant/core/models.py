@@ -1,6 +1,6 @@
 """SQLAlchemy ORM 模型，对应 MySQL 5 张业务表。
 
-表结构遵循 ``docs/phase1-plan.md`` §4.2：
+表结构遵循 ``docs/archive/phases/phase1-plan.md`` §4.2：
 字符集 utf8mb4 / utf8mb4_unicode_ci，InnoDB，主键 BIGINT 自增。
 """
 from __future__ import annotations

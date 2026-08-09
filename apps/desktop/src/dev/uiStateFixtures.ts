@@ -10,7 +10,7 @@ import type { AgentWorkspaceMessage } from "../models/agentWorkspace";
 
 /**
  * 0.4.0 D0 全状态 fixture 集（仅开发模式 / UI Lab / 测试使用，生产构建不引用）。
- * 覆盖 docs/ui-state-matrix-0.4.0.md 的全部核心场景，使用真实公开 DTO 类型，
+ * 覆盖 docs/releases/v0.4.0/ui-state-matrix-0.4.0.md 的全部核心场景，使用真实公开 DTO 类型，
  * 与 v0.3.0-public-contracts.md 冻结的状态语义一一对应，禁止虚构后端状态。
  */
 
@@ -119,7 +119,7 @@ const DEFAULT_TRUSTED: TrustedPath[] = [
   },
   {
     id: -8002,
-    path: "F:\\Program\\Agent\\docs\\v0.4.0-ui-ux-redesign-plan.md",
+    path: "F:\\Program\\Agent\\docs\\releases\\v0.4.0\\v0.4.0-ui-ux-redesign-plan.md",
     kind: "file",
     granted_at: at(1),
   },

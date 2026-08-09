@@ -1,6 +1,6 @@
 # R3 Agent Runtime 灰度验证与兼容链退出提案（2026-08-06）
 
-> 范围：`docs/remaining-work-plan-20260806.md` §6。Runtime 代码底座已存在且默认关闭；
+> 范围：`docs/archive/planning/remaining-work-plan-20260806.md` §6。Runtime 代码底座已存在且默认关闭；
 > 本报告记录隔离环境逐开关验证、故障门禁、取消清理修复和兼容链退出标准，
 > 并如实标注哪些仍需要生产授权与跨版本观察窗口。
 
@@ -55,7 +55,7 @@
 `input_chars // 4` 估算 token；AgentRuntime/ContextBuilder 用 `ConservativeTokenEstimator`
 （CJK 1:1、非 CJK /3）。三处口径分裂，且旧聊天可突破 provider `num_ctx`。
 
-**修复**（`docs/remaining-work-plan-20260806.md` §6.3 项）：
+**修复**（`docs/archive/planning/remaining-work-plan-20260806.md` §6.3 项）：
 - 旧聊天历史按 `llm_context_length`（settings 表生效值）做**从旧到新截断**，保留最近消息，
   与 Runtime 共用同一估算器（`core/chat.py` + `tests/test_chat_budget.py`）；
 - 远程审计 `estimated_input_tokens` 改用同一估算器（不再用字符/4），测试断言统一口径；

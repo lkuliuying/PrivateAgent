@@ -277,7 +277,7 @@ class BackupService:
         """恢复演练：恢复预览 + manifest 校验 + 现有完整性发现 + Chroma/MySQL 一致性。
 
         不执行实际恢复，不重新跑体检（避免副作用），只汇总可恢复性与一致性状态。
-        对齐 docs/phase8-requirements.md §5.9（恢复预览 + 完整性体检路径）。
+        对齐 docs/archive/phases/phase8-requirements.md §5.9（恢复预览 + 完整性体检路径）。
         """
         preview = await self.restore_preview(backup_path)
         validation = await self.validate_manifest(backup_path)

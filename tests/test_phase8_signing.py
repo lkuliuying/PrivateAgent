@@ -1,6 +1,6 @@
 """第八阶段 M4 测试：代码签名编排与 unsigned 透明策略。
 
-覆盖（对齐 docs/phase8-plan.md §M4 / docs/phase8-requirements.md §5.4/§9）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M4 / docs/archive/phases/phase8-requirements.md §5.4/§9）：
 - resolve_signing_config：无证书 / 有证书 / 密码文件 / 证书缺失。
 - signtool sign / verify 命令构造（/fd SHA256 /tr /td /pa /v）。
 - 无证书 SmartScreen 说明。

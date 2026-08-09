@@ -4,7 +4,7 @@ Revision ID: 0006
 Revises: 0005
 Create Date: 2026-07-06
 
-对齐 docs/phase4-plan.md §3.3 与 docs/phase4-requirements.md §6（M0 范围）：
+对齐 docs/archive/phases/phase4-plan.md §3.3 与 docs/archive/phases/phase4-requirements.md §6（M0 范围）：
 - memory_items / memory_events：长期记忆与事件流，覆盖偏好/学习/项目/文档/工作流/笔记。
 - learning_cards 增列（due_at/interval_days/ease_factor/review_count/lapse_count）：间隔重复调度字段。
 - learning_reviews：复习记录，rating 驱动 SM-2 调度。

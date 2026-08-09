@@ -1,6 +1,6 @@
 """v0.5.0 B0 可信工作流契约冻结测试。
 
-固定 ``docs/v0.5.0-b0-contracts-20260809.md`` 声明的五类工作流工具契约：
+固定 ``docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md`` 声明的五类工作流工具契约：
 名称、版本、input/output Schema、risk、capability、幂等策略、验证器
 与独立 feature flag。同时固化：
 

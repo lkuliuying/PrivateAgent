@@ -1,6 +1,6 @@
 """工具调用底座：定义 / 注册 / 执行 / LLM 规划。
 
-设计（docs/phase2-plan.md M1）：
+设计（docs/archive/phases/phase2-plan.md M1）：
 - ToolDefinition：name / description / risk_level / input_schema / output_schema / execute。
 - ToolRegistry：注册与查询；for_planning() 提供 LLM 可见的工具清单（排除 restricted）。
 - ToolExecutor：按审批状态机执行 confirm 工具，全程写 tool_calls + 同步 activities。

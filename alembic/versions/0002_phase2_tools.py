@@ -4,7 +4,7 @@ Revision ID: 0002
 Revises: 0001
 Create Date: 2026-07-04
 
-三表对齐 docs/phase2-plan.md §4.1 与 docs/phase2-requirements.md §5：
+三表对齐 docs/archive/phases/phase2-plan.md §4.1 与 docs/archive/phases/phase2-requirements.md §5：
 utf8mb4 / utf8mb4_unicode_ci / InnoDB。
 """
 

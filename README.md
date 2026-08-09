@@ -348,7 +348,7 @@ uv run alembic current
 
 # 版本化 RAG：迁移默认只预览，评测命令只读
 uv run python scripts/migrate_versioned_rag.py --limit 25
-uv run python scripts/evaluate_rag.py --cases docs/rag-evaluation-cases.example.json --retrieval versioned
+uv run python scripts/evaluate_rag.py --cases docs/examples/rag-evaluation-cases.example.json --retrieval versioned
 
 # 实际语料审计：只输出聚合；canonicalization 仅生成干跑计划
 uv run python scripts/profile_rag_data_quality.py --output data/analysis/rag-profile.json
@@ -449,7 +449,7 @@ dist/latest.json
 
 - Windows NSIS、Python sidecar、动态端口、发布清单、updater、无证书透明策略和自动化检查已实现。
 - Windows 真实 `v0.1.2 → v0.2.0` 安装升级、数据保留、卸载/重装回滚和 updater 签名负面验证已完成（2026-08-05，升级 smoke run #26）。GitHub Release 真实远程 updater 交付仍需仓库发布权限后以真实远程资产补一次 smoke；当前本地镜像证据不代表已部署生产 Release。
-- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷与配置门禁；它是独立单机拓扑，不代表公网或多租户支持。容器 GPU profile 的真实 GPU healthcheck 尚未完成（见 `docs/remaining-work-plan-20260806.md` §5.2）。
+- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷与配置门禁；它是独立单机拓扑，不代表公网或多租户支持。容器 GPU profile 的真实 GPU healthcheck 尚未完成（见 `docs/archive/planning/remaining-work-plan-20260806.md` §5.2）。
 - Authenticode 签名逻辑已接入，但正式证书实签需要在发布环境执行；当前如实标记 `unsigned`，SmartScreen 可能显示未知发布者。
 - macOS/Linux 的数据目录适配、构建脚本和发布清单结构已准备，尚未完成实机构建与 smoke，因此当前不宣称正式跨平台交付。
 - `externalBin` 变化后，同版本覆盖安装应先完成真实验证；未验证前建议卸载旧版本再安装新包。
@@ -467,10 +467,11 @@ dist/latest.json
 
 ## 文档导航
 
+- `docs/README.md`：文档中心、当前版本入口与目录维护规则
 - `docs/usage-guide.md`：最终用户与开发者完整使用说明
 - `docs/requirements.md`：项目需求基线与已落地范围
-- `docs/phase2-requirements.md` ～ `docs/phase8-requirements.md`：阶段需求
-- `docs/phase1-plan.md` ～ `docs/phase8-plan.md`：阶段开发与验收计划
+- `docs/archive/phases/phase2-requirements.md` ～ `docs/archive/phases/phase8-requirements.md`：阶段需求
+- `docs/archive/phases/phase1-plan.md` ～ `docs/archive/phases/phase8-plan.md`：阶段开发与验收计划
 - `docs/release-checklist.md`：安装、升级、发布和回滚检查清单
 - `docs/signing-and-keys.md`：updater、代码签名和密钥治理
 - `docs/cross-platform.md`：Windows、macOS、Linux 平台状态与差异
@@ -488,5 +489,5 @@ dist/latest.json
 - `docs/deployment-guide.md`：开发启动、Windows 交付、分阶段启用和回滚
 - `docs/api-reference.md`：API 安全约束、端点分组和现代化能力边界
 - `docs/troubleshooting.md`：启动、认证、Ollama、RAG、MCP 和构建故障排查
-- `docs/personal-agent-ui-refactor-prompt.md`：Agent 工作台界面重构说明
+- `docs/archive/ui/personal-agent-ui-refactor-prompt.md`：Agent 工作台界面重构说明
 - `design-qa.md`：桌面工作台视觉、交互、响应式与无障碍验收记录

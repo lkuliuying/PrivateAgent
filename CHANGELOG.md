@@ -2,7 +2,7 @@
 
 ## 0.4.0-alpha.2（2026-08-08，Workbench UX 2.0 收口 · 开发中）
 
-> 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)。
+> 计划：[`docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md`](docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md)。
 
 ### ui_v2 默认开启（alpha.2 契约切换）
 - `src/config/uiFlags.ts`：`DEFAULT_UI_V2 = true`——默认进入新 UI，`?ui=v1` / `pa_ui_v2=0` 回退兼容壳；
@@ -44,12 +44,12 @@
 
 ### D6 · alpha.2 检查点
 - 版本统一 `0.4.0-alpha.2`（八处含 package-lock.json，UTF-8 无 BOM），telemetry 测试同步；
-- `docs/v0.4.0-alpha.2-checkpoint-20260808.md`；
+- `docs/releases/v0.4.0/v0.4.0-alpha.2-checkpoint-20260808.md`；
 - **release-check-full：14/14，绑定 `8c50900`，`worktree_dirty=False`，`installer_built=True`**。
 
 ### D4 · 全生产页面验收（验收修复轮）
 - `e2e/pages-smoke.spec.ts` 13/13：12 视图导航/主体渲染/空态/无横向溢出/键盘 Tab + 断连错误态；
-- `docs/v0.4.0-alpha.2-function-comparison.md` 完整功能对照表（逐页功能/证据/状态覆盖）。
+- `docs/releases/v0.4.0/v0.4.0-alpha.2-function-comparison.md` 完整功能对照表（逐页功能/证据/状态覆盖）。
 
 ### D5 · 性能与资源清理（验收修复轮）
 - `e2e/performance-resource.spec.ts` 3/3：页面切换长任务 **0 个（p95=0ms）**、
@@ -67,12 +67,12 @@
 
 ## 0.4.0-alpha.1（2026-08-08，Workbench UX 2.0 内部检查点 · D0–D2）
 
-> 计划：[`docs/v0.4.0-ui-ux-redesign-plan.md`](docs/v0.4.0-ui-ux-redesign-plan.md)；
-> 证据：`docs/v0.4.0-alpha.1-checkpoint-20260808.md`。仅内部 Alpha，不更新普通用户 `latest.json`。
+> 计划：[`docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md`](docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md)；
+> 证据：`docs/releases/v0.4.0/v0.4.0-alpha.1-checkpoint-20260808.md`。仅内部 Alpha，不更新普通用户 `latest.json`。
 
 ### D0 · 设计审计与范围冻结
-- 新增 `docs/ui-audit-0.4.0.md`：全量 UI 审计（54 组件、103 处硬编码颜色、135 处硬编码字号、动效时长分布、组件规模 Top10）；
-- 新增 `docs/ui-state-matrix-0.4.0.md`：Agent 任务/计划/工具/审批/SSE 恢复/右栏/页面级状态矩阵；
+- 新增 `docs/releases/v0.4.0/ui-audit-0.4.0.md`：全量 UI 审计（54 组件、103 处硬编码颜色、135 处硬编码字号、动效时长分布、组件规模 Top10）；
+- 新增 `docs/releases/v0.4.0/ui-state-matrix-0.4.0.md`：Agent 任务/计划/工具/审批/SSE 恢复/右栏/页面级状态矩阵；
 - 新增 `src/dev/uiStateFixtures.ts`：13 个真实公开 DTO fixture（空任务/规划/流式/工具执行/审批/失败/停止/RAG/拒答/重连/产物），与状态矩阵一一对应；
 - 信息架构冻结：一级导航 6 分组（日常/执行/工作/知识/连接 + 底部系统），12 视图零下线；
 - 视觉方向冻结：Calm Workbench 2.0（浅色主题首轮交付，六级语义字号，动效四档）。
@@ -154,7 +154,7 @@
 
 ## 0.2.0（2026-08-06 发布门禁收口）
 
-### 发布事实源与门禁（R0/R1，对应 `docs/remaining-work-plan-20260806.md`）
+### 发布事实源与门禁（R0/R1，对应 `docs/archive/planning/remaining-work-plan-20260806.md`）
 
 - 明确 `dist/release-check-<version>.json` 为唯一机器事实源：`scripts/generate_release_manifest.py` 改为从该报告的步骤结果生成 manifest 的 validation checklist，不再人工勾选；生成顺序固定为先完整 release check、后刷新 manifest。
 - `scripts/run_release_checks.py` 新增四个强制步骤：`ruff_check`、`compileall`、`cargo_test`（新增 `scripts/cargo-test-tauri.bat`）、`sidecar_smoke`，完整门禁由 10 步扩至 14 步。

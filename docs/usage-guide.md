@@ -1,7 +1,7 @@
 # 私人助手 Agent · 项目详细使用说明书
 
 > 版本：v0.1 · 日期：2026-07-04
-> 对应需求：`docs/requirements.md` v0.1 · 对应计划：`docs/phase1-plan.md` v0.3
+> 对应需求：`docs/requirements.md` v0.1 · 对应计划：`docs/archive/phases/phase1-plan.md` v0.3
 
 ---
 
@@ -830,7 +830,7 @@ sidecar 不打包这些，需用户本机具备：
 
 ### 10.5 安装包与分发（第五阶段 M0–M6）
 
-第五阶段已落地完整发布工程化链路（Windows 硬验收）：可复现构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。详见 `docs/phase5-plan.md`、`docs/phase5-requirements.md`、`docs/release-checklist.md`、`docs/signing-and-keys.md`、`docs/cross-platform.md`。
+第五阶段已落地完整发布工程化链路（Windows 硬验收）：可复现构建脚本（去硬编码路径）、`release-check.bat` 发布前校验、`generate_release_manifest.py` 发布清单、`generate-latest-json.py` 自动产出 updater 清单、`UpdateChecker.vue` 分类错误提示、`signing-and-keys.md` 签名与密钥治理、`release-checklist.md` 发布 QA 矩阵、`measure_sidecar_baseline.py` 体积与启动基线、onedir 评估 spec、`build-sidecar.sh` 跨平台脚本、`cross-platform.md` 预研。详见 `docs/archive/phases/phase5-plan.md`、`docs/archive/phases/phase5-requirements.md`、`docs/release-checklist.md`、`docs/signing-and-keys.md`、`docs/cross-platform.md`。
 
 重要缺陷修复（已重新构建验证）：实测发现旧打包 sidecar 缺 `cryptography`，连 MySQL 8（默认 `caching_sha2_password`）会认证失败。已在 `personal_assistant.spec` 的 `hiddenimports` 显式加入 `"cryptography"`；2026-07-08 重新构建 v0.1.1 sidecar 后，打包模式 `/health` 已验证 API / Ollama / MySQL / ChromaDB 全绿。
 
@@ -839,7 +839,7 @@ sidecar 不打包这些，需用户本机具备：
 1. **部署 GitHub Release**（安装包 + `.sig` + `latest.json`）并跑通 v0.1.0 -> v0.1.1 升级 smoke。
 2. **Windows 代码签名**：当前无证书，安装包未签名，SmartScreen 会警告（绕过：更多信息 -> 仍要运行）。方案见 `docs/signing-and-keys.md` §2。
 3. **macOS / Linux 实机构建与 smoke**：见 `docs/cross-platform.md`（当前仅预研，未实测）。
-4. **体积优化**：onefile 已评估（v0.1.1 sidecar 约 88.6MB，安装包约 92.0MB），onedir 暂不切换；onnxruntime 裁剪需运行时验证（见 `docs/phase5-plan.md` M5）。
+4. **体积优化**：onefile 已评估（v0.1.1 sidecar 约 88.6MB，安装包约 92.0MB），onedir 暂不切换；onnxruntime 裁剪需运行时验证（见 `docs/archive/phases/phase5-plan.md` M5）。
 
 ---
 

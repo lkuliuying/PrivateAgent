@@ -1,6 +1,6 @@
 """第八阶段 M3 测试：升级 smoke 工具与数据保留校验。
 
-覆盖（对齐 docs/phase8-plan.md §M3 / docs/phase8-requirements.md §5.3）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M3 / docs/archive/phases/phase8-requirements.md §5.3）：
 - verify_data_preservation：保留 / 丢失判定。
 - build_runbook：含执行步骤 + 负面场景 + 回滚。
 - snapshot_counts：覆盖全部 PRESERVATION_TABLES。

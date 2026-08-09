@@ -22,7 +22,7 @@ import {
 } from "@phosphor-icons/vue";
 import type { View } from "../types";
 
-/** 导航分组（D0 冻结，docs/ui-audit-0.4.0.md §4） */
+/** 导航分组（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §4） */
 export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system";
 
 export interface ViewMeta {

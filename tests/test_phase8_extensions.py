@@ -1,6 +1,6 @@
 """第八阶段 M7 测试：扩展注册表。
 
-覆盖（对齐 docs/phase8-plan.md §M7 / docs/phase8-requirements.md §5.7/§10.1）：
+覆盖（对齐 docs/archive/phases/phase8-plan.md §M7 / docs/archive/phases/phase8-requirements.md §5.7/§10.1）：
 - 注册项 schema：重复 id、缺权限声明、未知 kind 注册失败。
 - 内置 command / diagnostic / maintenance 三类已注册。
 - GET /extensions 列出注册项（合并持久化 enabled）。

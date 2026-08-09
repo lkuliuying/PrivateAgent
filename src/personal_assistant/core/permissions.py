@@ -1,6 +1,6 @@
 """权限与风险等级。
 
-风险分级（docs/phase2-requirements.md §4.1）：
+风险分级（docs/archive/phases/phase2-requirements.md §4.1）：
   safe       只读、低风险，无需审批。
   confirm    读取本地文件、消耗资源，需审批。
   restricted 有潜在破坏性（写/删/执行），第二阶段不开放。

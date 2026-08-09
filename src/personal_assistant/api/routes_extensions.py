@@ -3,7 +3,7 @@
 - GET    /extensions          列出所有注册项（合并持久化 enabled 状态），可按 kind 过滤
 - PATCH  /extensions/{id}     启用/禁用可配置扩展（不绕过审批状态机）
 
-对齐 docs/phase8-requirements.md §7（GET /extensions、PATCH /extensions/{id}）。
+对齐 docs/archive/phases/phase8-requirements.md §7（GET /extensions、PATCH /extensions/{id}）。
 """
 from __future__ import annotations
 
