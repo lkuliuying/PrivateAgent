@@ -32,6 +32,7 @@ from .api.routes_extensions import router as extensions_router
 from .api.routes_files import router as files_router
 from .api.routes_goals import router as goals_router
 from .api.routes_health import router as health_router
+from .api.routes_http_profiles import router as http_profiles_router
 from .api.routes_inbox import router as inbox_router
 from .api.routes_integrations import router as integrations_router
 from .api.routes_learning import router as learning_router
@@ -220,6 +221,7 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
+app.include_router(http_profiles_router)
 app.include_router(today_router)
 app.include_router(inbox_router)
 app.include_router(goals_router)

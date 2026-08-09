@@ -344,6 +344,7 @@ class ApiResultVerifier:
         response_schema: dict[str, Any] | None = None,
         max_attempts: int | None = None,
         require_idempotency_key: bool = False,
+        reject_schema_invalid: bool = False,
     ) -> None:
         self._supported = frozenset(supported)
         self._ranges = tuple(
@@ -355,6 +356,9 @@ class ApiResultVerifier:
         )
         self._max_attempts = int(max_attempts) if max_attempts is not None else None
         self._require_idempotency_key = bool(require_idempotency_key)
+        # v0.5.0 B3：executor 已按 profile 固定响应 Schema 校验并输出
+        # schema_valid 字段；开启后该字段为 False 即失败关闭。
+        self._reject_schema_invalid = bool(reject_schema_invalid)
 
     def supports(self, tool_name: str) -> bool:
         return tool_name in self._supported
@@ -366,6 +370,12 @@ class ApiResultVerifier:
         if not isinstance(result, Mapping):
             return ResultVerification.fail(
                 "result_not_object", "API 调用结果必须是对象"
+            )
+        if self._reject_schema_invalid and result.get("schema_valid") is False:
+            return ResultVerification.fail(
+                "api_schema_invalid",
+                "响应不符合 endpoint profile 固定 Schema",
+                "确认端点返回结构与 profile 的 response_schema 一致。",
             )
         status = result.get("status_code")
         if status is None:

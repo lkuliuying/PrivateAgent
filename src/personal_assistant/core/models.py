@@ -2420,9 +2420,107 @@ class ToolExecutionOutput(Base):
     )
 
 
+class HttpEndpointProfile(Base):
+    """v0.5.0 B3：HTTP/API endpoint profile（非敏感元数据 + keyring secret 引用）。
+
+    明文 key 只进 OS keyring（Rust 侧收集，PA_HTTP_PROFILES_SECRETS_JSON 通道
+    注入 sidecar 内存）；本表只保存引用与目标/策略/限制元数据。
+    """
+
+    __tablename__ = "http_endpoint_profiles"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    scheme: Mapped[str] = mapped_column(VARCHAR(8), nullable=False, server_default="https")
+    host: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    port: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    path_prefix: Mapped[str] = mapped_column(
+        VARCHAR(1024), nullable=False, server_default="/"
+    )
+    allowed_methods_json: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    request_schema_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    response_schema_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    max_request_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, server_default="65536"
+    )
+    max_response_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, server_default="1048576"
+    )
+    timeout_ms: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, server_default="30000"
+    )
+    headers_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    secret_refs_json: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    retry_policy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    allow_insecure_local: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, server_default="0"
+    )
+    allow_private_network: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, server_default="0"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, server_default="0"
+    )
+    version: Mapped[int] = mapped_column(INTEGER, nullable=False, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uk_http_endpoint_profile_name"),
+        Index("idx_http_endpoint_profile_enabled", "enabled"),
+    )
+
+
+class SqlReadonlyProfile(Base):
+    """v0.5.0 B4：只读 SQL 连接 profile（非敏感元数据 + keyring 密码引用）。"""
+
+    __tablename__ = "sql_readonly_profiles"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(VARCHAR(64), nullable=False)
+    dialect: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
+    host: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    port: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    database: Mapped[str] = mapped_column(VARCHAR(255), nullable=False)
+    username: Mapped[str | None] = mapped_column(VARCHAR(255), nullable=True)
+    password_secret_ref: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
+    connect_args_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    max_rows: Mapped[int] = mapped_column(INTEGER, nullable=False, server_default="1000")
+    max_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, server_default="1048576"
+    )
+    timeout_ms: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, server_default="30000"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, server_default="0"
+    )
+    version: Mapped[int] = mapped_column(INTEGER, nullable=False, server_default="1")
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("name", name="uk_sql_readonly_profile_name"),
+        Index("idx_sql_readonly_profile_enabled", "enabled"),
+    )
+
+
 class McpServer(Base):
     """Trusted-boundary configuration and discovery cache for one MCP server."""
-
     __tablename__ = "mcp_servers"
 
     id: Mapped[str] = mapped_column(

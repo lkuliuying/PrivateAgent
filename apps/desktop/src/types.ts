@@ -146,6 +146,28 @@ export interface AgentToolOutputPage {
   finished: boolean;
 }
 
+/** v0.5.0 B3：HTTP endpoint profile（非敏感元数据 + keyring secret 引用）。 */
+export interface HttpEndpointProfile {
+  id: number;
+  name: string;
+  scheme: string;
+  host: string;
+  port: number;
+  path_prefix: string;
+  allowed_methods: string[];
+  max_request_bytes: number;
+  max_response_bytes: number;
+  timeout_ms: number;
+  headers: Record<string, string>;
+  secret_refs: Record<string, string>;
+  allow_insecure_local: boolean;
+  allow_private_network: boolean;
+  enabled: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type DocStatus =
   | "pending"
   | "processing"

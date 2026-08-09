@@ -71,6 +71,8 @@ struct ConfigData {
     chat_agent_runtime_enabled: bool,
     #[serde(default)]
     conversation_summary_worker_enabled: bool,
+    #[serde(default)]
+    http_workflow_enabled: bool,
 }
 
 impl Default for ConfigData {
@@ -87,6 +89,7 @@ impl Default for ConfigData {
             mcp_enabled: false,
             chat_agent_runtime_enabled: false,
             conversation_summary_worker_enabled: false,
+            http_workflow_enabled: false,
         }
     }
 }
@@ -144,6 +147,23 @@ struct McpSecretPromptResult {
 #[derive(Default, Deserialize, Serialize)]
 struct McpSecretIndex {
     aliases: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+struct HttpProfileSecretEntry {
+    name: String,
+    slot: String,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct HttpProfileSecretIndex {
+    entries: Vec<HttpProfileSecretEntry>,
+}
+
+#[derive(Serialize)]
+struct HttpProfileSecretStatus {
+    reference: String,
+    configured: bool,
 }
 
 struct LoadedConfig {
@@ -287,6 +307,120 @@ fn collect_mcp_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
     Ok(Zeroizing::new(encoded))
 }
 
+// ============ v0.5.0 B3：HTTP endpoint profile 凭据通道 ============
+// 与 MCP 同构：DB 只存 keyring 引用；桌面壳把引用→明文 map 注入
+// PA_HTTP_PROFILES_SECRETS_JSON，sidecar 进程内存一次性消费。
+
+fn http_profile_secret_index_path() -> PathBuf {
+    config_dir().join("http-profile-secret-index.json")
+}
+
+fn read_http_profile_secret_entries() -> Result<BTreeSet<HttpProfileSecretEntry>, String> {
+    let path = http_profile_secret_index_path();
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let raw = fs::read_to_string(path)
+        .map_err(|_| "HTTP profile credential index read failed")?;
+    let index: HttpProfileSecretIndex =
+        serde_json::from_str(&raw).map_err(|_| "HTTP profile credential index is invalid")?;
+    if index.entries.len() > 32 {
+        return Err("too many HTTP profile credentials".to_string());
+    }
+    let mut entries = BTreeSet::new();
+    for entry in index.entries {
+        credentials::http_profile_account(&entry.name, &entry.slot)?;
+        entries.insert(entry);
+    }
+    Ok(entries)
+}
+
+fn write_http_profile_secret_entries(
+    entries: &BTreeSet<HttpProfileSecretEntry>,
+) -> Result<(), String> {
+    if entries.len() > 32 {
+        return Err("too many HTTP profile credentials".to_string());
+    }
+    fs::create_dir_all(config_dir())
+        .map_err(|_| "HTTP profile credential index directory failed")?;
+    let encoded = serde_json::to_vec(&HttpProfileSecretIndex {
+        entries: entries.iter().cloned().collect(),
+    })
+    .map_err(|_| "HTTP profile credential index serialization failed")?;
+    fs::write(http_profile_secret_index_path(), encoded)
+        .map_err(|_| "HTTP profile credential index write failed".to_string())
+}
+
+fn collect_http_profile_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
+    let mut values = BTreeMap::new();
+    for entry in read_http_profile_secret_entries()? {
+        let account = credentials::http_profile_account(&entry.name, &entry.slot)?;
+        if let Some(secret) = credentials::get(&account)? {
+            values.insert(
+                credentials::http_profile_reference(&entry.name, &entry.slot)?,
+                secret,
+            );
+        }
+    }
+    let mut encoded = serde_json::to_string(&values)
+        .map_err(|_| "HTTP profile credential injection serialization failed")?;
+    for secret in values.values_mut() {
+        secret.zeroize();
+    }
+    if encoded.len() > 24 * 1024 {
+        encoded.zeroize();
+        return Err("HTTP profile credential injection exceeds the process limit".to_string());
+    }
+    Ok(Zeroizing::new(encoded))
+}
+
+fn read_http_profile_secret_status(
+    name: &str,
+    slot: &str,
+) -> Result<HttpProfileSecretStatus, String> {
+    let account = credentials::http_profile_account(name, slot)?;
+    let entries = read_http_profile_secret_entries()?;
+    Ok(HttpProfileSecretStatus {
+        reference: credentials::http_profile_reference(name, slot)?,
+        configured: credentials::exists(&account)?
+            && entries.contains(&HttpProfileSecretEntry {
+                name: name.to_string(),
+                slot: slot.to_string(),
+            }),
+    })
+}
+
+#[tauri::command]
+fn http_profile_secret_status(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+    read_http_profile_secret_status(&name, &slot)
+}
+
+#[tauri::command]
+fn set_http_profile_secret(name: String, slot: String, secret: String) -> Result<HttpProfileSecretStatus, String> {
+    let account = credentials::http_profile_account(&name, &slot)?;
+    credentials::set(&account, &secret)?;
+    let mut entries = read_http_profile_secret_entries()?;
+    entries.insert(HttpProfileSecretEntry {
+        name: name.clone(),
+        slot: slot.clone(),
+    });
+    write_http_profile_secret_entries(&entries)?;
+    read_http_profile_secret_status(&name, &slot)
+}
+
+#[tauri::command]
+fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+    let account = credentials::http_profile_account(&name, &slot)?;
+    credentials::delete(&account)?;
+    let mut entries = read_http_profile_secret_entries()?;
+    entries.remove(&HttpProfileSecretEntry {
+        name: name.clone(),
+        slot: slot.clone(),
+    });
+    write_http_profile_secret_entries(&entries)?;
+    read_http_profile_secret_status(&name, &slot)
+}
+
 // ============ .env 读写 ============
 
 fn percent_encode_component(value: &str) -> String {
@@ -422,6 +556,8 @@ fn parse_config_content(content: &str) -> LoadedConfig {
             cfg.chat_agent_runtime_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=") {
             cfg.conversation_summary_worker_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_HTTP_WORKFLOW_ENABLED=") {
+            cfg.http_workflow_enabled = v.eq_ignore_ascii_case("true");
         }
     }
     LoadedConfig {
@@ -1009,6 +1145,11 @@ async fn start_sidecar(
     } else {
         Zeroizing::new("{}".to_string())
     };
+    let http_profile_secrets_json = if loaded.public.http_workflow_enabled {
+        collect_http_profile_secrets_for_sidecar()?
+    } else {
+        Zeroizing::new("{}".to_string())
+    };
 
     // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
     // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
@@ -1060,6 +1201,7 @@ async fn start_sidecar(
             .env("PA_OPENAI_API_KEY", openai_api_key)
             .env("PA_CLAUDE_API_KEY", claude_api_key)
             .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
+            .env("PA_HTTP_PROFILES_SECRETS_JSON", http_profile_secrets_json.as_str())
             // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
             // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
             .env(
@@ -1204,6 +1346,9 @@ pub fn run() {
             mcp_secret_status,
             prompt_mcp_secret,
             clear_mcp_secret,
+            http_profile_secret_status,
+            set_http_profile_secret,
+            clear_http_profile_secret,
             check_dependencies,
             test_connections,
             start_sidecar,

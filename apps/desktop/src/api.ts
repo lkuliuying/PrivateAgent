@@ -164,6 +164,12 @@ export {
   streamAgentRunContinuation,
 } from "./api/agentRuns";
 export {
+  createHttpProfile,
+  deleteHttpProfile,
+  listHttpProfiles,
+  updateHttpProfile,
+} from "./api/httpProfiles";
+export {
   createIntegrationSource,
   listIntegrationImports,
   listIntegrationSources,

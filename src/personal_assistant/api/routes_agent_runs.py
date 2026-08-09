@@ -47,6 +47,7 @@ from ..core.command_workflow import build_command_tool_registry
 from ..core.compatibility import compatibility_telemetry
 from ..core.db import get_session
 from ..core.history import SessionRepository
+from ..core.http_workflow import build_http_tool_registry
 from ..core.models import AgentRun as AgentRunRecord
 from ..core.models import AgentToolExecution as ToolExecutionRecord
 from ..core.models import ToolApproval as ToolApprovalRecord
@@ -250,6 +251,7 @@ async def get_agent_tool_bundle(
         not cfg.agent_run_read_only_tools_enabled
         and not cfg.agent_patch_workflow_enabled
         and not cfg.agent_command_workflow_enabled
+        and not cfg.agent_http_workflow_enabled
         and not cfg.agent_rag_tools_enabled
         and not mcp_records
     ):
@@ -308,6 +310,23 @@ async def get_agent_tool_bundle(
                 command_verifier
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, command_verifier])
+            )
+        if cfg.agent_http_workflow_enabled:
+            for spec in build_http_tool_registry(run_db).list():
+                registry.register(spec)
+            # B3：API 结果验证器——状态码范围/重试/幂等结构检查（可信代码固定注入）。
+            from ..agents.result_verification import ApiResultVerifier
+
+            http_verifier = ApiResultVerifier(
+                supported=("call_allowlisted_api",),
+                allowed_status_ranges=((200, 299),),
+                max_attempts=3,
+                reject_schema_invalid=True,
+            )
+            result_verifier = (
+                http_verifier
+                if result_verifier is None
+                else CompositeToolResultVerifier([result_verifier, http_verifier])
             )
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
