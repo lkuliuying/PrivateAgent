@@ -5,14 +5,16 @@
  * 动作 → 对象/范围 → 授权原因 → 风险/可撤销性 → 批准/拒绝/详情。
  * 批准后原位转为「已批准/执行中」，不从活动流消失后异地重现。
  */
-import { computed, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import {
   PhCheck,
   PhClock,
+  PhFilePlus,
   PhShieldWarning,
   PhX,
 } from "@phosphor-icons/vue";
-import type { AgentRunApproval, ToolCall } from "../../types";
+import type { AgentApprovalPreview, AgentRunApproval, ToolCall } from "../../types";
+import { getAgentApprovalPreview } from "../../api/agentRuns";
 import { TOOL_STATUS_META } from "../../models/agentWorkspace";
 import PaBadge from "../../design/PaBadge.vue";
 import PaButton from "../../design/PaButton.vue";
@@ -136,6 +138,62 @@ function reject() {
     emit("reject-tool", props.toolCall.id);
   }
 }
+
+/**
+ * v0.5.0 B1：文件变更类工具（apply_patch_to_workspace / propose_patch）在审批时
+ * 加载只读 diff 预览。预览失败或不可预览时静默降级，不阻塞审批。
+ */
+const PATCH_TOOLS = new Set(["apply_patch_to_workspace", "propose_patch"]);
+const preview = ref<AgentApprovalPreview | null>(null);
+const previewLoading = ref(false);
+let previewRequest = 0;
+
+watch(
+  () => [props.approval?.id, props.approval?.status, props.approval?.tool_name],
+  async ([approvalId, approvalStatus, toolName]) => {
+    preview.value = null;
+    const isPatchTool = typeof toolName === "string" && PATCH_TOOLS.has(toolName);
+    if (
+      !isPatchTool ||
+      !approvalId ||
+      !props.approval ||
+      approvalStatus !== "pending"
+    ) {
+      return;
+    }
+    const requestId = ++previewRequest;
+    previewLoading.value = true;
+    try {
+      const result = await getAgentApprovalPreview(
+        props.approval.run_id,
+        approvalId
+      );
+      if (requestId === previewRequest) preview.value = result;
+    } catch {
+      if (requestId === previewRequest) {
+        preview.value = {
+          tool_name: String(toolName),
+          previewable: false,
+          rel_path: null,
+          creates_file: null,
+          old_sha256: null,
+          new_sha256: null,
+          diff: null,
+          truncated: null,
+          reason: "无法加载变更预览",
+        };
+      }
+    } finally {
+      if (requestId === previewRequest) previewLoading.value = false;
+    }
+  },
+  { immediate: true }
+);
+
+onUnmounted(() => {
+  previewRequest += 1;
+});
+
 </script>
 
 <template>
@@ -178,6 +236,47 @@ function reject() {
         <dd>{{ expiresText }}</dd>
       </div>
     </dl>
+
+    <!-- v0.5.0 B1：文件变更预览（审批时展示，基于磁盘事实只读重算） -->
+    <section
+      v-if="previewLoading"
+      class="preview-section"
+      aria-label="正在生成变更预览"
+    >
+      <PaSpinner :size="12" label="生成中" /> 正在生成变更预览…
+    </section>
+    <section
+      v-else-if="preview?.previewable && preview.diff != null"
+      class="preview-section"
+      aria-label="文件变更预览"
+    >
+      <header class="preview-head">
+        <strong>变更预览</strong>
+        <span class="preview-file">{{ preview.rel_path }}</span>
+        <PaBadge v-if="preview.creates_file" tone="info">
+          <PhFilePlus :size="11" /> 新建文件
+        </PaBadge>
+      </header>
+      <dl class="preview-sha">
+        <div><dt>旧 SHA</dt><dd><code>{{ preview.old_sha256?.slice(0, 12) }}…</code></dd></div>
+        <div><dt>新 SHA</dt><dd><code>{{ preview.new_sha256?.slice(0, 12) }}…</code></dd></div>
+      </dl>
+      <pre class="preview-diff">{{ preview.diff }}</pre>
+      <PaInlineNotice
+        v-if="preview.truncated"
+        tone="warning"
+        title="预览已被截断"
+      >
+        预览内容不完整；批准后只会应用本次审批绑定参数的原始内容，不会直接应用截断视图。
+      </PaInlineNotice>
+    </section>
+    <PaInlineNotice
+      v-else-if="preview && !preview.previewable && approval?.tool_name"
+      tone="info"
+      :title="`无法预览（${approval.tool_name}）`"
+    >
+      {{ preview.reason || "该工具不产生文件变更预览，可查看参数指纹后决定。" }}
+    </PaInlineNotice>
 
     <PaDisclosure
       v-if="props.toolCall"
@@ -317,5 +416,63 @@ function reject() {
   display: flex;
   justify-content: flex-end;
   gap: var(--space-2);
+}
+.preview-section {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.preview-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-t-12);
+}
+.preview-head strong {
+  color: var(--color-fg);
+  font-weight: var(--font-semibold);
+}
+.preview-file {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--pa-t-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.preview-sha {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  font-size: var(--pa-t-12);
+}
+.preview-sha dt {
+  color: var(--color-fg-faint);
+}
+.preview-sha dd {
+  margin: 0;
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+}
+.preview-diff {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--pa-t-12);
+  line-height: 1.55;
+  white-space: pre;
 }
 </style>

@@ -8,6 +8,7 @@
 import { computed, ref, watch } from "vue";
 import {
   PhCaretRight,
+  PhCheck,
   PhFile,
   PhFileText,
   PhFolder,
@@ -16,12 +17,14 @@ import {
   PhTerminal,
   PhX,
 } from "@phosphor-icons/vue";
-import type { Activity, Session, Source, TrustedPath } from "../types";
+import type { Activity, AgentToolExecution, Session, Source, TrustedPath } from "../types";
 import type { AgentWorkspaceMessage } from "../models/agentWorkspace";
 import { formatActivityTime } from "../models/agentWorkspace";
 import PaBadge from "../design/PaBadge.vue";
+import PaDialog from "../design/PaDialog.vue";
 import PaEmptyState from "../design/PaEmptyState.vue";
 import PaIconButton from "../design/PaIconButton.vue";
+import PaInlineNotice from "../design/PaInlineNotice.vue";
 import PaTabs from "../design/PaTabs.vue";
 import PaTooltip from "../design/PaTooltip.vue";
 
@@ -33,9 +36,10 @@ const props = withDefaults(
     messages: AgentWorkspaceMessage[];
     activities: Activity[];
     trusted: TrustedPath[];
+    patchResults?: AgentToolExecution[];
     chunkId?: number | null;
   }>(),
-  { chunkId: null, activities: () => [], trusted: () => [] }
+  { chunkId: null, activities: () => [], trusted: () => [], patchResults: () => [] }
 );
 
 const emit = defineEmits<{ close: []; "select-chunk": [chunkId: number] }>();
@@ -88,6 +92,66 @@ const filePaths = computed<{ path: string; kind: "file" | "directory" | "tool" }
   return entries;
 });
 
+/**
+ * v0.5.0 B1：文件变更摘要——从活动流提取 apply_patch_to_workspace /
+ * propose_patch 的结果（rel_path / verified / diff），标记「已修改」并供 Diff 弹窗。
+ */
+type FileChange = {
+  relPath: string;
+  verified: boolean;
+  diff: string;
+  truncated: boolean;
+  at: string;
+};
+
+const fileChanges = computed<FileChange[]>(() => {
+  const changes: FileChange[] = [];
+  const seen = new Set<string>();
+  // 事实源 1：v0.5.0 B1 已脱敏持久化的 Runtime 执行结果（apply_patch_to_workspace）
+  for (const execution of props.patchResults) {
+    if (execution.status !== "succeeded") continue;
+    const detail = execution.output ?? {};
+    const relPath = detail.rel_path;
+    if (typeof relPath !== "string" || !relPath) continue;
+    const key = `${relPath}:${String(detail.new_sha256 ?? "")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    changes.push({
+      relPath,
+      verified: detail.verified === true,
+      diff: typeof detail.diff === "string" ? detail.diff : "",
+      truncated: detail.truncated === true,
+      at: execution.completed_at ?? execution.created_at,
+    });
+  }
+  // 事实源 2：legacy 工具调用结果（兼容路径）
+  for (const message of props.messages) {
+    const tool = message.tool_call;
+    if (!tool || tool.tool_name !== "apply_patch_to_workspace") continue;
+    if (tool.status !== "succeeded") continue;
+    const detail = tool.output_json ?? {};
+    const relPath = detail.rel_path;
+    if (typeof relPath !== "string" || !relPath) continue;
+    const key = `${relPath}:${String(detail.new_sha256 ?? "")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    changes.push({
+      relPath,
+      verified: detail.verified === true,
+      diff: typeof detail.diff === "string" ? detail.diff : "",
+      truncated: detail.truncated === true,
+      at: message.created_at,
+    });
+  }
+  return changes;
+});
+
+function changeForPath(path: string): FileChange | undefined {
+  return fileChanges.value.find((change) => change.relPath === path);
+}
+
+const diffDialog = ref<FileChange | null>(null);
+
 function artifactIcon(activity: Activity) {
   const type = String(activity.detail_json?.artifact ?? "");
   if (type === "image") return PhImage;
@@ -124,22 +188,41 @@ function artifactIcon(activity: Activity) {
               <PhFile v-else-if="entry.kind === 'file'" :size="14" class="file-icon" />
               <PhScroll v-else :size="14" class="file-icon is-tool" />
               <span class="file-path" :title="entry.path">{{ entry.path }}</span>
-              <PaTooltip text="查看 Diff">
-                <PaIconButton label="查看文件变更" size="sm" variant="subtle">
+              <PaBadge
+                v-if="changeForPath(entry.path)"
+                tone="success"
+                :title="`回读校验${changeForPath(entry.path)?.verified ? '通过' : '未完成'} · ${formatActivityTime(changeForPath(entry.path)?.at ?? '')}`"
+              >
+                <PhCheck :size="11" />
+                已修改
+              </PaBadge>
+              <PaTooltip
+                v-if="changeForPath(entry.path)"
+                text="查看变更 Diff"
+              >
+                <PaIconButton
+                  label="查看文件变更"
+                  size="sm"
+                  variant="subtle"
+                  @click="diffDialog = changeForPath(entry.path) ?? null"
+                >
                   <PhCaretRight :size="13" />
                 </PaIconButton>
               </PaTooltip>
             </li>
           </ul>
           <p class="rail-hint">
-            Diff 入口将在 D3 接入：授权文件、修改状态与变更摘要集中在此。
+            {{ fileChanges.length }} 个文件已修改
+            <template v-if="fileChanges.length">
+              · 回读校验已核对写入内容；点击「已修改」文件可查看完整 Diff。
+            </template>
           </p>
         </template>
         <PaEmptyState
           v-else
           :icon="PhFolder"
           title="尚未授权文件"
-          description="Agent 读写文件前会先请求授权，授权路径会显示在这里。"
+          description="Agent 读写文件前会先请求授权，授权路径与修改摘要会显示在这里。"
         />
       </section>
 
@@ -227,6 +310,31 @@ function artifactIcon(activity: Activity) {
         />
       </section>
     </div>
+
+    <PaDialog
+      v-if="diffDialog"
+      :open="true"
+      :title="`变更 Diff · ${diffDialog.relPath}`"
+      :width="760"
+      @close="diffDialog = null"
+    >
+      <div class="diff-dialog-body">
+        <p class="rail-hint">
+          写入后回读校验：<strong>{{
+            diffDialog.verified ? "通过（磁盘内容与审批参数一致）" : "未通过或未知"
+          }}</strong>
+          · {{ formatActivityTime(diffDialog.at) }}
+        </p>
+        <pre class="diff-dialog-pre">{{ diffDialog.diff }}</pre>
+        <PaInlineNotice
+          v-if="diffDialog.truncated"
+          tone="warning"
+          title="Diff 预览曾被截断"
+        >
+          展示内容不完整；实际写入以审批时绑定参数的原始内容为准。
+        </PaInlineNotice>
+      </div>
+    </PaDialog>
   </div>
 </template>
 
@@ -436,5 +544,22 @@ function artifactIcon(activity: Activity) {
 .artifact-copy small {
   color: var(--color-fg-faint);
   font-size: var(--pa-t-11);
+}
+.diff-dialog-body {
+  display: grid;
+  gap: var(--space-3);
+}
+.diff-dialog-pre {
+  margin: 0;
+  max-height: 60vh;
+  overflow: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--pa-text-mono);
+  line-height: 1.55;
+  white-space: pre;
 }
 </style>

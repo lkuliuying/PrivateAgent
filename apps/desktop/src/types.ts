@@ -107,6 +107,32 @@ export interface AgentRunApproval {
   created_at: string;
 }
 
+/** v0.5.0 B1：审批时的文件变更预览（只读 DTO；previewable=false 时仅 reason）。 */
+export interface AgentApprovalPreview {
+  tool_name: string;
+  previewable: boolean;
+  rel_path: string | null;
+  creates_file: boolean | null;
+  old_sha256: string | null;
+  new_sha256: string | null;
+  diff: string | null;
+  truncated: boolean | null;
+  reason: string | null;
+}
+
+/** v0.5.0 B1：已脱敏/限长并持久化的工具执行结果（UI 展示用）。 */
+export interface AgentToolExecution {
+  id: string;
+  tool_name: string;
+  tool_version: string;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  output: Record<string, unknown> | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export type DocStatus =
   | "pending"
   | "processing"

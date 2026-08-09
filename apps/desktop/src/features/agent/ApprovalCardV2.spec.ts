@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import ApprovalCardV2 from "./ApprovalCardV2.vue";
-import type { AgentRunApproval, ToolCall } from "../../types";
+import type { AgentApprovalPreview, AgentRunApproval, ToolCall } from "../../types";
+import * as agentRunsApi from "../../api/agentRuns";
 
 function makeApproval(overrides: Partial<AgentRunApproval> = {}): AgentRunApproval {
   return {
@@ -75,5 +76,81 @@ describe("ApprovalCardV2", () => {
     });
     expect(wrapper.text()).toContain("已过期");
     expect(wrapper.text()).toContain("重新发起");
+  });
+});
+
+describe("ApprovalCardV2 · v0.5.0 B1 文件变更预览", () => {
+  function makePatchApproval(): AgentRunApproval {
+    return makeApproval({ tool_name: "apply_patch_to_workspace" });
+  }
+
+  const preview: AgentApprovalPreview = {
+    tool_name: "apply_patch_to_workspace",
+    previewable: true,
+    rel_path: "src/main.py",
+    creates_file: false,
+    old_sha256: "a".repeat(64),
+    new_sha256: "b".repeat(64),
+    diff: "--- a/src/main.py\n+++ b/src/main.py\n@@ -1 +1 @@\n-old\n+new",
+    truncated: false,
+    reason: null,
+  };
+
+  it("patch 工具审批时展示文件、SHA 与完整 diff", async () => {
+    const spy = vi
+      .spyOn(agentRunsApi, "getAgentApprovalPreview")
+      .mockResolvedValue(preview);
+    const wrapper = mount(ApprovalCardV2, {
+      props: { approval: makePatchApproval() },
+    });
+    await flushPromises();
+    expect(spy).toHaveBeenCalledWith("run-1", "ap-1");
+    expect(wrapper.text()).toContain("变更预览");
+    expect(wrapper.text()).toContain("src/main.py");
+    expect(wrapper.text()).toContain(preview.diff);
+    expect(wrapper.text()).toContain("旧 SHA");
+    expect(wrapper.text()).toContain("新 SHA");
+    spy.mockRestore();
+  });
+
+  it("不可预览时显示原因且不阻塞审批按钮", async () => {
+    const spy = vi
+      .spyOn(agentRunsApi, "getAgentApprovalPreview")
+      .mockResolvedValue({
+        ...preview,
+        previewable: false,
+        diff: null,
+        reason: "审批参数不完整，无法生成预览",
+      });
+    const wrapper = mount(ApprovalCardV2, {
+      props: { approval: makePatchApproval() },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("无法生成预览");
+    expect(
+      wrapper.findAll("button").some((b) => b.text().includes("批准执行"))
+    ).toBe(true);
+    spy.mockRestore();
+  });
+
+  it("加载失败静默降级，不抛错不阻塞", async () => {
+    const spy = vi
+      .spyOn(agentRunsApi, "getAgentApprovalPreview")
+      .mockRejectedValue(new Error("network down"));
+    const wrapper = mount(ApprovalCardV2, {
+      props: { approval: makePatchApproval() },
+    });
+    await flushPromises();
+    expect(wrapper.text()).toContain("无法加载变更预览");
+    spy.mockRestore();
+  });
+
+  it("非文件类工具不发起预览请求", () => {
+    const spy = vi
+      .spyOn(agentRunsApi, "getAgentApprovalPreview")
+      .mockResolvedValue(preview);
+    mount(ApprovalCardV2, { props: { approval: makeApproval() } });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });

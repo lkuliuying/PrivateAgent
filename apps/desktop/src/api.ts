@@ -156,6 +156,8 @@ export type {
 } from "./api/mcp";
 export {
   approveAgentRunTool,
+  getAgentApprovalPreview,
+  listAgentRunExecutions,
   listPendingAgentApprovals,
   rejectAgentRunTool,
   streamAgentRunContinuation,

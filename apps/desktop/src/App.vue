@@ -44,6 +44,7 @@ import {
   rejectAgentRunTool,
   listToolCalls,
   listPendingAgentApprovals,
+  listAgentRunExecutions,
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
@@ -55,6 +56,7 @@ import {
   shouldUseLegacyToolPlanner,
 } from "./api";
 import type { Session, View, Activity, TrustedPath } from "./types";
+import type { AgentToolExecution } from "./types";
 import { viewLabel } from "./models/viewRegistry";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
@@ -107,6 +109,29 @@ const sessions = ref<Session[]>([]);
 const currentSessionId = ref<number | null>(null);
 const messages = ref<AgentWorkspaceMessage[]>([]);
 const streaming = ref(false);
+
+/**
+ * v0.5.0 B1：已脱敏/限长并持久化的工具执行结果（ContextRail Files/Diff 事实源）。
+ * 每次 run 结束后拉取一次；会话重载时对存在审批的 run 一并拉取。
+ */
+const runExecutions = ref<AgentToolExecution[]>([]);
+
+async function loadRunExecutions(runId: string) {
+  if (!runId) return;
+  try {
+    const executions = await listAgentRunExecutions(runId);
+    const patchResults = executions.filter(
+      (execution) => execution.tool_name === "apply_patch_to_workspace"
+    );
+    const merged = runExecutions.value.filter(
+      (execution) =>
+        !patchResults.some((candidate) => candidate.id === execution.id)
+    );
+    runExecutions.value = [...merged, ...patchResults];
+  } catch {
+    // 执行结果缺失不影响聊天流；后续可在同一 run 上重试
+  }
+}
 // v2 上下文栏数据：会话活动（5s 轮询）与授权路径，与当前任务绑定
 const sessionActivities = ref<Activity[]>([]);
 const trustedPaths = ref<TrustedPath[]>([]);
@@ -511,6 +536,12 @@ async function rehydrateToolCalls(sessionId: number) {  try {
   } catch {
     // Agent Runtime is default-off; a hidden approval API must not break chat loading.
   }
+  // B1：会话重载时对存在审批的 run 一并拉取已脱敏的执行结果（Files/Diff 事实源）。
+  for (const message of messages.value) {
+    if (message.agent_approval?.run_id) {
+      loadRunExecutions(message.agent_approval.run_id);
+    }
+  }
 }
 
 async function newSession() {
@@ -665,6 +696,7 @@ function streamAssistantReply(
       } else if (e.type === "done") {
         const completedMessage = ensureResponseMessage();
         if (e.run_id) {
+          loadRunExecutions(e.run_id);
           for (const message of messages.value) {
             if (
               message.agent_approval?.run_id === e.run_id &&
@@ -728,6 +760,7 @@ function continueAgentReply(runId: string, sid: number) {
       if (event.type === "token" && event.content) {
         assistantMessage.content += event.content;
       } else if (event.type === "done") {
+        loadRunExecutions(runId);
         if (event.message_id) assistantMessage.id = event.message_id;
         if (event.content) assistantMessage.content = event.content;
         if (event.sources) assistantMessage.sources = event.sources;
@@ -1011,6 +1044,7 @@ function stopGenerate() {
           :messages="messages"
           :activities="workspacePreview?.activities ?? sessionActivities"
           :trusted="workspacePreview?.trusted ?? trustedPaths"
+          :patch-results="runExecutions"
           :chunk-id="currentChunkId"
           @close="inspectorOpen = false"
           @select-chunk="currentChunkId = $event"

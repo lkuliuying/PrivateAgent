@@ -48,6 +48,7 @@ from ..core.db import get_session
 from ..core.history import SessionRepository
 from ..core.models import AgentRun as AgentRunRecord
 from ..core.models import ToolApproval as ToolApprovalRecord
+from ..core.patch_workflow import build_patch_tool_registry
 from ..core.provider import ProviderRouter
 from ..core.rag_citation_evidence import load_durable_rag_citation_sources
 from ..core.rag_tool_adapter import build_rag_tool_registry
@@ -150,6 +151,41 @@ class AgentToolApprovalResponse(BaseModel):
     created_at: str
 
 
+class AgentApprovalPreviewResponse(BaseModel):
+    """v0.5.0 B1：审批时的文件变更预览（只读 DTO，不含审批 token/明文 secret）。
+
+    ``previewable=False`` 时只返回 ``reason`` 说明；预览基于当前磁盘事实
+    重新计算，与审批参数无关（审批本身仍绑定参数哈希）。
+    """
+
+    tool_name: str
+    previewable: bool
+    rel_path: str | None = None
+    creates_file: bool | None = None
+    old_sha256: str | None = None
+    new_sha256: str | None = None
+    diff: str | None = None
+    truncated: bool | None = None
+    reason: str | None = None
+
+
+class AgentToolExecutionResponse(BaseModel):
+    """v0.5.0 B1：已脱敏、限长并持久化的工具执行结果（UI 展示用）。
+
+    ``output`` 是 dispatcher 验证/脱敏后的有界 JSON；不包含审批 token。
+    """
+
+    id: str
+    tool_name: str
+    tool_version: str
+    status: str
+    error_code: str | None
+    error_message: str | None
+    output: dict | None
+    created_at: str
+    completed_at: str | None
+
+
 @dataclass(frozen=True, slots=True)
 class AgentToolBundle:
     definitions: tuple[ModelToolDefinition, ...]
@@ -195,6 +231,7 @@ async def get_agent_tool_bundle(
     mcp_records = await McpRepository(db).list_active() if cfg.mcp_enabled else []
     if (
         not cfg.agent_run_read_only_tools_enabled
+        and not cfg.agent_patch_workflow_enabled
         and not cfg.agent_rag_tools_enabled
         and not mcp_records
     ):
@@ -212,8 +249,13 @@ async def get_agent_tool_bundle(
         if cfg.agent_run_read_only_tools_enabled:
             for spec in build_read_only_tool_registry(run_db).list():
                 registry.register(spec)
-            # R4：文件 diff 结果验证器——复用旧 SHA/回读事实复核 propose_patch 预览，
-            # 防止模型基于过期预览继续操作（read-only 工作流即真实调用方）。
+        if cfg.agent_patch_workflow_enabled:
+            for spec in build_patch_tool_registry(run_db).list():
+                registry.register(spec)
+        if cfg.agent_run_read_only_tools_enabled or cfg.agent_patch_workflow_enabled:
+            # R4/B1：文件 diff 结果验证器——复用旧 SHA/回读事实复核 propose_patch
+            # 预览与 apply_patch_to_workspace 写入，防止基于过期预览继续操作或
+            # 伪造写入结果（read-only 与 Patch 工作流共用该验证器）。
             from ..agents.result_verification import FileDiffResultVerifier
             from ..core.projects import ProjectService
 
@@ -230,19 +272,24 @@ async def get_agent_tool_bundle(
                 run_db, mcp_records, run_id=run_id
             ).list():
                 registry.register(spec)
+        granted_capabilities = frozenset(
+            {
+                ToolCapability.FILESYSTEM_READ,
+                ToolCapability.PROCESS_EXECUTE,
+                ToolCapability.DATABASE_QUERY,
+                ToolCapability.NETWORK_FETCH,
+                ToolCapability.EXTERNAL_MCP,
+            }
+        )
+        if cfg.agent_patch_workflow_enabled:
+            # 只有 Patch 工作流开启时才授予写能力（B1 契约：filesystem.write
+            # 不随只读工具开放）。
+            granted_capabilities = granted_capabilities | {
+                ToolCapability.FILESYSTEM_WRITE
+            }
         return ValidatedToolDispatcher(
             registry,
-            policy=ToolCapabilityPolicy(
-                granted_capabilities=frozenset(
-                    {
-                        ToolCapability.FILESYSTEM_READ,
-                        ToolCapability.PROCESS_EXECUTE,
-                        ToolCapability.DATABASE_QUERY,
-                        ToolCapability.NETWORK_FETCH,
-                        ToolCapability.EXTERNAL_MCP,
-                    }
-                )
-            ),
+            policy=ToolCapabilityPolicy(granted_capabilities=granted_capabilities),
             approval_requester=SqlToolApprovalRequester(run_db, run_id=run_id),
             approval_consumer=(
                 SqlToolApprovalConsumer(
@@ -512,6 +559,107 @@ async def list_agent_run_approvals(
         raise HTTPException(status_code=404, detail="Agent run not found")
     records = await ToolApprovalRepository(db).list_for_run(run_id)
     return [_approval_response(record) for record in records]
+
+
+@router.get(
+    "/{run_id}/executions",
+    response_model=list[AgentToolExecutionResponse],
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def list_agent_run_executions(
+    run_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> list[AgentToolExecutionResponse]:
+    """B1：返回已脱敏/限长并持久化的工具执行结果（UI 产物与 Diff 入口的事实源）。"""
+    if await AgentRunRepository(db).get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    records = await ToolExecutionRepository(db, run_id=run_id).list_for_run()
+    return [
+        AgentToolExecutionResponse(
+            id=record.id,
+            tool_name=record.tool_name,
+            tool_version=record.tool_version,
+            status=record.status,
+            error_code=record.error_code,
+            error_message=record.error_message,
+            output=record.output_json if isinstance(record.output_json, dict) else None,
+            created_at=_timestamp(record.created_at) or "",
+            completed_at=_timestamp(record.completed_at),
+        )
+        for record in records
+    ]
+
+
+@router.get(
+    "/{run_id}/approvals/{approval_id}/preview",
+    response_model=AgentApprovalPreviewResponse,
+    dependencies=[Depends(require_agent_approvals_api)],
+)
+async def preview_agent_approval(
+    run_id: str,
+    approval_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> AgentApprovalPreviewResponse:
+    """B1：返回审批的文件变更预览（只读，基于当前磁盘事实重新计算）。
+
+    只对文件变更类工具（apply_patch_to_workspace / propose_patch）提供；
+    未开启 Patch 或只读工作流时与工具可见性保持一致返回 404。
+    """
+    if not (
+        cfg.agent_patch_workflow_enabled or cfg.agent_run_read_only_tools_enabled
+    ):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    approval = await ToolApprovalRepository(db).get(approval_id)
+    if approval is None or approval.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Tool approval not found")
+    if approval.tool_name not in {"apply_patch_to_workspace", "propose_patch"}:
+        return AgentApprovalPreviewResponse(
+            tool_name=approval.tool_name,
+            previewable=False,
+            reason="该工具不产生文件变更预览",
+        )
+    arguments = approval.arguments_json or {}
+    project_id = arguments.get("project_id")
+    rel_path = arguments.get("rel_path")
+    new_content = arguments.get("new_content")
+    if (
+        not isinstance(project_id, int)
+        or project_id <= 0
+        or not isinstance(rel_path, str)
+        or not isinstance(new_content, str)
+    ):
+        return AgentApprovalPreviewResponse(
+            tool_name=approval.tool_name,
+            previewable=False,
+            reason="审批参数不完整，无法生成预览",
+        )
+    from ..core.code_tools import propose_patch
+
+    try:
+        preview = await propose_patch(
+            db,
+            project_id,
+            rel_path,
+            new_content,
+            create=bool(arguments.get("create", False)),
+        )
+    except Exception as exc:  # noqa: BLE001 - 只读预览失败不阻塞审批
+        return AgentApprovalPreviewResponse(
+            tool_name=approval.tool_name,
+            previewable=False,
+            reason=str(exc)[:200] or type(exc).__name__,
+        )
+    return AgentApprovalPreviewResponse(
+        tool_name=approval.tool_name,
+        previewable=True,
+        rel_path=preview["rel_path"],
+        creates_file=preview["creates_file"],
+        old_sha256=preview["old_sha256"],
+        new_sha256=preview["new_sha256"],
+        diff=preview["diff"],
+        truncated=preview["truncated"],
+    )
 
 
 @router.get(
