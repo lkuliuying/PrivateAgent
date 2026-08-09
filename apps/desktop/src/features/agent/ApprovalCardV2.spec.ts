@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import ApprovalCardV2 from "./ApprovalCardV2.vue";
-import type { AgentApprovalPreview, AgentRunApproval, ToolCall } from "../../types";
+import type {
+  AgentApprovalPreview,
+  AgentRunApproval,
+  AgentToolExecution,
+  ToolCall,
+} from "../../types";
 import * as agentRunsApi from "../../api/agentRuns";
 
 function makeApproval(overrides: Partial<AgentRunApproval> = {}): AgentRunApproval {
@@ -150,6 +155,87 @@ describe("ApprovalCardV2 · v0.5.0 B1 文件变更预览", () => {
       .spyOn(agentRunsApi, "getAgentApprovalPreview")
       .mockResolvedValue(preview);
     mount(ApprovalCardV2, { props: { approval: makeApproval() } });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+});
+
+describe("ApprovalCardV2 · v0.5.0 B2 命令实时输出", () => {
+  const execution: AgentToolExecution = {
+    id: "exec-1",
+    tool_name: "run_whitelisted_command",
+    tool_version: "1.0.0",
+    status: "running",
+    error_code: null,
+    error_message: null,
+    output: {
+      args: ["pytest", "-q"],
+      cwd: "F:\\project",
+      returncode: 0,
+      succeeded: true,
+      processes_remaining: 0,
+    },
+    created_at: "2026-08-09T00:00:00Z",
+    completed_at: null,
+  };
+
+  function makeCommandApproval(status: AgentRunApproval["status"]): AgentRunApproval {
+    return makeApproval({ tool_name: "run_whitelisted_command", status });
+  }
+
+  it("审批通过后拉取 executions 并轮询展示流式输出与退出码", async () => {
+    vi.spyOn(agentRunsApi, "listAgentRunExecutions").mockResolvedValue([execution]);
+    const pageSpy = vi
+      .spyOn(agentRunsApi, "getAgentToolOutput")
+      .mockResolvedValueOnce({
+        lines: [
+          { seq: 0, kind: "stdout", text: "collecting..." },
+          { seq: 1, kind: "stdout", text: "1 passed" },
+        ],
+        last_seq: 1,
+        finished: false,
+      })
+      .mockResolvedValueOnce({
+        lines: [],
+        last_seq: 1,
+        finished: true,
+      });
+    const wrapper = mount(ApprovalCardV2, {
+      props: { approval: makeCommandApproval("approved") },
+    });
+    await flushPromises();
+    await flushPromises();
+    expect(pageSpy).toHaveBeenCalledWith("run-1", "exec-1", -1);
+    expect(wrapper.text()).toContain("pytest -q");
+    expect(wrapper.text()).toContain("collecting...");
+    expect(wrapper.text()).toContain("1 passed");
+    vi.restoreAllMocks();
+  });
+
+  it("完成后展示退出码徽标与进程树残留", async () => {
+    vi.spyOn(agentRunsApi, "listAgentRunExecutions").mockResolvedValue([
+      { ...execution, status: "succeeded" },
+    ]);
+    vi.spyOn(agentRunsApi, "getAgentToolOutput").mockResolvedValue({
+      lines: [{ seq: 0, kind: "stdout", text: "1 passed" }],
+      last_seq: 0,
+      finished: true,
+    });
+    const wrapper = mount(ApprovalCardV2, {
+      props: { approval: makeCommandApproval("consumed") },
+    });
+    await flushPromises();
+    await flushPromises();
+    expect(wrapper.text()).toContain("成功");
+    expect(wrapper.text()).toContain("F:\\project");
+    vi.restoreAllMocks();
+  });
+
+  it("非命令工具不发起命令轮询", () => {
+    const spy = vi.spyOn(agentRunsApi, "listAgentRunExecutions");
+    mount(ApprovalCardV2, {
+      props: { approval: makeApproval({ status: "approved" }) },
+    });
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });

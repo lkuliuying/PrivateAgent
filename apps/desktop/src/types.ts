@@ -133,6 +133,19 @@ export interface AgentToolExecution {
   completed_at: string | null;
 }
 
+/** v0.5.0 B2：流式输出行（已脱敏、单行有界；按 seq 续读）。 */
+export interface AgentToolOutputLine {
+  seq: number;
+  kind: string;
+  text: string;
+}
+
+export interface AgentToolOutputPage {
+  lines: AgentToolOutputLine[];
+  last_seq: number;
+  finished: boolean;
+}
+
 export type DocStatus =
   | "pending"
   | "processing"

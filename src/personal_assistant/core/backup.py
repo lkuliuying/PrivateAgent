@@ -70,6 +70,7 @@ BACKUP_TABLES = [
     "tool_approvals",
     "agent_run_checkpoints",
     "agent_tool_executions",
+    "tool_execution_output",
     "memory_facts",
     "memory_fact_versions",
     "document_index_versions",

@@ -259,6 +259,10 @@ _RUN_COMMAND_OUTPUT: Mapping[str, Any] = {
             "minimum": 0,
             "description": "取消/超时后仍残留的子进程数（0 表示清理完成）",
         },
+        "profile": {
+            "type": "string",
+            "description": "匹配的项目 command profile 名称（未匹配时省略；B2 additive）",
+        },
     },
     "required": [
         "project_id",

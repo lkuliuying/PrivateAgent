@@ -8,6 +8,7 @@ import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import suppress
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -118,6 +119,17 @@ class ToolExecutionStore(Protocol):
 
 _NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
+
+# v0.5.0 B2：当前 dispatcher 正在执行的 execution_id（供 executor 持久化流式
+# 输出等执行期副作用使用）。claim 成功后设置，执行结束/异常时复位。
+_EXECUTION_ID_CONTEXT: ContextVar[str | None] = ContextVar(
+    "agent_execution_id", default=None
+)
+
+
+def current_execution_id() -> str | None:
+    """Return the execution id claimed by the dispatcher for this tool call."""
+    return _EXECUTION_ID_CONTEXT.get()
 _DEFAULT_SENSITIVE_KEYS = frozenset(
     {
         "api_key",
@@ -512,35 +524,43 @@ class ValidatedToolDispatcher:
                     output=deepcopy(self._success_cache[cache_key]),
                 )
 
+        execution_context = _EXECUTION_ID_CONTEXT.set(
+            execution_claim.execution_id if execution_claim is not None else None
+        )
         try:
-            raw_output = await self._execute_with_bounds(
-                spec,
-                canonical_arguments,
-                cancellation,
-            )
-        except ToolDispatchCancelled:
-            await self._persist_cancelled(execution_claim)
-            raise
-        except TimeoutError:
-            return await self._terminal_failure(
-                call,
-                execution_claim,
-                code="timeout",
-                message="工具执行超时",
-                status="timed_out",
-            )
-        except asyncio.CancelledError:
-            await self._persist_cancelled(execution_claim)
-            raise
-        except Exception as exc:  # noqa: BLE001
-            message = str(exc) or type(exc).__name__
-            return await self._terminal_failure(
-                call,
-                execution_claim,
-                code="executor_error",
-                message=_redact_text(message),
-            )
-
+            try:
+                raw_output = await self._execute_with_bounds(
+                    spec,
+                    canonical_arguments,
+                    cancellation,
+                )
+            except ToolDispatchCancelled as exc:
+                await self._persist_cancelled(
+                    execution_claim,
+                    message=_redact_text(str(exc) or "工具执行已取消"),
+                )
+                raise
+            except TimeoutError as exc:
+                return await self._terminal_failure(
+                    call,
+                    execution_claim,
+                    code="timeout",
+                    message=_redact_text(str(exc) or "工具执行超时"),
+                    status="timed_out",
+                )
+            except asyncio.CancelledError:
+                await self._persist_cancelled(execution_claim)
+                raise
+            except Exception as exc:  # noqa: BLE001
+                message = str(exc) or type(exc).__name__
+                return await self._terminal_failure(
+                    call,
+                    execution_claim,
+                    code="executor_error",
+                    message=_redact_text(message),
+                )
+        finally:
+            _EXECUTION_ID_CONTEXT.reset(execution_context)
         try:
             canonical_output = _json_clone(raw_output)
         except (TypeError, ValueError, RecursionError):
@@ -671,6 +691,8 @@ class ValidatedToolDispatcher:
     async def _persist_cancelled(
         self,
         claim: ToolExecutionClaimView | None,
+        *,
+        message: str = "工具执行已取消",
     ) -> None:
         if claim is None or self._execution_store is None:
             return
@@ -681,7 +703,7 @@ class ValidatedToolDispatcher:
                     claim_token=claim.claim_token or "",
                     status="cancelled",
                     error_code="cancelled",
-                    error_message="工具执行已取消",
+                    error_message=message,
                 )
             )
 

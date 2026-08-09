@@ -221,7 +221,7 @@ def test_frozen_schema_hashes_are_stable():
         },
         "run_whitelisted_command": {
             "input": "e4c81cf7903b5f19162ac45215ad922150c17a0e07711953604a79f6ae7b5fa1",
-            "output": "0409fa3c45e43af8798586a7c647262b7880ec11a072cf5cdb0cf6412f4f250b",
+            "output": "ad5bc525ad4a5b235131f1953f51c7a91252d35c688ce8094536b81d0b0487f4",
         },
         "call_allowlisted_api": {
             "input": "6e17911a602f2eeb070bd98b3f14d66c2eca5f4ae201ccdf17194af8abd3752b",

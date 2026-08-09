@@ -157,6 +157,7 @@ export type {
 export {
   approveAgentRunTool,
   getAgentApprovalPreview,
+  getAgentToolOutput,
   listAgentRunExecutions,
   listPendingAgentApprovals,
   rejectAgentRunTool,

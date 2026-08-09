@@ -2393,6 +2393,33 @@ class AgentToolExecution(Base):
     )
 
 
+class ToolExecutionOutput(Base):
+    """v0.5.0 B2：有界流式工具输出行（脱敏后按 seq 续读）。"""
+
+    __tablename__ = "tool_execution_output"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    execution_id: Mapped[str] = mapped_column(
+        CHAR(36),
+        ForeignKey("agent_tool_executions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    seq: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    kind: Mapped[str] = mapped_column(VARCHAR(8), nullable=False)
+    text: Mapped[str] = mapped_column(VARCHAR(8192), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        UniqueConstraint("execution_id", "seq", name="uk_tool_execution_output_seq"),
+        Index("idx_tool_execution_output_exec", "execution_id", "seq"),
+    )
+
+
 class McpServer(Base):
     """Trusted-boundary configuration and discovery cache for one MCP server."""
 

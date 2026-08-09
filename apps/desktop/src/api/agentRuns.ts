@@ -2,6 +2,7 @@ import type {
   AgentApprovalPreview,
   AgentRunApproval,
   AgentToolExecution,
+  AgentToolOutputPage,
   ChatEvent,
 } from "../types";
 import { apiFetch as fetch, ensureApiBase } from "./http";
@@ -19,6 +20,23 @@ export async function listAgentRunExecutions(
   const base = await ensureApiBase();
   const response = await fetch(
     `${base}/agent-runs/${encodeURIComponent(runId)}/executions`
+  );
+  await requireOk(response);
+  return response.json();
+}
+
+/**
+ * v0.5.0 B2：按 seq 续读流式输出（实时输出轮询）。afterSeq 传上次返回的
+ * last_seq；默认 -1 返回全部（含 seq=0 首行）。
+ */
+export async function getAgentToolOutput(
+  runId: string,
+  executionId: string,
+  afterSeq: number = -1
+): Promise<AgentToolOutputPage> {
+  const base = await ensureApiBase();
+  const response = await fetch(
+    `${base}/agent-runs/${encodeURIComponent(runId)}/executions/${encodeURIComponent(executionId)}/output?after_seq=${afterSeq}`
   );
   await requireOk(response);
   return response.json();

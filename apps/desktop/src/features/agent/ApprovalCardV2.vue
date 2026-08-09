@@ -11,10 +11,21 @@ import {
   PhClock,
   PhFilePlus,
   PhShieldWarning,
+  PhTerminal,
   PhX,
 } from "@phosphor-icons/vue";
-import type { AgentApprovalPreview, AgentRunApproval, ToolCall } from "../../types";
-import { getAgentApprovalPreview } from "../../api/agentRuns";
+import type {
+  AgentApprovalPreview,
+  AgentRunApproval,
+  AgentToolExecution,
+  AgentToolOutputLine,
+  ToolCall,
+} from "../../types";
+import {
+  getAgentApprovalPreview,
+  getAgentToolOutput,
+  listAgentRunExecutions,
+} from "../../api/agentRuns";
 import { TOOL_STATUS_META } from "../../models/agentWorkspace";
 import PaBadge from "../../design/PaBadge.vue";
 import PaButton from "../../design/PaButton.vue";
@@ -194,6 +205,100 @@ onUnmounted(() => {
   previewRequest += 1;
 });
 
+/**
+ * v0.5.0 B2：命令工具的实时输出——审批通过/执行中时轮询已脱敏的流式行
+ * （executions + tool_execution_output），展示 argv/cwd/退出码/进程树清理结果。
+ */
+const isCommandTool = computed(
+  () => props.approval?.tool_name === "run_whitelisted_command"
+);
+const commandExec = ref<AgentToolExecution | null>(null);
+const outputLines = ref<AgentToolOutputLine[]>([]);
+const outputLastSeq = ref(-1);
+const outputFinished = ref(false);
+const outputError = ref("");
+let outputTimer: ReturnType<typeof setTimeout> | null = null;
+
+function stopOutputPolling() {
+  if (outputTimer !== null) {
+    clearTimeout(outputTimer);
+    outputTimer = null;
+  }
+}
+
+async function pollCommandOutput() {
+  if (!props.approval) return;
+  const runId = props.approval.run_id;
+  try {
+    if (!commandExec.value) {
+      const executions = await listAgentRunExecutions(runId);
+      const candidates = executions.filter(
+        (execution) => execution.tool_name === "run_whitelisted_command"
+      );
+      if (!candidates.length) return;
+      const running = candidates.find((execution) => execution.status === "running");
+      commandExec.value = running ?? candidates[candidates.length - 1];
+    }
+    const page = await getAgentToolOutput(
+      runId,
+      commandExec.value.id,
+      outputLastSeq.value
+    );
+    if (page.lines.length) {
+      outputLines.value.push(...page.lines);
+      outputLastSeq.value = page.last_seq;
+    }
+    outputFinished.value = page.finished;
+    if (!page.finished) {
+      outputTimer = setTimeout(pollCommandOutput, 600);
+    }
+  } catch {
+    outputError.value = "无法加载命令输出";
+  }
+}
+
+function resetCommandOutput() {
+  commandExec.value = null;
+  outputLines.value = [];
+  outputLastSeq.value = -1;
+  outputFinished.value = false;
+  outputError.value = "";
+  stopOutputPolling();
+}
+
+watch(
+  () => [props.approval?.id, props.approval?.status],
+  ([, status]) => {
+    resetCommandOutput();
+    if (
+      isCommandTool.value &&
+      props.approval &&
+      (status === "approved" || status === "consumed")
+    ) {
+      void pollCommandOutput();
+    }
+  },
+  { immediate: true }
+);
+
+onUnmounted(() => {
+  previewRequest += 1;
+  stopOutputPolling();
+});
+
+const commandExitMeta = computed(() => {
+  const output = commandExec.value?.output ?? {};
+  const returncode = output.returncode;
+  const succeeded = output.succeeded === true;
+  const remaining = output.processes_remaining;
+  return { returncode, succeeded, remaining };
+});
+
+const commandArgv = computed(() => {
+  const args = commandExec.value?.output?.args;
+  return Array.isArray(args) ? args.join(" ") : props.approval?.tool_name ?? "";
+});
+
 </script>
 
 <template>
@@ -277,6 +382,33 @@ onUnmounted(() => {
     >
       {{ preview.reason || "该工具不产生文件变更预览，可查看参数指纹后决定。" }}
     </PaInlineNotice>
+
+    <!-- v0.5.0 B2：命令实时输出（已脱敏流式行 + 退出码/进程树清理证据） -->
+    <section
+      v-if="isCommandTool && commandExec && (outputLines.length || outputError)"
+      class="command-section"
+      aria-label="命令实时输出"
+    >
+      <header class="command-head">
+        <PhTerminal :size="14" />
+        <code class="command-argv">{{ commandArgv }}</code>
+        <PaBadge v-if="outputFinished" :tone="commandExitMeta.succeeded ? 'success' : 'danger'">
+          <PhCheck v-if="commandExitMeta.succeeded" :size="11" />
+          <PhX v-else :size="11" />
+          {{ commandExitMeta.succeeded ? "成功" : `退出码 ${commandExitMeta.returncode ?? "?"}` }}
+        </PaBadge>
+        <PaBadge v-else tone="info"><PhClock :size="11" /> 执行中</PaBadge>
+      </header>
+      <p class="command-meta">
+        <code>{{ commandExec.output?.cwd ?? "" }}</code>
+        <template v-if="commandExitMeta.remaining != null">
+          · 进程树残留 {{ commandExitMeta.remaining }}
+        </template>
+      </p>
+      <pre class="command-output" data-testid="command-output">{{
+        outputError || outputLines.map((line) => line.text).join("\n")
+      }}</pre>
+    </section>
 
     <PaDisclosure
       v-if="props.toolCall"
@@ -474,5 +606,50 @@ onUnmounted(() => {
   font-size: var(--pa-t-12);
   line-height: 1.55;
   white-space: pre;
+}
+.command-section {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+}
+.command-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-t-12);
+}
+.command-argv {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: var(--pa-t-12);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-meta {
+  margin: 0;
+  color: var(--color-fg-faint);
+  font-size: var(--pa-t-12);
+  overflow-wrap: anywhere;
+}
+.command-output {
+  margin: 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  font-size: var(--pa-t-12);
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 </style>

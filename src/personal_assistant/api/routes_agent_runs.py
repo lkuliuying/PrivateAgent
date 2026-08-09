@@ -43,11 +43,14 @@ from ..context import (
     context_event_payload,
     prepare_agent_context,
 )
+from ..core.command_workflow import build_command_tool_registry
 from ..core.compatibility import compatibility_telemetry
 from ..core.db import get_session
 from ..core.history import SessionRepository
 from ..core.models import AgentRun as AgentRunRecord
+from ..core.models import AgentToolExecution as ToolExecutionRecord
 from ..core.models import ToolApproval as ToolApprovalRecord
+from ..core.models import ToolExecutionOutput as ToolExecutionOutputRecord
 from ..core.patch_workflow import build_patch_tool_registry
 from ..core.provider import ProviderRouter
 from ..core.rag_citation_evidence import load_durable_rag_citation_sources
@@ -186,6 +189,20 @@ class AgentToolExecutionResponse(BaseModel):
     completed_at: str | None
 
 
+class AgentToolOutputLineResponse(BaseModel):
+    """v0.5.0 B2：流式输出行（已脱敏、单行有界；按 seq 续读）。"""
+
+    seq: int
+    kind: str
+    text: str
+
+
+class AgentToolOutputPageResponse(BaseModel):
+    lines: list[AgentToolOutputLineResponse]
+    last_seq: int
+    finished: bool
+
+
 @dataclass(frozen=True, slots=True)
 class AgentToolBundle:
     definitions: tuple[ModelToolDefinition, ...]
@@ -232,6 +249,7 @@ async def get_agent_tool_bundle(
     if (
         not cfg.agent_run_read_only_tools_enabled
         and not cfg.agent_patch_workflow_enabled
+        and not cfg.agent_command_workflow_enabled
         and not cfg.agent_rag_tools_enabled
         and not mcp_records
     ):
@@ -264,6 +282,33 @@ async def get_agent_tool_bundle(
                 return project.root_path
 
             result_verifier = FileDiffResultVerifier(resolve_root)
+        if cfg.agent_command_workflow_enabled:
+            for spec in build_command_tool_registry(run_db).list():
+                registry.register(spec)
+            # B2：Shell + CodeCommand 组合验证器——退出码/超时/取消结构检查 +
+            # 白名单前缀与成功/失败标记检查（可信代码固定注入，模型不能绕过）。
+            from ..agents.result_verification import (
+                CodeCommandResultVerifier,
+                CompositeToolResultVerifier,
+                ShellResultVerifier,
+            )
+
+            command_verifier = CompositeToolResultVerifier(
+                [
+                    ShellResultVerifier(
+                        expected_returncode=0,
+                        reject_timeout=True,
+                        reject_cancelled=True,
+                        reject_stderr=False,
+                    ),
+                    CodeCommandResultVerifier(),
+                ]
+            )
+            result_verifier = (
+                command_verifier
+                if result_verifier is None
+                else CompositeToolResultVerifier([result_verifier, command_verifier])
+            )
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
                 registry.register(spec)
@@ -588,6 +633,59 @@ async def list_agent_run_executions(
         )
         for record in records
     ]
+
+
+@router.get(
+    "/{run_id}/executions/{execution_id}/output",
+    response_model=AgentToolOutputPageResponse,
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def list_agent_tool_output(
+    run_id: str,
+    execution_id: str,
+    after_seq: int = Query(default=-1, ge=-1),
+    limit: int = Query(default=2_000, ge=1, le=10_000),
+    db: AsyncSession = Depends(get_session),
+) -> AgentToolOutputPageResponse:
+    """B2：按 seq 续读已脱敏、有界的流式输出（实时输出轮询入口）。
+
+    ``after_seq`` 表示只返回 seq 大于该值的行；默认 -1 返回全部
+    （含 seq=0 的首行），客户端用返回的 ``last_seq`` 继续轮询。
+    """
+    if await AgentRunRepository(db).get_run(run_id) is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    rows = (
+        await db.execute(
+            select(ToolExecutionOutputRecord)
+            .where(
+                ToolExecutionOutputRecord.run_id == run_id,
+                ToolExecutionOutputRecord.execution_id == execution_id,
+                ToolExecutionOutputRecord.seq > after_seq,
+            )
+            .order_by(ToolExecutionOutputRecord.seq.asc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    finished = False
+    execution = (
+        await db.execute(
+            select(ToolExecutionRecord)
+            .where(
+                ToolExecutionRecord.run_id == run_id,
+                ToolExecutionRecord.id == execution_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if execution is not None:
+        finished = execution.status in {"succeeded", "failed", "timed_out", "cancelled"}
+    return AgentToolOutputPageResponse(
+        lines=[
+            AgentToolOutputLineResponse(seq=row.seq, kind=row.kind, text=row.text)
+            for row in rows
+        ],
+        last_seq=rows[-1].seq if rows else after_seq,
+        finished=finished,
+    )
 
 
 @router.get(
