@@ -102,6 +102,9 @@ async function openV2(page: Page, width: number, height = 900) {
 }
 
 test.describe("0.4.0 视觉回归矩阵", () => {
+  // rc.3：视觉基线对流水线负载下的字体栅格化抖动敏感（单独跑稳定）；
+  // 允许单次自动重试吸收抖动，不掩盖真实回归（重试仍失败则 FAIL）。
+  test.describe.configure({ retries: 1 });
   test.use({ reducedMotion: "reduce" });
 
   test("v2 Agent 工作区 1280", async ({ page }) => {
