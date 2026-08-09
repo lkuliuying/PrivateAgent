@@ -29,15 +29,31 @@ from personal_assistant.core.conversation_summarizer import (
 
 
 def test_capabilities_fields_frozen():
-    """§1：/capabilities 字段集合与互斥语义固定。"""
+    """§1：/capabilities 字段集合与互斥语义固定。
+
+    v0.5.0 B0 additive 扩展：新增四个可信工作流开关字段（默认 False），
+    既有字段不变。见 docs/v0.5.0-b0-contracts-20260809.md §2。
+    """
     assert set(RuntimeCapabilities.model_fields) == {
         "chat_execution_mode",
         "legacy_tool_planner_enabled",
         "agent_read_only_tools_enabled",
         "rag_chat_runtime_enabled",
+        "patch_workflow_enabled",
+        "command_workflow_enabled",
+        "http_workflow_enabled",
+        "sql_readonly_workflow_enabled",
     }
     mode = RuntimeCapabilities.model_fields["chat_execution_mode"]
     assert mode.annotation.__args__ == ("agent_runtime", "legacy")
+    # 四个新增工作流开关默认关闭（高风险管理默认值）
+    for field in (
+        "patch_workflow_enabled",
+        "command_workflow_enabled",
+        "http_workflow_enabled",
+        "sql_readonly_workflow_enabled",
+    ):
+        assert RuntimeCapabilities.model_fields[field].default is False
     # 互斥语义：legacy_tool_planner 只由 chat_execution_mode 决定（见 test_health.py）
 
 

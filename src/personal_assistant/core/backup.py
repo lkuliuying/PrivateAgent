@@ -78,6 +78,10 @@ BACKUP_TABLES = [
     # MCP registry configuration and metadata-only audit. OS credentials are excluded.
     "mcp_servers",
     "mcp_call_logs",
+    # v0.5.0 B0 trusted-workflow profiles: non-sensitive metadata only.
+    # Secret values live in the OS keyring; exports keep only the configured state.
+    "http_endpoint_profiles",
+    "sql_readonly_profiles",
 ]
 
 
@@ -172,7 +176,7 @@ class BackupService:
         }
 
     async def restore_preview(self, backup_path: str) -> dict:
-        manifest, tables = self._read_backup(backup_path)
+        manifest, tables = _read_backup(backup_path)
         return {
             "path": backup_path,
             "created_at": manifest.get("created_at"),
@@ -187,7 +191,7 @@ class BackupService:
         }
 
     async def restore(self, backup_path: str) -> dict:
-        manifest, tables = self._read_backup(backup_path)
+        manifest, tables = _read_backup(backup_path)
         restored = 0
         for row in tables.get("settings", []):
             key = str(row.get("key") or "")
@@ -334,14 +338,46 @@ class BackupService:
                         environment = {}
                 if isinstance(environment, dict):
                     row["env_json"] = {str(name): "" for name in environment}
+        elif table == "http_endpoint_profiles":
+            # Contract requires only non-secret fixed headers, but defense in
+            # depth never copies values into the archive: keep header names and
+            # blank their values. keyring references are identifiers and kept.
+            for row in rows:
+                headers = _json_object(row.get("headers_json"))
+                if headers is not None:
+                    row["headers_json"] = {str(name): "" for name in headers}
+                refs = _json_object(row.get("secret_refs_json"))
+                if refs is not None:
+                    row["secret_refs_json"] = refs
+        elif table == "sql_readonly_profiles":
+            # Never copy non-URL connection options that could carry secrets.
+            # The keyring reference itself is a non-secret identifier and kept.
+            for row in rows:
+                connect_args = _json_object(row.get("connect_args_json"))
+                if connect_args is not None:
+                    row["connect_args_json"] = {
+                        str(name): "" for name in connect_args
+                    }
         return rows
 
-    @staticmethod
-    def _read_backup(backup_path: str) -> tuple[dict, dict]:
-        path = Path(backup_path)
-        if not path.exists() or path.suffix.lower() != ".zip":
-            raise FileNotFoundError(f"备份包不存在: {backup_path}")
-        with zipfile.ZipFile(path) as zf:
-            manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
-            tables = json.loads(zf.read("tables.json").decode("utf-8"))
-        return manifest, tables
+
+def _json_object(value: Any) -> dict[str, Any] | None:
+    """Return the parsed JSON object, or None when the value is not an object."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(value, dict):
+        return value
+    return None
+
+
+def _read_backup(backup_path: str) -> tuple[dict, dict]:
+    path = Path(backup_path)
+    if not path.exists() or path.suffix.lower() != ".zip":
+        raise FileNotFoundError(f"备份包不存在: {backup_path}")
+    with zipfile.ZipFile(path) as zf:
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        tables = json.loads(zf.read("tables.json").decode("utf-8"))
+    return manifest, tables

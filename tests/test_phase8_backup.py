@@ -83,8 +83,66 @@ async def test_backup_includes_phase678_tables(db, backup_cleanup):
         "document_index_heads",
         "mcp_servers",
         "mcp_call_logs",
+        "http_endpoint_profiles",
+        "sql_readonly_profiles",
     ):
         assert t in tables, f"备份缺少表 {t}"
+
+
+@pytest.mark.asyncio
+async def test_backup_sanitizes_workflow_profile_secrets(db, backup_cleanup):
+    """B0：v0.5.0 profile 表备份导出不携带 header/连接选项明文值。
+
+    保留键名（配置状态）与 keyring 引用标识，清空可能含 secret 的值。
+    """
+    from sqlalchemy import text
+
+    marker = "backup-must-not-contain-7f3b9d"
+    await db.execute(
+        text(
+            "INSERT INTO http_endpoint_profiles "
+            "(name, scheme, host, port, allowed_methods_json, headers_json, "
+            "secret_refs_json) VALUES "
+            "('b0-backup-http', 'https', 'api.example.test', 443, "
+            "JSON_ARRAY('GET'), JSON_OBJECT('X-Api-Key', :marker), "
+            "JSON_OBJECT('X-Api-Key', 'keyring://http-profiles/b0-backup-http/api-key'))"
+        ),
+        {"marker": marker},
+    )
+    await db.execute(
+        text(
+            "INSERT INTO sql_readonly_profiles "
+            "(name, dialect, host, port, `database`, username, password_secret_ref, "
+            "connect_args_json) VALUES "
+            "('b0-backup-sql', 'mysql', 'db.example.test', 3306, 'app', 'appuser', "
+            "'keyring://sql-profiles/b0-backup-sql/password', "
+            "JSON_OBJECT('password', :marker))"
+        ),
+        {"marker": marker},
+    )
+    await db.commit()
+    try:
+        http_rows = await BackupService(db)._dump_table("http_endpoint_profiles")
+        http_row = next(row for row in http_rows if row["name"] == "b0-backup-http")
+        assert http_row["headers_json"] == {"X-Api-Key": ""}
+        assert http_row["secret_refs_json"] == {
+            "X-Api-Key": "keyring://http-profiles/b0-backup-http/api-key"
+        }
+        assert marker not in str(http_row)
+
+        sql_rows = await BackupService(db)._dump_table("sql_readonly_profiles")
+        sql_row = next(row for row in sql_rows if row["name"] == "b0-backup-sql")
+        assert sql_row["connect_args_json"] == {"password": ""}
+        assert sql_row["password_secret_ref"].startswith("keyring://")
+        assert marker not in str(sql_row)
+    finally:
+        await db.execute(
+            text("DELETE FROM http_endpoint_profiles WHERE name = 'b0-backup-http'")
+        )
+        await db.execute(
+            text("DELETE FROM sql_readonly_profiles WHERE name = 'b0-backup-sql'")
+        )
+        await db.commit()
 
 
 @pytest.mark.asyncio

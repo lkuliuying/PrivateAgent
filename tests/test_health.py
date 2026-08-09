@@ -52,6 +52,10 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
         "legacy_tool_planner_enabled": False,
         "agent_read_only_tools_enabled": True,
         "rag_chat_runtime_enabled": True,
+        "patch_workflow_enabled": False,
+        "command_workflow_enabled": False,
+        "http_workflow_enabled": False,
+        "sql_readonly_workflow_enabled": False,
     }
 
     monkeypatch.setattr(routes_health.settings, "chat_agent_runtime_enabled", False)
@@ -60,6 +64,7 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
     assert legacy.json()["chat_execution_mode"] == "legacy"
     assert legacy.json()["legacy_tool_planner_enabled"] is True
     assert legacy.json()["rag_chat_runtime_enabled"] is False
+    assert legacy.json()["patch_workflow_enabled"] is False
 
 
 @pytest.mark.asyncio
@@ -136,12 +141,62 @@ async def test_capabilities_four_key_combinations(
     r = await client.get("/capabilities")
 
     assert r.status_code == 200
-    assert r.json() == expected
-    # 互斥约束：legacy_tool_planner 只由 chat_execution_mode 决定
     body = r.json()
+    expected_body = dict(expected)
+    expected_body.update(
+        {
+            "patch_workflow_enabled": False,
+            "command_workflow_enabled": False,
+            "http_workflow_enabled": False,
+            "sql_readonly_workflow_enabled": False,
+        }
+    )
+    assert body == expected_body
+    # 互斥约束：legacy_tool_planner 只由 chat_execution_mode 决定
     assert body["legacy_tool_planner_enabled"] == (
         body["chat_execution_mode"] == "legacy"
     )
+
+
+@pytest.mark.asyncio
+async def test_capabilities_expose_four_independent_workflow_flags(client, monkeypatch):
+    """B0：四个可信工作流开关彼此独立，默认全部关闭。"""
+    defaults = await client.get("/capabilities")
+    assert defaults.status_code == 200
+    for key in (
+        "patch_workflow_enabled",
+        "command_workflow_enabled",
+        "http_workflow_enabled",
+        "sql_readonly_workflow_enabled",
+    ):
+        assert defaults.json()[key] is False
+
+    monkeypatch.setattr(routes_health.settings, "agent_patch_workflow_enabled", True)
+    only_patch = await client.get("/capabilities")
+    assert only_patch.status_code == 200
+    assert only_patch.json() == {
+        "chat_execution_mode": "legacy",
+        "legacy_tool_planner_enabled": True,
+        "agent_read_only_tools_enabled": False,
+        "rag_chat_runtime_enabled": False,
+        "patch_workflow_enabled": True,
+        "command_workflow_enabled": False,
+        "http_workflow_enabled": False,
+        "sql_readonly_workflow_enabled": False,
+    }
+
+    monkeypatch.setattr(routes_health.settings, "agent_command_workflow_enabled", True)
+    monkeypatch.setattr(routes_health.settings, "agent_http_workflow_enabled", True)
+    monkeypatch.setattr(
+        routes_health.settings, "agent_sql_readonly_workflow_enabled", True
+    )
+    all_four = await client.get("/capabilities")
+    assert all_four.status_code == 200
+    body = all_four.json()
+    assert body["patch_workflow_enabled"] is True
+    assert body["command_workflow_enabled"] is True
+    assert body["http_workflow_enabled"] is True
+    assert body["sql_readonly_workflow_enabled"] is True
 
 
 @pytest.mark.asyncio

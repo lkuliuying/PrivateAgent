@@ -6,13 +6,27 @@ import {
 } from "./runtime";
 
 function capabilities(
-  chat_execution_mode: RuntimeCapabilities["chat_execution_mode"]
+  chat_execution_mode: RuntimeCapabilities["chat_execution_mode"],
+  workflows: Partial<
+    Pick<
+      RuntimeCapabilities,
+      | "patch_workflow_enabled"
+      | "command_workflow_enabled"
+      | "http_workflow_enabled"
+      | "sql_readonly_workflow_enabled"
+    >
+  > = {}
 ): RuntimeCapabilities {
   return {
     chat_execution_mode,
     legacy_tool_planner_enabled: chat_execution_mode === "legacy",
     agent_read_only_tools_enabled: true,
     rag_chat_runtime_enabled: false,
+    patch_workflow_enabled: false,
+    command_workflow_enabled: false,
+    http_workflow_enabled: false,
+    sql_readonly_workflow_enabled: false,
+    ...workflows,
   };
 }
 
@@ -27,5 +41,25 @@ describe("chat execution mode", () => {
 
   it("bypasses the planner in Agent Runtime mode", () => {
     expect(shouldUseLegacyToolPlanner(capabilities("agent_runtime"))).toBe(false);
+  });
+});
+
+describe("trusted workflow gates (v0.5.0 B0)", () => {
+  it("defaults all four workflow gates to disabled", () => {
+    const gates = capabilities("legacy");
+    expect(gates.patch_workflow_enabled).toBe(false);
+    expect(gates.command_workflow_enabled).toBe(false);
+    expect(gates.http_workflow_enabled).toBe(false);
+    expect(gates.sql_readonly_workflow_enabled).toBe(false);
+  });
+
+  it("keeps gates independent of the chat execution mode", () => {
+    const gates = capabilities("agent_runtime", {
+      patch_workflow_enabled: true,
+      sql_readonly_workflow_enabled: true,
+    });
+    expect(gates.command_workflow_enabled).toBe(false);
+    expect(gates.http_workflow_enabled).toBe(false);
+    expect(shouldUseLegacyToolPlanner(gates)).toBe(false);
   });
 });

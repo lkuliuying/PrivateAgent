@@ -16,12 +16,21 @@ router = APIRouter(tags=["health"])
 
 
 class RuntimeCapabilities(BaseModel):
-    """Stable, non-secret feature gates needed by local clients."""
+    """Stable, non-secret feature gates needed by local clients.
+
+    v0.5.0 B0 additive extension：四个可信工作流开关（均默认 False），
+    保持对既有字段的向后兼容。字段集合由 tests/test_public_contracts.py
+    与 docs/v0.3.0-public-contracts.md 冻结。
+    """
 
     chat_execution_mode: Literal["agent_runtime", "legacy"]
     legacy_tool_planner_enabled: bool
     agent_read_only_tools_enabled: bool
     rag_chat_runtime_enabled: bool
+    patch_workflow_enabled: bool = False
+    command_workflow_enabled: bool = False
+    http_workflow_enabled: bool = False
+    sql_readonly_workflow_enabled: bool = False
 
 
 @router.get("/health")
@@ -45,4 +54,8 @@ async def capabilities() -> RuntimeCapabilities:
             and settings.agent_rag_tools_enabled
             and settings.agent_output_verification_enabled
         ),
+        patch_workflow_enabled=settings.agent_patch_workflow_enabled,
+        command_workflow_enabled=settings.agent_command_workflow_enabled,
+        http_workflow_enabled=settings.agent_http_workflow_enabled,
+        sql_readonly_workflow_enabled=settings.agent_sql_readonly_workflow_enabled,
     )
