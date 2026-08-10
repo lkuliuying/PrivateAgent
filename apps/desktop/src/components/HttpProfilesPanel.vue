@@ -231,13 +231,17 @@ async function remove(profile: HttpEndpointProfile) {
 }
 
 const cleanupError = ref("");
+/** 待清理的凭据（profile 删除后 keyring 清理失败的残留，供单独重试） */
+const pendingCleanup = ref<{ name: string; slots: string[] } | null>(null);
 
 async function cleanupKeyring(name: string, references: string[]) {
+  const slots = references
+    .map(slotFromHttpReference)
+    .filter((slot): slot is string => Boolean(slot));
+  pendingCleanup.value = { name, slots };
   cleanupError.value = "";
   const failures: string[] = [];
-  for (const reference of references) {
-    const slot = slotFromHttpReference(reference);
-    if (!slot) continue;
+  for (const slot of slots) {
     try {
       await clearHttpProfileSecret(name, slot);
     } catch {
@@ -245,7 +249,31 @@ async function cleanupKeyring(name: string, references: string[]) {
     }
   }
   if (failures.length) {
+    cleanupError.value = `以下凭据清理失败：${failures.join(", ")}`;
+    pendingCleanup.value = { name, slots: failures };
+  } else {
+    pendingCleanup.value = null;
+  }
+}
+
+/** 单独重试凭据清理（profile 已删除，不再调用 remove） */
+async function retryCleanup() {
+  const target = pendingCleanup.value;
+  if (!target) return;
+  const failures: string[] = [];
+  for (const slot of target.slots) {
+    try {
+      await clearHttpProfileSecret(target.name, slot);
+    } catch {
+      failures.push(slot);
+    }
+  }
+  if (failures.length) {
+    pendingCleanup.value = { name: target.name, slots: failures };
     cleanupError.value = `以下凭据清理失败：${failures.join(", ")}（重试或手动在系统凭据库中删除）`;
+  } else {
+    pendingCleanup.value = null;
+    cleanupError.value = "";
   }
 }
 
@@ -288,7 +316,7 @@ onMounted(async () => {
     </PaInlineNotice>
     <PaInlineNotice v-if="cleanupError" tone="warning" title="凭据清理未完成">
       {{ cleanupError }}
-      <button class="text-btn" @click="confirmDelete && remove(confirmDelete)">重试</button>
+      <button class="text-btn" @click="retryCleanup">重试清理</button>
     </PaInlineNotice>
     <PaEmptyState
       v-else-if="profiles.length === 0"

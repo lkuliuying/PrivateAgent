@@ -164,18 +164,34 @@ async function save() {
 }
 
 const cleanupError = ref("");
+/** 待清理的凭据（profile 删除后 keyring 清理失败的残留，供单独重试） */
+const pendingCleanup = ref<{ name: string } | null>(null);
+
+async function cleanupKeyring(name: string): Promise<boolean> {
+  pendingCleanup.value = { name };
+  try {
+    await clearSqlProfileSecret(name);
+    pendingCleanup.value = null;
+    cleanupError.value = "";
+    return true;
+  } catch {
+    cleanupError.value = "系统凭据清理失败（重试或手动在系统凭据库中删除该条目）";
+    return false;
+  }
+}
+
+/** 单独重试凭据清理（profile 已删除，不再调用 remove） */
+async function retryCleanup() {
+  const target = pendingCleanup.value;
+  if (!target) return;
+  await cleanupKeyring(target.name);
+}
 
 async function remove(profile: SqlReadonlyProfile) {
   try {
     const result = await deleteSqlProfile(profile.id);
     if (isDesktop.value && result.password_secret_ref) {
-      cleanupError.value = "";
-      try {
-        await clearSqlProfileSecret(profile.name);
-      } catch {
-        cleanupError.value =
-          "系统凭据清理失败（重试或手动在系统凭据库中删除该条目）";
-      }
+      await cleanupKeyring(profile.name);
     }
     confirmDelete.value = null;
     await load();
@@ -220,7 +236,7 @@ onMounted(async () => {
     </PaInlineNotice>
     <PaInlineNotice v-if="cleanupError" tone="warning" title="凭据清理未完成">
       {{ cleanupError }}
-      <button class="text-btn" @click="confirmDelete && remove(confirmDelete)">重试</button>
+      <button class="text-btn" @click="retryCleanup">重试清理</button>
     </PaInlineNotice>
     <PaEmptyState
       v-else-if="profiles.length === 0"
