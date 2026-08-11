@@ -52,7 +52,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/lkuliuying/PrivateAgent/releases/latest/download/latest.json"
+        "https://github.com/lkuliuying/PrivateAgent-updates/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFMTU3NzVGNzI3NjY0MUYKUldRZlpIWnlYM2NWWGhjd0NBL3U1OFF4S0w1eXV2N3MwSnFiUThDN0hTbXR4aGFMYksxNVhuK2EK",
       "dialog": false
