@@ -42,7 +42,14 @@ SIDECAR = (
 )
 EVIDENCE_PATH = PROJECT_ROOT / "dist" / f"qa-evidence-{__version__}.json"
 STARTUP_TIMEOUT_S = 120
-RUN_TIMEOUT_S = 240
+# 本机为纯 CPU 推理（Ollama 无 VRAM 卸载），14B 模型单次生成可达 100s+；
+# run 默认墙钟 120s 不足以完成三步工作流，smoke 显式放宽运行上限与轮询等待。
+RUN_TIMEOUT_S = 540
+SMOKE_RUN_LIMITS = {
+    "max_steps": 16,
+    "max_tool_calls": 12,
+    "max_wall_time_seconds": 420.0,
+}
 POLL_INTERVAL_S = 2
 
 
@@ -333,36 +340,44 @@ def main() -> int:
                         "apply_patch_to_workspace 才能实际写入文件。请严格执行："
                         "1) 用 propose_patch 预览（project_id={project_id}，"
                         "rel_path='test_sample.py'）；2) 必须调用 apply_patch_to_workspace "
-                        "把 greeting 返回值从 \"hello\" 改为 \"hello beta1\""
+                        "做一个最小修改：只把 greeting 函数中 return 语句的字符串从 "
+                        "\"hello\" 改为 \"hello beta1\"，test_greeting 测试函数与文件"
+                        "其余内容必须保持原样"
                         "（project_id={project_id}，rel_path='test_sample.py'，"
                         "expected_old_sha256 用预览返回的 old_sha256）；"
                         "3) 用 run_whitelisted_command 运行 ['python', '-m', 'pytest', '-q']"
                         "（project_id={project_id}）。三步都必须完成。"
-                    )
+                    ),
+                    "limits": SMOKE_RUN_LIMITS,
                 },
             )
             run_a_id = run_a["id"]
-            # 轮询循环：pending 审批即批准；到达终态即结束（多步骤审批逐步出现）
-            deadline = time.time() + RUN_TIMEOUT_S
+            # 轮询循环：pending 审批即批准；到达终态即结束（多步骤审批逐步出现）。
+            # 通过标准（rc.4 final 修复，杜绝假通过）：整轮 run A 最终状态必须为
+            # completed 且无 failed execution，且 patch 与 command 都在该轮成功；
+            # 不满足则重置项目文件后用新 run 重试（最多 3 轮），不再跨轮累计。
+            patch_ok = False
+            command_ok = False
+            run_a_completed = False
+            no_failed_exec = False
             final_a = None
-            while time.time() < deadline:
-                run = api.get(f"/agent-runs/{run_a_id}")
-                if run.get("status") in {"completed", "failed", "cancelled", "timed_out", "limit_exceeded"}:
-                    final_a = run
-                    break
-                approvals_a = api.get(f"/agent-runs/{run_a_id}/approvals")
-                pending = [a for a in approvals_a if a["status"] == "pending"]
-                if pending:
-                    approve_all(api, run_a_id, approvals_a)
-                time.sleep(POLL_INTERVAL_S)
-            if final_a is None:
-                final_a = wait_for_run_terminal(api, run_a_id, timeout=30)
-            # LLM 行为波动容忍：patch/command 各自在会话内至少成功一次即可
-            # （每次失败用新 run 重试，最多 3 轮；能力可用性按累计成功判定）。
-            any_patch_ok = False
-            any_command_ok = False
+            executions_a: list[dict] = []
             retries = 0
-            while retries < 3:
+            while True:
+                deadline = time.time() + RUN_TIMEOUT_S
+                final_a = None
+                while time.time() < deadline:
+                    run = api.get(f"/agent-runs/{run_a_id}")
+                    if run.get("status") in {"completed", "failed", "cancelled", "timed_out", "limit_exceeded"}:
+                        final_a = run
+                        break
+                    approvals_a = api.get(f"/agent-runs/{run_a_id}/approvals")
+                    pending = [a for a in approvals_a if a["status"] == "pending"]
+                    if pending:
+                        approve_all(api, run_a_id, approvals_a)
+                    time.sleep(POLL_INTERVAL_S)
+                if final_a is None:
+                    final_a = wait_for_run_terminal(api, run_a_id, timeout=30)
                 executions_a = api.get(f"/agent-runs/{run_a_id}/executions")
                 patch_exec = next(
                     (e for e in executions_a if e["tool_name"] == "apply_patch_to_workspace"),
@@ -386,15 +401,20 @@ def main() -> int:
                     and command_exec_a["status"] == "succeeded"
                     and (command_exec_a.get("output") or {}).get("succeeded") is True
                 )
-                any_patch_ok = any_patch_ok or patch_ok
-                any_command_ok = any_command_ok or command_ok
-                if any_patch_ok and any_command_ok:
+                run_a_completed = bool(final_a and final_a.get("status") == "completed")
+                no_failed_exec = not any(
+                    e["status"] == "failed" for e in executions_a
+                )
+                if run_a_completed and no_failed_exec and patch_ok and command_ok:
                     break
                 retries += 1
                 print(
-                    f"[v050-smoke] run A 未全部成功（patch累计={any_patch_ok} "
-                    f"command累计={any_command_ok}），重试 {retries}/3"
+                    f"[v050-smoke] run A 未全部通过（status="
+                    f"{final_a.get('status') if final_a else None} patch={patch_ok} "
+                    f"command={command_ok} failed_exec={not no_failed_exec}），重试 {retries}/5"
                 )
+                if retries >= 5:
+                    break
                 # 重置项目文件后重试
                 (project_dir_path / "test_sample.py").write_text(
                     "def greeting():\n    return \"hello\"\n\n"
@@ -405,19 +425,22 @@ def main() -> int:
                     "/agent-runs",
                     {
                         "message": (
-                            f"项目 ID 是 {project_id}，项目根目录下有文件 test_sample.py。"
-                            "注意：propose_patch 只是预览、不会修改文件；只有调用 "
-                            "apply_patch_to_workspace 才能实际写入文件。请严格执行："
-                            "1) 用 propose_patch 预览（project_id={project_id}，"
-                            "rel_path='test_sample.py'）；2) 必须调用 apply_patch_to_workspace "
-                            "把 greeting 返回值从 \"hello\" 改为 \"hello beta1\""
-                            "（project_id={project_id}，rel_path='test_sample.py'，"
-                            "expected_old_sha256 用预览返回的 old_sha256）；"
-                            "3) 用 run_whitelisted_command 运行 ['python', '-m', 'pytest', '-q']"
-                            "（project_id={project_id}）。三步都必须完成。"
-                        )
-                    },
-                )
+                        f"项目 ID 是 {project_id}，项目根目录下有文件 test_sample.py。"
+                        "注意：propose_patch 只是预览、不会修改文件；只有调用 "
+                        "apply_patch_to_workspace 才能实际写入文件。请严格执行："
+                        "1) 用 propose_patch 预览（project_id={project_id}，"
+                        "rel_path='test_sample.py'）；2) 必须调用 apply_patch_to_workspace "
+                        "做一个最小修改：只把 greeting 函数中 return 语句的字符串从 "
+                        "\"hello\" 改为 \"hello beta1\"，test_greeting 测试函数与文件"
+                        "其余内容必须保持原样"
+                        "（project_id={project_id}，rel_path='test_sample.py'，"
+                        "expected_old_sha256 用预览返回的 old_sha256）；"
+                        "3) 用 run_whitelisted_command 运行 ['python', '-m', 'pytest', '-q']"
+                        "（project_id={project_id}）。三步都必须完成。"
+                    ),
+                    "limits": SMOKE_RUN_LIMITS,
+                },
+            )
                 run_a_id = run_a["id"]
                 deadline = time.time() + RUN_TIMEOUT_S
                 final_a = None
@@ -457,10 +480,10 @@ def main() -> int:
             evidence["checks"].append(
                 {
                     "name": "patch_workflow_atomic_write_verified",
-                    "passed": any_patch_ok,
+                    "passed": patch_ok,
                     "detail": (
                         "apply_patch_to_workspace succeeded + verified=True + 磁盘内容含新值"
-                        if any_patch_ok
+                        if patch_ok
                         else f"最后轮 patch_exec={patch_exec} file_has_new={('hello beta1' in file_text)}"
                     ),
                 }
@@ -468,13 +491,25 @@ def main() -> int:
             evidence["checks"].append(
                 {
                     "name": "command_workflow_pytest_succeeded",
-                    "passed": any_command_ok,
+                    "passed": command_ok,
                     "detail": f"最后轮 command_exec={command_exec_a}",
                 }
             )
+            evidence["checks"].append(
+                {
+                    "name": "run_a_completed_clean",
+                    "passed": run_a_completed and no_failed_exec,
+                    "detail": (
+                        f"status={final_a.get('status') if final_a else None} "
+                        f"failed_executions="
+                        f"{[e['tool_name'] for e in executions_a if e['status'] == 'failed']}"
+                    ),
+                }
+            )
             print(
-                f"[v050-smoke] run A final={final_a.get('status')} "
-                f"patch累计={any_patch_ok} command累计={any_command_ok} retries={retries}"
+                f"[v050-smoke] run A final={final_a.get('status') if final_a else None} "
+                f"patch={patch_ok} command={command_ok} "
+                f"no_failed_exec={no_failed_exec} retries={retries}"
             )
 
             # ---------- 场景 2：命令取消 + 进程树清理 ----------
@@ -487,8 +522,9 @@ def main() -> int:
                         f"项目 ID 是 {project_id}。请使用 run_whitelisted_command 运行命令 "
                         f"['python', '-c', 'import time; time.sleep(30); "
                         f"print(\"{needle}\")']（project_id 必须为上面的真实值），"
-                        "不要做其他任何事。"
-                    )
+                        "不要做任何其他事。"
+                    ),
+                    "limits": SMOKE_RUN_LIMITS,
                 },
             )
             run_b_id = run_b["id"]
@@ -578,8 +614,9 @@ def main() -> int:
                         f"SQL profile ID 是 {sql_profile_id}。请使用 query_readonly_sql "
                         f"查询 'SELECT COUNT(*) AS total FROM sessions'"
                         f"（profile_id 必须为上面的真实值），然后简要报告结果行数与结论，"
-                        "不要做其他任何事。"
-                    )
+                        "不要做任何其他事。"
+                    ),
+                    "limits": SMOKE_RUN_LIMITS,
                 },
             )
             run_c_id = run_c["id"]
@@ -592,7 +629,9 @@ def main() -> int:
                 None,
             )
             sql_ok = bool(
-                sql_exec
+                final_c
+                and final_c.get("status") == "completed"
+                and sql_exec
                 and sql_exec["status"] == "succeeded"
                 and (sql_exec.get("output") or {}).get("read_only_confirmed") is True
             )
@@ -647,7 +686,8 @@ def main() -> int:
                         f"调用 GET 路径 '/echo'（profile_id 必须为上面的真实值，"
                         "method 为 GET，path 为 /echo），然后简要报告响应状态码与 body，"
                         "不要做其他任何事。"
-                    )
+                    ),
+                    "limits": SMOKE_RUN_LIMITS,
                 },
             )
             run_d_id = run_d["id"]
@@ -660,7 +700,9 @@ def main() -> int:
                 None,
             )
             http_ok = bool(
-                http_exec
+                final_d
+                and final_d.get("status") == "completed"
+                and http_exec
                 and http_exec["status"] == "succeeded"
                 and (http_exec.get("output") or {}).get("status_code") == 200
             )
