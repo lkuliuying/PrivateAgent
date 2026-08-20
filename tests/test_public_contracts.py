@@ -74,7 +74,11 @@ def test_run_status_set_frozen():
 
 
 def test_run_event_types_frozen():
-    """§4：公开事件类型固定。"""
+    """§4：公开事件类型固定。
+
+    v0.6.0 C0 §4.5 additive 扩展：plan/artifact 四个稳定事件（durable），
+    既有事件不变。见 docs/releases/v0.6.0/v0.6.0-c0-contracts-20260820.md §4.5。
+    """
     assert {e.value for e in AgentEventType} == {
         "run.started",
         "context.prepared",
@@ -95,11 +99,20 @@ def test_run_event_types_frozen():
         "run.timed_out",
         "run.limit_exceeded",
         "chat.output_persisted",
+        # v0.6.0 durable 稳定事件
+        "plan.created",
+        "plan.updated",
+        "plan.item_changed",
+        "artifact.created",
     }
 
 
 def test_agent_run_response_fields_frozen():
-    """§3/§6：run 与审批响应字段集合固定。"""
+    """§3/§6：run 与审批响应字段集合固定。
+
+    v0.6.0 additive 扩展：project/workspace 绑定、Git/模型/权限快照、
+    幂等重放与重连纠偏快照字段（旧客户端可忽略）。
+    """
     assert set(AgentRunResponse.model_fields) == {
         "id",
         "session_id",
@@ -123,6 +136,19 @@ def test_agent_run_response_fields_frozen():
         "updated_at",
         "active_in_process",
         "steps",
+        # v0.6.0 additive
+        "project_id",
+        "workspace_id",
+        "base_head_sha",
+        "base_branch_name",
+        "base_git_dirty",
+        "model_profile_id",
+        "reasoning_effort",
+        "permission_mode",
+        "client_request_id",
+        "idempotent_replay",
+        "plan",
+        "artifacts",
     }
 
 
@@ -188,7 +214,11 @@ def test_context_metadata_payload_keys_frozen():
 
 
 def test_compatibility_telemetry_labels_frozen():
-    """§8：telemetry path/mode/outcome 标签固定。"""
+    """§8：telemetry path/mode/outcome 标签固定。
+
+    v0.6.0 C0 §10 additive 扩展：coding 路由计数标签（只计数，不记录
+    message/路径/Git 快照/权限正文）。
+    """
     assert set(_LABELS) == {
         "/tools",
         "/tools/plan",
@@ -199,6 +229,12 @@ def test_compatibility_telemetry_labels_frozen():
         "/tool-calls/:id/reject",
         "/tool-calls",
         "/tool-calls/:id",
+        # v0.6.0 additive
+        "agent_run_create",
+        "coding_session_create",
+        "run_plan_update",
+        "run_event_stream",
+        "workspace_resolve",
     }
     assert _LABELS["/chat/stream"]["modes"] == {
         "agent_runtime",
@@ -212,6 +248,26 @@ def test_compatibility_telemetry_labels_frozen():
     assert _LABELS["/tools/plan"]["modes"] == {"legacy_full", "runtime_filtered"}
     assert _LABELS["/tools"]["modes"] == {"legacy_registry"}
     assert _LABELS["/agent-runs"]["modes"] == {"agent_runs_api"}
+    # v0.6.0 标签约束：只计数，不记录敏感正文
+    assert _LABELS["agent_run_create"]["modes"] == {"legacy", "project_bound"}
+    assert _LABELS["agent_run_create"]["outcomes"] == {
+        "created",
+        "replayed",
+        "rejected",
+    }
+    assert _LABELS["run_event_stream"]["outcomes"] == {
+        "connected",
+        "reconnected",
+        "completed",
+        "aborted",
+        "error",
+    }
+    assert _LABELS["workspace_resolve"]["outcomes"] == {
+        "resolved",
+        "missing",
+        "mismatch",
+        "untrusted",
+    }
 
 
 def test_chat_sse_event_types_frozen():
