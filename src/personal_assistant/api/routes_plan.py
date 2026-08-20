@@ -73,6 +73,15 @@ def _require_plan_enabled() -> None:
         raise HTTPException(status_code=404, detail="Not found")
 
 
+def _telemetry(outcome: str) -> None:
+    """C0 §10：run_plan_update 只保存 outcome 计数，不记录计划正文。"""
+    from ..core.compatibility import compatibility_telemetry
+
+    compatibility_telemetry.record(
+        path="run_plan_update", mode="project_bound", outcome=outcome
+    )
+
+
 def _error(status: int, error_code: str, detail: str) -> HTTPException:
     # 平铺 error_code 响应（契约测试按 resp.json()["error_code"] 断言）
     from fastapi.responses import JSONResponse
@@ -140,9 +149,12 @@ async def upsert_run_plan(
                 items=items,
             )
     except PlanVersionConflict as exc:
+        _telemetry("conflict")
         return _error(409, "plan_version_conflict", str(exc))
     except PlanTransitionInvalid as exc:
+        _telemetry("invalid")
         return _error(422, "plan_transition_invalid", str(exc))
+    _telemetry("created" if records[0]["plan_version"] == 1 else "updated")
     version = records[0]["plan_version"] if records else 0
     return {"version": version, "items": records}
 
@@ -168,5 +180,5 @@ async def update_plan_item_status(
     except PlanTransitionInvalid as exc:
         return _error(422, "plan_transition_invalid", str(exc))
     if result is None:
-        return _error(404, "workspace_not_found", "Plan item not found")
+        return _error(404, "plan_item_not_found", "Plan item not found")
     return result

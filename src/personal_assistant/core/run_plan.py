@@ -14,12 +14,13 @@ import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..agents.contracts import AgentEventType
 from ..logging_setup import get_logger
+from .db import async_session_factory
 from .models import RunPlanItem
 from .repo_plan import PLAN_ITEM_STATUSES, RunPlanRepository
 
 logger = get_logger(__name__)
-
 ITEM_KEY_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,127}")
 MAX_ITEMS = 32
 MAX_TITLE = 512
@@ -92,7 +93,7 @@ class RunPlanService:
             )
 
     async def create_plan(self, *, run_id: str, items: list[dict]) -> list[dict]:
-        """创建初始计划（plan_version=1）。"""
+        """创建初始计划（plan_version=1），随后写 plan.created durable 事件。"""
         self._validate_items(items)
         if await self.repo.get_latest_plan_version(run_id) > 0:
             raise PlanVersionConflict(
@@ -101,6 +102,17 @@ class RunPlanService:
         self._validate_single_in_progress(run_id, items)
         records = await self.repo.create_plan(
             run_id=run_id, items=items, plan_version=1
+        )
+        await self._emit_event(
+            run_id,
+            AgentEventType.PLAN_CREATED,
+            {
+                "plan_version": 1,
+                "items": [
+                    {"item_key": r.item_key, "title": r.title, "status": r.status}
+                    for r in records
+                ],
+            },
         )
         return [self._to_dict(r) for r in records]
 
@@ -111,23 +123,65 @@ class RunPlanService:
         expected_plan_version: int,
         items: list[dict],
     ) -> list[dict]:
-        """按 expected_plan_version 写入计划新版本。
+        """按 expected_plan_version（CAS）写入计划新版本，随后写 plan.updated/plan.item_changed。
 
-        版本不匹配 → PlanVersionConflict（拒绝旧模型回合覆盖新计划）。
+        - expected_plan_version 是模型读取到的当前最新版本（快照 version）；
+          仅当 == latest 时写入 latest+1；过期版本 → PlanVersionConflict，不做 last-write-wins。
+        - 状态转换校验（相对最新版本的同一 item_key）先于版本校验：
+          terminal 回退等非法转换直接 422，旧版本覆盖才 409。
         """
         self._validate_items(items)
+        # 归一化：未提供 status 的 item 按默认 pending 参与转换检查与写入，
+        # 避免后续 item["status"] 下标 KeyError（与 _validate_items 默认值一致）。
+        items = [
+            {**item, "status": item.get("status", "pending")} for item in items
+        ]
         latest = await self.repo.get_latest_plan_version(run_id)
-        if latest != expected_plan_version:
+        if latest < 1:
+            raise PlanVersionConflict(
+                "plan does not exist; create it without expected_plan_version"
+            )
+        # 状态转换校验：同 item_key 状态未变则跳过（同状态不是转换）
+        previous_items = await self.repo.get_plan(run_id)
+        previous_by_key = {item.item_key: item.status for item in previous_items}
+        for item in items:
+            previous_status = previous_by_key.get(item["item_key"])
+            if previous_status is not None and previous_status != item.get(
+                "status"
+            ):
+                self._validate_transition(previous_status, item["status"])
+        if expected_plan_version != latest:
             raise PlanVersionConflict(
                 f"expected_plan_version={expected_plan_version} "
-                f"but latest is {latest}"
+                f"but latest version is {latest}"
             )
         self._validate_single_in_progress(run_id, items)
+        new_version = latest + 1
         records = await self.repo.replace_plan(
             run_id=run_id,
             items=items,
-            plan_version=latest + 1,
+            plan_version=new_version,
         )
+        await self._emit_event(
+            run_id,
+            AgentEventType.PLAN_UPDATED,
+            {"previous_version": latest, "plan_version": new_version},
+        )
+        for item in items:
+            previous_status = previous_by_key.get(item["item_key"])
+            if previous_status is not None and previous_status != item.get(
+                "status"
+            ):
+                await self._emit_event(
+                    run_id,
+                    AgentEventType.PLAN_ITEM_CHANGED,
+                    {
+                        "plan_version": new_version,
+                        "item_key": item["item_key"],
+                        "previous_status": previous_status,
+                        "status": item["status"],
+                    },
+                )
         return [self._to_dict(r) for r in records]
 
     def _validate_single_in_progress(
@@ -149,7 +203,7 @@ class RunPlanService:
         new_status: str,
         evidence_json: dict | None = None,
     ) -> dict | None:
-        """更新计划项状态（带状态机校验）。"""
+        """更新计划项状态（带状态机校验），随后写 plan.item_changed durable 事件。"""
         if new_status not in PLAN_ITEM_STATUSES:
             raise PlanTransitionInvalid(f"invalid status: {new_status}")
         item = await self.db.get(RunPlanItem, item_id)
@@ -163,6 +217,7 @@ class RunPlanService:
                 raise PlanTransitionInvalid(
                     "at most one plan item may be in_progress"
                 )
+        previous_status = item.status
         record = await self.repo.update_plan_item(
             item_id=item_id,
             status=new_status,
@@ -170,6 +225,16 @@ class RunPlanService:
         )
         if record is None:
             return None
+        await self._emit_event(
+            record.run_id,
+            AgentEventType.PLAN_ITEM_CHANGED,
+            {
+                "plan_version": await self.get_latest_plan_version(record.run_id),
+                "item_key": record.item_key,
+                "previous_status": previous_status,
+                "status": record.status,
+            },
+        )
         return self._to_dict(record)
 
     async def get_plan(
@@ -180,6 +245,41 @@ class RunPlanService:
 
     async def get_latest_plan_version(self, run_id: str) -> int:
         return await self.repo.get_latest_plan_version(run_id)
+
+    async def _emit_event(
+        self, run_id: str, event_type: AgentEventType, payload: dict
+    ) -> None:
+        """写 durable 计划事件（C0 §8）。
+
+        使用独立 session：record_event 失败时的 rollback 只影响事件事务，
+        不会使主 session 的 plan ORM 对象过期（避免懒加载 MissingGreenlet），
+        也不会回滚计划本身的写入。计划表仍是事实（快照纠偏兜底），
+        事件写入失败只记录日志；sequence 由 record_event 的行锁校验兜底。
+        """
+        try:
+            from ..agents.contracts import AgentEvent
+            from ..agents.repository import AgentRunRepository
+
+            async with async_session_factory() as session:
+                run_repo = AgentRunRepository(session)
+                run = await run_repo.get_run(run_id)
+                if run is None:
+                    return
+                await run_repo.record_event(
+                    AgentEvent(
+                        run_id=run_id,
+                        sequence=run.last_event_sequence + 1,
+                        type=event_type,
+                        payload=payload,
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "plan durable event emit failed",
+                run_id=run_id,
+                event_type=event_type.value,
+                exc_info=True,
+            )
 
     @staticmethod
     def _to_dict(item: RunPlanItem) -> dict:

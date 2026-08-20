@@ -184,6 +184,9 @@ class AgentRunResponse(BaseModel):
     client_request_id: str | None = None
     # C0 §5.2：幂等重放标记（旧客户端可忽略）
     idempotent_replay: bool = False
+    # C0 §7.2：重连纠偏快照（durable 事实，旧客户端可忽略）
+    plan: dict | None = None
+    artifacts: list = Field(default_factory=list)
 
 
 class AgentRunEventResponse(BaseModel):
@@ -395,6 +398,7 @@ async def get_agent_tool_bundle(
         and not cfg.agent_http_workflow_enabled
         and not cfg.agent_sql_readonly_workflow_enabled
         and not cfg.agent_rag_tools_enabled
+        and not cfg.agent_run_plan_enabled
         and not mcp_records
     ):
         return None
@@ -506,6 +510,12 @@ async def get_agent_tool_bundle(
         if cfg.agent_rag_tools_enabled:
             for spec in build_rag_tool_registry(run_db).list():
                 registry.register(spec)
+        if cfg.agent_run_plan_enabled:
+            # C3：update_run_plan 内部 safe 工具（C0 契约 §7.1），
+            # 不授予任何 capability；flag 关闭时不注册（模型不可见）。
+            from ..core.run_plan_tool import build_run_plan_tool_spec
+
+            registry.register(build_run_plan_tool_spec(run_db, run_id))
         if cfg.mcp_enabled:
             for spec in build_mcp_tool_registry(
                 run_db, mcp_records, run_id=run_id
@@ -712,7 +722,32 @@ async def _run_response(
         permission_mode=run.permission_mode,
         client_request_id=run.client_request_id,
         idempotent_replay=idempotent_replay,
+        # C0 §7.2：快照是重连纠偏事实；flag 关闭时仍返回（旧客户端忽略）
+        plan=await _plan_snapshot(repository.db, run_id),
+        artifacts=await _artifact_snapshot(repository.db, run_id),
     )
+
+
+async def _plan_snapshot(db, run_id: str) -> dict | None:
+    """C0 §7.2：最新计划快照 {version, items}；无计划或 flag 关闭时返回 None。"""
+    from ..core.run_plan import RunPlanService
+
+    if not cfg.agent_run_plan_enabled:
+        return None
+    svc = RunPlanService(db)
+    version = await svc.get_latest_plan_version(run_id)
+    if version < 1:
+        return None
+    return {"version": version, "items": await svc.get_plan(run_id)}
+
+
+async def _artifact_snapshot(db, run_id: str) -> list:
+    """C0 §7.2：run 产物引用列表；flag 关闭时返回空列表。"""
+    if not cfg.agent_run_plan_enabled:
+        return []
+    from ..core.run_artifact import RunArtifactService
+
+    return await RunArtifactService(db).list_artifacts(run_id)
 
 
 @router.post(
@@ -1002,9 +1037,10 @@ async def stream_agent_run_events(
 
     断线重连用快照覆盖未完成临时文本，不取消后台 run。
     """
-    from fastapi.responses import StreamingResponse
     import asyncio
     import json
+
+    from fastapi.responses import StreamingResponse
 
     repository = AgentRunRepository(db)
     run = await repository.get_run(run_id)

@@ -93,9 +93,27 @@ async def db():
         connect_args={"init_command": "SET time_zone='+00:00'"},
     )
     factory = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
-    async with factory() as session:
-        yield session
-    await engine.dispose()
+    # v0.6.0：RunPlan/RunArtifact 服务用独立 session 写 durable 事件（直接
+    # 导入 async_session_factory 名字），须重绑到本 fixture 的 engine，
+    # 避免测试中写入全局（生产）数据库。
+    from personal_assistant.core import db as dbmod
+    from personal_assistant.core import run_artifact as run_artifact_mod
+    from personal_assistant.core import run_plan as run_plan_mod
+
+    orig_factory = dbmod.async_session_factory
+    orig_plan_factory = run_plan_mod.async_session_factory
+    orig_artifact_factory = run_artifact_mod.async_session_factory
+    dbmod.async_session_factory = factory
+    run_plan_mod.async_session_factory = factory
+    run_artifact_mod.async_session_factory = factory
+    try:
+        async with factory() as session:
+            yield session
+    finally:
+        dbmod.async_session_factory = orig_factory
+        run_plan_mod.async_session_factory = orig_plan_factory
+        run_artifact_mod.async_session_factory = orig_artifact_factory
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture
@@ -131,6 +149,14 @@ async def client():
     reminders_mod.async_session_factory = test_factory
     # OCR 后台 worker 同样直接导入 async_session_factory 名字，须重绑（phase7 M3）。
     ocr_mod.async_session_factory = test_factory
+    # v0.6.0：RunPlan/RunArtifact 服务同样直接导入 async_session_factory 名字。
+    from personal_assistant.core import run_artifact as run_artifact_mod
+    from personal_assistant.core import run_plan as run_plan_mod
+    
+    orig_plan_factory = run_plan_mod.async_session_factory
+    orig_artifact_factory = run_artifact_mod.async_session_factory
+    run_plan_mod.async_session_factory = test_factory
+    run_artifact_mod.async_session_factory = test_factory
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -159,6 +185,8 @@ async def client():
         importer_mod.async_session_factory = orig_factory
         reminders_mod.async_session_factory = orig_factory
         ocr_mod.async_session_factory = orig_factory
+        run_plan_mod.async_session_factory = orig_plan_factory
+        run_artifact_mod.async_session_factory = orig_artifact_factory
         await test_engine.dispose()
 
 

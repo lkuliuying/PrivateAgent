@@ -5,7 +5,6 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
@@ -44,6 +43,23 @@ def _inject_immediate_model():
         yield
     finally:
         app.dependency_overrides.pop(get_agent_model_client, None)
+
+
+async def _cleanup_run(run_id: str) -> None:
+    """删除测试创建的 run（级联 events/plan/artifacts），保持共享测试库干净。
+
+    共享 DB 无事务回滚，coordinator 后台任务在 client teardown 时可能被中断，
+    残留 running run 会污染其他文件的全局断言（如 recovery 的孤儿计数），
+    因此每个创建 run 的测试必须自清理。
+    """
+    from sqlalchemy import delete
+
+    from personal_assistant.core.db import async_session_factory
+    from personal_assistant.core.models import AgentRun
+
+    async with async_session_factory() as session:
+        await session.execute(delete(AgentRun).where(AgentRun.id == run_id))
+        await session.commit()
 
 
 # ===========================================================================
@@ -103,6 +119,7 @@ async def test_coding_run_never_uses_most_recent_project(client, monkeypatch, tm
     data = resp.json()
     assert data["project_id"] is None
     assert data["workspace_id"] is None
+    await _cleanup_run(data["id"])
 
 
 # ===========================================================================
@@ -186,6 +203,7 @@ async def test_client_request_id_replays_same_run_once(client, monkeypatch):
     assert resp2.status_code == 202, resp2.text
     assert resp2.json()["id"] == run_id
     assert resp2.json().get("idempotent_replay") is True
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -212,6 +230,7 @@ async def test_client_request_id_rejects_different_payload(client, monkeypatch):
     )
     assert resp2.status_code == 409
     assert resp2.json().get("error_code") == "client_request_conflict"
+    await _cleanup_run(resp1.json()["id"])
 
 
 # ===========================================================================
@@ -296,7 +315,6 @@ async def test_missing_workspace_path_fails_closed(client, monkeypatch, tmp_path
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: update_run_plan expected version 校验未实现", strict=False)
 async def test_plan_rejects_stale_version(client, monkeypatch):
     """expected_plan_version 过期 → 409 plan_version_conflict。"""
     from personal_assistant.config import settings
@@ -328,7 +346,25 @@ async def test_plan_rejects_stale_version(client, monkeypatch):
     )
     assert resp.status_code == 201, resp.text
 
-    # 用过期版本 1 再次更新 → 冲突
+    # 基于 v1 更新（expected == 当前版本）→ v2
+    resp = await client.post(
+        f"/agent-runs/{run_id}/plan",
+        json={
+            "expected_plan_version": 1,
+            "items": [
+                {
+                    "item_key": "inspect_failure",
+                    "title": "定位失败测试",
+                    "detail": "读取测试和实现",
+                    "status": "completed",
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["version"] == 2
+
+    # 过期版本 1 再更新 → 冲突
     resp = await client.post(
         f"/agent-runs/{run_id}/plan",
         json={
@@ -338,13 +374,14 @@ async def test_plan_rejects_stale_version(client, monkeypatch):
                     "item_key": "inspect_failure",
                     "title": "覆盖计划",
                     "detail": "旧模型回合",
-                    "status": "in_progress",
+                    "status": "completed",
                 }
             ],
         },
     )
     assert resp.status_code == 409
     assert resp.json().get("error_code") == "plan_version_conflict"
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -352,7 +389,6 @@ async def test_plan_rejects_stale_version(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: 单 in_progress 约束未实现", strict=False)
 async def test_plan_allows_at_most_one_in_progress_item(client, monkeypatch):
     """同时最多一个 in_progress → 422 plan_transition_invalid。"""
     from personal_assistant.config import settings
@@ -387,6 +423,7 @@ async def test_plan_allows_at_most_one_in_progress_item(client, monkeypatch):
     )
     assert resp.status_code == 422
     assert resp.json().get("error_code") == "plan_transition_invalid"
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -394,7 +431,6 @@ async def test_plan_allows_at_most_one_in_progress_item(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: terminal 状态回退校验未实现", strict=False)
 async def test_terminal_plan_item_cannot_regress(client, monkeypatch):
     """completed/failed/cancelled 不能回到 pending 或 in_progress。"""
     from personal_assistant.config import settings
@@ -432,6 +468,7 @@ async def test_terminal_plan_item_cannot_regress(client, monkeypatch):
     )
     assert resp.status_code == 422
     assert resp.json().get("error_code") == "plan_transition_invalid"
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -439,7 +476,6 @@ async def test_terminal_plan_item_cannot_regress(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: SSE 续读未实现", strict=False)
 async def test_event_stream_replays_after_sequence_without_new_run(
     client, monkeypatch
 ):
@@ -466,6 +502,7 @@ async def test_event_stream_replays_after_sequence_without_new_run(
         "GET", f"/agent-runs/{run_id}/events/stream?after_sequence={len(events)}"
     ) as stream:
         assert stream.status_code == 200
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -473,7 +510,6 @@ async def test_event_stream_replays_after_sequence_without_new_run(
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: SSE heartbeat 未实现", strict=False)
 async def test_heartbeat_does_not_advance_sequence(client, monkeypatch):
     """SSE heartbeat 不写数据库、不增加 sequence。"""
     from personal_assistant.config import settings
@@ -493,6 +529,7 @@ async def test_heartbeat_does_not_advance_sequence(client, monkeypatch):
     page2 = await client.get(f"/agent-runs/{run_id}/events?after_sequence=0")
     seq2 = page2.json()["last_sequence"]
     assert seq1 == seq2
+    await _cleanup_run(run_id)
 
 
 # ===========================================================================
@@ -517,6 +554,7 @@ async def test_flags_disabled_preserve_legacy_run(client, monkeypatch):
     data = resp.json()
     assert data["project_id"] is None
     assert data["workspace_id"] is None
+    await _cleanup_run(data["id"])
 
 
 # ===========================================================================
@@ -653,3 +691,339 @@ def test_v060_error_codes_frozen():
     assert ERROR_CODES["workspace_outside_trust"] == 403
     assert ERROR_CODES["event_sequence_conflict"] == 500
     assert http_status_for("plan_version_conflict") == 409
+
+
+# ===========================================================================
+# C3 · update_run_plan 工具契约（C0 §7.1）
+# ===========================================================================
+
+
+def test_update_run_plan_tool_contract():
+    """update_run_plan 是 safe 工具，不授予任何 capability。"""
+    from personal_assistant.agents.tools import ToolRiskLevel
+    from personal_assistant.core.run_plan_tool import build_run_plan_tool_spec
+
+    spec = build_run_plan_tool_spec(None, "run-123")  # type: ignore[arg-type]
+    assert spec.name == "update_run_plan"
+    assert spec.risk_level == ToolRiskLevel.SAFE
+    assert spec.required_capabilities == frozenset()
+    assert spec.input_schema["required"] == ["expected_plan_version", "items"]
+    assert spec.input_schema["properties"]["expected_plan_version"]["minimum"] == 1
+    items = spec.input_schema["properties"]["items"]
+    assert items["maxItems"] == 32
+    assert "in_progress" in items["items"]["properties"]["status"]["enum"]
+
+
+async def test_update_run_plan_tool_registered_by_flag(client, monkeypatch):
+    """flag 开启时工具在模型定义中可见；关闭时不可见。"""
+    from personal_assistant.config import settings
+
+    monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(settings, "project_bound_runs_enabled", True)
+    monkeypatch.setattr(settings, "agent_run_read_only_tools_enabled", False)
+    monkeypatch.setattr(settings, "agent_command_workflow_enabled", False)
+    monkeypatch.setattr(settings, "agent_http_workflow_enabled", False)
+    monkeypatch.setattr(settings, "agent_sql_readonly_workflow_enabled", False)
+    monkeypatch.setattr(settings, "agent_patch_workflow_enabled", False)
+    monkeypatch.setattr(settings, "agent_rag_tools_enabled", False)
+    monkeypatch.setattr(settings, "mcp_enabled", False)
+
+    from personal_assistant.api.routes_agent_runs import get_agent_tool_bundle
+    from personal_assistant.core.db import async_session_factory
+
+    async with async_session_factory() as session:
+        monkeypatch.setattr(settings, "agent_run_plan_enabled", True)
+        bundle = await get_agent_tool_bundle(session)
+        assert bundle is not None
+        on_names = {definition.name for definition in bundle.definitions}
+        assert "update_run_plan" in on_names
+
+        monkeypatch.setattr(settings, "agent_run_plan_enabled", False)
+        bundle = await get_agent_tool_bundle(session)
+        assert bundle is None
+
+        # 仅开启 plan flag（其他工具 flag 全部关闭）时工具仍可见
+        monkeypatch.setattr(settings, "agent_run_plan_enabled", True)
+        monkeypatch.setattr(settings, "mcp_enabled", True)
+
+        # mcp_enabled 但无活动记录：不影响 plan 工具注册
+        bundle = await get_agent_tool_bundle(session)
+        assert bundle is not None
+        assert {
+            definition.name for definition in bundle.definitions
+        } >= {"update_run_plan"}
+
+
+async def test_update_run_plan_tool_executor_paths(db: AsyncSession) -> None:
+    """工具 executor：首次创建、版本递增更新、stale 版本转 RuntimeError。"""
+    from personal_assistant.agents.contracts import AgentEvent, AgentEventType
+    from personal_assistant.agents.repository import AgentRunRepository
+    from personal_assistant.core.models import AgentRun
+    from personal_assistant.core.run_plan_tool import build_run_plan_tool_spec
+
+    run = AgentRun(
+        id=str(uuid4()),
+        trace_id=str(uuid4()),
+        status="created",
+        max_steps=10,
+        max_tool_calls=20,
+        max_wall_time_ms=60_000,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    await AgentRunRepository(db).record_event(
+        AgentEvent(
+            run_id=run.id,
+            sequence=1,
+            type=AgentEventType.RUN_STARTED,
+            payload={"status": "started"},
+        )
+    )
+
+    spec = build_run_plan_tool_spec(db, run.id)
+
+    class _NoCancel:
+        is_cancelled = False
+
+    cancellation = _NoCancel()
+    # 首次创建（expected=1）
+    result = await spec.executor(
+        {"expected_plan_version": 1, "items": [{"item_key": "a", "title": "A"}]},
+        cancellation,
+    )
+    assert result["plan_version"] == 1
+    assert result["items"][0]["item_key"] == "a"
+
+    # 版本递增更新（expected=1 == 当前版本）：pending → in_progress 合法
+    result = await spec.executor(
+        {
+            "expected_plan_version": 1,
+            "items": [{"item_key": "a", "title": "A", "status": "in_progress"}],
+        },
+        cancellation,
+    )
+    assert result["plan_version"] == 2
+    assert result["items"][0]["status"] == "in_progress"
+
+    # 版本递增更新（expected=2 == 当前版本）：in_progress → completed 合法
+    result = await spec.executor(
+        {
+            "expected_plan_version": 2,
+            "items": [{"item_key": "a", "title": "A", "status": "completed"}],
+        },
+        cancellation,
+    )
+    assert result["plan_version"] == 3
+    assert result["items"][0]["status"] == "completed"
+
+    # 非法转换：completed → in_progress 回退 → RuntimeError
+    with pytest.raises(RuntimeError):
+        await spec.executor(
+            {
+                "expected_plan_version": 3,
+                "items": [{"item_key": "a", "title": "A", "status": "in_progress"}],
+            },
+            cancellation,
+        )
+
+    # stale 版本（同状态跳过转换检查）→ RuntimeError（不做 last-write-wins）
+    with pytest.raises(RuntimeError):
+        await spec.executor(
+            {
+                "expected_plan_version": 1,
+                "items": [{"item_key": "a", "title": "A", "status": "completed"}],
+            },
+            cancellation,
+        )
+    await _cleanup_run(run.id)
+
+
+# ===========================================================================
+# C3 · artifact 契约（C0 §4.2/§7.2/§8）
+# ===========================================================================
+
+
+async def test_artifact_created_durable_event(db: AsyncSession) -> None:
+    """artifact.created 以独立事务写入 durable 事件流（sequence 不重复）。"""
+
+    from personal_assistant.agents.contracts import AgentEvent, AgentEventType
+    from personal_assistant.agents.repository import AgentRunRepository
+    from personal_assistant.core.models import AgentRun, AgentRunEvent
+    from personal_assistant.core.run_artifact import RunArtifactService
+
+    run = AgentRun(
+        id=str(uuid4()),
+        trace_id=str(uuid4()),
+        status="created",
+        max_steps=10,
+        max_tool_calls=20,
+        max_wall_time_ms=60_000,
+    )
+    db.add(run)
+    await db.commit()
+    await db.refresh(run)
+    repo = AgentRunRepository(db)
+    await repo.record_event(
+        AgentEvent(
+            run_id=run.id,
+            sequence=1,
+            type=AgentEventType.RUN_STARTED,
+            payload={"status": "started"},
+        )
+    )
+
+    result = await RunArtifactService(db).create_artifact(
+        run_id=run.id,
+        kind="test_report",
+        title="单元测试报告",
+        rel_path="reports/test.txt",
+        content_sha256="a" * 64,
+        metadata={"summary": "3 passed"},
+    )
+    assert result["kind"] == "test_report"
+    assert result["rel_path"] == "reports/test.txt"
+
+    from personal_assistant.core.db import async_session_factory
+
+    async with async_session_factory() as session:
+        rows = (
+            await session.execute(
+                select(AgentRunEvent).where(AgentRunEvent.run_id == run.id)
+            )
+        ).scalars().all()
+    by_type = {row.event_type: row for row in rows}
+    assert by_type["artifact.created"].payload_json["kind"] == "test_report"
+    assert by_type["artifact.created"].payload_json["artifact_id"] == result["id"]
+    assert "rel_path" not in by_type["artifact.created"].payload_json
+    await _cleanup_run(run.id)
+
+
+async def test_artifact_rejects_absolute_rel_path(client, monkeypatch):
+    """rel_path 只允许 workspace 相对路径（C0 §4.2）。"""
+    from personal_assistant.config import settings
+
+    monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(settings, "agent_run_plan_enabled", True)
+
+    resp = await client.post(
+        "/agent-runs",
+        json={"message": "artifact-test", "client_request_id": str(uuid4())},
+    )
+    run_id = resp.json()["id"]
+    for bad in ("/etc/passwd", "../escape", "C:\\win\\x", "a\\b"):
+        resp = await client.post(
+            f"/agent-runs/{run_id}/artifacts",
+            json={"kind": "file", "title": "x", "rel_path": bad},
+        )
+        assert resp.status_code == 422, (bad, resp.text)
+        assert resp.json().get("error_code") == "artifact_invalid"
+    await _cleanup_run(run_id)
+
+
+async def test_run_snapshot_includes_plan_and_artifacts(client, monkeypatch):
+    """C0 §7.2：GET /agent-runs/{id} 返回 plan/artifacts 重连纠偏快照。"""
+    from personal_assistant.config import settings
+
+    monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(settings, "agent_run_plan_enabled", True)
+
+    resp = await client.post(
+        "/agent-runs",
+        json={"message": "snapshot-test", "client_request_id": str(uuid4())},
+    )
+    run_id = resp.json()["id"]
+    assert resp.json().get("plan") is None
+    assert resp.json().get("artifacts") == []
+
+    resp = await client.post(
+        f"/agent-runs/{run_id}/plan",
+        json={
+            "expected_plan_version": 1,
+            "items": [
+                {"item_key": "fix_bug", "title": "修复缺陷", "status": "in_progress"}
+            ],
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+    resp = await client.post(
+        f"/agent-runs/{run_id}/artifacts",
+        json={"kind": "summary", "title": "总结"},
+    )
+    assert resp.status_code == 201, resp.text
+    artifact_id = resp.json()["id"]
+
+    resp = await client.get(f"/agent-runs/{run_id}")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["plan"]["version"] == 1
+    assert body["plan"]["items"][0]["item_key"] == "fix_bug"
+    assert body["artifacts"][0]["id"] == artifact_id
+    assert body["artifacts"][0]["kind"] == "summary"
+    await _cleanup_run(run_id)
+
+
+async def test_artifact_events_replay_after_sequence(client, monkeypatch):
+    """artifact.created 事件可通过 events 接口按 after_sequence 续读。"""
+    from personal_assistant.config import settings
+
+    monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(settings, "agent_run_plan_enabled", True)
+
+    # 手动构造确定性事件流（不经 coordinator，避免终态时序竞态）：
+    # run.started(seq1) → artifact.created(seq2)
+    from personal_assistant.agents.contracts import AgentEvent, AgentEventType
+    from personal_assistant.agents.repository import AgentRunRepository
+    from personal_assistant.core.db import async_session_factory
+    from personal_assistant.core.models import AgentRun
+
+    run_id = str(uuid4())
+    async with async_session_factory() as session:
+        session.add(
+            AgentRun(
+                id=run_id,
+                trace_id=str(uuid4()),
+                status="created",
+                max_steps=10,
+                max_tool_calls=20,
+                max_wall_time_ms=60_000,
+            )
+        )
+        await session.commit()
+        repo = AgentRunRepository(session)
+        await repo.record_event(
+            AgentEvent(
+                run_id=run_id,
+                sequence=1,
+                type=AgentEventType.RUN_STARTED,
+                payload={"status": "started"},
+            )
+        )
+        await repo.record_event(
+            AgentEvent(
+                run_id=run_id,
+                sequence=2,
+                type=AgentEventType.ARTIFACT_CREATED,
+                payload={
+                    "artifact_id": str(uuid4()),
+                    "kind": "summary",
+                    "title": "t",
+                    "step_id": None,
+                },
+            )
+        )
+
+    events = (await client.get(f"/agent-runs/{run_id}/events?after_sequence=0")).json()
+    assert [e["type"] for e in events["items"]] == [
+        "run.started",
+        "artifact.created",
+    ]
+
+    # 续读：after_sequence=1 只返回后续事件，不重放旧事件
+    tail = (await client.get(f"/agent-runs/{run_id}/events?after_sequence=1")).json()
+    assert [e["type"] for e in tail["items"]] == ["artifact.created"]
+    sequences = [e["sequence"] for e in events["items"]]
+    assert sequences == sorted(sequences)
+    assert len(set(sequences)) == len(sequences)
+    await _cleanup_run(run_id)

@@ -19,6 +19,7 @@ from .api.routes_activities import router as activities_router
 from .api.routes_agent_runs import agent_run_coordinator
 from .api.routes_agent_runs import router as agent_runs_router
 from .api.routes_agent_tasks import router as agent_tasks_router
+from .api.routes_artifacts import router as artifacts_router
 from .api.routes_backup import router as backup_router
 from .api.routes_briefings import router as briefings_router
 from .api.routes_capture import router as capture_router
@@ -52,10 +53,10 @@ from .api.routes_search import router as search_router
 from .api.routes_sessions import router as sessions_router
 from .api.routes_settings import router as settings_router
 from .api.routes_sql_profiles import router as sql_profiles_router
-from .api.routes_workspaces import router as workspaces_router
 from .api.routes_testing import router as testing_router
 from .api.routes_today import router as today_router
 from .api.routes_tools import router as tools_router
+from .api.routes_workspaces import router as workspaces_router
 from .api.security import (
     LocalApiSecurityMiddleware,
     parse_csv_setting,
@@ -257,6 +258,7 @@ app.include_router(notifications_router)
 app.include_router(ocr_router)
 app.include_router(patch_sets_router)
 app.include_router(plan_router)
+app.include_router(artifacts_router)
 app.include_router(commands_router)
 app.include_router(providers_router)
 app.include_router(reminders_router)
