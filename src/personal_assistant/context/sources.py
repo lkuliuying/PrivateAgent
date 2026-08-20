@@ -161,8 +161,8 @@ async def _load_project_fragments(
     git_snapshot: tuple[str | None, str | None, bool | None] | None,
 ) -> list[ContextFragment]:
     """v0.6.0 C2：项目指令、workspace 与 Git 摘要片段（有界、无秘密）。"""
+
     from personal_assistant.core.models import Project, ProjectWorkspace
-    from sqlalchemy import select
 
     project = await db.get(Project, project_id)
     if project is None:

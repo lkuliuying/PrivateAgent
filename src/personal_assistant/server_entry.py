@@ -80,9 +80,10 @@ def _run_migrations() -> None:
     （v0.6.0 第 7 节）。revision 读不到时保持原行为：交给 upgrade 处理（空库
     建链）或失败拒绝启动（连接/表异常，避免在未知 schema 上启动可写 API）。
     """
-    from alembic import command
     from alembic.config import Config
     from alembic.script import ScriptDirectory
+
+    from alembic import command
 
     base = _project_base()
     ini = base / "alembic.ini"

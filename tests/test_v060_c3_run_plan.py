@@ -6,7 +6,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from personal_assistant.agents.contracts import AgentRunLimits, ModelResponse, TokenUsage
+from personal_assistant.agents.contracts import (
+    AgentRunLimits,
+    ModelResponse,
+    TokenUsage,
+)
 from personal_assistant.agents.repository import AgentRunRepository
 from personal_assistant.config import settings
 from personal_assistant.core.run_plan import (

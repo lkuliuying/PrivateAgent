@@ -19,10 +19,10 @@ import json
 import re
 import sys
 
+from alembic.config import Config
 from sqlalchemy import create_engine, text
 
 from alembic import command
-from alembic.config import Config
 
 PROJECT_ROOT = __file__.rsplit("scripts", 1)[0]
 

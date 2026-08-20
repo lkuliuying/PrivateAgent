@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from personal_assistant.config import settings
 from personal_assistant.core.history import SessionRepository
-from personal_assistant.core.models import Project, ProjectWorkspace
+from personal_assistant.core.models import Project
 from personal_assistant.core.repo_workspaces import ProjectWorkspaceRepository
 from personal_assistant.core.workspaces import ProjectWorkspaceService
 
