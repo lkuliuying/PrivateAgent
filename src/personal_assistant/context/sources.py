@@ -30,6 +30,7 @@ def _default_budget() -> ContextBudget:
         max_rag_tokens=min(1_600, total),
         max_summary_tokens=min(800, total),
         max_fragment_tokens=min(600, total),
+        max_project_tokens=min(800, total),
     )
 
 
@@ -41,8 +42,18 @@ async def prepare_agent_context(
     session_id: int | None,
     knowledge_base: bool,
     builder: ContextBuilder | None = None,
+    # v0.6.0 C2：项目指令 / workspace / Git 摘要（coding run 上下文）
+    project_id: int | None = None,
+    workspace_id: int | None = None,
+    git_snapshot: tuple[str | None, str | None, bool | None] | None = None,
 ) -> ContextBuildResult:
     """Load bounded sources and build context without mutating source records."""
+
+    project_fragments: list[ContextFragment] = []
+    if project_id is not None:
+        project_fragments = await _load_project_fragments(
+            db, project_id, workspace_id, git_snapshot
+        )
 
     history: list[ModelMessage] = []
     summary_fragments: list[ContextFragment] = []
@@ -139,7 +150,59 @@ async def prepare_agent_context(
         memories=memory_fragments,
         rag_fragments=rag_fragments,
         summaries=summary_fragments,
+        project_fragments=project_fragments,
     )
+
+
+async def _load_project_fragments(
+    db: AsyncSession,
+    project_id: int,
+    workspace_id: int | None,
+    git_snapshot: tuple[str | None, str | None, bool | None] | None,
+) -> list[ContextFragment]:
+    """v0.6.0 C2：项目指令、workspace 与 Git 摘要片段（有界、无秘密）。"""
+    from personal_assistant.core.models import Project, ProjectWorkspace
+    from sqlalchemy import select
+
+    project = await db.get(Project, project_id)
+    if project is None:
+        return []
+    workspace = None
+    if workspace_id is not None:
+        workspace = await db.get(ProjectWorkspace, workspace_id)
+
+    lines = [
+        f"项目名称: {project.name}",
+        f"项目根目录: {project.root_path}",
+    ]
+    if project.language:
+        lines.append(f"语言: {project.language}")
+    if project.framework:
+        lines.append(f"框架: {project.framework}")
+    if workspace is not None:
+        lines.append(f"工作区状态: {workspace.status}")
+    if git_snapshot is not None:
+        head_sha, branch, dirty = git_snapshot
+        git_desc = f"分支: {branch}" if branch else "HEAD: 分离"
+        if head_sha:
+            git_desc += f" @ {head_sha[:12]}"
+        git_desc += "（有未提交改动）" if dirty else "（工作区干净）"
+        lines.append(f"Git: {git_desc}")
+
+    fragment = ContextFragment(
+        id=f"project:{project_id}",
+        kind=ContextFragmentKind.PROJECT,
+        content="\n".join(lines),
+        trust=ContextTrust.USER_CONFIRMED,
+        source=f"project:{project_id}",
+        score=1_000_000.0,
+        metadata={
+            "project_id": project_id,
+            "workspace_id": workspace_id,
+            "workspace_status": workspace.status if workspace is not None else None,
+        },
+    )
+    return [fragment]
 
 
 def context_event_payload(result: ContextBuildResult) -> dict[str, object]:

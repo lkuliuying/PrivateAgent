@@ -112,11 +112,24 @@ class TestProjectBoundRunAPI:
         ws_id = resp.json()["id"]
 
         resp = await client.post(
+            "/sessions",
+            json={
+                "title": "coding",
+                "project_id": project_id,
+                "workspace_id": ws_id,
+                "kind": "coding",
+            },
+        )
+        session_id = resp.json()["id"]
+
+        resp = await client.post(
             "/agent-runs",
             json={
+                "session_id": session_id,
                 "message": "test project-bound",
                 "project_id": project_id,
                 "workspace_id": ws_id,
+                "permission_mode": "confirm",
                 "client_request_id": str(uuid4()),
             },
         )
@@ -124,11 +137,13 @@ class TestProjectBoundRunAPI:
         data = resp.json()
         assert data["project_id"] == project_id
         assert data["workspace_id"] == ws_id
+        assert data["permission_mode"] == "confirm"
+        assert data["idempotent_replay"] is False
 
     async def test_create_run_with_wrong_workspace_rejected(
         self, client, monkeypatch, tmp_path
     ):
-        """workspace 不属于 project 时拒绝。"""
+        """workspace 不属于 project 时拒绝（403 workspace_outside_trust）。"""
         monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
         monkeypatch.setattr(settings, "project_bound_runs_enabled", True)
 
@@ -154,16 +169,32 @@ class TestProjectBoundRunAPI:
         )
         ws2_id = resp.json()["id"]
 
-        # 用 p1 的 project_id 但 ws2 的 workspace_id
+        # coding session 绑定 p1 + ws2（session 层面一致）
+        resp = await client.post(
+            "/sessions",
+            json={
+                "title": "coding",
+                "project_id": p1_id,
+                "workspace_id": ws2_id,
+                "kind": "coding",
+            },
+        )
+        session_id = resp.json()["id"]
+
+        # 请求用 p1 的 project_id 但 ws2 的 workspace_id（ws2 实际属于 p2）
         resp = await client.post(
             "/agent-runs",
             json={
+                "session_id": session_id,
                 "message": "test",
                 "project_id": p1_id,
                 "workspace_id": ws2_id,
+                "permission_mode": "confirm",
+                "client_request_id": str(uuid4()),
             },
         )
-        assert resp.status_code == 400
+        assert resp.status_code == 403, resp.text
+        assert resp.json().get("error_code") == "workspace_outside_trust"
 
     async def test_client_request_id_idempotent_via_api(
         self, client, monkeypatch, tmp_path

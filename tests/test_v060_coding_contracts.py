@@ -51,7 +51,6 @@ def _inject_immediate_model():
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: coding 创建模式判定未实现", strict=False)
 async def test_coding_run_rejects_partial_context(client, monkeypatch):
     """Coding 字段只提供一部分 → 422 coding_context_incomplete，零 run 创建。"""
     from personal_assistant.config import settings
@@ -79,7 +78,6 @@ async def test_coding_run_rejects_partial_context(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: 隐式授权禁止未实现", strict=False)
 async def test_coding_run_never_uses_most_recent_project(client, monkeypatch, tmp_path):
     """legacy 请求不携带 coding 字段时，不得被绑定到最近项目。"""
     from personal_assistant.config import settings
@@ -112,7 +110,6 @@ async def test_coding_run_never_uses_most_recent_project(client, monkeypatch, tm
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: session/workspace 归属校验未实现", strict=False)
 async def test_session_workspace_mismatch_fails_closed(
     client, monkeypatch, tmp_path
 ):
@@ -167,7 +164,6 @@ async def test_session_workspace_mismatch_fails_closed(
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: client_request_id 幂等未实现", strict=False)
 async def test_client_request_id_replays_same_run_once(client, monkeypatch):
     """相同 client_request_id 重复请求返回原 run（idempotent_replay=true）。"""
     from personal_assistant.config import settings
@@ -197,7 +193,6 @@ async def test_client_request_id_replays_same_run_once(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: client_request_id 冲突检测未实现", strict=False)
 async def test_client_request_id_rejects_different_payload(client, monkeypatch):
     """相同幂等键对应不同请求 → 409 client_request_conflict。"""
     from personal_assistant.config import settings
@@ -224,7 +219,6 @@ async def test_client_request_id_rejects_different_payload(client, monkeypatch):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: 旧项目幂等补建 root workspace 未实现", strict=False)
 async def test_workspace_backfill_is_idempotent(db: AsyncSession):
     """旧项目 ensure_root_workspace 幂等，不重复创建多个 root workspace。"""
     from personal_assistant.core.repo_workspaces import ProjectWorkspaceRepository
@@ -250,7 +244,6 @@ async def test_workspace_backfill_is_idempotent(db: AsyncSession):
 # ===========================================================================
 
 
-@pytest.mark.xfail(reason="C0: workspace 路径缺失失败关闭未实现", strict=False)
 async def test_missing_workspace_path_fails_closed(client, monkeypatch, tmp_path):
     """workspace 路径缺失 → 409 workspace_unavailable，不自动改绑。"""
     from personal_assistant.config import settings
@@ -534,7 +527,6 @@ async def test_flags_disabled_preserve_legacy_run(client, monkeypatch):
 class TestProjectWorkspaceSchema:
     """project_workspaces 表结构契约。"""
 
-    @pytest.mark.xfail(reason="C0: ProjectWorkspace schema 未冻结", strict=False)
     async def test_root_workspace_has_path_sha256(self, db: AsyncSession) -> None:
         """root workspace 必须携带规范化路径哈希。"""
         project = Project(name="sha-test", root_path="/tmp/sha-test")
@@ -554,7 +546,6 @@ class TestProjectWorkspaceSchema:
         assert ws.kind == "root"
         assert ws.status == "active"
 
-    @pytest.mark.xfail(reason="C0: ProjectWorkspace schema 未冻结", strict=False)
     async def test_workspace_unique_project_path(self, db: AsyncSession) -> None:
         """同一 project 的同一路径哈希不能重复建 workspace。"""
         project = Project(name="unique-test", root_path="/tmp/unique-test")
@@ -583,7 +574,6 @@ class TestProjectWorkspaceSchema:
 class TestSessionSchema:
     """sessions 新字段契约。"""
 
-    @pytest.mark.xfail(reason="C0: session kind 默认值未冻结", strict=False)
     async def test_session_kind_defaults_legacy(self, db: AsyncSession) -> None:
         """旧 session 不设置 kind 时为 legacy（非空默认）。"""
         session = ChatSession(title="legacy-session")
@@ -598,7 +588,6 @@ class TestSessionSchema:
 class TestAgentRunSchema:
     """agent_runs 新字段契约。"""
 
-    @pytest.mark.xfail(reason="C0: AgentRun schema 未冻结", strict=False)
     async def test_run_git_and_permission_snapshot(self, db: AsyncSession) -> None:
         """run 保存 Git HEAD/branch/dirty 与权限快照。"""
         project = Project(name="snap-test", root_path="/tmp/snap-test")

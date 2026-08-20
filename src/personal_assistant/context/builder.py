@@ -109,6 +109,7 @@ class ContextBuilder:
         memories: Sequence[ContextFragment] = (),
         rag_fragments: Sequence[ContextFragment] = (),
         summaries: Sequence[ContextFragment] = (),
+        project_fragments: Sequence[ContextFragment] = (),
     ) -> ContextBuildResult:
         if current_request.role != "user":
             raise ValueError("current context request must have role=user")
@@ -132,6 +133,7 @@ class ContextBuilder:
         self._require_kinds(memories, ContextFragmentKind.MEMORY)
         self._require_kinds(rag_fragments, ContextFragmentKind.RAG)
         self._require_kinds(summaries, ContextFragmentKind.SUMMARY)
+        self._require_kinds(project_fragments, ContextFragmentKind.PROJECT)
 
         policy = ModelMessage(
             role="system",
@@ -152,6 +154,7 @@ class ContextBuilder:
             "memory": 0,
             "summary": 0,
             "rag": 0,
+            "project": 0,
         }
 
         history_limit = min(self.budget.max_history_tokens, remaining)
@@ -208,9 +211,24 @@ class ContextBuilder:
         )
         selections.extend(rag_decisions)
         section_tokens["rag"] = rag_tokens
+        remaining -= rag_tokens
+
+        project_limit = min(self.budget.max_project_tokens, remaining)
+        project_messages, project_tokens, project_decisions = self._select_fragments(
+            project_fragments,
+            limit=project_limit,
+            exclusion_reason=(
+                ContextSelectionReason.TOTAL_BUDGET
+                if project_limit < self.budget.max_project_tokens
+                else ContextSelectionReason.SECTION_BUDGET
+            ),
+        )
+        selections.extend(project_decisions)
+        section_tokens["project"] = project_tokens
 
         messages = (
             policy,
+            *project_messages,
             *summary_messages,
             *memory_messages,
             *rag_messages,

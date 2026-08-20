@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
@@ -9,6 +11,7 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,6 +40,7 @@ from ..agents import (
     VersionedToolRegistry,
 )
 from ..agents.recovery import agent_runtime_process_guard
+from ..agents.repository import ClientRequestConflictError
 from ..agents.result_verification import ToolResultVerifier
 from ..config import settings as cfg
 from ..context import (
@@ -44,9 +48,11 @@ from ..context import (
     context_event_payload,
     prepare_agent_context,
 )
+from ..core.coding_errors import PERMISSION_MODES, RUNNABLE_WORKSPACE_STATUSES
 from ..core.command_workflow import build_command_tool_registry
 from ..core.compatibility import compatibility_telemetry
 from ..core.db import async_session_factory, get_session
+from ..core.git_snapshot import GitSnapshotError, read_git_snapshot
 from ..core.history import SessionRepository
 from ..core.http_workflow import build_http_tool_registry
 from ..core.models import AgentRun as AgentRunRecord
@@ -60,6 +66,7 @@ from ..core.rag_tool_adapter import build_rag_tool_registry
 from ..core.settings import SettingsService
 from ..core.sql_workflow import build_sql_tool_registry
 from ..core.tool_adapter import build_read_only_tool_registry
+from ..core.workspaces import ProjectWorkspaceService
 from ..mcp.manager import build_mcp_tool_registry
 from ..mcp.repository import McpRepository
 
@@ -169,9 +176,14 @@ class AgentRunResponse(BaseModel):
     project_id: int | None = None
     workspace_id: int | None = None
     base_head_sha: str | None = None
+    base_branch_name: str | None = None
+    base_git_dirty: bool | None = None
     model_profile_id: str | None = None
     reasoning_effort: str | None = None
+    permission_mode: str | None = None
     client_request_id: str | None = None
+    # C0 §5.2：幂等重放标记（旧客户端可忽略）
+    idempotent_replay: bool = False
 
 
 class AgentRunEventResponse(BaseModel):
@@ -575,6 +587,42 @@ def _timestamp(value) -> str | None:
     return value.isoformat() if value is not None else None
 
 
+def _coding_error(status: int, error_code: str, detail: str) -> JSONResponse:
+    """v0.6.0 平铺 error_code 错误响应（C0 契约 §9）。
+
+    错误响应不得包含本地绝对路径（C0 §9）；仅可进入受控诊断包并脱敏。
+    """
+    return JSONResponse(
+        status_code=status,
+        content={"error_code": error_code, "detail": detail},
+    )
+
+
+def _request_payload_sha256(
+    *,
+    session_id: int | None,
+    project_id: int | None,
+    workspace_id: int | None,
+    message: str,
+) -> str:
+    """C0 §5.2.4：规范化请求指纹（session/project/workspace/message）。
+
+    相同 client_request_id 重放时比较指纹；不一致返回 client_request_conflict。
+    """
+    payload = json.dumps(
+        {
+            "session_id": session_id,
+            "project_id": project_id,
+            "workspace_id": workspace_id,
+            "message": message,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _approval_response(record) -> AgentToolApprovalResponse:
     return AgentToolApprovalResponse(
         id=record.id,
@@ -597,6 +645,8 @@ def _approval_response(record) -> AgentToolApprovalResponse:
 async def _run_response(
     repository: AgentRunRepository,
     run_id: str,
+    *,
+    idempotent_replay: bool = False,
 ) -> AgentRunResponse:
     run = await repository.get_run(run_id)
     if run is None:
@@ -655,9 +705,13 @@ async def _run_response(
         project_id=run.project_id,
         workspace_id=run.workspace_id,
         base_head_sha=run.base_head_sha,
+        base_branch_name=run.base_branch_name,
+        base_git_dirty=run.base_git_dirty,
         model_profile_id=run.model_profile_id,
         reasoning_effort=run.reasoning_effort,
+        permission_mode=run.permission_mode,
         client_request_id=run.client_request_id,
+        idempotent_replay=idempotent_replay,
     )
 
 
@@ -673,40 +727,117 @@ async def create_agent_run(
     model: ModelClient = Depends(get_agent_model_client),
     tool_bundle: AgentToolBundle | None = Depends(get_agent_tool_bundle),
 ) -> AgentRunResponse:
+    # ---- v0.6.0 C2：Coding/legacy 创建模式判定（C0 契约 §5.1）----
+    # 判定字段三件套 = {project_id, workspace_id, permission_mode}；
+    # client_request_id 是独立幂等键，单独出现仍按 legacy 处理（C0 §5.2）。
+    coding_fields_present = [
+        name
+        for name, value in (
+            ("project_id", request.project_id),
+            ("workspace_id", request.workspace_id),
+            ("permission_mode", request.permission_mode),
+        )
+        if value is not None
+    ]
+    coding_mode = len(coding_fields_present) == 3
+    if coding_fields_present and not coding_mode:
+        # 部分出现 → 422，零 run 创建，不退回 legacy（C0 §5.1）
+        compatibility_telemetry.record(
+            path="agent_run_create", mode="project_bound", outcome="rejected"
+        )
+        return _coding_error(
+            422,
+            "coding_context_incomplete",
+            "project_id/workspace_id/permission_mode must be provided together",
+        )
+    if coding_mode and not cfg.project_bound_runs_enabled:
+        # 全部出现但 flag 关闭 → 409，legacy 仍可用
+        compatibility_telemetry.record(
+            path="agent_run_create", mode="project_bound", outcome="rejected"
+        )
+        return _coding_error(
+            409, "coding_mode_disabled", "Project-bound runs are disabled"
+        )
+
+    session = None
     if request.session_id is not None:
         session = await SessionRepository(db).get(request.session_id)
-        if session is None:
+        if session is None and not coding_mode:
             raise HTTPException(status_code=404, detail="Session not found")
 
-    # v0.6.0：project-bound run 校验
-    project = None
-    workspace = None
-    if request.project_id is not None:
-        from ..core.projects import ProjectService
-
+    # ---- v0.6.0 C2：coding 模式归属/授权/路径/Git/权限快照校验链 ----
+    # 任何一步失败都不能退回 legacy，也不能改绑到最近项目（C0 §5.1/§8）。
+    git_snapshot: tuple[str | None, str | None, bool | None] | None = None
+    if coding_mode:
+        if session is None or session.kind != "coding":
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                409, "session_not_coding", "Coding runs require a coding session"
+            )
+        if (
+            session.project_id != request.project_id
+            or session.workspace_id != request.workspace_id
+        ):
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                409,
+                "session_workspace_mismatch",
+                "Session binding does not match the requested project/workspace",
+            )
+        if request.permission_mode not in PERMISSION_MODES:
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                422,
+                "coding_context_incomplete",
+                f"permission_mode must be one of {sorted(PERMISSION_MODES)}",
+            )
+        workspace_service = ProjectWorkspaceService(db)
+        workspace = await workspace_service.get(request.workspace_id)
+        if workspace is None:
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(404, "workspace_not_found", "Workspace not found")
+        if workspace.project_id != request.project_id:
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                403,
+                "workspace_outside_trust",
+                "Workspace does not belong to the requested project",
+            )
+        if workspace.status not in RUNNABLE_WORKSPACE_STATUSES:
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                409, "workspace_unavailable", f"Workspace is {workspace.status}"
+            )
+        # 路径存在性：失败关闭并标记 missing，不自动改绑（C1 退出条件）
+        if not await workspace_service.check_path(workspace):
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(
+                409, "workspace_unavailable", "Workspace path is missing"
+            )
+        # Git 只读快照（C0-D06）：非 git 目录快照为 None，不阻断创建
         try:
-            project = await ProjectService(db).get(request.project_id)
-        except Exception:
-            raise HTTPException(status_code=404, detail="Project not found")
-        if project.status != "active":
-            raise HTTPException(status_code=400, detail="Project is not active")
-
-        if request.workspace_id is not None:
-            from ..core.workspaces import ProjectWorkspaceService
-
-            workspace = await ProjectWorkspaceService(db).get(request.workspace_id)
-            if workspace is None:
-                raise HTTPException(status_code=404, detail="Workspace not found")
-            if workspace.project_id != project.id:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Workspace does not belong to the specified project",
-                )
-            if workspace.status not in ("active", "dirty"):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Workspace is {workspace.status}",
-                )
+            snapshot = await read_git_snapshot(workspace.root_path)
+        except GitSnapshotError as exc:
+            compatibility_telemetry.record(
+                path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            return _coding_error(409, "git_snapshot_failed", str(exc))
+        if snapshot is not None:
+            git_snapshot = (snapshot.head_sha, snapshot.branch, snapshot.dirty)
 
     run_id = str(uuid4())
     messages = (
@@ -722,6 +853,10 @@ async def create_agent_run(
                 current_request=request.message,
                 session_id=request.session_id,
                 knowledge_base=request.knowledge_base,
+                # v0.6.0 C2：coding run 注入项目/workspace/Git 摘要片段
+                project_id=request.project_id if coding_mode else None,
+                workspace_id=request.workspace_id if coding_mode else None,
+                git_snapshot=git_snapshot,
             )
         except ContextBudgetExceededError as exc:
             raise HTTPException(
@@ -731,28 +866,60 @@ async def create_agent_run(
         messages = prepared.messages
         context_metadata = context_event_payload(prepared)
     repository = AgentRunRepository(db)
-    run = await repository.create_run(
-        run_id=run_id,
-        limits=request.limits,
-        session_id=request.session_id,
-        knowledge_base=request.knowledge_base,
-        completion_conditions=request.completion_conditions,
-        # v0.6.0 Coding Agent
-        project_id=request.project_id,
-        workspace_id=request.workspace_id,
-        model_profile_id=request.model_profile_id,
-        reasoning_effort=request.reasoning_effort,
-        permission_snapshot_json=(
-            {"mode": request.permission_mode}
-            if request.permission_mode is not None
-            else None
-        ),
-        client_request_id=request.client_request_id,
+    try:
+        run = await repository.create_run(
+            run_id=run_id,
+            limits=request.limits,
+            session_id=request.session_id,
+            knowledge_base=request.knowledge_base,
+            completion_conditions=request.completion_conditions,
+            # v0.6.0 Coding Agent
+            project_id=request.project_id if coding_mode else None,
+            workspace_id=request.workspace_id if coding_mode else None,
+            base_head_sha=git_snapshot[0] if git_snapshot else None,
+            base_branch_name=git_snapshot[1] if git_snapshot else None,
+            base_git_dirty=git_snapshot[2] if git_snapshot else None,
+            model_profile_id=request.model_profile_id,
+            reasoning_effort=request.reasoning_effort,
+            permission_mode=request.permission_mode if coding_mode else None,
+            permission_snapshot_json=(
+                {"mode": request.permission_mode}
+                if request.permission_mode is not None
+                else None
+            ),
+            client_request_id=request.client_request_id,
+            request_payload_sha256=_request_payload_sha256(
+                session_id=request.session_id,
+                project_id=request.project_id if coding_mode else None,
+                workspace_id=request.workspace_id if coding_mode else None,
+                message=request.message,
+            ),
+        )
+    except ClientRequestConflictError:
+        # C0 §5.2.4：相同幂等键对应不同请求 payload，不复用也不新建
+        compatibility_telemetry.record(
+            path="agent_run_create",
+            mode="project_bound" if coding_mode else "legacy",
+            outcome="rejected",
+        )
+        return _coding_error(
+            409,
+            "client_request_conflict",
+            "client_request_id is bound to a different request payload",
+        )
+    # 幂等重放：create_run 返回既有 run 时 id 不同于本次生成值
+    idempotent_replay = run.id != run_id
+    compatibility_telemetry.record(
+        path="agent_run_create",
+        mode="project_bound" if coding_mode else "legacy",
+        outcome="replayed" if idempotent_replay else "created",
     )
-    # v0.6.0：幂等——如果 run 已存在（client_request_id 重复），直接返回
+    # v0.6.0：幂等——如果 run 已存在（client_request_id 重复），直接返回，绝不启动第二个 coordinator（C0-D04）
     effective_run_id = run.id
     if run.status != "created" or agent_run_coordinator.is_active(effective_run_id):
-        return await _run_response(repository, effective_run_id)
+        return await _run_response(
+            repository, effective_run_id, idempotent_replay=idempotent_replay
+        )
     agent_run_coordinator.start(
         run_id=effective_run_id,
         model=model,
@@ -771,13 +938,9 @@ async def create_agent_run(
         ),
         context_metadata=context_metadata,
     )
-    # 0.3.0 M1：显式 Agent Runs API 与 chat 驱动的 run 分开计，观察脚本可区分。
-    compatibility_telemetry.record(
-        path="/agent-runs",
-        mode="agent_runs_api",
-        outcome="created",
+    return await _run_response(
+        repository, effective_run_id, idempotent_replay=idempotent_replay
     )
-    return await _run_response(repository, effective_run_id)
 
 
 @router.get(

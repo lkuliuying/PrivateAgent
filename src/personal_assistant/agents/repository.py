@@ -58,6 +58,10 @@ class AgentRunProjectionError(AgentRunPersistenceError):
     pass
 
 
+class ClientRequestConflictError(AgentRunPersistenceError):
+    """C0 §5.2.4：相同幂等键对应不同请求 payload，拒绝复用与新建。"""
+
+
 _TERMINAL_RUN_STATUSES = {
     "completed",
     "failed",
@@ -134,6 +138,7 @@ class AgentRunRepository:
         permission_mode: str | None = None,
         permission_snapshot_json: dict | None = None,
         client_request_id: str | None = None,
+        request_payload_sha256: str | None = None,
     ) -> AgentRunRecord:
         if not run_id or len(run_id) > 36:
             raise ValueError("run_id must contain 1-36 characters")
@@ -141,10 +146,18 @@ class AgentRunRepository:
         if len(effective_trace_id) > 64:
             raise ValueError("trace_id must contain at most 64 characters")
 
-        # v0.6.0：client_request_id 幂等——重复请求返回原 run
+        # v0.6.0：client_request_id 幂等——重复请求返回原 run；payload 不一致时冲突
         if client_request_id is not None:
             existing = await self.get_run_by_client_request_id(client_request_id)
             if existing is not None:
+                if (
+                    existing.request_payload_sha256 is not None
+                    and request_payload_sha256 is not None
+                    and existing.request_payload_sha256 != request_payload_sha256
+                ):
+                    raise ClientRequestConflictError(
+                        "client_request_id is bound to a different request payload"
+                    )
                 return existing
 
         record = AgentRunRecord(
@@ -163,6 +176,7 @@ class AgentRunRepository:
             permission_mode=permission_mode,
             permission_snapshot_json=permission_snapshot_json,
             client_request_id=client_request_id,
+            request_payload_sha256=request_payload_sha256,
             status="created",
             max_steps=limits.max_steps,
             max_tool_calls=limits.max_tool_calls,

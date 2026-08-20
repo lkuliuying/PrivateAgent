@@ -2218,6 +2218,11 @@ class AgentRun(Base):
     client_request_id: Mapped[str | None] = mapped_column(
         VARCHAR(64), nullable=True, unique=True
     )
+    # C0 §5.2：请求指纹（session/project/workspace/message 规范化哈希），
+    # 幂等重放时校验 payload 一致性；旧 run 为 NULL 不参与比对。
+    request_payload_sha256: Mapped[str | None] = mapped_column(
+        VARCHAR(64), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         VARCHAR(32), nullable=False, default="created", server_default="created"
     )

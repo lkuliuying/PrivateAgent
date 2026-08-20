@@ -18,6 +18,8 @@ class ContextFragmentKind(StrEnum):
     MEMORY = "memory"
     RAG = "rag"
     SUMMARY = "summary"
+    # v0.6.0 C2：项目指令 / workspace / Git 摘要（coding run 上下文）
+    PROJECT = "project"
 
 
 class ContextTrust(StrEnum):
@@ -52,6 +54,8 @@ class ContextBudget(ContextContract):
     max_rag_tokens: int = Field(default=1_600, ge=0, le=1_000_000)
     max_summary_tokens: int = Field(default=800, ge=0, le=1_000_000)
     max_fragment_tokens: int = Field(default=600, ge=32, le=1_000_000)
+    # v0.6.0 C2：项目指令/workspace/Git 摘要片段预算
+    max_project_tokens: int = Field(default=800, ge=0, le=1_000_000)
 
     @model_validator(mode="after")
     def section_limits_cannot_exceed_total(self) -> ContextBudget:
@@ -61,6 +65,7 @@ class ContextBudget(ContextContract):
             self.max_rag_tokens,
             self.max_summary_tokens,
             self.max_fragment_tokens,
+            self.max_project_tokens,
         ):
             if value > self.max_total_tokens:
                 raise ValueError("context section limit cannot exceed total limit")

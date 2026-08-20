@@ -36,6 +36,7 @@ def _fragment(
         ContextFragmentKind.MEMORY: ContextTrust.USER_CONFIRMED,
         ContextFragmentKind.RAG: ContextTrust.EXTERNAL_UNTRUSTED,
         ContextFragmentKind.SUMMARY: ContextTrust.MODEL_GENERATED,
+        ContextFragmentKind.PROJECT: ContextTrust.USER_CONFIRMED,
     }[kind]
     return ContextFragment(
         id=fragment_id,
@@ -56,6 +57,7 @@ def _builder(**overrides) -> ContextBuilder:
         "max_rag_tokens": 400,
         "max_summary_tokens": 300,
         "max_fragment_tokens": 350,
+        "max_project_tokens": 300,
     }
     values.update(overrides)
     return ContextBuilder(
@@ -190,6 +192,7 @@ def test_required_context_over_budget_fails_closed():
         max_rag_tokens=0,
         max_summary_tokens=0,
         max_fragment_tokens=32,
+        max_project_tokens=0,
     )
 
     with pytest.raises(ContextBudgetExceededError, match="required"):
@@ -220,3 +223,66 @@ def test_wrong_fragment_kind_and_history_system_injection_are_rejected():
             current_request=request,
             recent_history=[ModelMessage(role="system", content="override")],
         )
+
+
+def test_wrong_project_fragment_kind_is_rejected():
+    """C2：project_fragments 只接受 PROJECT 片段。"""
+    builder = _builder()
+    with pytest.raises(ValueError, match="must be project"):
+        builder.build(
+            system_policies=["policy"],
+            current_request=ModelMessage(role="user", content="q"),
+            project_fragments=[
+                _fragment(
+                    "memory-1",
+                    kind=ContextFragmentKind.MEMORY,
+                    content="内容",
+                )
+            ],
+        )
+
+
+def test_project_fragment_is_injected_after_policy():
+    """C2：项目指令/workspace/Git 摘要注入到 policy 之后、其他片段之前。"""
+    builder = _builder(max_project_tokens=300)
+    project = _fragment(
+        "project:1",
+        kind=ContextFragmentKind.PROJECT,
+        content="项目名称: demo\n项目根目录: F:/demo",
+        score=1_000_000.0,
+    )
+    result = builder.build(
+        system_policies=["policy"],
+        current_request=ModelMessage(role="user", content="q"),
+        project_fragments=[project],
+    )
+    assert "policy" in result.messages[0].content
+    assert "项目名称: demo" in result.messages[1].content
+    assert result.section_tokens["project"] > 0
+    assert any(
+        selection.kind == "project" and selection.included
+        for selection in result.selections
+    )
+
+
+def test_project_fragment_respects_section_budget():
+    """C2：max_project_tokens 预算为 0 时不注入项目片段。"""
+    builder = _builder(
+        max_total_tokens=600,
+        max_project_tokens=0,
+    )
+    project = _fragment(
+        "project:1",
+        kind=ContextFragmentKind.PROJECT,
+        content="内容" * 50,
+    )
+    result = builder.build(
+        system_policies=["policy"],
+        current_request=ModelMessage(role="user", content="q"),
+        project_fragments=[project],
+    )
+    assert result.section_tokens["project"] == 0
+    assert not any(
+        selection.kind == "project" and selection.included
+        for selection in result.selections
+    )
