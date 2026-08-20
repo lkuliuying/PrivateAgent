@@ -366,6 +366,15 @@ export interface Project {
   updated_at: string;
 }
 
+// ============ v0.6.0 Coding Agent：类型化选择输入 ============
+
+export interface SessionCreateInput {
+  title?: string;
+  project_id?: number | null;
+  workspace_id?: number | null;
+  kind?: string | null;
+}
+
 export interface LearningTopic {
   id: number;
   title: string;

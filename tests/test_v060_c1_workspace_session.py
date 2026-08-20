@@ -74,6 +74,53 @@ class TestWorkspaceEnsureRoot:
         await db.refresh(ws)
         assert ws.status == "missing"
 
+    async def test_check_path_marks_missing_fails_closed(self, db: AsyncSession, tmp_path):
+        """路径丢失时 check_path 标记 missing 并失败关闭（不自动改绑）。"""
+        missing = str(tmp_path / "gone-dir")
+        project = Project(name="ws-test-5", root_path=missing)
+        db.add(project)
+        await db.commit()
+        await db.refresh(project)
+
+        svc = ProjectWorkspaceService(db)
+        ws = await svc.ensure_root_workspace(project)
+        assert await svc.check_path(ws) is False
+        await db.refresh(ws)
+        assert ws.status == "missing"
+
+    async def test_check_path_active_when_dir_exists(self, db: AsyncSession, tmp_path):
+        """路径存在时 check_path 返回 True 且状态保持 active。"""
+        root = str(tmp_path / "exist-dir")
+        (tmp_path / "exist-dir").mkdir()
+        project = Project(name="ws-test-6", root_path=root)
+        db.add(project)
+        await db.commit()
+        await db.refresh(project)
+
+        svc = ProjectWorkspaceService(db)
+        ws = await svc.ensure_root_workspace(project)
+        assert await svc.check_path(ws) is True
+        await db.refresh(ws)
+        assert ws.status == "active"
+
+    async def test_archive_project_archives_workspaces(self, db: AsyncSession):
+        """项目归档时 active workspace 被标记 archived（不删除审计关系）。"""
+        project = Project(name="ws-test-7", root_path="/tmp/ws-test-7")
+        db.add(project)
+        await db.commit()
+        await db.refresh(project)
+
+        svc = ProjectWorkspaceService(db)
+        ws = await svc.ensure_root_workspace(project)
+        assert ws.status == "active"
+
+        await svc.repo.archive_by_project(project.id)
+        await db.refresh(ws)
+        assert ws.status == "archived"
+        # 记录仍保留
+        all_ws = await svc.repo.list_by_project(project.id)
+        assert len(all_ws) == 1
+
 
 class TestSessionBinding:
     """session 绑定 project/workspace。"""
@@ -245,3 +292,43 @@ class TestWorkspaceAPI:
         assert data["project_id"] == project_id
         assert data["workspace_id"] == ws_id
         assert data["kind"] == "coding"
+
+    async def test_session_detail_returns_binding(self, client, monkeypatch, tmp_path):
+        """GET /sessions/{id} 返回 project/workspace 绑定详情。"""
+        monkeypatch.setattr(settings, "project_bound_runs_enabled", True)
+
+        root = str(tmp_path.resolve())
+        resp = await client.post(
+            "/projects",
+            json={"name": "api-sess-detail", "root_path": root},
+        )
+        assert resp.status_code == 201, resp.text
+        project_id = resp.json()["id"]
+        resp = await client.post(
+            f"/projects/{project_id}/workspaces/root/ensure"
+        )
+        ws_id = resp.json()["id"]
+
+        resp = await client.post(
+            "/sessions",
+            json={
+                "title": "detail-session",
+                "project_id": project_id,
+                "workspace_id": ws_id,
+                "kind": "coding",
+            },
+        )
+        session_id = resp.json()["id"]
+
+        resp = await client.get(f"/sessions/{session_id}")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["id"] == session_id
+        assert data["project_id"] == project_id
+        assert data["workspace_id"] == ws_id
+        assert data["kind"] == "coding"
+
+    async def test_session_detail_404(self, client):
+        """不存在的 session 返回 404。"""
+        resp = await client.get("/sessions/99999999")
+        assert resp.status_code == 404

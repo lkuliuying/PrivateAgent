@@ -120,6 +120,21 @@ class ProjectWorkspaceRepository:
         )
         await self.db.commit()
 
+    async def archive_by_project(self, project_id: int) -> None:
+        """项目归档时把该项目的 active workspace 统一标记 archived。
+
+        C0 契约 §4.1：不物理删除运行审计关系。
+        """
+        await self.db.execute(
+            update(ProjectWorkspace)
+            .where(
+                ProjectWorkspace.project_id == project_id,
+                ProjectWorkspace.status == "active",
+            )
+            .values(status="archived")
+        )
+        await self.db.commit()
+
     async def touch_last_used(
         self, workspace_id: int, at: datetime | None = None
     ) -> None:

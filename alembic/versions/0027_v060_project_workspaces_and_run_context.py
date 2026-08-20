@@ -12,6 +12,8 @@
   非空时全局唯一）。
 - 升级回填：按 project id 分页，为每个现有 project 幂等补建一个 root workspace
   （不重写旧 session / 旧 run；中断后重跑不重复创建）。
+- DDL 全部幂等（if_not_exists / 列与约束存在性检查）：MySQL DDL 隐式提交，
+  迁移中断后重跑不会因表/列/索引/约束已存在而失败。
 
 正式应用回退不执行本迁移的 downgrade；downgrade 仅用于开发库/克隆库验证。
 
@@ -34,7 +36,44 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _column_exists(conn, table: str, column: str) -> bool:
+    """MySQL 列存在性检查（DDL 幂等重跑用）。"""
+    row = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema = DATABASE() AND table_name = :t AND column_name = :c"
+        ),
+        {"t": table, "c": column},
+    ).fetchone()
+    return row is not None
+
+
+def _constraint_exists(conn, name: str) -> bool:
+    """MySQL 约束存在性检查（DDL 幂等重跑用）。"""
+    row = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE constraint_schema = DATABASE() AND constraint_name = :n"
+        ),
+        {"n": name},
+    ).fetchone()
+    return row is not None
+
+
+def _index_exists(conn, table: str, index: str) -> bool:
+    """MySQL 索引存在性检查（MySQL 不支持 CREATE INDEX IF NOT EXISTS）。"""
+    row = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i"
+        ),
+        {"t": table, "i": index},
+    ).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
+    connection = op.get_bind()
     # ============================================================
     # 1. project_workspaces
     # ============================================================
@@ -89,128 +128,152 @@ def upgrade() -> None:
         mysql_charset="utf8mb4",
         mysql_collate="utf8mb4_unicode_ci",
         mysql_engine="InnoDB",
+        if_not_exists=True,
     )
-    op.create_index(
-        "idx_workspace_project_status",
-        "project_workspaces",
-        ["project_id", "status", "last_used_at"],
-    )
+    if not _index_exists(connection, "project_workspaces", "idx_workspace_project_status"):
+        op.create_index(
+            "idx_workspace_project_status",
+            "project_workspaces",
+            ["project_id", "status", "last_used_at"],
+        )
 
     # ============================================================
     # 2. sessions 新列（additive，kind 非空默认 legacy）
     # ============================================================
-    op.add_column(
-        "sessions",
-        sa.Column(
-            "kind",
-            mysql.VARCHAR(32),
-            nullable=False,
-            server_default="legacy",
-        ),
-    )
-    op.add_column(
-        "sessions",
-        sa.Column("project_id", mysql.BIGINT(), nullable=True),
-    )
-    op.add_column(
-        "sessions",
-        sa.Column("workspace_id", mysql.BIGINT(), nullable=True),
-    )
-    op.add_column(
-        "sessions",
-        sa.Column("last_run_id", mysql.CHAR(36), nullable=True),
-    )
-    op.add_column(
-        "sessions",
-        sa.Column("pinned_at", mysql.DATETIME(fsp=3), nullable=True),
-    )
-    op.add_column(
-        "sessions",
-        sa.Column("archived_at", mysql.DATETIME(fsp=3), nullable=True),
-    )
-    op.create_index("idx_session_project", "sessions", ["project_id"])
-    op.create_index("idx_session_workspace", "sessions", ["workspace_id"])
-    op.create_foreign_key(
-        "fk_session_project",
-        "sessions", "projects",
-        ["project_id"], ["id"],
-        ondelete="SET NULL",
-    )
-    op.create_foreign_key(
-        "fk_session_workspace",
-        "sessions", "project_workspaces",
-        ["workspace_id"], ["id"],
-        ondelete="SET NULL",
-    )
+    if not _column_exists(connection, "sessions", "kind"):
+        op.add_column(
+            "sessions",
+            sa.Column(
+                "kind",
+                mysql.VARCHAR(32),
+                nullable=False,
+                server_default="legacy",
+            ),
+        )
+    if not _column_exists(connection, "sessions", "project_id"):
+        op.add_column(
+            "sessions",
+            sa.Column("project_id", mysql.BIGINT(), nullable=True),
+        )
+    if not _column_exists(connection, "sessions", "workspace_id"):
+        op.add_column(
+            "sessions",
+            sa.Column("workspace_id", mysql.BIGINT(), nullable=True),
+        )
+    if not _column_exists(connection, "sessions", "last_run_id"):
+        op.add_column(
+            "sessions",
+            sa.Column("last_run_id", mysql.CHAR(36), nullable=True),
+        )
+    if not _column_exists(connection, "sessions", "pinned_at"):
+        op.add_column(
+            "sessions",
+            sa.Column("pinned_at", mysql.DATETIME(fsp=3), nullable=True),
+        )
+    if not _column_exists(connection, "sessions", "archived_at"):
+        op.add_column(
+            "sessions",
+            sa.Column("archived_at", mysql.DATETIME(fsp=3), nullable=True),
+        )
+    if not _index_exists(connection, "sessions", "idx_session_project"):
+        op.create_index("idx_session_project", "sessions", ["project_id"])
+    if not _index_exists(connection, "sessions", "idx_session_workspace"):
+        op.create_index("idx_session_workspace", "sessions", ["workspace_id"])
+    if not _constraint_exists(connection, "fk_session_project"):
+        op.create_foreign_key(
+            "fk_session_project",
+            "sessions", "projects",
+            ["project_id"], ["id"],
+            ondelete="SET NULL",
+        )
+    if not _constraint_exists(connection, "fk_session_workspace"):
+        op.create_foreign_key(
+            "fk_session_workspace",
+            "sessions", "project_workspaces",
+            ["workspace_id"], ["id"],
+            ondelete="SET NULL",
+        )
 
     # ============================================================
     # 3. agent_runs 新列（additive；client_request_id 非空唯一）
     # ============================================================
-    op.add_column(
-        "agent_runs",
-        sa.Column("project_id", mysql.BIGINT(), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("workspace_id", mysql.BIGINT(), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("base_head_sha", mysql.VARCHAR(64), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("base_branch_name", mysql.VARCHAR(512), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("base_git_dirty", mysql.BOOLEAN(), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("model_profile_id", mysql.VARCHAR(128), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("reasoning_effort", mysql.VARCHAR(32), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("permission_mode", mysql.VARCHAR(32), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column("permission_snapshot_json", mysql.JSON(), nullable=True),
-    )
-    op.add_column(
-        "agent_runs",
-        sa.Column(
-            "client_request_id", mysql.VARCHAR(64), nullable=True, unique=True
-        ),
-    )
-    op.create_index(
-        "idx_agent_run_project_workspace",
-        "agent_runs",
-        ["project_id", "workspace_id", "created_at"],
-    )
-    op.create_foreign_key(
-        "fk_agent_run_project",
-        "agent_runs", "projects",
-        ["project_id"], ["id"],
-        ondelete="SET NULL",
-    )
-    op.create_foreign_key(
-        "fk_agent_run_workspace",
-        "agent_runs", "project_workspaces",
-        ["workspace_id"], ["id"],
-        ondelete="SET NULL",
-    )
+    if not _column_exists(connection, "agent_runs", "project_id"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("project_id", mysql.BIGINT(), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "workspace_id"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("workspace_id", mysql.BIGINT(), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "base_head_sha"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("base_head_sha", mysql.VARCHAR(64), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "base_branch_name"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("base_branch_name", mysql.VARCHAR(512), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "base_git_dirty"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("base_git_dirty", mysql.BOOLEAN(), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "model_profile_id"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("model_profile_id", mysql.VARCHAR(128), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "reasoning_effort"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("reasoning_effort", mysql.VARCHAR(32), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "permission_mode"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("permission_mode", mysql.VARCHAR(32), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "permission_snapshot_json"):
+        op.add_column(
+            "agent_runs",
+            sa.Column("permission_snapshot_json", mysql.JSON(), nullable=True),
+        )
+    if not _column_exists(connection, "agent_runs", "client_request_id"):
+        op.add_column(
+            "agent_runs",
+            sa.Column(
+                "client_request_id", mysql.VARCHAR(64), nullable=True, unique=True
+            ),
+        )
+    if not _index_exists(connection, "agent_runs", "idx_agent_run_project_workspace"):
+        op.create_index(
+            "idx_agent_run_project_workspace",
+            "agent_runs",
+            ["project_id", "workspace_id", "created_at"],
+        )
+    if not _constraint_exists(connection, "fk_agent_run_project"):
+        op.create_foreign_key(
+            "fk_agent_run_project",
+            "agent_runs", "projects",
+            ["project_id"], ["id"],
+            ondelete="SET NULL",
+        )
+    if not _constraint_exists(connection, "fk_agent_run_workspace"):
+        op.create_foreign_key(
+            "fk_agent_run_workspace",
+            "agent_runs", "project_workspaces",
+            ["workspace_id"], ["id"],
+            ondelete="SET NULL",
+        )
 
     # ============================================================
     # 4. 升级回填：为每个现有 project 幂等补建一个 root workspace。
     # 不重写旧 session / 旧 run；中断后重跑不重复创建。
     # ============================================================
-    connection = op.get_bind()
     project_rows = connection.execute(
         sa.text("SELECT id, root_path FROM projects WHERE id IS NOT NULL ORDER BY id")
     ).fetchall()

@@ -130,6 +130,10 @@ async def archive_project(project_id: int, db: AsyncSession = Depends(get_sessio
     except ProjectNotFound:
         raise HTTPException(404, "项目不存在")
     await ProjectRepository(db).archive(project_id)
+    # C0 契约 §4.1：项目归档只把 workspace 标记 archived，不物理删除运行审计关系。
+    from ..core.repo_workspaces import ProjectWorkspaceRepository
+
+    await ProjectWorkspaceRepository(db).archive_by_project(project_id)
     project = await ProjectRepository(db).get(project_id)
     assert project is not None
     return _map_project(project)

@@ -46,6 +46,7 @@ import type {
   ProjectFile,
   ProjectStats,
   ProjectTree,
+  ProjectWorkspace,
   ProviderStatus,
   ReviewRating,
   ReviewResponse,
@@ -53,6 +54,7 @@ import type {
   ScanResponse,
   SectionSummary,
   Session,
+  SessionCreateInput,
   SummarizeResult,
   ToolCall,
   ToolDefinition,
@@ -223,16 +225,34 @@ export async function getApiInfo(): Promise<Record<string, unknown>> {
   return r.json();
 }
 
-export async function listSessions(): Promise<Session[]> {
+export async function listSessions(
+  options?: { projectId?: number; kind?: string },
+): Promise<Session[]> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/sessions`);
+  const qs = new URLSearchParams();
+  if (options?.projectId != null) qs.set("project_id", String(options.projectId));
+  if (options?.kind != null) qs.set("kind", options.kind);
+  const r = await fetch(`${base}/sessions${qs.size ? `?${qs}` : ""}`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
 
-export async function createSession(): Promise<Session> {
+export async function getSession(sessionId: number): Promise<Session> {
   const base = await ensureApiBase();
-  const r = await fetch(`${base}/sessions`, { method: "POST" });
+  const r = await fetch(`${base}/sessions/${sessionId}`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function createSession(
+  input: SessionCreateInput = {},
+): Promise<Session> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }
@@ -591,6 +611,41 @@ export async function createProject(
 export async function archiveProject(id: number): Promise<Project> {
   const base = await ensureApiBase();
   const r = await fetch(`${base}/projects/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// ---- v0.6.0 ProjectWorkspace（类型化选择 API） ----
+
+export async function listWorkspaces(
+  projectId: number,
+): Promise<ProjectWorkspace[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/projects/${projectId}/workspaces`);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function getWorkspace(
+  projectId: number,
+  workspaceId: number,
+): Promise<ProjectWorkspace> {
+  const base = await ensureApiBase();
+  const r = await fetch(
+    `${base}/projects/${projectId}/workspaces/${workspaceId}`,
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+export async function ensureRootWorkspace(
+  projectId: number,
+): Promise<ProjectWorkspace> {
+  const base = await ensureApiBase();
+  const r = await fetch(
+    `${base}/projects/${projectId}/workspaces/root/ensure`,
+    { method: "POST" },
+  );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

@@ -7,6 +7,8 @@
   同一 plan version 的 item_key/ordinal 唯一；状态限定为 pending/in_progress/
   completed/blocked/failed/cancelled；evidence_json 只放有界引用。
 - 新增 ``agent_run_artifacts``：产物引用契约（v0.6.0 不提供文件下载/外部上传）。
+- DDL 全部幂等（if_not_exists）：MySQL DDL 隐式提交，迁移中断后重跑
+  不会因表/索引已存在而失败。
 
 正式应用回退不执行本迁移的 downgrade；downgrade 仅用于开发库/克隆库验证
 （先删本迁移的表，再回退 0027 的列）。
@@ -30,7 +32,20 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _index_exists(conn, table: str, index: str) -> bool:
+    """MySQL 索引存在性检查（MySQL 不支持 CREATE INDEX IF NOT EXISTS）。"""
+    row = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.statistics "
+            "WHERE table_schema = DATABASE() AND table_name = :t AND index_name = :i"
+        ),
+        {"t": table, "i": index},
+    ).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
+    connection = op.get_bind()
     # ============================================================
     # 1. run_plan_items
     # ============================================================
@@ -83,10 +98,12 @@ def upgrade() -> None:
         mysql_charset="utf8mb4",
         mysql_collate="utf8mb4_unicode_ci",
         mysql_engine="InnoDB",
+        if_not_exists=True,
     )
-    op.create_index(
-        "idx_run_plan_run", "run_plan_items", ["run_id", "plan_version"]
-    )
+    if not _index_exists(connection, "run_plan_items", "idx_run_plan_run"):
+        op.create_index(
+            "idx_run_plan_run", "run_plan_items", ["run_id", "plan_version"]
+        )
 
     # ============================================================
     # 2. agent_run_artifacts（只冻结产物引用）
@@ -130,10 +147,12 @@ def upgrade() -> None:
         mysql_charset="utf8mb4",
         mysql_collate="utf8mb4_unicode_ci",
         mysql_engine="InnoDB",
+        if_not_exists=True,
     )
-    op.create_index(
-        "idx_run_artifact_run", "agent_run_artifacts", ["run_id", "created_at"]
-    )
+    if not _index_exists(connection, "agent_run_artifacts", "idx_run_artifact_run"):
+        op.create_index(
+            "idx_run_artifact_run", "agent_run_artifacts", ["run_id", "created_at"]
+        )
 
 
 def downgrade() -> None:

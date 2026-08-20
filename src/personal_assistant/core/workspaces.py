@@ -4,6 +4,7 @@ C0 阶段只提供基础服务桩，后续 C1 阶段补全。
 """
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,3 +50,14 @@ class ProjectWorkspaceService:
         self, workspace_id: int, status: str
     ) -> None:
         await self.repo.update_status(workspace_id, status)
+
+    async def check_path(self, ws: ProjectWorkspace) -> bool:
+        """校验 workspace 路径仍存在；缺失时标记 missing 并返回 False。
+
+        C1 退出条件：项目路径丢失时失败关闭，不自动改绑。
+        """
+        if os.path.isdir(ws.root_path):
+            return True
+        if ws.status == "active":
+            await self.update_status(ws.id, "missing")
+        return False

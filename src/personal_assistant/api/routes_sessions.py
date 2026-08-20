@@ -58,6 +58,18 @@ async def list_sessions(
     return items
 
 
+@router.get("/sessions/{session_id}", response_model=SessionOut)
+async def get_session_detail(
+    session_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """获取会话详情（v0.6.0 返回 project/workspace 绑定）。"""
+    sess = await SessionRepository(db).get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return sess
+
+
 @router.post("/sessions", response_model=SessionOut, status_code=201)
 async def create_session(
     request: SessionCreateRequest = SessionCreateRequest(),
