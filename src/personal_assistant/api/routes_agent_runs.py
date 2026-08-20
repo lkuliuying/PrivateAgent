@@ -838,10 +838,16 @@ async def create_agent_run(
             compatibility_telemetry.record(
                 path="agent_run_create", mode="project_bound", outcome="rejected"
             )
+            compatibility_telemetry.record(
+                path="workspace_resolve", mode="project_bound", outcome="missing"
+            )
             return _coding_error(404, "workspace_not_found", "Workspace not found")
         if workspace.project_id != request.project_id:
             compatibility_telemetry.record(
                 path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            compatibility_telemetry.record(
+                path="workspace_resolve", mode="project_bound", outcome="mismatch"
             )
             return _coding_error(
                 403,
@@ -852,6 +858,9 @@ async def create_agent_run(
             compatibility_telemetry.record(
                 path="agent_run_create", mode="project_bound", outcome="rejected"
             )
+            compatibility_telemetry.record(
+                path="workspace_resolve", mode="project_bound", outcome="untrusted"
+            )
             return _coding_error(
                 409, "workspace_unavailable", f"Workspace is {workspace.status}"
             )
@@ -859,6 +868,9 @@ async def create_agent_run(
         if not await workspace_service.check_path(workspace):
             compatibility_telemetry.record(
                 path="agent_run_create", mode="project_bound", outcome="rejected"
+            )
+            compatibility_telemetry.record(
+                path="workspace_resolve", mode="project_bound", outcome="untrusted"
             )
             return _coding_error(
                 409, "workspace_unavailable", "Workspace path is missing"
@@ -1048,41 +1060,69 @@ async def stream_agent_run_events(
         raise HTTPException(status_code=404, detail="Agent run not found")
 
     async def event_generator():
+        # C5：连接建立即记录（C0 §10 run_event_stream），只计数不记 payload
+        compatibility_telemetry.record(
+            path="run_event_stream",
+            mode="project_bound",
+            outcome="reconnected" if after_sequence > 0 else "connected",
+        )
         last_seq = after_sequence
         heartbeat_interval = 15  # seconds
         last_heartbeat = 0
         import time
 
-        while True:
-            # 每个轮询周期使用独立 session：请求级 session 在 REPEATABLE READ
-            # 下持有一个事务快照，看不到 coordinator 后续提交的状态/事件更新。
-            async with async_session_factory() as poll_session:
-                poll_repository = AgentRunRepository(poll_session)
-                run = await poll_repository.get_run(run_id)
-                if run is None:
-                    break
+        terminal_sent = False
+        try:
+            while True:
+                # 每个轮询周期使用独立 session：请求级 session 在 REPEATABLE READ
+                # 下持有一个事务快照，看不到 coordinator 后续提交的状态/事件更新。
+                async with async_session_factory() as poll_session:
+                    poll_repository = AgentRunRepository(poll_session)
+                    run = await poll_repository.get_run(run_id)
+                    if run is None:
+                        break
 
-                is_terminal = run.status in _TERMINAL_RUN_STATUSES
+                    is_terminal = run.status in _TERMINAL_RUN_STATUSES
 
-                # 获取新事件
-                events = await poll_repository.list_events(
-                    run_id, after_sequence=last_seq, limit=100
+                    # 获取新事件
+                    events = await poll_repository.list_events(
+                        run_id, after_sequence=last_seq, limit=100
+                    )
+                    for event in events:
+                        yield f"data: {json.dumps({'sequence': event.sequence, 'type': event.event_type, 'payload': event.payload_json}, default=str)}\n\n"
+                        last_seq = event.sequence
+
+                    if is_terminal:
+                        yield f"data: {json.dumps({'sequence': last_seq, 'type': 'run.terminal', 'payload': {'status': run.status}})}\n\n"
+                        terminal_sent = True
+                        compatibility_telemetry.record(
+                            path="run_event_stream",
+                            mode="project_bound",
+                            outcome="completed",
+                        )
+                        break
+
+                # Heartbeat
+                now = time.time()
+                if now - last_heartbeat >= heartbeat_interval:
+                    yield ": heartbeat\n\n"
+                    last_heartbeat = now
+
+                await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            # 客户端断开（AbortController）不取消 run，只记 aborted 计数
+            if not terminal_sent:
+                compatibility_telemetry.record(
+                    path="run_event_stream",
+                    mode="project_bound",
+                    outcome="aborted",
                 )
-                for event in events:
-                    yield f"data: {json.dumps({'sequence': event.sequence, 'type': event.event_type, 'payload': event.payload_json}, default=str)}\n\n"
-                    last_seq = event.sequence
-
-                if is_terminal:
-                    yield f"data: {json.dumps({'sequence': last_seq, 'type': 'run.terminal', 'payload': {'status': run.status}})}\n\n"
-                    break
-
-            # Heartbeat
-            now = time.time()
-            if now - last_heartbeat >= heartbeat_interval:
-                yield ": heartbeat\n\n"
-                last_heartbeat = now
-
-            await asyncio.sleep(1)
+            raise
+        except Exception:  # noqa: BLE001
+            compatibility_telemetry.record(
+                path="run_event_stream", mode="project_bound", outcome="error"
+            )
+            raise
 
     return StreamingResponse(
         event_generator(),

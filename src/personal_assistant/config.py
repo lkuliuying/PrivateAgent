@@ -148,6 +148,24 @@ class Settings(BaseSettings):
     agent_run_event_stream_enabled: bool = False
 
     @model_validator(mode="after")
+    def validate_v060_flag_order(self) -> Settings:
+        """C0 §10：flag 开启顺序固定 project-bound → plan → stream。"""
+        if self.agent_run_plan_enabled and not self.project_bound_runs_enabled:
+            raise ValueError(
+                "PA_AGENT_RUN_PLAN_ENABLED requires "
+                "PA_PROJECT_BOUND_RUNS_ENABLED"
+            )
+        if (
+            self.agent_run_event_stream_enabled
+            and not self.agent_run_plan_enabled
+        ):
+            raise ValueError(
+                "PA_AGENT_RUN_EVENT_STREAM_ENABLED requires "
+                "PA_AGENT_RUN_PLAN_ENABLED"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_summary_worker_limits(self) -> Settings:
         if (
             self.conversation_summary_max_source_messages

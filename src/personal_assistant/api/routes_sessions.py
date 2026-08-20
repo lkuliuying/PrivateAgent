@@ -7,12 +7,32 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings as cfg
 from ..core.db import get_session
 from ..core.history import MessageRepository, SessionRepository
 from ..logging_setup import get_logger
 
 router = APIRouter(tags=["sessions"])
 logger = get_logger(__name__)
+
+
+def _session_error(status: int, error_code: str, detail: str):
+    # 平铺 error_code 响应（与 v0.6.0 契约错误码一致）
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        status_code=status,
+        content={"error_code": error_code, "detail": detail},
+    )
+
+
+def _coding_session_telemetry(outcome: str) -> None:
+    """C0 §10：coding_session_create 只保存 outcome 计数，不记录绑定字段。"""
+    from ..core.compatibility import compatibility_telemetry
+
+    compatibility_telemetry.record(
+        path="coding_session_create", mode="project_bound", outcome=outcome
+    )
 
 
 class SessionOut(BaseModel):
@@ -75,13 +95,52 @@ async def create_session(
     request: SessionCreateRequest = SessionCreateRequest(),
     db: AsyncSession = Depends(get_session),
 ):
-    """新建会话。v0.6.0 支持可选 project/workspace 绑定。"""
+    """新建会话。v0.6.0 支持可选 project/workspace 绑定。
+
+    C5：coding session 创建走校验链（flag 开启 + 绑定完整 + workspace
+    归属一致），失败拒绝且不落库；legacy session（kind 省略）不受影响。
+    """
+    if request.kind is not None and request.kind != "coding":
+        _coding_session_telemetry("rejected")
+        return _session_error(
+            422,
+            "coding_context_incomplete",
+            "kind must be 'coding' or omitted",
+        )
+    if request.kind == "coding":
+        if not cfg.project_bound_runs_enabled:
+            _coding_session_telemetry("rejected")
+            return _session_error(
+                409, "coding_mode_disabled", "Project-bound runs are disabled"
+            )
+        if request.project_id is None or request.workspace_id is None:
+            _coding_session_telemetry("rejected")
+            return _session_error(
+                422,
+                "coding_context_incomplete",
+                "project_id/workspace_id are required for coding sessions",
+            )
+        from ..core.workspaces import ProjectWorkspaceService
+
+        ws = await ProjectWorkspaceService(db).get(request.workspace_id)
+        if ws is None:
+            _coding_session_telemetry("rejected")
+            return _session_error(404, "workspace_not_found", "Workspace not found")
+        if ws.project_id != request.project_id:
+            _coding_session_telemetry("rejected")
+            return _session_error(
+                403,
+                "workspace_outside_trust",
+                "Workspace does not belong to the requested project",
+            )
     s = await SessionRepository(db).create(
         title=request.title,
         project_id=request.project_id,
         workspace_id=request.workspace_id,
         kind=request.kind,
     )
+    if request.kind == "coding":
+        _coding_session_telemetry("created")
     logger.info("session created", session_id=s.id)
     return s
 

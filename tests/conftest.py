@@ -96,16 +96,22 @@ async def db():
     # v0.6.0：RunPlan/RunArtifact 服务用独立 session 写 durable 事件（直接
     # 导入 async_session_factory 名字），须重绑到本 fixture 的 engine，
     # 避免测试中写入全局（生产）数据库。
+    from personal_assistant.api import routes_agent_runs as runs_mod
     from personal_assistant.core import db as dbmod
     from personal_assistant.core import run_artifact as run_artifact_mod
     from personal_assistant.core import run_plan as run_plan_mod
+    from personal_assistant.workers import conversation_summarizer as summarizer_mod
 
     orig_factory = dbmod.async_session_factory
     orig_plan_factory = run_plan_mod.async_session_factory
     orig_artifact_factory = run_artifact_mod.async_session_factory
+    orig_runs_factory = runs_mod.async_session_factory
+    orig_summarizer_factory = summarizer_mod.async_session_factory
     dbmod.async_session_factory = factory
     run_plan_mod.async_session_factory = factory
     run_artifact_mod.async_session_factory = factory
+    runs_mod.async_session_factory = factory
+    summarizer_mod.async_session_factory = factory
     try:
         async with factory() as session:
             yield session
@@ -113,6 +119,8 @@ async def db():
         dbmod.async_session_factory = orig_factory
         run_plan_mod.async_session_factory = orig_plan_factory
         run_artifact_mod.async_session_factory = orig_artifact_factory
+        runs_mod.async_session_factory = orig_runs_factory
+        summarizer_mod.async_session_factory = orig_summarizer_factory
         await engine.dispose()
 
 
@@ -150,13 +158,19 @@ async def client():
     # OCR 后台 worker 同样直接导入 async_session_factory 名字，须重绑（phase7 M3）。
     ocr_mod.async_session_factory = test_factory
     # v0.6.0：RunPlan/RunArtifact 服务同样直接导入 async_session_factory 名字。
+    from personal_assistant.api import routes_agent_runs as runs_mod
     from personal_assistant.core import run_artifact as run_artifact_mod
     from personal_assistant.core import run_plan as run_plan_mod
-    
+    from personal_assistant.workers import conversation_summarizer as summarizer_mod
+
     orig_plan_factory = run_plan_mod.async_session_factory
     orig_artifact_factory = run_artifact_mod.async_session_factory
+    orig_runs_factory = runs_mod.async_session_factory
+    orig_summarizer_factory = summarizer_mod.async_session_factory
     run_plan_mod.async_session_factory = test_factory
     run_artifact_mod.async_session_factory = test_factory
+    runs_mod.async_session_factory = test_factory
+    summarizer_mod.async_session_factory = test_factory
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -187,6 +201,8 @@ async def client():
         ocr_mod.async_session_factory = orig_factory
         run_plan_mod.async_session_factory = orig_plan_factory
         run_artifact_mod.async_session_factory = orig_artifact_factory
+        runs_mod.async_session_factory = orig_runs_factory
+        summarizer_mod.async_session_factory = orig_summarizer_factory
         await test_engine.dispose()
 
 

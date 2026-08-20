@@ -6,10 +6,13 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from personal_assistant.agents.contracts import AgentRunLimits, ModelResponse, TokenUsage
+from personal_assistant.agents.contracts import (
+    AgentRunLimits,
+    ModelResponse,
+    TokenUsage,
+)
 from personal_assistant.agents.repository import AgentRunRepository
 from personal_assistant.config import settings
-from personal_assistant.core.models import Project
 
 
 @pytest.fixture(autouse=True)
@@ -169,7 +172,20 @@ class TestProjectBoundRunAPI:
         )
         ws2_id = resp.json()["id"]
 
-        # coding session 绑定 p1 + ws2（session 层面一致）
+        # 先把 ws2 改绑到 p1，使 coding session 创建校验通过（C5：session
+        # 创建时 project/workspace 归属须一致）
+        from sqlalchemy import update as sql_update
+
+        from personal_assistant.core.db import async_session_factory
+        from personal_assistant.core.models import ProjectWorkspace
+
+        async with async_session_factory() as session:
+            await session.execute(
+                sql_update(ProjectWorkspace)
+                .where(ProjectWorkspace.id == ws2_id)
+                .values(project_id=p1_id)
+            )
+            await session.commit()
         resp = await client.post(
             "/sessions",
             json={
@@ -179,7 +195,16 @@ class TestProjectBoundRunAPI:
                 "kind": "coding",
             },
         )
+        assert resp.status_code == 201, resp.text
         session_id = resp.json()["id"]
+        # 再改绑回 p2：run 请求时 workspace 归属错配 → workspace_outside_trust
+        async with async_session_factory() as session:
+            await session.execute(
+                sql_update(ProjectWorkspace)
+                .where(ProjectWorkspace.id == ws2_id)
+                .values(project_id=p2_id)
+            )
+            await session.commit()
 
         # 请求用 p1 的 project_id 但 ws2 的 workspace_id（ws2 实际属于 p2）
         resp = await client.post(

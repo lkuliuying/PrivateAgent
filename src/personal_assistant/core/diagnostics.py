@@ -30,9 +30,14 @@ from .extensions import ExtensionDescriptor, ExtensionKind, extension_registry
 from .health import HealthService
 from .models import (
     AgentEvidence,
+    AgentRun,
+    AgentRunArtifact,
+    ChatSession,
     DiagnosticRun,
     Document,
+    ProjectWorkspace,
     Reminder,
+    RunPlanItem,
 )
 from .repo_privacy import ProviderCallAuditRepository
 from .settings import SettingsService
@@ -165,7 +170,87 @@ class DiagnosticsService:
             "compatibility_telemetry": compatibility_telemetry.snapshot(),
         }
         snap.update(extra)
+        snap["coding_agent"] = await self._coding_agent_summary()
         return snap
+
+    async def _coding_agent_summary(self) -> dict[str, Any]:
+        """C5：v0.6.0 运行摘要——只计数，不记录项目正文、绝对路径或 Git 快照（C0 §8/§10）。
+
+        诊断快照与诊断包均不含 root_path/head_sha/branch/message/权限正文。
+        """
+        runs_total = int(await self.db.scalar(select(func.count(AgentRun.id))) or 0)
+        runs_bound = int(
+            await self.db.scalar(
+                select(func.count(AgentRun.id)).where(
+                    AgentRun.project_id.is_not(None)
+                )
+            )
+            or 0
+        )
+        runs_by_status: dict[str, int] = {}
+        rows = (
+            await self.db.execute(
+                select(AgentRun.status, func.count(AgentRun.id)).group_by(
+                    AgentRun.status
+                )
+            )
+        ).all()
+        for status, count in rows:
+            runs_by_status[str(status)] = int(count)
+        coding_sessions = int(
+            await self.db.scalar(
+                select(func.count(ChatSession.id)).where(
+                    ChatSession.kind == "coding"
+                )
+            )
+            or 0
+        )
+        workspaces_total = int(
+            await self.db.scalar(select(func.count(ProjectWorkspace.id))) or 0
+        )
+        workspaces_by_status: dict[str, int] = {}
+        rows = (
+            await self.db.execute(
+                select(ProjectWorkspace.status, func.count(ProjectWorkspace.id)).group_by(
+                    ProjectWorkspace.status
+                )
+            )
+        ).all()
+        for status, count in rows:
+            workspaces_by_status[str(status)] = int(count)
+        runs_with_plan = int(
+            await self.db.scalar(
+                select(func.count(func.distinct(RunPlanItem.run_id)))
+            )
+            or 0
+        )
+        plan_items = int(
+            await self.db.scalar(select(func.count(RunPlanItem.id))) or 0
+        )
+        artifacts = int(
+            await self.db.scalar(select(func.count(AgentRunArtifact.id))) or 0
+        )
+        return {
+            "flags": {
+                "project_bound_runs_enabled": cfg.project_bound_runs_enabled,
+                "agent_run_plan_enabled": cfg.agent_run_plan_enabled,
+                "agent_run_event_stream_enabled": (
+                    cfg.agent_run_event_stream_enabled
+                ),
+            },
+            "runs": {
+                "total": runs_total,
+                "project_bound": runs_bound,
+                "by_status": runs_by_status,
+            },
+            "coding_sessions": coding_sessions,
+            "workspaces": {
+                "total": workspaces_total,
+                "by_status": workspaces_by_status,
+            },
+            "plans": {"runs_with_plan": runs_with_plan, "items": plan_items},
+            "artifacts": artifacts,
+        }
 
     async def export(self, output_dir: str | None = None) -> dict[str, Any]:
         """生成脱敏诊断包（zip），记录 DiagnosticRun。返回路径与摘要。"""
