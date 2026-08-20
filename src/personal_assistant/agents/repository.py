@@ -123,6 +123,17 @@ class AgentRunRepository:
         trace_id: str | None = None,
         knowledge_base: bool = False,
         completion_conditions: dict | None = None,
+        # v0.6.0 Coding Agent
+        project_id: int | None = None,
+        workspace_id: int | None = None,
+        base_head_sha: str | None = None,
+        base_branch_name: str | None = None,
+        base_git_dirty: bool | None = None,
+        model_profile_id: str | None = None,
+        reasoning_effort: str | None = None,
+        permission_mode: str | None = None,
+        permission_snapshot_json: dict | None = None,
+        client_request_id: str | None = None,
     ) -> AgentRunRecord:
         if not run_id or len(run_id) > 36:
             raise ValueError("run_id must contain 1-36 characters")
@@ -130,12 +141,28 @@ class AgentRunRepository:
         if len(effective_trace_id) > 64:
             raise ValueError("trace_id must contain at most 64 characters")
 
+        # v0.6.0：client_request_id 幂等——重复请求返回原 run
+        if client_request_id is not None:
+            existing = await self.get_run_by_client_request_id(client_request_id)
+            if existing is not None:
+                return existing
+
         record = AgentRunRecord(
             id=run_id,
             session_id=session_id,
             trace_id=effective_trace_id,
             knowledge_base=knowledge_base,
             completion_conditions_json=completion_conditions,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            base_head_sha=base_head_sha,
+            base_branch_name=base_branch_name,
+            base_git_dirty=base_git_dirty,
+            model_profile_id=model_profile_id,
+            reasoning_effort=reasoning_effort,
+            permission_mode=permission_mode,
+            permission_snapshot_json=permission_snapshot_json,
+            client_request_id=client_request_id,
             status="created",
             max_steps=limits.max_steps,
             max_tool_calls=limits.max_tool_calls,
@@ -149,6 +176,15 @@ class AgentRunRepository:
             await self.db.rollback()
             raise
         return record
+
+    async def get_run_by_client_request_id(
+        self, client_request_id: str
+    ) -> AgentRunRecord | None:
+        stmt = select(AgentRunRecord).where(
+            AgentRunRecord.client_request_id == client_request_id
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def get_run(self, run_id: str) -> AgentRunRecord | None:
         return await self.db.get(AgentRunRecord, run_id)
@@ -758,7 +794,105 @@ class AgentRunRepository:
             )
             return
 
+        # v0.6.0 C0 §4.5：plan/artifact 稳定事件只推进 sequence，不改变 run 状态。
+        # payload 必须脱敏且有界（禁止完整命令输出、API key、审批 token）。
+        if event.type in {
+            AgentEventType.PLAN_CREATED,
+            AgentEventType.PLAN_UPDATED,
+            AgentEventType.PLAN_ITEM_CHANGED,
+            AgentEventType.ARTIFACT_CREATED,
+        }:
+            if run.status not in {"created", "running", "waiting_approval"}:
+                raise AgentRunProjectionError(
+                    f"{event.type.value} requires a non-terminal run"
+                )
+            if event.step_id is not None:
+                raise AgentRunProjectionError(
+                    f"{event.type.value} must not carry step_id"
+                )
+            self._validate_stable_event_payload(event.type, payload)
+            return
+
         raise AgentRunProjectionError(f"Unsupported event type: {event.type.value}")
+
+    @staticmethod
+    def _validate_stable_event_payload(
+        event_type: AgentEventType, payload: dict[str, Any]
+    ) -> None:
+        """plan/artifact 事件 payload 校验：必需字段存在且有界。"""
+        if event_type == AgentEventType.PLAN_CREATED:
+            plan_version = payload.get("plan_version")
+            items = payload.get("items")
+            if not isinstance(plan_version, int) or plan_version < 1:
+                raise AgentRunProjectionError(
+                    "plan.created requires a positive plan_version"
+                )
+            if not isinstance(items, list) or not items or len(items) > 32:
+                raise AgentRunProjectionError(
+                    "plan.created requires 1..32 items"
+                )
+            return
+        if event_type == AgentEventType.PLAN_UPDATED:
+            previous = payload.get("previous_version")
+            plan_version = payload.get("plan_version")
+            if not isinstance(previous, int) or not isinstance(plan_version, int):
+                raise AgentRunProjectionError(
+                    "plan.updated requires previous_version and plan_version"
+                )
+            if previous < 1 or plan_version <= previous:
+                raise AgentRunProjectionError(
+                    "plan.updated requires plan_version > previous_version"
+                )
+            return
+        if event_type == AgentEventType.PLAN_ITEM_CHANGED:
+            plan_version = payload.get("plan_version")
+            item_key = payload.get("item_key")
+            previous_status = payload.get("previous_status")
+            status = payload.get("status")
+            for name, value in (
+                ("plan_version", plan_version),
+                ("item_key", item_key),
+                ("previous_status", previous_status),
+                ("status", status),
+            ):
+                if not isinstance(value, str) and not isinstance(value, int):
+                    raise AgentRunProjectionError(
+                        f"plan.item_changed requires a bounded {name}"
+                    )
+            if not isinstance(plan_version, int) or plan_version < 1:
+                raise AgentRunProjectionError(
+                    "plan.item_changed requires a positive plan_version"
+                )
+            if not isinstance(item_key, str) or not 1 <= len(item_key) <= 128:
+                raise AgentRunProjectionError(
+                    "plan.item_changed requires a bounded item_key"
+                )
+            if (
+                not isinstance(previous_status, str)
+                or not isinstance(status, str)
+                or len(previous_status) > 32
+                or len(status) > 32
+            ):
+                raise AgentRunProjectionError(
+                    "plan.item_changed requires bounded status values"
+                )
+            return
+        if event_type == AgentEventType.ARTIFACT_CREATED:
+            for key in ("artifact_id", "kind", "title"):
+                value = payload.get(key)
+                if not isinstance(value, str) or not 1 <= len(value) <= 512:
+                    raise AgentRunProjectionError(
+                        f"artifact.created requires a bounded {key}"
+                    )
+            step_id = payload.get("step_id")
+            if step_id is not None and (
+                not isinstance(step_id, str) or len(step_id) > 36
+            ):
+                raise AgentRunProjectionError(
+                    "artifact.created requires a bounded step_id"
+                )
+            return
+        raise AgentRunProjectionError(f"Unsupported stable event: {event_type.value}")
 
     async def _require_step(self, event: AgentEvent) -> RunStepRecord:
         if event.step_id is None:

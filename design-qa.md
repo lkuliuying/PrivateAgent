@@ -1,8 +1,8 @@
 # Personal Agent UI Refactor — Design QA
 
 - source visual truth path: `F:\Program\Agent\docs\assets\ui\agent-workbench-reference-20260731.png`
-- implementation screenshot path: `F:\Program\Agent\design-implementation-agent-workspace-final-1536x1024.png`
-- combined comparison input: `F:\Program\Agent\design-reference-comparison-1536x1024.png`
+- implementation screenshot path: `F:\Program\Agent\docs\archive\design-artifacts\design-implementation-agent-workspace-final-1536x1024.png`
+- combined comparison input: `F:\Program\Agent\docs\archive\design-artifacts\design-reference-comparison-1536x1024.png`
 - viewport: source `1536 x 1024`; implementation `1536 x 1024`
 - density normalization: both images were compared at native 1:1 pixel density with no scaling or crop
 - state: development-only running-task fixture at `?workspace-preview=running`; production data paths and backend APIs remain unchanged

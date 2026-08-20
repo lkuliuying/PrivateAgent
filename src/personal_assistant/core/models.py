@@ -63,7 +63,30 @@ class ChatSession(Base):
         back_populates="session", cascade="all, delete-orphan"
     )
 
-    __table_args__ = (Index("idx_updated", "updated_at"),)
+    # v0.6.0 Coding Agent: project/workspace binding（全部 additive，旧客户端可忽略）
+    # C0-D02：Session 是 CodingThread 的兼容载体；kind=legacy/coding 区分，不建第二张 thread 表。
+    # 旧 session 保持 kind=legacy，不回填 project/workspace。
+    project_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    workspace_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("project_workspaces.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(
+        VARCHAR(32),
+        nullable=False,
+        default="legacy",
+        server_default="legacy",
+    )
+    last_run_id: Mapped[str | None] = mapped_column(CHAR(36), nullable=True)
+    pinned_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+
+    __table_args__ = (
+        Index("idx_updated", "updated_at"),
+        Index("idx_session_project", "project_id"),
+        Index("idx_session_workspace", "workspace_id"),
+    )
 
 
 class Message(Base):
@@ -543,6 +566,64 @@ class Project(Base):
     )
 
     __table_args__ = (Index("idx_project_status", "status"),)
+
+
+class ProjectWorkspace(Base):
+    """v0.6.0 项目工作区。一个 active project 至少有一个 root workspace。
+
+    C0-D01：ProjectWorkspace 是项目路径实例；Project 继续表示用户授权项目。
+    C0-D05：root_path 是数据库中的规范化绝对路径（事实源），前端提交路径无效。
+    v0.6.0 只创建 root，不自动创建 Git branch/worktree。
+    """
+
+    __tablename__ = "project_workspaces"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(
+        ENUM("root", "git_worktree", name="workspace_kind_enum"),
+        nullable=False,
+        default="root",
+        server_default="root",
+    )
+    root_path: Mapped[str] = mapped_column(VARCHAR(2048), nullable=False)
+    # 规范化路径哈希（Windows 大小写不敏感），防重复建 workspace
+    root_path_sha256: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    branch_name: Mapped[str | None] = mapped_column(VARCHAR(512), nullable=True)
+    head_sha: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "active",
+            "missing",
+            "dirty",
+            "archived",
+            "conflict",
+            name="workspace_status_enum",
+        ),
+        nullable=False,
+        default="active",
+        server_default="active",
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (
+        # 避免 Windows 路径大小写/分隔符变体重复建 workspace
+        UniqueConstraint(
+            "project_id", "root_path_sha256", name="uk_workspace_project_path"
+        ),
+        Index("idx_workspace_project_status", "project_id", "status", "last_used_at"),
+    )
 
 
 class ProjectFile(Base):
@@ -2118,6 +2199,25 @@ class AgentRun(Base):
     # v0.5.0 B5：可选可信完成条件（must_succeed_tools/max_failed_tools/
     # require_verified），持久化使审批恢复/重启续跑路径与创建路径一致。
     completion_conditions_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # v0.6.0 Coding Agent: project-bound run fields（全部 additive）
+    # C0-D06：Git HEAD/branch/dirty 是 run 创建时只读快照；C0-D07：权限快照持久化后不可静默扩大。
+    project_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="SET NULL"), nullable=True
+    )
+    workspace_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("project_workspaces.id", ondelete="SET NULL"), nullable=True
+    )
+    base_head_sha: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    base_branch_name: Mapped[str | None] = mapped_column(VARCHAR(512), nullable=True)
+    base_git_dirty: Mapped[bool | None] = mapped_column(BOOLEAN, nullable=True)
+    model_profile_id: Mapped[str | None] = mapped_column(VARCHAR(128), nullable=True)
+    reasoning_effort: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    permission_mode: Mapped[str | None] = mapped_column(VARCHAR(32), nullable=True)
+    permission_snapshot_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # C0-D04：非空时全局唯一；重复请求返回原 run，绝不启动第二个 coordinator。
+    client_request_id: Mapped[str | None] = mapped_column(
+        VARCHAR(64), nullable=True, unique=True
+    )
     status: Mapped[str] = mapped_column(
         VARCHAR(32), nullable=False, default="created", server_default="created"
     )
@@ -2177,10 +2277,21 @@ class AgentRun(Base):
         cascade="all, delete-orphan",
         order_by="ToolApproval.created_at",
     )
+    plan_items: Mapped[list["RunPlanItem"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="RunPlanItem.ordinal",
+    )
+    artifacts: Mapped[list["AgentRunArtifact"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+        order_by="AgentRunArtifact.created_at",
+    )
 
     __table_args__ = (
         Index("idx_agent_run_session_created", "session_id", "created_at"),
         Index("idx_agent_run_status_updated", "status", "updated_at"),
+        Index("idx_agent_run_project_workspace", "project_id", "workspace_id", "created_at"),
     )
 
 
@@ -2655,3 +2766,98 @@ class CompatibilityTelemetryRow(Base):
         ),
         Index("idx_compat_telemetry_window", "scope", "started_at"),
     )
+
+
+class RunPlanItem(Base):
+    """v0.6.0 持久化 run 计划项（C0-D08：独立 plan item 表，不复用 run_steps）。
+
+    同一 plan version 的 item_key/ordinal 唯一；同时最多一个 in_progress；
+    plan version 只增不减；item completed 不自动把 run 标记 completed。
+    """
+
+    __tablename__ = "run_plan_items"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    plan_version: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    item_key: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    ordinal: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    title: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
+    detail: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "pending",
+            "in_progress",
+            "completed",
+            "blocked",
+            "failed",
+            "cancelled",
+            name="plan_item_status_enum",
+        ),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    # 只放有界引用，不放完整命令输出或秘密
+    evidence_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="plan_items")
+
+    __table_args__ = (
+        UniqueConstraint(
+            "run_id", "plan_version", "item_key", name="uk_run_plan_item_key"
+        ),
+        UniqueConstraint(
+            "run_id", "plan_version", "ordinal", name="uk_run_plan_item_ordinal"
+        ),
+        Index("idx_run_plan_run", "run_id", "plan_version"),
+    )
+
+
+class AgentRunArtifact(Base):
+    """v0.6.0 run 产物引用契约。只冻结引用，不新增任意文件下载或外部上传能力。"""
+
+    __tablename__ = "agent_run_artifacts"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str | None] = mapped_column(
+        CHAR(36), ForeignKey("run_steps.id", ondelete="SET NULL"), nullable=True
+    )
+    kind: Mapped[str] = mapped_column(
+        ENUM(
+            "diff",
+            "file",
+            "command_output",
+            "test_report",
+            "summary",
+            name="artifact_kind_enum",
+        ),
+        nullable=False,
+    )
+    title: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
+    # 只允许 workspace 相对路径
+    rel_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    content_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    # 脱敏且有界
+    metadata_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    run: Mapped[AgentRun] = relationship(back_populates="artifacts")
+
+    __table_args__ = (Index("idx_run_artifact_run", "run_id", "created_at"),)

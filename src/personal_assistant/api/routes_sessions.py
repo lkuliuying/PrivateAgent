@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.db import get_session
@@ -21,6 +21,20 @@ class SessionOut(BaseModel):
     title: str
     created_at: datetime
     updated_at: datetime
+    # v0.6.0 Coding Agent
+    project_id: int | None = None
+    workspace_id: int | None = None
+    kind: str | None = None
+    last_run_id: str | None = None
+    pinned_at: datetime | None = None
+    archived_at: datetime | None = None
+
+
+class SessionCreateRequest(BaseModel):
+    title: str = Field(default="新对话", max_length=255)
+    project_id: int | None = None
+    workspace_id: int | None = None
+    kind: str | None = Field(default=None, max_length=32)
 
 
 class MessageOut(BaseModel):
@@ -33,17 +47,29 @@ class MessageOut(BaseModel):
 
 
 @router.get("/sessions", response_model=list[SessionOut])
-async def list_sessions(db: AsyncSession = Depends(get_session)):
-    """获取会话列表（按最近更新倒序）。"""
-    items = await SessionRepository(db).list()
+async def list_sessions(
+    project_id: int | None = Query(default=None, gt=0),
+    kind: str | None = Query(default=None, max_length=32),
+    db: AsyncSession = Depends(get_session),
+):
+    """获取会话列表（按最近更新倒序）。可选按 project/kind 过滤。"""
+    items = await SessionRepository(db).list(project_id=project_id, kind=kind)
     logger.info("sessions listed", count=len(items))
     return items
 
 
 @router.post("/sessions", response_model=SessionOut, status_code=201)
-async def create_session(db: AsyncSession = Depends(get_session)):
-    """新建会话，标题默认「新对话」，首轮对话后由后端自动生成。"""
-    s = await SessionRepository(db).create()
+async def create_session(
+    request: SessionCreateRequest = SessionCreateRequest(),
+    db: AsyncSession = Depends(get_session),
+):
+    """新建会话。v0.6.0 支持可选 project/workspace 绑定。"""
+    s = await SessionRepository(db).create(
+        title=request.title,
+        project_id=request.project_id,
+        workspace_id=request.workspace_id,
+        kind=request.kind,
+    )
     logger.info("session created", session_id=s.id)
     return s
 

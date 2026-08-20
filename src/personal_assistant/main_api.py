@@ -43,6 +43,7 @@ from .api.routes_memories import router as memories_router
 from .api.routes_notifications import router as notifications_router
 from .api.routes_ocr import router as ocr_router
 from .api.routes_patch_sets import router as patch_sets_router
+from .api.routes_plan import router as plan_router
 from .api.routes_privacy import router as privacy_router
 from .api.routes_projects import router as projects_router
 from .api.routes_providers import router as providers_router
@@ -51,6 +52,7 @@ from .api.routes_search import router as search_router
 from .api.routes_sessions import router as sessions_router
 from .api.routes_settings import router as settings_router
 from .api.routes_sql_profiles import router as sql_profiles_router
+from .api.routes_workspaces import router as workspaces_router
 from .api.routes_testing import router as testing_router
 from .api.routes_today import router as today_router
 from .api.routes_tools import router as tools_router
@@ -254,11 +256,13 @@ app.include_router(maintenance_router)
 app.include_router(notifications_router)
 app.include_router(ocr_router)
 app.include_router(patch_sets_router)
+app.include_router(plan_router)
 app.include_router(commands_router)
 app.include_router(providers_router)
 app.include_router(reminders_router)
 app.include_router(search_router)
 app.include_router(testing_router)
+app.include_router(workspaces_router)
 
 
 @app.get("/")

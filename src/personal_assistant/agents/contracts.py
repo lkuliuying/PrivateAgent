@@ -58,6 +58,11 @@ class AgentEventType(StrEnum):
     RUN_TIMED_OUT = "run.timed_out"
     RUN_LIMIT_EXCEEDED = "run.limit_exceeded"
     CHAT_OUTPUT_PERSISTED = "chat.output_persisted"
+    # v0.6.0 C0 §4.5：稳定事件（plan/artifact）
+    PLAN_CREATED = "plan.created"
+    PLAN_UPDATED = "plan.updated"
+    PLAN_ITEM_CHANGED = "plan.item_changed"
+    ARTIFACT_CREATED = "artifact.created"
 
 
 class ContractModel(BaseModel):

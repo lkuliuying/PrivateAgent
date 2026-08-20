@@ -48,6 +48,30 @@ _LABELS = {
         "modes": frozenset({"agent_runs_api"}),
         "outcomes": frozenset({"created"}),
     },
+    # v0.6.0 Coding Agent: telemetry 计数标签（C0 契约 §10，只保存计数）
+    # 不得记录 message、路径、branch、SHA、命令、模型输出或权限快照正文。
+    "agent_run_create": {
+        "modes": frozenset({"legacy", "project_bound"}),
+        "outcomes": frozenset({"created", "replayed", "rejected"}),
+    },
+    "coding_session_create": {
+        "modes": frozenset({"project_bound"}),
+        "outcomes": frozenset({"created", "rejected"}),
+    },
+    "run_plan_update": {
+        "modes": frozenset({"project_bound"}),
+        "outcomes": frozenset({"created", "updated", "conflict", "invalid"}),
+    },
+    "run_event_stream": {
+        "modes": frozenset({"project_bound"}),
+        "outcomes": frozenset(
+            {"connected", "reconnected", "completed", "aborted", "error"}
+        ),
+    },
+    "workspace_resolve": {
+        "modes": frozenset({"project_bound"}),
+        "outcomes": frozenset({"resolved", "missing", "mismatch", "untrusted"}),
+    },
     "/tool-calls/:id/approve": {
         "modes": frozenset({"legacy_tool_call"}),
         "outcomes": frozenset({"succeeded", "failed", "conflict", "not_found"}),

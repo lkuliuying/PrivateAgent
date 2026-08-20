@@ -17,16 +17,37 @@ class SessionRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def create(self, title: str = "新对话") -> ChatSession:
-        obj = ChatSession(title=title)
+    async def create(
+        self,
+        title: str = "新对话",
+        *,
+        project_id: int | None = None,
+        workspace_id: int | None = None,
+        kind: str | None = None,
+    ) -> ChatSession:
+        obj = ChatSession(
+            title=title,
+            project_id=project_id,
+            workspace_id=workspace_id,
+            kind=kind,
+        )
         self.db.add(obj)
         await self.db.commit()
         await self.db.refresh(obj)
         return obj
 
-    async def list(self) -> list[ChatSession]:
-        """按最近更新时间倒序返回会话。"""
+    async def list(
+        self,
+        *,
+        project_id: int | None = None,
+        kind: str | None = None,
+    ) -> list[ChatSession]:
+        """按最近更新时间倒序返回会话。可选按 project/kind 过滤。"""
         stmt = select(ChatSession).order_by(ChatSession.updated_at.desc())
+        if project_id is not None:
+            stmt = stmt.where(ChatSession.project_id == project_id)
+        if kind is not None:
+            stmt = stmt.where(ChatSession.kind == kind)
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
 

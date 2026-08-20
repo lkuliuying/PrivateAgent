@@ -279,8 +279,20 @@ class ProjectService:
         self.repo = ProjectRepository(db)
         self.file_repo = ProjectFileRepository(db)
 
+    @property
+    def _workspace_enabled(self) -> bool:
+        from ..config import settings
+
+        return settings.project_bound_runs_enabled
+
+    async def _ensure_workspace(self, project: Project) -> None:
+        """v0.6.0：幂等补建 root workspace。"""
+        from .workspaces import ProjectWorkspaceService
+
+        await ProjectWorkspaceService(self.db).ensure_root_workspace(project)
+
     async def authorize(self, *, name: str, root_path: str) -> Project:
-        """授权项目目录：校验 → 去重 → 推断语言 → 建 project → 同步 trusted_paths。"""
+        """授权项目目录：校验 → 去重 → 推断语言 → 建 project → 同步 trusted_paths → 补建 workspace。"""
         p = Path(root_path).expanduser()
         if not p.is_absolute():
             raise ValueError("root_path 必须为绝对路径")
@@ -291,12 +303,18 @@ class ProjectService:
         if existing:
             # 已授权：确保 trusted_paths 也有记录（幂等）
             await TrustedPathRepository(self.db).authorize(root_str, "directory")
+            # v0.6.0：幂等补建 root workspace
+            if self._workspace_enabled:
+                await self._ensure_workspace(existing)
             return existing
         language, framework = await asyncio.to_thread(_infer_project, p.resolve())
         project = await self.repo.create(
             name=name, root_path=root_str, language=language, framework=framework
         )
         await TrustedPathRepository(self.db).authorize(root_str, "directory")
+        # v0.6.0：新建 project 同时创建 root workspace
+        if self._workspace_enabled:
+            await self._ensure_workspace(project)
         logger.info("project authorized", project_id=project.id, root=root_str, language=language)
         return project
 

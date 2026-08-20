@@ -1,0 +1,51 @@
+# Normalize text in the Git index and make checkout behavior independent of
+# each developer's core.autocrlf setting.
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+
+# Project source, configuration, documentation, and lock files use LF.
+*.md text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+*.pyi text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.lock text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.cjs text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.scss text eol=lf
+*.html text eol=lf
+*.rs text eol=lf
+*.sql text eol=lf
+*.xml text eol=lf
+*.svg text eol=lf
+*.sh text eol=lf
+
+# Native Windows launch and maintenance scripts keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Never run text or line-ending conversion on binary assets and archives.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.gz binary
+*.7z binary
+*.pdf binary

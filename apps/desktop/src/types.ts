@@ -23,6 +23,13 @@ export interface Session {
   title: string;
   created_at: string;
   updated_at: string;
+  // v0.6.0 Coding Agent
+  project_id?: number | null;
+  workspace_id?: number | null;
+  kind?: string | null;
+  last_run_id?: string | null;
+  pinned_at?: string | null;
+  archived_at?: string | null;
 }
 
 export interface Message {
@@ -1368,6 +1375,93 @@ export interface AppNotification {
   action_payload_json: Record<string, unknown> | null;
   created_at: string;
   read_at: string | null;
+}
+
+// ============================================================================
+// v0.6.0 Coding Agent: project-bound types
+// ============================================================================
+
+export interface ProjectWorkspace {
+  id: number;
+  project_id: number | null;
+  kind: "root" | "git_worktree";
+  root_path: string;
+  branch_name: string | null;
+  head_sha: string | null;
+  status: "active" | "missing" | "dirty" | "archived" | "conflict";
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentRunCoding {
+  project_id?: number | null;
+  workspace_id?: number | null;
+  base_head_sha?: string | null;
+  model_profile_id?: string | null;
+  reasoning_effort?: string | null;
+  client_request_id?: string | null;
+}
+
+export interface RunPlanItem {
+  id: string;
+  run_id: string;
+  plan_version: number;
+  sequence: number;
+  summary: string;
+  status: "pending" | "in_progress" | "completed" | "blocked" | "failed" | "cancelled";
+  evidence_json?: Record<string, unknown> | null;
+  item_order: number;
+}
+
+export interface RunPlanEvent {
+  sequence: number;
+  type: "plan.created" | "plan.updated" | "plan.item_changed" | "artifact.created";
+  payload: Record<string, unknown>;
+}
+
+// runProjector: 按 (run_id, sequence) 幂等投影事件
+export function runProjector(
+  events: RunPlanEvent[],
+  currentPlan: RunPlanItem[],
+): RunPlanItem[] {
+  const plan = new Map<string, RunPlanItem>();
+
+  // 先加载现有计划
+  for (const item of currentPlan) {
+    plan.set(item.id, { ...item });
+  }
+
+  // 按 sequence 顺序应用事件
+  for (const event of events.sort((a, b) => a.sequence - b.sequence)) {
+    switch (event.type) {
+      case "plan.created":
+      case "plan.updated": {
+        const items = event.payload.items as RunPlanItem[];
+        if (items) {
+          for (const item of items) {
+            plan.set(item.id, { ...item });
+          }
+        }
+        break;
+      }
+      case "plan.item_changed": {
+        const itemId = event.payload.item_id as string;
+        const existing = plan.get(itemId);
+        if (existing) {
+          plan.set(itemId, {
+            ...existing,
+            status: (event.payload.status as RunPlanItem["status"]) || existing.status,
+            evidence_json: event.payload.evidence_json as Record<string, unknown> | undefined,
+          });
+        }
+        break;
+      }
+      // artifact.created 暂不改变计划
+    }
+  }
+
+  return Array.from(plan.values()).sort((a, b) => a.item_order - b.item_order);
 }
 
 export interface AppNotificationCreate {

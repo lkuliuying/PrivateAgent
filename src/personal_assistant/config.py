@@ -139,6 +139,14 @@ class Settings(BaseSettings):
         le=86_400,
     )
 
+    # === v0.6.0 Coding Agent（全部默认关闭） ===
+    # 开启后 AgentRun 支持 project/workspace 绑定、幂等创建和真实计划持久化。
+    # 关闭时全部旧行为不变；关闭不需要 schema downgrade。
+    # 开启顺序固定为 project-bound → plan → stream；关闭顺序相反。
+    project_bound_runs_enabled: bool = False
+    agent_run_plan_enabled: bool = False
+    agent_run_event_stream_enabled: bool = False
+
     @model_validator(mode="after")
     def validate_summary_worker_limits(self) -> Settings:
         if (
