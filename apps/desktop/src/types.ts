@@ -1416,62 +1416,64 @@ export interface RunPlanItem {
   id: string;
   run_id: string;
   plan_version: number;
-  sequence: number;
-  summary: string;
-  status: "pending" | "in_progress" | "completed" | "blocked" | "failed" | "cancelled";
-  evidence_json?: Record<string, unknown> | null;
-  item_order: number;
+  item_key: string;
+  ordinal: number;
+  title: string;
+  detail: string | null;
+  status: PlanItemStatus;
+  evidence_json: Record<string, unknown> | null;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
-export interface RunPlanEvent {
+export type PlanItemStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+/** C0 §7.2：重连纠偏快照 {version, items}（GET /agent-runs/{id}）。 */
+export interface RunPlanSnapshot {
+  version: number;
+  items: RunPlanItem[];
+}
+
+/** C0 §4.2：RunArtifact 引用（rel_path 只允许 workspace 相对路径）。 */
+export interface RunArtifact {
+  id: string;
+  run_id: string;
+  kind: "diff" | "file" | "command_output" | "test_report" | "summary";
+  title: string;
+  rel_path: string | null;
+  step_id: string | null;
+  content_sha256: string | null;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+/** C0 §4.5：durable 公开事件类型（plan/artifact；其余事件是临时 delta，不进投影）。 */
+export type RunDurableEventType =
+  | "plan.created"
+  | "plan.updated"
+  | "plan.item_changed"
+  | "artifact.created";
+
+export interface RunDurableEvent {
+  run_id: string;
   sequence: number;
-  type: "plan.created" | "plan.updated" | "plan.item_changed" | "artifact.created";
+  type: RunDurableEventType;
   payload: Record<string, unknown>;
+  created_at?: string;
 }
 
-// runProjector: 按 (run_id, sequence) 幂等投影事件
-export function runProjector(
-  events: RunPlanEvent[],
-  currentPlan: RunPlanItem[],
-): RunPlanItem[] {
-  const plan = new Map<string, RunPlanItem>();
-
-  // 先加载现有计划
-  for (const item of currentPlan) {
-    plan.set(item.id, { ...item });
-  }
-
-  // 按 sequence 顺序应用事件
-  for (const event of events.sort((a, b) => a.sequence - b.sequence)) {
-    switch (event.type) {
-      case "plan.created":
-      case "plan.updated": {
-        const items = event.payload.items as RunPlanItem[];
-        if (items) {
-          for (const item of items) {
-            plan.set(item.id, { ...item });
-          }
-        }
-        break;
-      }
-      case "plan.item_changed": {
-        const itemId = event.payload.item_id as string;
-        const existing = plan.get(itemId);
-        if (existing) {
-          plan.set(itemId, {
-            ...existing,
-            status: (event.payload.status as RunPlanItem["status"]) || existing.status,
-            evidence_json: event.payload.evidence_json as Record<string, unknown> | undefined,
-          });
-        }
-        break;
-      }
-      // artifact.created 暂不改变计划
-    }
-  }
-
-  return Array.from(plan.values()).sort((a, b) => a.item_order - b.item_order);
+/** C0 §7.2：GET /agent-runs/{id} 重连纠偏快照（flag 关闭时 plan=null、artifacts=[]）。 */
+export interface RunSnapshot {
+  plan: RunPlanSnapshot | null;
+  artifacts: RunArtifact[];
 }
+
 
 export interface AppNotificationCreate {
   level?: NotificationLevel;
