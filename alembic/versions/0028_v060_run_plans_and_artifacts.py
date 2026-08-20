@@ -44,6 +44,18 @@ def _index_exists(conn, table: str, index: str) -> bool:
     return row is not None
 
 
+def _constraint_exists(conn, name: str) -> bool:
+    """MySQL 约束存在性检查（downgrade 幂等重跑用）。"""
+    row = conn.execute(
+        sa.text(
+            "SELECT 1 FROM information_schema.table_constraints "
+            "WHERE constraint_schema = DATABASE() AND constraint_name = :n"
+        ),
+        {"n": name},
+    ).fetchone()
+    return row is not None
+
+
 def upgrade() -> None:
     connection = op.get_bind()
     # ============================================================
@@ -157,7 +169,25 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # 仅用于开发库/克隆库验证；正式应用回退不执行本函数。
-    op.drop_index("idx_run_artifact_run", table_name="agent_run_artifacts")
+    # 必须先 drop FK 约束再 drop 索引：MySQL 要求外键列存在索引，
+    # 否则 DROP INDEX 报 "needed in a foreign key constraint"。
+    # 全部 DDL 带存在性检查，与 upgrade 幂等哲学对称，循环演练不中断。
+    connection = op.get_bind()
+    if _constraint_exists(connection, "fk_run_artifact_step"):
+        op.drop_constraint(
+            "fk_run_artifact_step", "agent_run_artifacts", type_="foreignkey"
+        )
+    if _constraint_exists(connection, "fk_run_artifact_run"):
+        op.drop_constraint(
+            "fk_run_artifact_run", "agent_run_artifacts", type_="foreignkey"
+        )
+    if _index_exists(connection, "agent_run_artifacts", "idx_run_artifact_run"):
+        op.drop_index("idx_run_artifact_run", table_name="agent_run_artifacts")
     op.drop_table("agent_run_artifacts")
-    op.drop_index("idx_run_plan_run", table_name="run_plan_items")
+    if _constraint_exists(connection, "fk_run_plan_item_run"):
+        op.drop_constraint(
+            "fk_run_plan_item_run", "run_plan_items", type_="foreignkey"
+        )
+    if _index_exists(connection, "run_plan_items", "idx_run_plan_run"):
+        op.drop_index("idx_run_plan_run", table_name="run_plan_items")
     op.drop_table("run_plan_items")

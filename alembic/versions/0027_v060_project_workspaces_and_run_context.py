@@ -314,31 +314,51 @@ def _normalized_path_sha256(root_path: str) -> str:
 def downgrade() -> None:
     # ============================================================
     # 仅用于开发库/克隆库验证。正式应用回退不执行本函数。
+    # 全部 DDL 带存在性检查：与 upgrade 的幂等哲学对称，兼容
+    # MySQL 自动创建的 FK 支撑索引命名差异与历史结构残留，
+    # 保证中断/循环演练不因 "key/constraint does not exist" 失败。
     # ============================================================
-    op.drop_constraint("fk_agent_run_workspace", "agent_runs", type_="foreignkey")
-    op.drop_constraint("fk_agent_run_project", "agent_runs", type_="foreignkey")
-    op.drop_index("idx_agent_run_project_workspace", table_name="agent_runs")
-    op.drop_column("agent_runs", "client_request_id")
-    op.drop_column("agent_runs", "permission_snapshot_json")
-    op.drop_column("agent_runs", "permission_mode")
-    op.drop_column("agent_runs", "reasoning_effort")
-    op.drop_column("agent_runs", "model_profile_id")
-    op.drop_column("agent_runs", "base_git_dirty")
-    op.drop_column("agent_runs", "base_branch_name")
-    op.drop_column("agent_runs", "base_head_sha")
-    op.drop_column("agent_runs", "workspace_id")
-    op.drop_column("agent_runs", "project_id")
+    connection = op.get_bind()
+    if _constraint_exists(connection, "fk_agent_run_workspace"):
+        op.drop_constraint("fk_agent_run_workspace", "agent_runs", type_="foreignkey")
+    if _constraint_exists(connection, "fk_agent_run_project"):
+        op.drop_constraint("fk_agent_run_project", "agent_runs", type_="foreignkey")
+    if _index_exists(connection, "agent_runs", "idx_agent_run_project_workspace"):
+        op.drop_index("idx_agent_run_project_workspace", table_name="agent_runs")
+    for column in (
+        "client_request_id",
+        "permission_snapshot_json",
+        "permission_mode",
+        "reasoning_effort",
+        "model_profile_id",
+        "base_git_dirty",
+        "base_branch_name",
+        "base_head_sha",
+        "workspace_id",
+        "project_id",
+    ):
+        if _column_exists(connection, "agent_runs", column):
+            op.drop_column("agent_runs", column)
 
-    op.drop_constraint("fk_session_workspace", "sessions", type_="foreignkey")
-    op.drop_constraint("fk_session_project", "sessions", type_="foreignkey")
-    op.drop_index("idx_session_workspace", table_name="sessions")
-    op.drop_index("idx_session_project", table_name="sessions")
-    op.drop_column("sessions", "archived_at")
-    op.drop_column("sessions", "pinned_at")
-    op.drop_column("sessions", "last_run_id")
-    op.drop_column("sessions", "workspace_id")
-    op.drop_column("sessions", "project_id")
-    op.drop_column("sessions", "kind")
+    if _constraint_exists(connection, "fk_session_workspace"):
+        op.drop_constraint("fk_session_workspace", "sessions", type_="foreignkey")
+    if _constraint_exists(connection, "fk_session_project"):
+        op.drop_constraint("fk_session_project", "sessions", type_="foreignkey")
+    if _index_exists(connection, "sessions", "idx_session_workspace"):
+        op.drop_index("idx_session_workspace", table_name="sessions")
+    if _index_exists(connection, "sessions", "idx_session_project"):
+        op.drop_index("idx_session_project", table_name="sessions")
+    for column in (
+        "archived_at",
+        "pinned_at",
+        "last_run_id",
+        "workspace_id",
+        "project_id",
+        "kind",
+    ):
+        if _column_exists(connection, "sessions", column):
+            op.drop_column("sessions", column)
 
-    op.drop_index("idx_workspace_project_status", table_name="project_workspaces")
+    if _index_exists(connection, "project_workspaces", "idx_workspace_project_status"):
+        op.drop_index("idx_workspace_project_status", table_name="project_workspaces")
     op.drop_table("project_workspaces")

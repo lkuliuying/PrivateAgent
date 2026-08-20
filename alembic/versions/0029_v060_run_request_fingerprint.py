@@ -51,4 +51,6 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # 仅用于开发库/克隆库验证；正式应用回退不执行本函数。
-    op.drop_column("agent_runs", "request_payload_sha256")
+    connection = op.get_bind()
+    if _column_exists(connection, "agent_runs", "request_payload_sha256"):
+        op.drop_column("agent_runs", "request_payload_sha256")

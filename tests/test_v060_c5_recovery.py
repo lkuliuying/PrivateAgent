@@ -190,13 +190,41 @@ async def test_project_bound_run_reconciled_after_restart_keeps_plan(db):
 # ===========================================================================
 
 
-async def test_sse_disconnect_does_not_cancel_run(client, monkeypatch):
+async def test_sse_disconnect_does_not_cancel_run(client, monkeypatch, tmp_path):
     """客户端断开 SSE 后 run 不被取消，也不产生替代 run。"""
     await _enable_all_flags(monkeypatch)
 
+    # coding 模式创建 project/workspace/session（client_request_id 幂等仅 coding 模式，
+    # C0 §5.1：四件套任一出现但未全部出现 → 422）
+    root = str((tmp_path / "p").resolve())
+    (tmp_path / "p").mkdir()
+    project = await client.post("/projects", json={"name": "sse-disconnect", "root_path": root})
+    project_id = project.json()["id"]
+    ws = await client.post(f"/projects/{project_id}/workspaces/root/ensure")
+    ws_id = ws.json()["id"]
+    session = await client.post(
+        "/sessions",
+        json={
+            "title": "coding",
+            "project_id": project_id,
+            "workspace_id": ws_id,
+            "kind": "coding",
+        },
+    )
+    assert session.status_code == 201, session.text
+    session_id = session.json()["id"]
+
+    client_request_id = str(uuid4())
     resp = await client.post(
         "/agent-runs",
-        json={"message": "disconnect-test", "client_request_id": str(uuid4())},
+        json={
+            "session_id": session_id,
+            "message": "disconnect-test",
+            "project_id": project_id,
+            "workspace_id": ws_id,
+            "permission_mode": "confirm",
+            "client_request_id": client_request_id,
+        },
     )
     assert resp.status_code == 202, resp.text
     run_id = resp.json()["id"]
@@ -217,7 +245,14 @@ async def test_sse_disconnect_does_not_cancel_run(client, monkeypatch):
     # 同一 client_request_id 重试 → 幂等重放同一 run，不创建替代 run
     resp2 = await client.post(
         "/agent-runs",
-        json={"message": "disconnect-test", "client_request_id": resp.json()["client_request_id"]},
+        json={
+            "session_id": session_id,
+            "message": "disconnect-test",
+            "project_id": project_id,
+            "workspace_id": ws_id,
+            "permission_mode": "confirm",
+            "client_request_id": client_request_id,
+        },
     )
     assert resp2.status_code == 202, resp2.text
     assert resp2.json()["id"] == run_id
@@ -250,9 +285,10 @@ async def test_legacy_session_and_agent_task_unaffected_by_new_relations(
     assert resp.json()["kind"] == "legacy"
 
     # legacy run（无 coding 字段）在 flag 全开时仍走 legacy 模式
+    # C0 §5.1：四件套（project/workspace/client_request_id/permission_mode）全部缺失 → legacy
     resp = await client.post(
         "/agent-runs",
-        json={"message": "legacy under flags on", "client_request_id": str(uuid4())},
+        json={"message": "legacy under flags on"},
     )
     assert resp.status_code == 202, resp.text
     body = resp.json()

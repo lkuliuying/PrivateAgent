@@ -764,7 +764,7 @@ async def create_agent_run(
 ) -> AgentRunResponse:
     # ---- v0.6.0 C2：Coding/legacy 创建模式判定（C0 契约 §5.1）----
     # 判定字段三件套 = {project_id, workspace_id, permission_mode}；
-    # client_request_id 是独立幂等键，单独出现仍按 legacy 处理（C0 §5.2）。
+    # client_request_id 是独立全局幂等键（C0-D04/§5.2），单独出现仍按 legacy 处理。
     coding_fields_present = [
         name
         for name, value in (

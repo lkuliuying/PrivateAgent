@@ -309,7 +309,7 @@ async def test_run_event_stream_records_connected_and_reconnected(client, monkey
 
     resp = await client.post(
         "/agent-runs",
-        json={"message": "stream", "client_request_id": str(uuid4())},
+        json={"message": "stream"},
     )
     run_id = resp.json()["id"]
 
