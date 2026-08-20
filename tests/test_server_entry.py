@@ -35,6 +35,72 @@ def test_run_migrations_rejects_missing_resources(monkeypatch, tmp_path):
         server_entry._run_migrations()
 
 
+def test_run_migrations_skips_unknown_future_revision(monkeypatch, capsys):
+    """第 7 节：DB revision 不在本应用迁移链内（新版升级后回退安装）时跳过迁移。
+
+    不得执行破坏性 downgrade，也不得拒绝启动；旧版回退应用必须可用。
+    """
+    from pathlib import Path
+
+    calls: list[str] = []
+
+    def fake_upgrade(cfg, revision):  # noqa: ANN001
+        calls.append(str(revision))
+
+    monkeypatch.setattr("alembic.command.upgrade", fake_upgrade)
+    monkeypatch.setattr(server_entry, "_read_db_revision", lambda: "9999")
+    monkeypatch.setattr(
+        server_entry,
+        "_project_base",
+        lambda: Path(__file__).resolve().parents[1],
+    )
+
+    server_entry._run_migrations()
+
+    captured = capsys.readouterr()
+    assert calls == []
+    assert "skipping migrations" in captured.err
+    assert "9999" in captured.err
+
+
+def test_run_migrations_upgrades_when_revision_known(monkeypatch):
+    """DB revision 在本应用迁移链内时仍执行正常 upgrade head。"""
+    from pathlib import Path
+
+    calls: list[str] = []
+
+    def fake_upgrade(cfg, revision):  # noqa: ANN001
+        calls.append(str(revision))
+
+    monkeypatch.setattr("alembic.command.upgrade", fake_upgrade)
+    monkeypatch.setattr(server_entry, "_read_db_revision", lambda: "0029")
+    monkeypatch.setattr(
+        server_entry,
+        "_project_base",
+        lambda: Path(__file__).resolve().parents[1],
+    )
+
+    server_entry._run_migrations()
+
+    assert calls == ["head"]
+
+
+def test_read_db_revision_returns_none_on_failure(monkeypatch):
+    """读 revision 失败（连接/表异常）时返回 None，交由 upgrade 路径处理。"""
+    import sqlalchemy.engine
+    import sqlalchemy.ext.asyncio
+
+    def boom(*args, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(sqlalchemy.engine, "make_url", boom)
+    monkeypatch.setattr(
+        sqlalchemy.ext.asyncio, "create_async_engine", boom, raising=False
+    )
+
+    assert server_entry._read_db_revision() is None
+
+
 def test_packaged_server_refuses_to_start_after_migration_failure(
     monkeypatch, capsys
 ):

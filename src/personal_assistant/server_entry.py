@@ -43,11 +43,46 @@ def _ensure_data_dirs() -> None:
     settings.log_dir.mkdir(parents=True, exist_ok=True)
 
 
-def _run_migrations() -> None:
-    """进程内执行 Alembic ``upgrade head``（打包后无 alembic CLI）。"""
-    from alembic.config import Config
+def _read_db_revision() -> str | None:
+    """读取数据库当前 alembic revision（连接或查询失败返回 None）。"""
+    import asyncio
 
+    from sqlalchemy import text
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from personal_assistant.config import settings
+
+    async def _run() -> str | None:
+        eng = create_async_engine(make_url(settings.db_url))
+        try:
+            async with eng.connect() as conn:
+                row = (
+                    await conn.execute(
+                        text("SELECT version_num FROM alembic_version")
+                    )
+                ).fetchone()
+                return str(row[0]) if row else None
+        finally:
+            await eng.dispose()
+
+    try:
+        return asyncio.run(_run())
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _run_migrations() -> None:
+    """进程内执行 Alembic ``upgrade head``（打包后无 alembic CLI）。
+
+    只向前迁移：数据库 revision 若不在本应用已知迁移链内（例如新版已升级
+    schema 后回退安装本版本），跳过迁移并继续启动，绝不执行破坏性 downgrade
+    （v0.6.0 第 7 节）。revision 读不到时保持原行为：交给 upgrade 处理（空库
+    建链）或失败拒绝启动（连接/表异常，避免在未知 schema 上启动可写 API）。
+    """
     from alembic import command
+    from alembic.config import Config
+    from alembic.script import ScriptDirectory
 
     base = _project_base()
     ini = base / "alembic.ini"
@@ -59,6 +94,17 @@ def _run_migrations() -> None:
         )
     cfg = Config(str(ini))
     cfg.set_main_option("script_location", str(alembic_dir))
+    db_revision = _read_db_revision()
+    if db_revision is not None:
+        known = {r.revision for r in ScriptDirectory.from_config(cfg).walk_revisions()}
+        if db_revision not in known:
+            print(
+                f"[server_entry] database revision {db_revision} is not in this "
+                "application's migration chain; skipping migrations "
+                "(rollback-safe: no destructive downgrade).",
+                file=sys.stderr,
+            )
+            return
     # env.py 会注入 settings.db_url，此处不设置 sqlalchemy.url
     command.upgrade(cfg, "head")
 
