@@ -159,6 +159,16 @@ def _validate_rel_path(rel_path: str) -> None:
     for part in parts:
         if _windows_device_name(part) is not None:
             raise PatchSetError("patchset_invalid", "拒绝设备路径")
+        # P1-2 第三轮验收修复：按 Windows 规范化（去尾随点/空格）后为空或
+        # 折叠为 . / .. 的组件一律拒绝——`...`、`.. `、`. ` 等形态在
+        # Windows 解析时会折叠到空/上级/当前目录，形成与正常路径的别名。
+        normalized = part.rstrip(" .").lower()
+        if not normalized:
+            raise PatchSetError("patchset_invalid", "拒绝空路径组件")
+        if normalized == "..":
+            raise PatchSetError("patchset_invalid", "拒绝 .. 越界路径")
+        if normalized == ".":
+            raise PatchSetError("patchset_invalid", "拒绝 . 路径组件")
 
 
 def _check_new_content(content: str) -> None:
@@ -776,14 +786,29 @@ class PatchSetService:
         except PatchSetStateConflict as exc:  # pragma: no cover - 并发终态竞争
             raise PatchSetError("patchset_partial_unknown", str(exc)) from exc
         except Exception as exc:
-            # P1-1 第二轮验收修复：DB 终态写入失败（SQL 执行/commit 异常）——
-            # 磁盘已修改但备份仍在：先逆序回滚磁盘恢复原状；回滚成功则尽力
-            # 标记 rolled_back，失败则尽力标记 partial_unknown；DB 完全不可用
-            # 时磁盘已恢复（或残留备份可人工处置），不再存在「磁盘已修改、
-            # PatchSet 仍 previewed」的幽灵状态。
-            await self._handle_db_terminal_failure(
+            # P1-1 第三轮验收修复：DB 终态写入失败（SQL 执行/commit 异常）——
+            # 先经**新事务确认 durable 状态**：transition_status 内部 commit
+            # 可能已成功（仅提交后查询失败），此时 DB=applied 而磁盘已改，
+            # 回滚磁盘会造成反向分叉，必须按成功路径收敛；确认仍 previewed
+            # 才逆序回滚磁盘（备份仍在）并尽力标记 rolled_back/partial_unknown。
+            durable_applied = await self._handle_db_terminal_failure(
                 patch_set.run_id, patch_set.id, staged, executed, str(exc)
             )
+            if durable_applied:
+                # commit 实际成功（仅查询失败）：终态已 durable，补发事件与投影
+                await self._emit_event(
+                    run_id,
+                    "patch_set.applied",
+                    {
+                        "patch_set_id": patch_set.id,
+                        "preview_version": patch_set.preview_version,
+                        "verified": True,
+                    },
+                )
+                await self._project_artifact(
+                    run_id, "project_patch_applied", patch_set.id
+                )
+                return self._apply_output(patch_set)
             raise PatchSetError(
                 "patchset_conflict", f"终态持久化失败，已回滚: {type(exc).__name__}"
             ) from exc
@@ -814,10 +839,35 @@ class PatchSetService:
         staged: Sequence[_StagedOp],
         executed: Sequence[int],
         reason: str,
-    ) -> None:
-        """DB 终态写入失败（P1-1 第二轮）：先回滚磁盘（备份仍在），再尽力
-        持久化 rolled_back / partial_unknown；DB 完全不可用时磁盘已恢复原状
-        （或残留备份可人工处置），不构成「磁盘已改 + 状态 previewed」幽灵状态。"""
+    ) -> bool:
+        """DB 终态写入失败（P1-1）：先经新事务确认 durable 状态，再补偿。
+
+        返回 True 表示终态已 durable（applied，commit 成功仅查询失败）——
+        调用方按成功路径收敛（不回滚磁盘）；返回 False 表示确认仍
+        previewed——本方法已逆序回滚磁盘并尽力标记 rolled_back /
+        partial_unknown（DB 完全不可用时磁盘已恢复原状，残留备份可人工
+        处置），不构成「磁盘已改 + 状态 previewed」幽灵状态。
+        """
+        from .db import async_session_factory
+
+        try:
+            async with async_session_factory() as s:
+                durable = await self.repo.__class__(
+                    s
+                ).get_by_id(patch_set_id)
+        except Exception:  # noqa: BLE001 - DB 不可用，按未持久化处理
+            durable = None
+        if durable is not None and durable.status == "applied":
+            # commit 已成功（仅提交后查询失败）：终态 durable，按成功路径
+            # 清理备份（残留无害）；绝不回滚磁盘（防反向分叉）。
+            try:
+                await asyncio.to_thread(_cleanup_staged, staged)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "patch_set applied cleanup failed",
+                    patch_set_id=patch_set_id,
+                )
+            return True
         rollback_ok, _failed_ordinals, _rollback_failures = await asyncio.to_thread(
             _rollback_all, staged, executed
         )
@@ -841,7 +891,7 @@ class PatchSetService:
                 logger.warning(
                     "patch_set cleanup failed", patch_set_id=patch_set_id
                 )
-            return
+            return False
         # 回滚失败 → partial_unknown（尽力而为；DB 不可用时记录日志）
         try:
             await self.db.rollback()
@@ -859,6 +909,7 @@ class PatchSetService:
                 patch_set_id=patch_set_id,
                 exc_info=True,
             )
+        return False
 
     async def _handle_failure(
         self,

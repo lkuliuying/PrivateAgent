@@ -109,8 +109,16 @@ class _HttpAdapter:
     _MAX_SSE_LINE_CHARS = 1_048_576
     _MAX_SSE_EVENT_CHARS = 2_097_152
 
-    def __init__(self, client: httpx.AsyncClient | None) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient | None,
+        *,
+        # P0-2 第三轮验收修复：本地适配器（Ollama）必须显式 trust_env=False，
+        # 否则 HTTP_PROXY 会把 loopback 请求送往远程代理（正文离开本机）。
+        trust_env: bool = True,
+    ) -> None:
         self._client = client
+        self._trust_env = trust_env
 
     async def _post(
         self,
@@ -123,7 +131,9 @@ class _HttpAdapter:
             response = await self._client.post(url, headers=headers, json=payload)
         else:
             async with httpx.AsyncClient(
-                timeout=60.0, follow_redirects=False
+                timeout=60.0,
+                follow_redirects=False,
+                trust_env=self._trust_env,
             ) as client:
                 response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
@@ -149,7 +159,11 @@ class _HttpAdapter:
             return
 
         async with (
-            httpx.AsyncClient(timeout=60.0, follow_redirects=False) as client,
+            httpx.AsyncClient(
+                timeout=60.0,
+                follow_redirects=False,
+                trust_env=self._trust_env,
+            ) as client,
             client.stream(
                 "POST",
                 url,
@@ -492,11 +506,27 @@ class OllamaChatAdapter(_HttpAdapter):
         temperature: float = 0.7,
         context_length: int = 8_192,
         client: httpx.AsyncClient | None = None,
+        # P0-2 第三轮验收修复：Ollama 是本地服务——默认不走环境代理
+        # （trust_env=False），避免 HTTP_PROXY 把 loopback 请求送往远程代理；
+        # require_loopback=True 时构造即校验主机必须 loopback（本地 profile
+        # 路由的最终防御，与 routes 层校验双保险）。
+        trust_env: bool = False,
+        require_loopback: bool = False,
     ) -> None:
-        super().__init__(client)
+        super().__init__(client, trust_env=trust_env)
         parsed = httpx.URL(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.host:
             raise ValueError("Ollama base_url 必须是有效的 HTTP(S) URL")
+        if require_loopback and parsed.host.lower() not in {
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "0.0.0.0",
+        }:
+            raise ValueError(
+                "Ollama base_url 必须指向本地 loopback 主机"
+                f"（当前: {parsed.host}）"
+            )
         self.base_url = str(parsed).rstrip("/")
         self.model_name = model
         self.temperature = temperature

@@ -536,6 +536,10 @@ async def _model_gateway_for_run(
                         "llm_context_length", cfg.llm_context_length
                     )
                 ),
+                # P0-2 第三轮：本地适配器不走环境代理（trust_env=False）且
+                # 构造即强制 loopback——HTTP_PROXY 无法把请求送往远程代理。
+                trust_env=False,
+                require_loopback=True,
             )
         )
     if provider == "openai":

@@ -780,3 +780,207 @@ async def test_path_uniqueness_trailing_dot_space_normalized(db, tmp_path):
         await _cleanup(
             db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
         )
+
+
+# ===========================================================================
+# 第三轮验收修复（2026-08-21 复核：等价绕过）：P0-1 allowlist / P0-2 代理 /
+# P1-1 post-commit 反向分叉 / P1-2 空组件别名
+# ===========================================================================
+
+
+async def test_command_nested_bypass_rejected(db, tmp_path):
+    """第三轮 P0-1：--override-ini/addopts 嵌套注入与 wrapper 变体全部拒绝。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project_with_profiles(
+        db,
+        tmp_path,
+        [
+            {"name": "py-tests", "args": [sys.executable, "-m", "pytest"]},
+            {"name": "uv-tests", "args": ["uv", "run", "pytest"]},
+        ],
+    )
+    try:
+        cases = [
+            # --override-ini / -o 嵌套 pythonpath 注入
+            [sys.executable, "-m", "pytest", "--override-ini=pythonpath=C:outside"],
+            [sys.executable, "-m", "pytest", "-o", "pythonpath=C:outside"],
+            # addopts 注入（-o addopts=-p x）与 -c 外部配置
+            [sys.executable, "-m", "pytest", "-o", "addopts=-p outside_plugin"],
+            [sys.executable, "-m", "pytest", "-c", "C:/outside/pytest.ini"],
+            # wrapper 变体（uv run 选项 / python -I）
+            ["uv", "run", "--offline", "pytest", "-p", "outside_plugin"],
+            ["uv", "run", "--offline", "pytest", "--pyargs", "outside_pkg"],
+            [sys.executable, "-I", "-m", "pytest", "--pyargs", "outside_pkg"],
+            # 未列入 allowlist 的 flag 一律拒绝
+            [sys.executable, "-m", "pytest", "--import-mode=importlib"],
+            [sys.executable, "-m", "pytest", "--addopts=-p x"],
+        ]
+        for args in cases:
+            with pytest.raises(PermissionError_):
+                await _resolve_command(db, project_id, args, timeout=None)
+
+        # wrapper 选项（--offline/-I）不在 profile 前缀也不在 pytest allowlist：
+        # 拒绝是安全语义（模型不能注入 wrapper 选项）；allowlist 内参数合法。
+        ok = await _resolve_command(
+            db, project_id, ["uv", "run", "pytest", "-q", "-x"], timeout=None
+        )
+        assert ok.matched_profile_name == "uv-tests"
+        ok2 = await _resolve_command(
+            db,
+            project_id,
+            [sys.executable, "-m", "pytest", "-q"],
+            timeout=None,
+        )
+        assert ok2.matched_profile_name == "py-tests"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+def test_ollama_adapter_bypasses_proxy_and_requires_loopback(monkeypatch):
+    """第三轮 P0-2：Ollama 本地适配器 trust_env=False（不走 HTTP_PROXY）；
+    require_loopback 拒绝远程主机。"""
+    from personal_assistant.llm.adapters import OllamaChatAdapter
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.com:8080")
+    monkeypatch.setenv("http_proxy", "http://proxy.example.com:8080")
+    adapter = OllamaChatAdapter(
+        base_url="http://127.0.0.1:11434",
+        model="qwen2.5",
+        require_loopback=True,
+    )
+    assert adapter._trust_env is False
+    # 远程主机在 require_loopback 下构造即拒绝
+    with pytest.raises(ValueError):
+        OllamaChatAdapter(
+            base_url="https://ollama.example.com",
+            model="qwen2.5",
+            require_loopback=True,
+        )
+    # 默认（legacy 全局路径）不强制 loopback，但同样不走代理
+    legacy = OllamaChatAdapter(base_url="http://127.0.0.1:11434", model="qwen2.5")
+    assert legacy._trust_env is False
+
+
+def test_ollama_adapter_client_trust_env_false(monkeypatch):
+    """第三轮 P0-2：_post 创建的 httpx 客户端显式 trust_env=False。"""
+    import httpx
+
+    from personal_assistant.llm.adapters import OllamaChatAdapter
+
+    captured: dict = {}
+
+    class _FakeResponse:
+        def json(self):
+            return {"message": {"content": "ok", "tool_calls": None}}
+
+        @property
+        def status_code(self):
+            return 200
+
+        def raise_for_status(self):
+            return None
+
+    class _FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    adapter = OllamaChatAdapter(base_url="http://127.0.0.1:11434", model="qwen2.5")
+    import asyncio
+
+    async def _run():
+        from personal_assistant.agents import ModelMessage, ModelRequest
+        from personal_assistant.agents.runtime import CancellationToken
+
+        await adapter.complete(
+            ModelRequest(messages=(ModelMessage(role="user", content="hi"),)),
+            cancellation=CancellationToken(),
+        )
+
+    asyncio.run(_run())
+    assert captured.get("trust_env") is False
+
+
+async def test_apply_post_commit_query_failure_keeps_disk(db, tmp_path):
+    """第三轮 P1-1：commit 成功但提交后查询失败 → 新事务确认 applied，
+    不回滚磁盘（防反向分叉：DB=applied + 磁盘=旧内容）。"""
+    from personal_assistant.core.patch_set_service import PatchSetService
+
+    (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        preview = await PatchSetService(db).propose(
+            run_id,
+            [_op_update("a.py", "v2\n", _sha256_text("v1\n"))],
+        )
+        await _request_approval_and_approve(db, run_id, _apply_call(preview))
+        svc = PatchSetService(db)
+        orig_transition = svc.repo.transition_status
+
+        async def _commit_then_raise(patch_set_id, expected, new_status, **kw):
+            await orig_transition(patch_set_id, expected, new_status, **kw)
+            raise RuntimeError("post-commit query failed")
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(svc.repo, "transition_status", _commit_then_raise)
+        try:
+            result = await svc.apply(
+                run_id,
+                preview["patch_set_id"],
+                preview["preview_version"],
+                preview["parameters_hash"],
+            )
+            assert result["status"] == "applied"
+        finally:
+            monkeypatch.undo()
+        # 磁盘保持新内容（未反向回滚），DB applied，零 .pa 残留
+        assert (tmp_path / "a.py").read_text(encoding="utf-8") == "v2\n"
+        assert _no_pa_leftovers(tmp_path) == []
+        stored = await svc.repo.get_by_id(preview["patch_set_id"])
+        assert stored is not None and stored.status == "applied"
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
+
+
+async def test_path_component_collapses_to_empty_rejected(db, tmp_path):
+    """第三轮 P1-2：规范化后为空/折叠的组件（...、.. 、. ）拒绝。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        for bad in ("src/.../config.py", "src/.. /x.py", "src/. /x.py", "..."):
+            with pytest.raises(PatchSetError) as exc:
+                await PatchSetService(db).propose(run_id, [_op_create(bad, "x\n")])
+            assert exc.value.error_code == "patchset_invalid", bad
+        assert list(tmp_path.iterdir()) == []
+        # 合法路径不受影响
+        preview = await PatchSetService(db).propose(
+            run_id, [_op_create("src/config.py", "x\n")]
+        )
+        assert preview["file_count"] == 1
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )

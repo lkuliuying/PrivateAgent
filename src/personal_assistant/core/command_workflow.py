@@ -308,40 +308,84 @@ _WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _PATH_SEPARATOR_RE = re.compile(r"[\\/]")
 _DOTDOT_RE = re.compile(r"(^|[\\/])\.\.([\\/]|$)")
 
-# 第二轮（P0-1）：命令感知 argv schema——按命令工具关键字拒绝工作区外
-# 加载能力（模块/插件/临时目录/收集根）与路径类 flag 的越界值。
-# reject：该 flag 无论值为何一律拒绝（MVP 内无合法使用场景）；
+# 第三轮（P0-1）：命令感知 argv schema——pytest 改为**安全参数 allowlist**
+# （未列入即拒绝，杜绝 --override-ini/pythonpath、addopts 注入、-p 插件等
+# 工作区外加载能力）；cargo/npm 维持 reject + path 值 workspace 内校验。
 # path：flag 的值必须解析在 workspace 内（等号形式或下一 token）。
+_PYTEST_ALLOWED_FLAGS = frozenset(
+    {
+        "-q", "--quiet", "-v", "--verbose", "-x", "--exitfirst",
+        "-k", "--maxfail", "-s", "--capture", "--tb", "--color", "-r",
+        "--lf", "--ff", "--co", "--collect-only", "--disable-warnings",
+        "--no-header", "-W", "--strict", "--strict-markers", "--timeout",
+        "-m", "--markers", "--deselect", "--continue-on-collection-errors",
+        "-l", "--showlocals", "--no-summary", "--no-cov",
+    }
+)
 _COMMAND_ARG_POLICY: dict[str, dict[str, frozenset[str]]] = {
     "pytest": {
-        "reject": frozenset(
-            {"-p", "--pyargs", "--basetemp", "--rootdir", "--confcutdir"}
-        ),
-        "path": frozenset(),
+        "allow": _PYTEST_ALLOWED_FLAGS,
+        "path": frozenset({"--ignore"}),
+        "reject": frozenset(),
     },
-    "cargo": {"reject": frozenset(), "path": frozenset({"--manifest-path"})},
-    "npm": {"reject": frozenset(), "path": frozenset({"--prefix"})},
+    "cargo": {
+        "allow": frozenset(),
+        "reject": frozenset({"--config"}),
+        "path": frozenset({"--manifest-path", "--target-dir"}),
+    },
+    "npm": {
+        "allow": frozenset(),
+        "reject": frozenset(),
+        "path": frozenset({"--prefix"}),
+    },
 }
 
 
-# 工具关键字识别：argv 前缀 → 命令工具（python -m pytest / uv run pytest
-# 与 pytest 本身都归 pytest；cargo/npm 按可执行名，忽略 Windows 后缀）。
+# 工具关键字识别（第三轮）：忽略 wrapper 选项——``uv run [--offline 等] pytest``
+# 与 ``python [-I 等] -m pytest`` 都归 pytest；cargo/npm 按可执行名（忽略
+# Windows .exe/.cmd/.bat 后缀）。
 def _command_key(args: Sequence[str]) -> str | None:
     if not args:
         return None
-    exe_name = Path(args[0]).name.lower()
-    for suffix in (".exe", ".cmd", ".bat"):
-        if exe_name.endswith(suffix):
-            exe_name = exe_name[: -len(suffix)]
-            break
-    exe = exe_name
-    rest = [a.lower() for a in args[1:]]
+
+    def _exe_name(token: str) -> str:
+        name = Path(token).name.lower()
+        for suffix in (".exe", ".cmd", ".bat"):
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                break
+        return name
+
+    exe = _exe_name(args[0])
     if exe == "pytest":
         return "pytest"
-    if exe in {"python", "py"} and rest[:2] == ["-m", "pytest"]:
-        return "pytest"
-    if exe == "uv" and rest[:2] == ["run", "pytest"]:
-        return "pytest"
+    if exe in {"python", "py"}:
+        # python [-I/-B/...] -m pytest：跳过 python 自身选项定位 -m pytest
+        # （-m 是定位符，不得跳过）
+        index = 1
+        while (
+            index < len(args)
+            and args[index].startswith("-")
+            and args[index] != "-m"
+        ):
+            index += 1
+        if (
+            index + 1 < len(args)
+            and args[index].lower() == "-m"
+            and args[index + 1].lower() == "pytest"
+        ):
+            return "pytest"
+    if exe == "uv":
+        # uv run [--offline/--no-sync/...] pytest：跳过 uv 选项定位 pytest
+        index = 1
+        while index < len(args) and args[index].startswith("-"):
+            index += 1
+        if index < len(args) and args[index].lower() == "run":
+            index += 1
+            while index < len(args) and args[index].startswith("-"):
+                index += 1
+            if index < len(args) and _exe_name(args[index]) == "pytest":
+                return "pytest"
     if exe == "cargo":
         return "cargo"
     if exe == "npm":
@@ -350,17 +394,23 @@ def _command_key(args: Sequence[str]) -> str | None:
 
 
 def _reject_command_args(root: str, remaining: Sequence[str], key: str | None) -> None:
-    """命令剩余参数校验（第二轮 P0-1）：通用路径检查 + 命令感知 schema。
+    """命令剩余参数校验：通用路径检查 + 命令感知 schema。
 
-    - 通用：盘符/绝对路径/UNC 拒绝；``..`` 与相对子路径 resolve_within
-      校验（工作区内允许）；``--flag=path`` 等号形式取 value 检查。
-    - schema：reject flag 一律拒绝（pytest -p/--pyargs/--basetemp/
-      --rootdir/--confcutdir 等工作区外加载能力）；path flag 的值必须
-      解析在 workspace 内（等号形式或下一 token）。
+    - 无 schema（未知工具）：盘符/绝对路径拒绝；``..`` 与相对子路径
+      resolve_within 校验；``--flag=path`` 等号形式取 value 检查。
+    - pytest（allowlist）：未列入安全集合的 flag 一律拒绝（-p/--pyargs/
+      -o/--override-ini/--addopts/-c/--config/--basetemp/--rootdir/
+      --confcutdir 等工作区外加载能力）；path flag 值与位置参数路径
+      必须解析在 workspace 内。
+    - cargo/npm：reject flag 拒绝；path flag 值必须 workspace 内。
     """
     policy = _COMMAND_ARG_POLICY.get(key or "") if key else None
-    reject_flags = policy["reject"] if policy else frozenset()
-    path_flags = policy["path"] if policy else frozenset()
+    if policy is None:
+        _reject_generic_args(root, remaining)
+        return
+    allow_flags = policy.get("allow") or frozenset()
+    reject_flags = policy.get("reject") or frozenset()
+    path_flags = policy.get("path") or frozenset()
     index = 0
     while index < len(remaining):
         token = remaining[index]
@@ -369,22 +419,37 @@ def _reject_command_args(root: str, remaining: Sequence[str], key: str | None) -
             continue
         name, sep, val = token.partition("=")
         has_inline_value = bool(sep and val)
-        flag_name = name if name.startswith("-") else None
-        if flag_name in reject_flags:
-            raise PermissionError_(
-                f"命令参数 {flag_name} 可加载 workspace 外模块/路径，已拒绝"
-            )
-        if flag_name in path_flags:
-            if has_inline_value:
-                value = val
-            else:
-                if index >= len(remaining):
-                    raise PermissionError_(f"命令参数 {flag_name} 缺少值")
-                value = remaining[index]
-                index += 1
-            _check_path_value(root, value, token=f"{flag_name} {value}")
+        if name.startswith("-"):
+            if name in reject_flags:
+                raise PermissionError_(
+                    f"命令参数 {name} 可加载 workspace 外模块/路径，已拒绝"
+                )
+            if allow_flags and name not in allow_flags:
+                raise PermissionError_(
+                    f"命令参数 {name} 不在安全 allowlist，已拒绝"
+                )
+            if name in path_flags:
+                if has_inline_value:
+                    value = val
+                else:
+                    if index >= len(remaining):
+                        raise PermissionError_(f"命令参数 {name} 缺少值")
+                    value = remaining[index]
+                    index += 1
+                _check_path_value(root, value, token=f"{name} {value}")
             continue
+        # 位置参数（或带值 flag 的值）：路径必须 workspace 内
         value = val if has_inline_value else token
+        _check_path_value(root, value, token=token)
+
+
+def _reject_generic_args(root: str, remaining: Sequence[str]) -> None:
+    """无命令 schema 时的通用路径检查（未知工具）。"""
+    for token in remaining:
+        if not token:
+            continue
+        name, sep, val = token.partition("=")
+        value = val if (sep and val) else token
         _check_path_value(root, value, token=token)
 
 
