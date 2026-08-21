@@ -380,17 +380,19 @@ def is_whitelisted_command(args: list[str]) -> bool:
 
 
 async def _execute_command(
-    args: list[str], cwd: str, *, timeout: float = COMMAND_TIMEOUT
+    args: list[str], cwd: str, *, timeout: float = COMMAND_TIMEOUT, env: dict | None = None
 ) -> dict:
     """在 cwd 运行 args（已通过权限/配置校验），返回结果 dict。
 
-    供 run_whitelisted_command（全局白名单）与项目命令配置（预授权）复用。
+    供 run_whitelisted_command（全局白名单）与项目命令配置（预授权）复用；
+    env 为可选白名单环境（E2：命令 profile env_allowlist 注入）。
     """
     timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
     try:
         proc = await asyncio.create_subprocess_exec(
             *args,
             cwd=cwd,
+            env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

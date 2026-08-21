@@ -106,7 +106,15 @@ class AgentRunCreateRequest(BaseModel):
     def _check_completion_conditions(cls, value: dict | None) -> dict | None:
         if value is None:
             return None
-        allowed = {"must_succeed_tools", "max_failed_tools", "require_verified"}
+        allowed = {
+            "must_succeed_tools",
+            "max_failed_tools",
+            "require_verified",
+            # E3（E0 §7）：完成条件扩展（v0.7.0 新增，additive）
+            "must_pass_command_profiles",
+            "no_pending_patchsets",
+            "final_git_diff",
+        }
         unknown = set(value) - allowed
         if unknown:
             raise ValueError(f"completion_conditions 含未知字段：{sorted(unknown)}")
@@ -130,6 +138,30 @@ class AgentRunCreateRequest(BaseModel):
             value["require_verified"], bool
         ):
             raise ValueError("require_verified 必须是布尔值")
+        # E3（E0 §7）：必须通过的命令 profile——1..16 个 profile 名
+        profiles = value.get("must_pass_command_profiles")
+        if profiles is not None:
+            if (
+                not isinstance(profiles, list)
+                or not profiles
+                or len(profiles) > 16
+                or not all(
+                    isinstance(item, str) and 1 <= len(item) <= 64
+                    for item in profiles
+                )
+            ):
+                raise ValueError("must_pass_command_profiles 必须是 1..16 个 profile 名")
+        if "no_pending_patchsets" in value and not isinstance(
+            value["no_pending_patchsets"], bool
+        ):
+            raise ValueError("no_pending_patchsets 必须是布尔值")
+        final_git_diff = value.get("final_git_diff")
+        if final_git_diff is not None and final_git_diff not in {
+            "any",
+            "nonempty",
+            "empty",
+        }:
+            raise ValueError("final_git_diff 必须是 any|nonempty|empty")
         return value
 
 
@@ -339,20 +371,67 @@ def _build_output_verifier_factory(
                 records = await ToolExecutionRepository(
                     run_db, run_id=target_run_id
                 ).list_for_run()
-                return WorkflowCompletionFacts(
-                    executions=[
+                # E3（E0 §7）：命令 profile 事实——execution 输出里的 profile
+                # 名（命令输出事实，不信任模型文本声明）。
+                executions = []
+                for record in records:
+                    output = (
+                        record.output_json
+                        if isinstance(record.output_json, dict)
+                        else None
+                    )
+                    executions.append(
                         {
                             "tool_name": record.tool_name,
                             "status": record.status,
                             "error_code": record.error_code,
                             "verified": (
-                                record.output_json.get("verified")
-                                if isinstance(record.output_json, dict)
-                                else None
+                                output.get("verified") if output is not None else None
+                            ),
+                            "profile": (
+                                output.get("profile") if output is not None else None
                             ),
                         }
-                        for record in records
+                    )
+                patch_sets: list[dict] = []
+                if cfg.coding_patchset_enabled:
+                    from ..core.repo_coding_patch_sets import (
+                        CodingPatchSetRepository,
+                    )
+
+                    patch_records = await CodingPatchSetRepository(
+                        run_db
+                    ).list_for_run(target_run_id)
+                    patch_sets = [
+                        {"id": record.id, "status": record.status}
+                        for record in patch_records
                     ]
+                # E3（E0 §7）：最终 Git Diff 判定——workspace 当前 dirty 状态
+                # （非 git 目录为 None，不可判定时 nonempty/empty 条件失败关闭）。
+                git_diff_empty: bool | None = None
+                if completion_conditions.get("final_git_diff") not in (None, "any"):
+                    from ..agents.repository import AgentRunRepository as RunRepo
+                    from ..core.git_snapshot import GitSnapshotError, read_git_snapshot
+                    from ..core.workspaces import ProjectWorkspaceService
+
+                    run = await RunRepo(run_db).get_run(target_run_id)
+                    if run is not None and run.workspace_id is not None:
+                        workspace = await ProjectWorkspaceService(run_db).get(
+                            run.workspace_id
+                        )
+                        if workspace is not None:
+                            try:
+                                snapshot = await read_git_snapshot(
+                                    workspace.root_path
+                                )
+                            except GitSnapshotError:
+                                snapshot = None
+                            if snapshot is not None:
+                                git_diff_empty = not snapshot.dirty
+                return WorkflowCompletionFacts(
+                    executions=executions,
+                    patch_sets=patch_sets,
+                    git_diff_empty=git_diff_empty,
                 )
 
             verifiers.append(
@@ -367,6 +446,13 @@ def _build_output_verifier_factory(
                     require_verified=bool(
                         completion_conditions.get("require_verified", False)
                     ),
+                    must_pass_command_profiles=tuple(
+                        completion_conditions.get("must_pass_command_profiles") or ()
+                    ),
+                    no_pending_patchsets=bool(
+                        completion_conditions.get("no_pending_patchsets", False)
+                    ),
+                    final_git_diff=completion_conditions.get("final_git_diff", "any"),
                 )
             )
         if not verifiers:
@@ -399,6 +485,7 @@ async def get_agent_tool_bundle(
         and not cfg.agent_sql_readonly_workflow_enabled
         and not cfg.agent_rag_tools_enabled
         and not cfg.agent_run_plan_enabled
+        and not cfg.coding_patchset_enabled
         and not mcp_records
     ):
         return None
@@ -469,6 +556,20 @@ async def get_agent_tool_bundle(
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, command_verifier])
             )
+        if cfg.coding_patchset_enabled:
+            # E1：PatchSet 多文件工具（E0 契约 §2）——safe 预览 + confirm 原子
+            # 应用；验证器按 DB 持久化 SHA 复核磁盘事实（T2/T3），模型不能绕过。
+            from ..agents.result_verification import PatchSetResultVerifier
+            from ..core.patch_set_tool import build_patch_set_tool_registry
+
+            for spec in build_patch_set_tool_registry(run_db, run_id).list():
+                registry.register(spec)
+            patchset_verifier = PatchSetResultVerifier(run_db)
+            result_verifier = (
+                patchset_verifier
+                if result_verifier is None
+                else CompositeToolResultVerifier([result_verifier, patchset_verifier])
+            )
         if cfg.agent_http_workflow_enabled:
             # rc.2：未配置任何已启用 endpoint profile 时工具不注册（模型不可见）。
             if has_http_profiles:
@@ -530,9 +631,9 @@ async def get_agent_tool_bundle(
                 ToolCapability.EXTERNAL_MCP,
             }
         )
-        if cfg.agent_patch_workflow_enabled:
-            # 只有 Patch 工作流开启时才授予写能力（B1 契约：filesystem.write
-            # 不随只读工具开放）。
+        if cfg.agent_patch_workflow_enabled or cfg.coding_patchset_enabled:
+            # 只有 Patch 工作流/PatchSet 开启时才授予写能力（B1/E1 契约：
+            # filesystem.write 不随只读工具开放）。
             granted_capabilities = granted_capabilities | {
                 ToolCapability.FILESYSTEM_WRITE
             }
@@ -913,6 +1014,25 @@ async def create_agent_run(
         messages = prepared.messages
         context_metadata = context_event_payload(prepared)
     repository = AgentRunRepository(db)
+    # E2（E0 §6）：每次 coding run 快照命令 profile 版本——取项目启用 profile
+    # 中的最高版本（无则省略）；历史 run 不因后续版本变化而修改。
+    command_profile_version: int | None = None
+    if coding_mode:
+        from ..core.repo_patch_sets import ProjectCommandProfileRepository
+
+        profiles = await ProjectCommandProfileRepository(db).list_by_project(
+            request.project_id, enabled=True
+        )
+        versions = [p.profile_version or 1 for p in profiles]
+        if versions:
+            command_profile_version = max(versions)
+    permission_snapshot = (
+        {"mode": request.permission_mode}
+        if request.permission_mode is not None
+        else None
+    )
+    if permission_snapshot is not None and command_profile_version is not None:
+        permission_snapshot["command_profile_version"] = command_profile_version
     try:
         run = await repository.create_run(
             run_id=run_id,
@@ -929,11 +1049,7 @@ async def create_agent_run(
             model_profile_id=request.model_profile_id,
             reasoning_effort=request.reasoning_effort,
             permission_mode=request.permission_mode if coding_mode else None,
-            permission_snapshot_json=(
-                {"mode": request.permission_mode}
-                if request.permission_mode is not None
-                else None
-            ),
+            permission_snapshot_json=permission_snapshot,
             client_request_id=request.client_request_id,
             request_payload_sha256=_request_payload_sha256(
                 session_id=request.session_id,

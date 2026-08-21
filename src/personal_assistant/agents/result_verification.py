@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from jsonschema import Draft202012Validator
+from sqlalchemy.ext.asyncio import AsyncSession
 
 MAX_MESSAGE = 2_000
 MAX_CORRECTION = 4_000
@@ -566,6 +567,146 @@ class WorkflowCompletionVerifier:
                 "继续执行未完成步骤。",
             )
         return ResultVerification.ok("全部完成条件已满足")
+
+
+class PatchSetResultVerifier:
+    """复核 PatchSet 工具结果与磁盘事实一致（E1，T2/T3）。
+
+    - ``propose_patch_set``（预览）：每个文件磁盘内容 SHA 必须仍等于预览
+      保存的 ``old_sha256``（预览后外部编辑即拒绝，防止基于过期预览操作）；
+    - ``apply_patch_set``（写入）：按文件操作类型复核磁盘终态——
+      create/update 目标存在且 SHA == ``new_sha256``、delete 目标不存在、
+      rename 新路径存在且 SHA == ``new_sha256`` 且旧路径不存在；
+      结果必须 ``verified=true`` 且状态 ``applied``。
+
+    事实源是 DB 持久化的 PatchSet（含文件级 SHA），不信任模型文本声明；
+    错误消息只含相对路径。
+    """
+
+    name = "patch_set"
+
+    def __init__(
+        self,
+        db: AsyncSession,
+        *,
+        supported: Iterable[str] = ("propose_patch_set", "apply_patch_set"),
+    ) -> None:
+        self._db = db
+        self._supported = frozenset(supported)
+
+    def supports(self, tool_name: str) -> bool:
+        return tool_name in self._supported
+
+    async def verify(
+        self, tool_name: str, arguments: Mapping[str, Any], result: Any
+    ) -> ResultVerification:
+        del arguments
+        if not isinstance(result, Mapping):
+            return ResultVerification.fail(
+                "result_not_object", "工具结果必须是对象", "返回包含 patch_set_id 的对象。"
+            )
+        patch_set_id = result.get("patch_set_id")
+        if not isinstance(patch_set_id, str) or not patch_set_id:
+            return ResultVerification.fail(
+                "missing_patch_set_id", "结果缺少 patch_set_id"
+            )
+        from ..core.repo_coding_patch_sets import CodingPatchSetRepository
+
+        record = await CodingPatchSetRepository(self._db).get_by_id(patch_set_id)
+        if record is None:
+            return ResultVerification.fail(
+                "patch_set_not_found", "PatchSet 不存在"
+            )
+        from ..core.workspaces import ProjectWorkspaceService
+
+        workspace = await ProjectWorkspaceService(self._db).get(record.workspace_id)
+        if workspace is None:
+            return ResultVerification.fail(
+                "workspace_not_found", "工作区不存在"
+            )
+        root = Path(workspace.root_path)
+        try:
+            if tool_name == "apply_patch_set":
+                if record.status != "applied" or result.get("verified") is not True:
+                    return ResultVerification.fail(
+                        "patch_set_not_verified",
+                        "apply 结果必须 verified=true 且状态 applied",
+                    )
+                decision = self._verify_applied(root, record)
+            else:
+                decision = self._verify_preview(root, record)
+        except (OSError, ValueError) as exc:
+            return ResultVerification.fail(
+                "patch_set_disk_check_failed",
+                f"磁盘复核失败: {type(exc).__name__}",
+            )
+        if decision is not None:
+            return decision
+        return ResultVerification.ok(f"PatchSet 事实校验通过（{record.id}）")
+
+    def _verify_preview(self, root: Path, record) -> ResultVerification | None:
+        """预览后内容未变：每个文件磁盘 SHA == 预览 old_sha256。"""
+        empty_sha = _sha256_text("")
+        for item in record.files:
+            full = _resolve_within(root, item.rel_path)
+            current_sha, exists = _sha256_disk(full)
+            if not exists:
+                if item.old_sha256 == empty_sha:
+                    continue
+                return ResultVerification.fail(
+                    "preview_file_missing",
+                    f"预览文件已消失（{item.rel_path}）",
+                )
+            if current_sha != item.old_sha256:
+                return ResultVerification.fail(
+                    "content_changed_since_preview",
+                    f"预览后内容已变化（{item.rel_path}），旧 SHA 不再匹配",
+                )
+        return None
+
+    def _verify_applied(self, root: Path, record) -> ResultVerification | None:
+        """写入后磁盘终态与文件级声明一致（T2 事实复核）。"""
+        for item in record.files:
+            if item.status != "applied":
+                return ResultVerification.fail(
+                    "patch_file_not_applied",
+                    f"文件未标记 applied（{item.rel_path}）",
+                )
+            full = _resolve_within(root, item.rel_path)
+            if item.operation == "rename":
+                assert item.new_rel_path is not None
+                new_full = _resolve_within(root, item.new_rel_path)
+                if full.exists():
+                    return ResultVerification.fail(
+                        "rename_source_still_exists",
+                        f"rename 后源仍存在（{item.rel_path}）",
+                    )
+                current_sha, exists = _sha256_disk(new_full)
+                if not exists or current_sha != item.new_sha256:
+                    return ResultVerification.fail(
+                        "write_verification_failed",
+                        f"rename 目标 SHA 与声明不一致（{item.new_rel_path}）",
+                    )
+                continue
+            if item.operation == "delete":
+                if full.exists():
+                    return ResultVerification.fail(
+                        "delete_target_still_exists",
+                        f"delete 后目标仍存在（{item.rel_path}）",
+                    )
+                continue
+            current_sha, exists = _sha256_disk(full)
+            if not exists:
+                return ResultVerification.fail(
+                    "write_missing_file",
+                    f"写入校验失败：{item.rel_path} 不存在（回读事实）",
+                )
+            if current_sha != item.new_sha256:
+                return ResultVerification.fail(
+                    "write_verification_failed",
+                    f"写入校验失败：磁盘 SHA 与声明 new_sha256 不一致（{item.rel_path}）",
+                )
+        return None
 
 
 class CompositeToolResultVerifier:

@@ -235,7 +235,7 @@ class AgentRunCoordinator:
                     output_verifier=output_verifier,
                     max_verification_retries=max_verification_retries,
                 )
-                await runtime.run(
+                result = await runtime.run(
                     messages,
                     limits=limits,
                     cancellation=cancellation,
@@ -244,6 +244,9 @@ class AgentRunCoordinator:
                     event_sink=SqlAgentRunEventSink(repository),
                     context_metadata=context_metadata,
                 )
+                # E3：run 进入终态时重建 Artifact 投影并生成 final_report
+                # （独立 session 读 durable facts；flag 关闭时 no-op）
+                await _project_terminal_artifacts(run_id, result.status.value)
         except Exception as exc:  # noqa: BLE001
             # Event persistence failures intentionally leave the last committed
             # state for reconciliation. Never log provider or database payloads.
@@ -288,7 +291,7 @@ class AgentRunCoordinator:
                 output_verifier, max_verification_retries = (
                     _output_verification_policy(workflow_verifier)
                 )
-                await PersistentAgentRunner(
+                result = await PersistentAgentRunner(
                     AgentRuntime(
                         model,
                         tools,
@@ -305,6 +308,8 @@ class AgentRunCoordinator:
                     cancellation=cancellation,
                     tool_definitions=tool_definitions,
                 )
+                # E3：审批恢复后 run 进入终态时同样重建 Artifact 投影
+                await _project_terminal_artifacts(run_id, result.status.value)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "agent run approval resume stopped",
@@ -315,3 +320,28 @@ class AgentRunCoordinator:
     def _forget(self, run_id: str) -> None:
         self._tasks.pop(run_id, None)
         self._tokens.pop(run_id, None)
+
+
+async def _project_terminal_artifacts(run_id: str, status: str) -> None:
+    """E3：run 终态时重建 Artifact 投影（独立 session；失败不影响主流程）。
+
+    投影只读 durable facts（executions / coding_patch_sets），幂等去重；
+    ``PA_CODING_ARTIFACTS_ENABLED`` 关闭时整体 no-op。
+    """
+    from ..config import settings as cfg
+
+    if not cfg.coding_artifacts_enabled:
+        return
+    from ..core.artifact_projection import ArtifactProjectionService
+
+    try:
+        async with dbmod.async_session_factory() as session:
+            await ArtifactProjectionService(session).rebuild_terminal(
+                run_id=run_id, status=status
+            )
+    except Exception:  # noqa: BLE001 - 投影失败不影响 run 事实
+        logger.error(
+            "terminal artifact projection stopped",
+            run_id=run_id,
+            exc_info=True,
+        )

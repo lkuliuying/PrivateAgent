@@ -28,6 +28,15 @@ class ProjectCommandProfileRepository:
         kind: str,
         timeout_seconds: int = 120,
         enabled: bool = True,
+        profile_version: int = 1,
+        cwd_rel: str | None = None,
+        env_allowlist: list | None = None,
+        allow_network: bool = False,
+        result_parser: str | None = None,
+        risk_level: str = "confirm",
+        capability: str | None = None,
+        max_output_bytes: int | None = None,
+        description: str | None = None,
     ) -> ProjectCommandProfile:
         p = ProjectCommandProfile(
             project_id=project_id,
@@ -36,6 +45,16 @@ class ProjectCommandProfileRepository:
             kind=kind,
             timeout_seconds=timeout_seconds,
             enabled=enabled,
+            # v0.7.0 E0 §6：版本化扩展字段（全部 additive，旧数据回填默认值）
+            profile_version=profile_version,
+            cwd_rel=cwd_rel,
+            env_allowlist=env_allowlist,
+            allow_network=allow_network,
+            result_parser=result_parser,
+            risk_level=risk_level,
+            capability=capability,
+            max_output_bytes=max_output_bytes,
+            description=description,
         )
         self.db.add(p)
         await self.db.commit()
@@ -68,6 +87,16 @@ class ProjectCommandProfileRepository:
         kind: str | None = None,
         timeout_seconds: int | None = None,
         enabled: bool | None = None,
+        # E0 §6：版本化扩展字段（None 不更新；profile_version 由 service 递增）
+        profile_version: int | None = None,
+        cwd_rel: str | None = None,
+        env_allowlist: list | None = None,
+        allow_network: bool | None = None,
+        result_parser: str | None = None,
+        risk_level: str | None = None,
+        capability: str | None = None,
+        max_output_bytes: int | None = None,
+        description: str | None = None,
     ) -> None:
         values: dict = {}
         if name is not None:
@@ -80,6 +109,24 @@ class ProjectCommandProfileRepository:
             values["timeout_seconds"] = timeout_seconds
         if enabled is not None:
             values["enabled"] = enabled
+        if profile_version is not None:
+            values["profile_version"] = profile_version
+        if cwd_rel is not None:
+            values["cwd_rel"] = cwd_rel
+        if env_allowlist is not None:
+            values["env_allowlist"] = env_allowlist
+        if allow_network is not None:
+            values["allow_network"] = allow_network
+        if result_parser is not None:
+            values["result_parser"] = result_parser
+        if risk_level is not None:
+            values["risk_level"] = risk_level
+        if capability is not None:
+            values["capability"] = capability
+        if max_output_bytes is not None:
+            values["max_output_bytes"] = max_output_bytes
+        if description is not None:
+            values["description"] = description
         if not values:
             return
         await self.db.execute(

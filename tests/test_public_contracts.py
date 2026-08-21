@@ -104,6 +104,12 @@ def test_run_event_types_frozen():
         "plan.updated",
         "plan.item_changed",
         "artifact.created",
+        # v0.7.0 E0 §1：PatchSet durable 事件（additive）
+        "patch_set.preview_created",
+        "patch_set.applied",
+        "patch_set.rolled_back",
+        "patch_set.failed",
+        "patch_set.unknown",
     }
 
 

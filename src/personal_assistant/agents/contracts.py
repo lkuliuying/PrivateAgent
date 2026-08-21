@@ -63,6 +63,12 @@ class AgentEventType(StrEnum):
     PLAN_UPDATED = "plan.updated"
     PLAN_ITEM_CHANGED = "plan.item_changed"
     ARTIFACT_CREATED = "artifact.created"
+    # v0.7.0 E0 §1：PatchSet durable 事件（additive，payload 脱敏有界）
+    PATCH_SET_PREVIEW_CREATED = "patch_set.preview_created"
+    PATCH_SET_APPLIED = "patch_set.applied"
+    PATCH_SET_ROLLED_BACK = "patch_set.rolled_back"
+    PATCH_SET_FAILED = "patch_set.failed"
+    PATCH_SET_UNKNOWN = "patch_set.unknown"
 
 
 class ContractModel(BaseModel):

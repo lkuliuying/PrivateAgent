@@ -77,7 +77,16 @@ async def reconcile_orphaned_agent_runs(db: AsyncSession) -> AgentRecoveryResult
     failed_runs = 0
     cancelled_runs = 0
     for run_id in run_ids:
-        run = await AgentRunRepository(db).get_run(run_id)
+        # 显式加锁读取并强制刷新缓存：get_run(db.get) 在 expire_on_commit=False
+        # 的 session 中可能返回陈旧 last_event_sequence，导致事件序列冲突。
+        run = (
+            await db.execute(
+                select(AgentRunRecord)
+                .where(AgentRunRecord.id == run_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if run is None or run.status != "running":
             continue
         cancellation_was_requested = run.cancel_requested_at is not None

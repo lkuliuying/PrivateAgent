@@ -6,7 +6,7 @@ rel_path/content_sha256/metadata），写入后发 ``artifact.created`` durable
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,12 +79,16 @@ async def create_run_artifact(
 )
 async def list_run_artifacts(
     run_id: str,
+    limit: int | None = Query(default=None, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_session),
 ):
-    """run 产物引用列表（重连纠偏快照的组成部分）。"""
+    """run 产物引用列表（重连纠偏快照的组成部分；E3 支持 limit/offset 分页）。"""
     from ..agents.repository import AgentRunRepository
 
     run = await AgentRunRepository(db).get_run(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Agent run not found")
-    return await RunArtifactService(db).list_artifacts(run_id)
+    return await RunArtifactService(db).list_artifacts(
+        run_id, limit=limit, offset=offset
+    )

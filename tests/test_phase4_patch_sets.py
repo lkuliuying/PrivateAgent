@@ -82,7 +82,7 @@ async def test_run_project_command(client, tmp_path, monkeypatch):
         )
     ).json()["id"]
 
-    async def fake_exec(args, cwd, *, timeout=120):
+    async def fake_exec(args, cwd, *, timeout=120, env=None):
         return {
             "args": args,
             "cwd": cwd,

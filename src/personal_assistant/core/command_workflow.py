@@ -47,7 +47,8 @@ from .code_tools import (
 )
 from .patch_sets import _profile_to_args
 from .permissions import PermissionError_
-from .projects import ProjectService
+from .projects import ProjectService, resolve_within
+from .result_parsers import parse_command_result
 
 _COMMAND_CONTRACT = WORKFLOW_CONTRACT_BY_NAME["run_whitelisted_command"]
 
@@ -251,12 +252,17 @@ class _JobObject:
 
 @dataclass
 class _BoundedOutputSink:
-    """有界输出收集器：行数/单行/总字节三重上限，超限后只 drain 不记录。"""
+    """有界输出收集器：行数/单行/总字节三重上限，超限后只 drain 不记录。
+
+    ``max_chars`` 为 profile 级 max_output_bytes 折算（None = MAX_OUTPUT_CHARS），
+    summary() 截断超限部分并置 truncated。
+    """
 
     lines: list[dict[str, Any]] = field(default_factory=list)
     line_count: int = 0
     char_count: int = 0
     truncated: bool = False
+    max_chars: int | None = None
 
     def feed(self, kind: str, line: str) -> None:
         self.line_count += 1
@@ -274,7 +280,11 @@ class _BoundedOutputSink:
         joined = "\n".join(
             item["text"] for item in self.lines if item["kind"] == kind
         )
-        return joined[:MAX_OUTPUT_CHARS]
+        limit = min(MAX_OUTPUT_CHARS, self.max_chars or MAX_OUTPUT_CHARS)
+        if len(joined) > limit:
+            self.truncated = True
+            return joined[:limit]
+        return joined
 
 
 @dataclass(frozen=True, slots=True)
@@ -284,6 +294,9 @@ class _ResolvedCommand:
     timeout: float
     env: dict[str, str]
     matched_profile_name: str | None = None
+    profile_version: int | None = None
+    result_parser: str | None = None
+    max_output_bytes: int | None = None
 
 
 async def _resolve_command(
@@ -292,11 +305,16 @@ async def _resolve_command(
     args: list[str],
     timeout: float | None,
 ) -> _ResolvedCommand:
-    """白名单合并：全局默认前缀 + 项目 command profile（预授权）。"""
+    """白名单合并：全局默认前缀 + 项目 command profile（预授权）。
+
+    E2：匹配 profile 后落地其 cwd_rel（resolve 校验仍在 root 内，否则拒绝）、
+    env_allowlist（白名单注入，仍拒绝代理/凭据类）、max_output_bytes 与
+    result_parser；非白名单 argv/cwd 全部拒绝。
+    """
     project = await ProjectService(db).get(project_id)
     from .repo_patch_sets import ProjectCommandProfileRepository
 
-    matched: str | None = None
+    matched_profile = None
     for profile in await ProjectCommandProfileRepository(db).list_by_project(
         project_id, enabled=True
     ):
@@ -305,18 +323,41 @@ async def _resolve_command(
         except ValueError:
             continue
         lowered = [a.lower() for a in profile_args]
-        if lowered and args[: len(lowered)] == lowered:
-            matched = profile.name
+        if lowered and [a.lower() for a in args[: len(lowered)]] == lowered:
+            matched_profile = profile
             break
-    if not matched and not is_whitelisted_command(args):
+    if matched_profile is None and not is_whitelisted_command(args):
         raise PermissionError_("非白名单命令，已拒绝执行")
     effective_timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
+    root = project.root_path
+    env = build_safe_environment()
+    max_output_bytes: int | None = None
+    result_parser: str | None = None
+    profile_version: int | None = None
+    if matched_profile is not None:
+        # cwd_rel 非空时解析到 root 内；越界/非法即拒绝（执行时防御旧数据）
+        if matched_profile.cwd_rel:
+            cwd = str(resolve_within(root, matched_profile.cwd_rel))
+        else:
+            cwd = root
+        if matched_profile.env_allowlist:
+            for name in matched_profile.env_allowlist:
+                if name and name in os.environ and not _ENV_REJECT_PATTERN.search(name):
+                    env[name] = os.environ[name]
+        max_output_bytes = matched_profile.max_output_bytes
+        result_parser = matched_profile.result_parser
+        profile_version = matched_profile.profile_version or 1
+    else:
+        cwd = root
     return _ResolvedCommand(
         args=args,
-        cwd=project.root_path,
+        cwd=cwd,
         timeout=effective_timeout,
-        env=build_safe_environment(),
-        matched_profile_name=matched,
+        env=env,
+        matched_profile_name=matched_profile.name if matched_profile else None,
+        profile_version=profile_version,
+        result_parser=result_parser,
+        max_output_bytes=max_output_bytes,
     )
 
 
@@ -534,9 +575,10 @@ async def run_command(
     stdout = output_sink.summary("stdout")
     stderr = output_sink.summary("stderr")
     combined = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()
-    truncated = output_sink.truncated or len(combined) > MAX_OUTPUT_CHARS
-    if truncated and len(combined) > MAX_OUTPUT_CHARS:
-        combined = combined[:MAX_OUTPUT_CHARS] + "\n" + _STREAM_TRUNCATED_MARKER
+    output_limit = min(MAX_OUTPUT_CHARS, output_sink.max_chars or MAX_OUTPUT_CHARS)
+    truncated = output_sink.truncated or len(combined) > output_limit
+    if truncated and len(combined) > output_limit:
+        combined = combined[:output_limit] + "\n" + _STREAM_TRUNCATED_MARKER
     return {
         "args": args,
         "cwd": cwd,
@@ -570,7 +612,7 @@ async def run_whitelisted_command_trusted(
     persister = (
         _OutputPersister(db, execution_id) if execution_id is not None else None
     )
-    sink = _BoundedOutputSink()
+    sink = _BoundedOutputSink(max_chars=resolved.max_output_bytes)
 
     async def _default_on_line(kind: str, text: str) -> None:
         if persister is not None:
@@ -592,6 +634,12 @@ async def run_whitelisted_command_trusted(
     result["project_id"] = project_id
     if resolved.matched_profile_name is not None:
         result["profile"] = resolved.matched_profile_name
+        result["profile_version"] = resolved.profile_version or 1
+        if resolved.result_parser:
+            # E2：结构化解析结果（有界、脱敏；不信任模型文本声明）
+            result["parsed"] = parse_command_result(
+                resolved.result_parser, result.get("output") or ""
+            )
     return result
 
 

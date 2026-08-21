@@ -1269,6 +1269,25 @@ class ProjectCommandProfile(Base):
     enabled: Mapped[bool] = mapped_column(
         BOOLEAN, nullable=False, default=True, server_default="1"
     )
+    # v0.7.0 E0 §6：命令 profile 版本化扩展（全部 additive，旧数据回填默认值）
+    profile_version: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=1, server_default="1"
+    )
+    # workspace 内相对 cwd（None = 项目根目录）
+    cwd_rel: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    env_allowlist: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    allow_network: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    # 结果解析器：pytest|ruff|mypy|compileall|npm_test|npm_build|npm_lint|
+    # vue_tsc|cargo_test|cargo_check|plain
+    result_parser: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    risk_level: Mapped[str] = mapped_column(
+        VARCHAR(16), nullable=False, default="confirm", server_default="confirm"
+    )
+    capability: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    max_output_bytes: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    description: Mapped[str | None] = mapped_column(VARCHAR(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
     )
@@ -1347,6 +1366,189 @@ class PatchFile(Base):
     patch_set: Mapped[PatchSet] = relationship(back_populates="files")
 
     __table_args__ = (Index("idx_patch_file_set", "patch_set_id"),)
+
+
+class CodingPatchSet(Base):
+    """v0.7.0 可信编码执行：run 绑定的多文件 PatchSet（E0 契约 §2）。
+
+    与 M4 遗留 ``patch_sets`` 表分离：本表绑定 run/workspace、保存
+    base HEAD、参数哈希与原子应用状态机（含 partial_unknown 人工处置态）；
+    旧表保持不动，保证回退性。
+    """
+
+    __tablename__ = "coding_patch_sets"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("agent_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    workspace_id: Mapped[int] = mapped_column(
+        BIGINT,
+        ForeignKey("project_workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    base_head_sha: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    # 预览参数规范化哈希：apply 时强校验，防止参数与预览不一致（T6）
+    parameters_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    preview_version: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=1, server_default="1"
+    )
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "previewed",
+            "applied",
+            "failed",
+            "rolled_back",
+            "partial_unknown",
+            "rejected",
+            name="coding_patch_set_status_enum",
+        ),
+        nullable=False,
+        default="previewed",
+        server_default="previewed",
+    )
+    file_count: Mapped[int] = mapped_column(INTEGER, nullable=False, default=0)
+    additions: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    deletions: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    truncated: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    diff_total_bytes: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    files: Mapped[list["CodingPatchSetFile"]] = relationship(
+        back_populates="patch_set",
+        cascade="all, delete-orphan",
+        order_by="CodingPatchSetFile.ordinal",
+    )
+
+    __table_args__ = (
+        Index("idx_coding_patch_set_run", "run_id", "created_at"),
+        Index("idx_coding_patch_set_workspace", "workspace_id", "status"),
+    )
+
+
+class CodingPatchSetFile(Base):
+    """v0.7.0 PatchSet 文件级操作：create/update/delete/rename。"""
+
+    __tablename__ = "coding_patch_set_files"
+
+    id: Mapped[str] = mapped_column(CHAR(36), primary_key=True)
+    patch_set_id: Mapped[str] = mapped_column(
+        CHAR(36), ForeignKey("coding_patch_sets.id", ondelete="CASCADE"), nullable=False
+    )
+    ordinal: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    operation: Mapped[str] = mapped_column(
+        ENUM(
+            "create",
+            "update",
+            "delete",
+            "rename",
+            name="coding_patch_set_file_op_enum",
+        ),
+        nullable=False,
+    )
+    rel_path: Mapped[str] = mapped_column(VARCHAR(2048), nullable=False)
+    # rename 目标路径（仅 rename 操作）
+    new_rel_path: Mapped[str | None] = mapped_column(VARCHAR(2048), nullable=True)
+    old_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    new_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    # 预览时冻结的新内容（apply 的事实源，模型不可重发；delete 为 NULL）
+    new_content: Mapped[str | None] = mapped_column(MEDIUMTEXT, nullable=True)
+    # 单文件 diff 是否被截断（E0 输出 schema files[].truncated）
+    truncated: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    diff_text: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    status: Mapped[str] = mapped_column(
+        ENUM(
+            "pending",
+            "applied",
+            "rolled_back",
+            "unknown",
+            name="coding_patch_set_file_status_enum",
+        ),
+        nullable=False,
+        default="pending",
+        server_default="pending",
+    )
+    error_message: Mapped[str | None] = mapped_column(TEXT, nullable=True)
+
+    patch_set: Mapped[CodingPatchSet] = relationship(back_populates="files")
+
+    __table_args__ = (
+        UniqueConstraint("patch_set_id", "ordinal", name="uk_coding_patch_file_ordinal"),
+        Index("idx_coding_patch_file_set", "patch_set_id"),
+    )
+
+
+class ModelProfile(Base):
+    """v0.7.0 模型 profile：能力显式声明，不通过名称猜测（E0 契约 §5）。
+
+    Provider secret 保持在原生凭据边界：本表不存任何 secret/token/API key。
+    """
+
+    __tablename__ = "model_profiles"
+
+    id: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
+    provider: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    display_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    is_local: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    # 不支持原生工具调用的模型只能用于只读问答，不进入 Coding 执行循环
+    native_tool_calls: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    supports_streaming: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    supports_structured_output: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    supports_vision: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    context_tokens: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=8192, server_default="8192"
+    )
+    reasoning_efforts_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    usage_reporting: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=True, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    __table_args__ = (Index("idx_model_profile_provider", "provider", "enabled"),)
 
 
 class DocumentCollection(Base):
@@ -2849,6 +3051,13 @@ class AgentRunArtifact(Base):
             "command_output",
             "test_report",
             "summary",
+            # v0.7.0 E0 契约 §3：新增 6 种（迁移 0030 同步扩展）
+            "patch_preview",
+            "patch_applied",
+            "command_result",
+            "lint_report",
+            "build_report",
+            "final_report",
             name="artifact_kind_enum",
         ),
         nullable=False,

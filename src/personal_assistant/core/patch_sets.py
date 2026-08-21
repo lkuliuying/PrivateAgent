@@ -10,6 +10,8 @@ PatchSet 状态机：draft → waiting_approval → applied/rejected；applied �
 from __future__ import annotations
 
 import difflib
+import os
+import re
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,12 +23,110 @@ from .models import PatchSet, ProjectCommandProfile
 from .projects import ProjectNotFound, ProjectService, resolve_within
 from .provider import OllamaProvider, ProviderError
 from .repo_patch_sets import PatchSetRepository, ProjectCommandProfileRepository
+from .result_parsers import RESULT_PARSERS
 from .settings import SettingsService
 
 logger = get_logger(__name__)
 
 PATCH_MAX_CHARS = 500000  # 单文件新内容上限（与 code_tools 一致）
 MAX_READ_FILE_BYTES = 5 * 1024 * 1024
+
+# E0 §6：命令 profile 字段约束（非法值由路由层映射 command_profile_invalid 422）
+_MAX_CWD_REL_CHARS = 2048
+_MAX_ENV_ALLOWLIST_ITEMS = 64
+_MAX_ENV_NAME_CHARS = 64
+_MAX_CAPABILITY_CHARS = 64
+_MAX_DESCRIPTION_CHARS = 512
+_MAX_OUTPUT_BYTES = 10 * 1024 * 1024  # 10 MiB
+RISK_LEVELS = frozenset({"safe", "confirm", "restricted"})
+_ENV_REJECT_PATTERN = re.compile(
+    r"(PROXY|API[_-]?KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|AUTH)", re.IGNORECASE
+)
+
+
+def _validate_profile_fields(
+    *,
+    cwd_rel: str | None = None,
+    env_allowlist: list | None = None,
+    result_parser: str | None = None,
+    risk_level: str | None = None,
+    capability: str | None = None,
+    max_output_bytes: int | None = None,
+    description: str | None = None,
+) -> None:
+    """E0 §6 字段校验：非法即抛 ValueError（路由层映射 422）。
+
+    - cwd_rel：workspace 内相对目录（≤2048，拒绝绝对路径/盘符/越界 ..）；
+    - env_allowlist：环境变量白名单数组，拒绝代理/凭据类名称（Provider
+      secret 保持在原生凭据边界，不注入命令环境）；
+    - result_parser：冻结枚举（result_parsers.RESULT_PARSERS）；
+    - risk_level：safe|confirm|restricted；
+    - max_output_bytes：1..10MiB。
+    """
+    if cwd_rel is not None:
+        if not isinstance(cwd_rel, str):
+            raise ValueError("cwd_rel 必须为字符串")
+        if len(cwd_rel) > _MAX_CWD_REL_CHARS:
+            raise ValueError(f"cwd_rel 过长（上限 {_MAX_CWD_REL_CHARS} 字符）")
+        if not cwd_rel.strip() or cwd_rel.strip() == ".":
+            pass  # 空 = 项目根目录
+        elif (
+            cwd_rel.startswith(("/", "\\"))
+            or re.match(r"^[A-Za-z]:[\\/]", cwd_rel)
+            or os.path.isabs(cwd_rel)
+        ):
+            raise ValueError("cwd_rel 必须是 workspace 内相对路径，拒绝绝对路径")
+        else:
+            norm = os.path.normpath(cwd_rel.replace("\\", "/"))
+            if norm == ".." or norm.startswith(f"..{os.sep}") or norm.startswith("../"):
+                raise ValueError("cwd_rel 不得越出 workspace 根目录")
+    if env_allowlist is not None:
+        if not isinstance(env_allowlist, list) or not all(
+            isinstance(x, str) for x in env_allowlist
+        ):
+            raise ValueError("env_allowlist 必须是字符串数组")
+        if len(env_allowlist) > _MAX_ENV_ALLOWLIST_ITEMS:
+            raise ValueError(
+                f"env_allowlist 项数超限（上限 {_MAX_ENV_ALLOWLIST_ITEMS}）"
+            )
+        for name in env_allowlist:
+            if not name or len(name) > _MAX_ENV_NAME_CHARS or "=" in name:
+                raise ValueError("env_allowlist 项必须是有效环境变量名")
+            if _ENV_REJECT_PATTERN.search(name):
+                raise ValueError(
+                    f"env_allowlist 拒绝代理/凭据类变量: {name}（Provider secret "
+                    "保持在原生凭据边界）"
+                )
+    if result_parser is not None:
+        if result_parser not in RESULT_PARSERS:
+            raise ValueError(
+                f"result_parser 非法: {result_parser}（可选: "
+                f"{'|'.join(sorted(RESULT_PARSERS))}）"
+            )
+    if risk_level is not None and risk_level not in RISK_LEVELS:
+        raise ValueError(
+            f"risk_level 非法: {risk_level}（可选: {'|'.join(sorted(RISK_LEVELS))}）"
+        )
+    if capability is not None:
+        if not isinstance(capability, str) or len(capability) > _MAX_CAPABILITY_CHARS:
+            raise ValueError(
+                f"capability 必须是 ≤{_MAX_CAPABILITY_CHARS} 的字符串"
+            )
+    if max_output_bytes is not None:
+        if (
+            isinstance(max_output_bytes, bool)
+            or not isinstance(max_output_bytes, int)
+            or max_output_bytes < 1
+            or max_output_bytes > _MAX_OUTPUT_BYTES
+        ):
+            raise ValueError(
+                f"max_output_bytes 必须是 1..{_MAX_OUTPUT_BYTES} 的整数"
+            )
+    if description is not None:
+        if not isinstance(description, str) or len(description) > _MAX_DESCRIPTION_CHARS:
+            raise ValueError(
+                f"description 必须是 ≤{_MAX_DESCRIPTION_CHARS} 的字符串"
+            )
 
 
 class PatchSetNotFound(LookupError):
@@ -216,7 +316,24 @@ class CommandProfileService:
         kind: str,
         timeout_seconds: int = 120,
         enabled: bool = True,
+        cwd_rel: str | None = None,
+        env_allowlist: list | None = None,
+        allow_network: bool = False,
+        result_parser: str | None = None,
+        risk_level: str = "confirm",
+        capability: str | None = None,
+        max_output_bytes: int | None = None,
+        description: str | None = None,
     ) -> ProjectCommandProfile:
+        _validate_profile_fields(
+            cwd_rel=cwd_rel,
+            env_allowlist=env_allowlist,
+            result_parser=result_parser,
+            risk_level=risk_level,
+            capability=capability,
+            max_output_bytes=max_output_bytes,
+            description=description,
+        )
         return await self.repo.create(
             project_id=project_id,
             name=name,
@@ -224,6 +341,14 @@ class CommandProfileService:
             kind=kind,
             timeout_seconds=timeout_seconds,
             enabled=enabled,
+            cwd_rel=cwd_rel,
+            env_allowlist=env_allowlist,
+            allow_network=allow_network,
+            result_parser=result_parser,
+            risk_level=risk_level,
+            capability=capability,
+            max_output_bytes=max_output_bytes,
+            description=description,
         )
 
     async def list_by_project(
@@ -235,6 +360,17 @@ class CommandProfileService:
         p = await self.repo.get(profile_id)
         if p is None:
             raise CommandProfileNotFound(f"命令配置不存在: {profile_id}")
+        _validate_profile_fields(
+            cwd_rel=kwargs.get("cwd_rel"),
+            env_allowlist=kwargs.get("env_allowlist"),
+            result_parser=kwargs.get("result_parser"),
+            risk_level=kwargs.get("risk_level"),
+            capability=kwargs.get("capability"),
+            max_output_bytes=kwargs.get("max_output_bytes"),
+            description=kwargs.get("description"),
+        )
+        # E0 §6：profile 内容变更即递增版本；历史 run 快照不受影响
+        kwargs["profile_version"] = (p.profile_version or 1) + 1
         await self.repo.update(profile_id, **kwargs)
         fresh = await self.repo.get(profile_id)
         assert fresh is not None
@@ -247,7 +383,11 @@ class CommandProfileService:
         await self.repo.delete(profile_id)
 
     async def run(self, profile_id: int) -> dict:
-        """运行项目命令配置（预授权，不经全局白名单）。"""
+        """运行项目命令配置（预授权，不经全局白名单）。
+
+        E2：落地 cwd_rel（resolve 校验仍在 root 内）、env_allowlist 白名单
+        注入（拒绝代理/凭据类）、result_parser 结构化解析与 profile_version。
+        """
         p = await self.repo.get(profile_id)
         if p is None:
             raise CommandProfileNotFound(f"命令配置不存在: {profile_id}")
@@ -257,12 +397,33 @@ class CommandProfileService:
         if project is None:
             raise ProjectNotFound(f"项目不存在: {p.project_id}")
         args = _profile_to_args(p.command_json)
+        root = project.root_path
+        cwd = str(resolve_within(root, p.cwd_rel)) if p.cwd_rel else root
+        env: dict | None = None
+        if p.env_allowlist:
+            from .command_workflow import build_safe_environment
+
+            env = build_safe_environment()
+            for name in p.env_allowlist:
+                if (
+                    name
+                    and name in os.environ
+                    and not _ENV_REJECT_PATTERN.search(name)
+                ):
+                    env[name] = os.environ[name]
         result = await _execute_command(
-            args, project.root_path, timeout=p.timeout_seconds
+            args, cwd, timeout=p.timeout_seconds, env=env
         )
         result["project_id"] = p.project_id
         result["profile_id"] = profile_id
         result["profile_name"] = p.name
+        result["profile_version"] = p.profile_version or 1
+        if p.result_parser:
+            from .result_parsers import parse_command_result
+
+            result["parsed"] = parse_command_result(
+                p.result_parser, result.get("output") or ""
+            )
         return result
 
 

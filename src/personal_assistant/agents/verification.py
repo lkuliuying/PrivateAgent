@@ -352,6 +352,10 @@ class WorkflowCompletionFacts(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     executions: list[dict[str, Any]] = Field(default_factory=list, max_length=256)
+    # E3（E0 §7）：PatchSet 未决事实（{id, status} 摘要）
+    patch_sets: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
+    # E3：最终 Git Diff 是否为空（None = 非 git 目录，不可判定）
+    git_diff_empty: bool | None = None
 
 
 WorkflowCompletionFactLoader = Callable[[], Awaitable[WorkflowCompletionFacts]]
@@ -365,7 +369,14 @@ class WorkflowCompletionOutputVerifier:
 
     - ``must_succeed_tools``：这些工具必须存在 succeeded 执行；
     - ``max_failed_tools``：允许的失败工具数上限（默认 0）；
-    - ``require_verified``：存在 ``verified`` 字段的工具必须为 True。
+    - ``require_verified``：存在 ``verified`` 字段的工具必须为 True；
+    - ``must_pass_command_profiles``（E3/E0 §7）：这些命令 profile 必须
+      存在 succeeded 且 ``profile`` 匹配的执行（命令输出事实）；
+    - ``no_pending_patchsets``（E3/E0 §7）：run 不得存在未决（previewed）
+      PatchSet；
+    - ``final_git_diff``（E3/E0 §7）：any/nonempty/empty——最终 Git Diff
+      判定基于 workspace 当前 dirty 状态；非 git 目录时 nonempty/empty
+      不可判定即失败关闭。
 
     条件未满足 → run 以 output_validation_failed 失败关闭，不进入 completed。
     """
@@ -380,15 +391,23 @@ class WorkflowCompletionOutputVerifier:
         must_succeed_tools: tuple[str, ...] = (),
         max_failed_tools: int = 0,
         require_verified: bool = False,
+        must_pass_command_profiles: tuple[str, ...] = (),
+        no_pending_patchsets: bool = False,
+        final_git_diff: str = "any",
     ) -> None:
         if not callable(fact_loader):
             raise TypeError("workflow completion fact loader must be callable")
         if max_failed_tools < 0:
             raise ValueError("max_failed_tools must be non-negative")
+        if final_git_diff not in {"any", "nonempty", "empty"}:
+            raise ValueError("final_git_diff must be any|nonempty|empty")
         self._loader = fact_loader
         self._must_succeed = tuple(must_succeed_tools)
         self._max_failed = int(max_failed_tools)
         self._require_verified = bool(require_verified)
+        self._must_pass_profiles = tuple(must_pass_command_profiles)
+        self._no_pending_patchsets = bool(no_pending_patchsets)
+        self._final_git_diff = final_git_diff
 
     async def verify(self, output: str, *, attempt: int) -> OutputVerification:
         del output, attempt
@@ -431,6 +450,32 @@ class WorkflowCompletionOutputVerifier:
             ]
             if unverified:
                 unmet.append("存在未通过回读验证的工具：" + ", ".join(unverified[:5]))
+        # E3（E0 §7）：必须通过的命令 profile（命令输出事实，不信任模型文本）
+        for profile_name in self._must_pass_profiles:
+            passed = any(
+                record.get("status") == "succeeded"
+                and record.get("profile") == profile_name
+                for record in facts.executions
+            )
+            if not passed:
+                unmet.append(f"命令 profile {profile_name} 无 succeeded 执行")
+        # E3（E0 §7）：不得存在未决 PatchSet（previewed = 已预览未应用/未决）
+        if self._no_pending_patchsets:
+            pending = [
+                str(item.get("status"))
+                for item in facts.patch_sets
+                if item.get("status") == "previewed"
+            ]
+            if pending:
+                unmet.append(f"存在 {len(pending)} 个未决 PatchSet（预览未应用）")
+        # E3（E0 §7）：最终 Git Diff 要求（nonempty/empty；非 git 不可判定）
+        if self._final_git_diff != "any":
+            if facts.git_diff_empty is None:
+                unmet.append("无法判定最终 Git Diff（非 git 目录）")
+            elif self._final_git_diff == "nonempty" and facts.git_diff_empty:
+                unmet.append("最终 Git Diff 为空，但条件要求非空")
+            elif self._final_git_diff == "empty" and not facts.git_diff_empty:
+                unmet.append("最终 Git Diff 非空，但条件要求为空")
         if unmet:
             return OutputVerification(
                 passed=False,

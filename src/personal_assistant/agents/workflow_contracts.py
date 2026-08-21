@@ -263,6 +263,43 @@ _RUN_COMMAND_OUTPUT: Mapping[str, Any] = {
             "type": "string",
             "description": "匹配的项目 command profile 名称（未匹配时省略；B2 additive）",
         },
+        "profile_version": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "匹配 profile 的版本号（E2 additive）",
+        },
+        "parsed": {
+            "type": ["object", "null"],
+            "description": "按 profile.result_parser 解析的结构化结果（E2 additive；有界脱敏，失败条目上限 50）",
+            "properties": {
+                "parser": {"type": "string", "maxLength": 64},
+                "summary": {"type": "string", "maxLength": 8000},
+                "passed": {"type": "integer", "minimum": 0},
+                "failed": {"type": "integer", "minimum": 0},
+                "skipped": {"type": "integer", "minimum": 0},
+                "errors": {"type": "integer", "minimum": 0},
+                "warnings": {"type": "integer", "minimum": 0},
+                "failures": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "file": {"type": "string", "maxLength": 2048},
+                            "line": {"type": "integer", "minimum": 0},
+                            "column": {"type": "integer", "minimum": 0},
+                            "code": {"type": "string", "maxLength": 128},
+                            "message": {"type": "string", "maxLength": 4000},
+                        },
+                        "required": ["message"],
+                        "additionalProperties": False,
+                    },
+                },
+                "truncated": {"type": "boolean"},
+            },
+            "required": ["parser", "summary", "truncated"],
+            "additionalProperties": False,
+        },
     },
     "required": [
         "project_id",

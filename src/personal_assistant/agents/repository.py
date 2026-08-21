@@ -203,6 +203,19 @@ class AgentRunRepository:
     async def get_run(self, run_id: str) -> AgentRunRecord | None:
         return await self.db.get(AgentRunRecord, run_id)
 
+    async def latest_event_sequence(self, run_id: str) -> int | None:
+        """读 run 已提交的最新事件序列（强制刷新缓存，绕过 expire_on_commit=False
+        的陈旧 identity map）。供 runtime 校准内存序列：工具执行期间
+        PatchSetService 等可能经独立 session 写入 durable 事件并推进该值。"""
+        run = (
+            await self.db.execute(
+                select(AgentRunRecord)
+                .where(AgentRunRecord.id == run_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
+        return run.last_event_sequence if run is not None else None
+
     async def persist_chat_output_message_once(
         self,
         run_id: str,
@@ -397,6 +410,14 @@ class AgentRunRepository:
             raise AgentRunNotFoundError(f"Agent run not found: {run_id}")
         if run.status != "waiting_approval":
             return False
+        # E3-alpha.2（E0 §2.4）：审批拒绝/取消 → run 未决 PatchSet 置 rejected
+        # （人工处置终态，防自动重放；关闭 PatchSet flag 时零影响）。
+        from ..config import settings as cfg
+
+        if cfg.coding_patchset_enabled:
+            from ..core.repo_coding_patch_sets import CodingPatchSetRepository
+
+            await CodingPatchSetRepository(self.db).mark_rejected_for_run(run_id)
         await self.record_event(
             AgentEvent(
                 run_id=run_id,
@@ -455,6 +476,10 @@ class AgentRunRepository:
                     select(AgentRunRecord)
                     .where(AgentRunRecord.id == event.run_id)
                     .with_for_update()
+                    # 强制刷新 identity map 缓存：调用方可能在旧快照/旧缓存
+                    # （expire_on_commit=False）session 中计算 event.sequence，
+                    # expected 校验必须基于最新已提交事实（E0 严格序列契约）。
+                    .execution_options(populate_existing=True)
                 )
             ).scalar_one_or_none()
             if run is None:
@@ -809,12 +834,18 @@ class AgentRunRepository:
             return
 
         # v0.6.0 C0 §4.5：plan/artifact 稳定事件只推进 sequence，不改变 run 状态。
+        # v0.7.0 E0 §1：patch_set.* durable 事件沿用同一投影语义（additive）。
         # payload 必须脱敏且有界（禁止完整命令输出、API key、审批 token）。
         if event.type in {
             AgentEventType.PLAN_CREATED,
             AgentEventType.PLAN_UPDATED,
             AgentEventType.PLAN_ITEM_CHANGED,
             AgentEventType.ARTIFACT_CREATED,
+            AgentEventType.PATCH_SET_PREVIEW_CREATED,
+            AgentEventType.PATCH_SET_APPLIED,
+            AgentEventType.PATCH_SET_ROLLED_BACK,
+            AgentEventType.PATCH_SET_FAILED,
+            AgentEventType.PATCH_SET_UNKNOWN,
         }:
             if run.status not in {"created", "running", "waiting_approval"}:
                 raise AgentRunProjectionError(
@@ -906,6 +937,67 @@ class AgentRunRepository:
                     "artifact.created requires a bounded step_id"
                 )
             return
+        # v0.7.0 E0 §1：patch_set.* 事件 payload 校验（键集由
+        # PATCHSET_EVENT_PAYLOADS 冻结，此处校验值有界）
+        patch_set_id = payload.get("patch_set_id")
+        if not isinstance(patch_set_id, str) or not 1 <= len(patch_set_id) <= 36:
+            raise AgentRunProjectionError(
+                "patch_set events require a bounded patch_set_id"
+            )
+        if event_type == AgentEventType.PATCH_SET_PREVIEW_CREATED:
+            preview_version = payload.get("preview_version")
+            file_count = payload.get("file_count")
+            truncated = payload.get("truncated")
+            if not isinstance(preview_version, int) or preview_version < 1:
+                raise AgentRunProjectionError(
+                    "patch_set.preview_created requires a positive preview_version"
+                )
+            if not isinstance(file_count, int) or file_count < 1:
+                raise AgentRunProjectionError(
+                    "patch_set.preview_created requires a positive file_count"
+                )
+            if not isinstance(truncated, bool):
+                raise AgentRunProjectionError(
+                    "patch_set.preview_created requires boolean truncated"
+                )
+            base_head_sha = payload.get("base_head_sha")
+            if base_head_sha is not None and (
+                not isinstance(base_head_sha, str) or len(base_head_sha) > 64
+            ):
+                raise AgentRunProjectionError(
+                    "patch_set.preview_created requires a bounded base_head_sha"
+                )
+            return
+        if event_type == AgentEventType.PATCH_SET_APPLIED:
+            preview_version = payload.get("preview_version")
+            verified = payload.get("verified")
+            if not isinstance(preview_version, int) or preview_version < 1:
+                raise AgentRunProjectionError(
+                    "patch_set.applied requires a positive preview_version"
+                )
+            if not isinstance(verified, bool):
+                raise AgentRunProjectionError(
+                    "patch_set.applied requires boolean verified"
+                )
+            return
+        if event_type == AgentEventType.PATCH_SET_FAILED:
+            error_code = payload.get("error_code")
+            error_message = payload.get("error_message")
+            if not isinstance(error_code, str) or not 1 <= len(error_code) <= 64:
+                raise AgentRunProjectionError(
+                    "patch_set.failed requires a bounded error_code"
+                )
+            if not isinstance(error_message, str) or not 1 <= len(error_message) <= 4000:
+                raise AgentRunProjectionError(
+                    "patch_set.failed requires a bounded error_message"
+                )
+            return
+        reason = payload.get("reason")
+        if not isinstance(reason, str) or not 1 <= len(reason) <= 512:
+            raise AgentRunProjectionError(
+                f"{event_type.value} requires a bounded reason"
+            )
+        return
         raise AgentRunProjectionError(f"Unsupported stable event: {event_type.value}")
 
     async def _require_step(self, event: AgentEvent) -> RunStepRecord:
@@ -985,6 +1077,10 @@ class SqlAgentRunEventSink(EventSink):
 
     async def emit(self, event: AgentEvent) -> None:
         await self._repository.record_event(event)
+
+    async def latest_sequence(self, run_id: str) -> int | None:
+        """run 已提交的最新事件序列（工具执行期间外部 durable 事件推进）。"""
+        return await self._repository.latest_event_sequence(run_id)
 
     async def emit_with_checkpoint(
         self,

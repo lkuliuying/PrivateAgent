@@ -222,8 +222,8 @@ class ToolSpec:
             raise ValueError("工具 timeout_ms 必须为 1..600000")
         if not 128 <= self.max_output_bytes <= 10 * 1024 * 1024:
             raise ValueError("工具 max_output_bytes 必须为 128..10485760")
-        if not 128 <= self.max_input_bytes <= 1024 * 1024:
-            raise ValueError("工具 max_input_bytes 必须为 128..1048576")
+        if not 128 <= self.max_input_bytes <= 5 * 1024 * 1024:
+            raise ValueError("工具 max_input_bytes 必须为 128..5242880")
         if not callable(self.executor):
             raise ValueError("工具 executor 必须可调用")
 

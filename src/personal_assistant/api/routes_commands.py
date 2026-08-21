@@ -39,6 +39,15 @@ class CommandProfileCreate(BaseModel):
     kind: CommandKind
     timeout_seconds: int = 120
     enabled: bool = True
+    # v0.7.0 E0 §6：版本化扩展字段（非法值由 service 校验，映射 422）
+    cwd_rel: str | None = Field(default=None, max_length=2048)
+    env_allowlist: list[str] | None = None
+    allow_network: bool = False
+    result_parser: str | None = None
+    risk_level: str = "confirm"
+    capability: str | None = Field(default=None, max_length=64)
+    max_output_bytes: int | None = None
+    description: str | None = Field(default=None, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -55,6 +64,15 @@ class CommandProfileUpdate(BaseModel):
     kind: CommandKind | None = None
     timeout_seconds: int | None = None
     enabled: bool | None = None
+    # v0.7.0 E0 §6：版本化扩展字段（None 不更新）
+    cwd_rel: str | None = Field(default=None, max_length=2048)
+    env_allowlist: list[str] | None = None
+    allow_network: bool | None = None
+    result_parser: str | None = None
+    risk_level: str | None = None
+    capability: str | None = Field(default=None, max_length=64)
+    max_output_bytes: int | None = None
+    description: str | None = Field(default=None, max_length=512)
 
     @field_validator("name")
     @classmethod
@@ -77,6 +95,16 @@ class CommandProfileOut(BaseModel):
     kind: str
     timeout_seconds: int
     enabled: bool
+    # v0.7.0 E0 §6：版本化扩展字段
+    profile_version: int
+    cwd_rel: str | None = None
+    env_allowlist: list | None = None
+    allow_network: bool = False
+    result_parser: str | None = None
+    risk_level: str = "confirm"
+    capability: str | None = None
+    max_output_bytes: int | None = None
+    description: str | None = None
     created_at: datetime
 
 
@@ -92,6 +120,9 @@ class RunResult(BaseModel):
     output: str
     truncated: bool
     succeeded: bool
+    # v0.7.0 E2：命令 profile 版本与结构化解析结果
+    profile_version: int | None = None
+    parsed: dict | None = None
 
 
 class DiagnoseRequest(BaseModel):
@@ -132,14 +163,26 @@ async def list_commands(
 async def create_command(
     project_id: int, req: CommandProfileCreate, db: AsyncSession = Depends(get_session)
 ):
-    return await CommandProfileService(db).create(
-        project_id=project_id,
-        name=req.name,
-        command_json=req.command_json,
-        kind=req.kind,
-        timeout_seconds=req.timeout_seconds,
-        enabled=req.enabled,
-    )
+    try:
+        return await CommandProfileService(db).create(
+            project_id=project_id,
+            name=req.name,
+            command_json=req.command_json,
+            kind=req.kind,
+            timeout_seconds=req.timeout_seconds,
+            enabled=req.enabled,
+            cwd_rel=req.cwd_rel,
+            env_allowlist=req.env_allowlist,
+            allow_network=req.allow_network,
+            result_parser=req.result_parser,
+            risk_level=req.risk_level,
+            capability=req.capability,
+            max_output_bytes=req.max_output_bytes,
+            description=req.description,
+        )
+    except ValueError as e:
+        # E0 §6：非法字段 → command_profile_invalid 422
+        raise HTTPException(422, str(e))
 
 
 @router.patch(
@@ -159,9 +202,20 @@ async def update_command(
             kind=req.kind,
             timeout_seconds=req.timeout_seconds,
             enabled=req.enabled,
+            cwd_rel=req.cwd_rel,
+            env_allowlist=req.env_allowlist,
+            allow_network=req.allow_network,
+            result_parser=req.result_parser,
+            risk_level=req.risk_level,
+            capability=req.capability,
+            max_output_bytes=req.max_output_bytes,
+            description=req.description,
         )
     except CommandProfileNotFound as e:
         raise HTTPException(404, str(e))
+    except ValueError as e:
+        # E0 §6：非法字段 → command_profile_invalid 422
+        raise HTTPException(422, str(e))
 
 
 @router.delete(
@@ -197,7 +251,8 @@ async def run_command(
     except ProjectNotFound as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        # E0 §6：禁用/非法配置 → command_profile_invalid 422
+        raise HTTPException(422, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     except TimeoutError as e:

@@ -18,8 +18,21 @@ from .models import AgentRunArtifact
 
 logger = get_logger(__name__)
 
+# v0.6.0 五类（0028 冻结）+ v0.7.0 六类新增（E0 契约 §3）
 ARTIFACT_KINDS = frozenset(
-    {"diff", "file", "command_output", "test_report", "summary"}
+    {
+        "diff",
+        "file",
+        "command_output",
+        "test_report",
+        "summary",
+        "patch_preview",
+        "patch_applied",
+        "command_result",
+        "lint_report",
+        "build_report",
+        "final_report",
+    }
 )
 MAX_TITLE = 512
 MAX_REL_PATH = 2048
@@ -133,14 +146,43 @@ class RunArtifactService:
         )
         return self._to_dict(record)
 
-    async def list_artifacts(self, run_id: str) -> list[dict]:
+    async def list_artifacts(
+        self,
+        run_id: str,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict]:
+        """run 产物引用列表（E3：limit/offset 分页，默认全量返回）。"""
         stmt = (
             select(AgentRunArtifact)
             .where(AgentRunArtifact.run_id == run_id)
             .order_by(AgentRunArtifact.created_at, AgentRunArtifact.id)
         )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        if offset:
+            stmt = stmt.offset(offset)
         result = await self.db.execute(stmt)
         return [self._to_dict(record) for record in result.scalars().all()]
+
+    async def list_metadata_by_kind(
+        self, run_id: str, kind: str
+    ) -> list[dict]:
+        """E3：按 kind 列出已有引用的 metadata（投影幂等去重用，不触发事件）。"""
+        stmt = (
+            select(AgentRunArtifact.metadata_json)
+            .where(
+                AgentRunArtifact.run_id == run_id,
+                AgentRunArtifact.kind == kind,
+            )
+            .order_by(AgentRunArtifact.created_at, AgentRunArtifact.id)
+        )
+        result = await self.db.execute(stmt)
+        return [
+            dict(record) if isinstance(record, dict) else {}
+            for record in result.scalars().all()
+        ]
 
     async def _emit_event(
         self, run_id: str, event_type: AgentEventType, payload: dict

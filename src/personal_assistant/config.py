@@ -147,6 +147,14 @@ class Settings(BaseSettings):
     agent_run_plan_enabled: bool = False
     agent_run_event_stream_enabled: bool = False
 
+    # === v0.7.0 可信编码执行（全部默认关闭，每类新工具独立 flag） ===
+    # 开启顺序：project-bound → 各编码 flag；关闭顺序相反。
+    # 关闭任一 flag 只隐藏对应工具/API，不需要 schema downgrade（E0 契约 §8）。
+    coding_patchset_enabled: bool = False
+    coding_command_profiles_enabled: bool = False
+    coding_artifacts_enabled: bool = False
+    coding_permission_models_enabled: bool = False
+
     @model_validator(mode="after")
     def validate_v060_flag_order(self) -> Settings:
         """C0 §10：flag 开启顺序固定 project-bound → plan → stream。"""
@@ -163,6 +171,21 @@ class Settings(BaseSettings):
                 "PA_AGENT_RUN_EVENT_STREAM_ENABLED requires "
                 "PA_AGENT_RUN_PLAN_ENABLED"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_v070_coding_flag_order(self) -> Settings:
+        """E0 §8：v0.7.0 编码 flag 依赖 project-bound；关闭顺序相反。"""
+        coding_flags = (
+            ("PA_CODING_PATCHSET_ENABLED", self.coding_patchset_enabled),
+            ("PA_CODING_COMMAND_PROFILES_ENABLED", self.coding_command_profiles_enabled),
+            ("PA_CODING_ARTIFACTS_ENABLED", self.coding_artifacts_enabled),
+        )
+        for env_name, enabled in coding_flags:
+            if enabled and not self.project_bound_runs_enabled:
+                raise ValueError(
+                    f"{env_name} requires PA_PROJECT_BOUND_RUNS_ENABLED"
+                )
         return self
 
     @model_validator(mode="after")

@@ -181,6 +181,25 @@ class _RunContext:
         self.events.append(event)
         self.last_sequence = event.sequence
 
+    async def sync_sequence(self) -> None:
+        """工具执行后校准内存事件序列到 DB 最新已提交事实。
+
+        PatchSetService 等经独立 session 写入 durable 事件（patch_set.
+        preview_created / applied 等，E3 §3）会推进 run.last_event_sequence；
+        若 runtime 内存序列滞后，后续 TOOL_COMPLETED 等事件将与外部事件
+        序列冲突（E0 严格序列契约）。sink 未提供 latest_sequence（内存
+        sink）时跳过。
+        """
+        latest = getattr(self.sink, "latest_sequence", None)
+        if latest is None:
+            return
+        try:
+            db_last = await latest(self.run_id)
+        except Exception:
+            return
+        if db_last is not None:
+            self.last_sequence = max(self.last_sequence, db_last)
+
     def start_step(
         self,
         kind: AgentStepKind,
@@ -633,6 +652,10 @@ class AgentRuntime:
                         error=str(exc) or type(exc).__name__,
                     )
 
+            # 工具执行期间外部 durable 事件（patch_set.* 等）可能已推进
+            # run.last_event_sequence，校准内存序列避免后续事件冲突（E3 §3）。
+            await context.sync_sequence()
+
             self._validate_tool_result(call, result)
             if result.error_code == "approval_required":
                 if call_index == 0:
@@ -894,6 +917,10 @@ class AgentRuntime:
                             success=False,
                             error=str(exc) or type(exc).__name__,
                         )
+
+                # 工具执行期间外部 durable 事件（patch_set.* 等）可能已推进
+                # run.last_event_sequence，校准内存序列避免后续事件冲突（E3 §3）。
+                await context.sync_sequence()
 
                 self._validate_tool_result(call, result)
                 if result.error_code == "approval_required":
