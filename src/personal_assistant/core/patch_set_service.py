@@ -170,11 +170,22 @@ def _check_new_content(content: str) -> None:
         raise PatchSetError("patchset_invalid", "内容不是有效 UTF-8 文本") from exc
 
 
+def _windows_normalize(path: str) -> str:
+    """Windows 路径规范化键：逐组件去除尾随点/空格后 lower。
+
+    P1-2 第二轮验收修复：Windows 文件系统忽略路径组件尾部的点和空格
+    （`README.MD.` 与 `Readme.md` 指向同一文件），仅 lower 无法覆盖；
+    与设备名规则（_windows_device_name）同一规范化语义。
+    """
+    return "/".join(part.rstrip(" .").lower() for part in path.split("/"))
+
+
 def _check_path_uniqueness(operations: Sequence[dict]) -> None:
     """同一 PatchSet 内路径唯一（含 rename 目标）；create 与 delete 不撞同路径。
 
     P1-2 验收修复：唯一性按 Windows 大小写不敏感形式归一化（lower）比较，
-    `Readme.md` 与 `readme.md` 视为同一路径拒绝。
+    `Readme.md` 与 `readme.md` 视为同一路径拒绝；第二轮按逐组件去尾随点/
+    空格规范化——`README.MD.` 与 `Readme.md` 同样判重复（Windows 同一文件）。
     """
     seen: set[str] = set()
     for item in operations:
@@ -186,7 +197,7 @@ def _check_path_uniqueness(operations: Sequence[dict]) -> None:
             paths = (params["path"],)
         for path in paths:
             _validate_rel_path(path)
-            key = path.lower()
+            key = _windows_normalize(path)
             if key in seen:
                 raise PatchSetError("patchset_invalid", f"路径重复: {path}")
             seen.add(key)
@@ -764,6 +775,18 @@ class PatchSetService:
             )
         except PatchSetStateConflict as exc:  # pragma: no cover - 并发终态竞争
             raise PatchSetError("patchset_partial_unknown", str(exc)) from exc
+        except Exception as exc:
+            # P1-1 第二轮验收修复：DB 终态写入失败（SQL 执行/commit 异常）——
+            # 磁盘已修改但备份仍在：先逆序回滚磁盘恢复原状；回滚成功则尽力
+            # 标记 rolled_back，失败则尽力标记 partial_unknown；DB 完全不可用
+            # 时磁盘已恢复（或残留备份可人工处置），不再存在「磁盘已修改、
+            # PatchSet 仍 previewed」的幽灵状态。
+            await self._handle_db_terminal_failure(
+                patch_set.run_id, patch_set.id, staged, executed, str(exc)
+            )
+            raise PatchSetError(
+                "patchset_conflict", f"终态持久化失败，已回滚: {type(exc).__name__}"
+            ) from exc
         try:
             await asyncio.to_thread(_cleanup_staged, staged)
         except Exception:  # noqa: BLE001 - 状态已 applied，残留备份无害
@@ -783,6 +806,59 @@ class PatchSetService:
         # E3：应用成功 → patch_applied Artifact（flag 关闭时 no-op）
         await self._project_artifact(run_id, "project_patch_applied", record.id)
         return self._apply_output(record)
+
+    async def _handle_db_terminal_failure(
+        self,
+        run_id: str,
+        patch_set_id: str,
+        staged: Sequence[_StagedOp],
+        executed: Sequence[int],
+        reason: str,
+    ) -> None:
+        """DB 终态写入失败（P1-1 第二轮）：先回滚磁盘（备份仍在），再尽力
+        持久化 rolled_back / partial_unknown；DB 完全不可用时磁盘已恢复原状
+        （或残留备份可人工处置），不构成「磁盘已改 + 状态 previewed」幽灵状态。"""
+        rollback_ok, _failed_ordinals, _rollback_failures = await asyncio.to_thread(
+            _rollback_all, staged, executed
+        )
+        if rollback_ok:
+            try:
+                await self.db.rollback()  # 结束失败事务后再写状态
+                await self.repo.set_all_files_status(patch_set_id, "rolled_back")
+                await self.repo.transition_status(
+                    patch_set_id, "previewed", "rolled_back"
+                )
+            except Exception:  # noqa: BLE001 - DB 仍不可用，磁盘已恢复
+                await self.db.rollback()
+                logger.warning(
+                    "patch_set db-terminal-failure rollback state not persisted",
+                    patch_set_id=patch_set_id,
+                    exc_info=True,
+                )
+            try:
+                await asyncio.to_thread(_cleanup_staged, staged)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "patch_set cleanup failed", patch_set_id=patch_set_id
+                )
+            return
+        # 回滚失败 → partial_unknown（尽力而为；DB 不可用时记录日志）
+        try:
+            await self.db.rollback()
+            await self.repo.transition_status(
+                patch_set_id,
+                "previewed",
+                "partial_unknown",
+                error_code="patchset_partial_unknown",
+                error_message=reason[:4000],
+            )
+        except Exception:  # noqa: BLE001 - DB 完全不可用
+            await self.db.rollback()
+            logger.error(
+                "patch_set db-terminal-failure partial_unknown not persisted",
+                patch_set_id=patch_set_id,
+                exc_info=True,
+            )
 
     async def _handle_failure(
         self,

@@ -510,8 +510,21 @@ async def _model_gateway_for_run(
     )
     provider = (profile.provider or "").strip().lower()
     if profile.is_local or provider == "ollama":
+        # P0-2 第二轮验收修复：本地 profile 强制 loopback 主机——OllamaChatAdapter
+        # 接受任意 HTTP(S) 地址，若全局 ollama_base_url 指向远程主机（如
+        # https://ollama.example.com），本地 profile 会把工作区上下文发送到
+        # 远程而快照仍声明 no_send。非 loopback 直接失败关闭，不静默连接。
+        from urllib.parse import urlsplit
+
         from ..llm import ModelGateway, OllamaChatAdapter
 
+        parsed_host = (urlsplit(cfg.ollama_base_url).hostname or "").lower()
+        if parsed_host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
+            raise ModelProfileUnsupported(
+                f"模型 profile {run.model_profile_id} 是本地 profile，但全局"
+                f" ollama_base_url 指向非本地主机（{parsed_host or '(空)'}），"
+                "拒绝路由（本地 profile 不得发送远程）"
+            )
         return ModelGateway(
             OllamaChatAdapter(
                 base_url=cfg.ollama_base_url,

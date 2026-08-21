@@ -27,6 +27,7 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text as sql_text
@@ -302,36 +303,102 @@ class _ResolvedCommand:
 
 
 # P0-2 验收修复：命令参数路径特征（盘符/绝对路径/上级引用/子路径分隔符）
-_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+# 第二轮（P0-1）：盘符不要求斜杠——`C:outside` 等 drive-relative 同样拒绝。
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
 _PATH_SEPARATOR_RE = re.compile(r"[\\/]")
 _DOTDOT_RE = re.compile(r"(^|[\\/])\.\.([\\/]|$)")
 
+# 第二轮（P0-1）：命令感知 argv schema——按命令工具关键字拒绝工作区外
+# 加载能力（模块/插件/临时目录/收集根）与路径类 flag 的越界值。
+# reject：该 flag 无论值为何一律拒绝（MVP 内无合法使用场景）；
+# path：flag 的值必须解析在 workspace 内（等号形式或下一 token）。
+_COMMAND_ARG_POLICY: dict[str, dict[str, frozenset[str]]] = {
+    "pytest": {
+        "reject": frozenset(
+            {"-p", "--pyargs", "--basetemp", "--rootdir", "--confcutdir"}
+        ),
+        "path": frozenset(),
+    },
+    "cargo": {"reject": frozenset(), "path": frozenset({"--manifest-path"})},
+    "npm": {"reject": frozenset(), "path": frozenset({"--prefix"})},
+}
 
-def _reject_out_of_workspace_args(root: str, remaining: Sequence[str]) -> None:
-    """白名单/profile 前缀之后剩余参数中的路径必须解析在 workspace 内（P0-2）。
 
-    只检查路径特征 token：盘符/绝对路径直接拒绝；``..`` 上级引用与相对子路径
-    经 ``resolve_within`` 校验（工作区内引用允许，越界拒绝）。纯 flag 名与
-    无路径特征参数不检查；``--flag=path`` 等号形式取 value 检查。
+# 工具关键字识别：argv 前缀 → 命令工具（python -m pytest / uv run pytest
+# 与 pytest 本身都归 pytest；cargo/npm 按可执行名，忽略 Windows 后缀）。
+def _command_key(args: Sequence[str]) -> str | None:
+    if not args:
+        return None
+    exe_name = Path(args[0]).name.lower()
+    for suffix in (".exe", ".cmd", ".bat"):
+        if exe_name.endswith(suffix):
+            exe_name = exe_name[: -len(suffix)]
+            break
+    exe = exe_name
+    rest = [a.lower() for a in args[1:]]
+    if exe == "pytest":
+        return "pytest"
+    if exe in {"python", "py"} and rest[:2] == ["-m", "pytest"]:
+        return "pytest"
+    if exe == "uv" and rest[:2] == ["run", "pytest"]:
+        return "pytest"
+    if exe == "cargo":
+        return "cargo"
+    if exe == "npm":
+        return "npm"
+    return None
+
+
+def _reject_command_args(root: str, remaining: Sequence[str], key: str | None) -> None:
+    """命令剩余参数校验（第二轮 P0-1）：通用路径检查 + 命令感知 schema。
+
+    - 通用：盘符/绝对路径/UNC 拒绝；``..`` 与相对子路径 resolve_within
+      校验（工作区内允许）；``--flag=path`` 等号形式取 value 检查。
+    - schema：reject flag 一律拒绝（pytest -p/--pyargs/--basetemp/
+      --rootdir/--confcutdir 等工作区外加载能力）；path flag 的值必须
+      解析在 workspace 内（等号形式或下一 token）。
     """
-    for token in remaining:
+    policy = _COMMAND_ARG_POLICY.get(key or "") if key else None
+    reject_flags = policy["reject"] if policy else frozenset()
+    path_flags = policy["path"] if policy else frozenset()
+    index = 0
+    while index < len(remaining):
+        token = remaining[index]
+        index += 1
         if not token:
             continue
-        value = token
-        _name, sep, val = token.partition("=")
-        if sep and val:
-            value = val
-        if not value:
+        name, sep, val = token.partition("=")
+        has_inline_value = bool(sep and val)
+        flag_name = name if name.startswith("-") else None
+        if flag_name in reject_flags:
+            raise PermissionError_(
+                f"命令参数 {flag_name} 可加载 workspace 外模块/路径，已拒绝"
+            )
+        if flag_name in path_flags:
+            if has_inline_value:
+                value = val
+            else:
+                if index >= len(remaining):
+                    raise PermissionError_(f"命令参数 {flag_name} 缺少值")
+                value = remaining[index]
+                index += 1
+            _check_path_value(root, value, token=f"{flag_name} {value}")
             continue
-        if _WINDOWS_DRIVE_RE.match(value) or value.startswith(("/", "\\")):
-            # 绝对路径/盘符/UNC：必须用相对路径引用 workspace 内文件
-            raise PermissionError_(f"命令参数不得使用绝对路径: {token}")
-        if _DOTDOT_RE.search(value):
-            resolve_within(root, value)
-            continue
-        if _PATH_SEPARATOR_RE.search(value):
-            # 相对子路径：resolve 后必须在 root 内
-            resolve_within(root, value)
+        value = val if has_inline_value else token
+        _check_path_value(root, value, token=token)
+
+
+def _check_path_value(root: str, value: str, *, token: str) -> None:
+    """单个参数值的 workspace 边界检查（盘符/绝对拒绝，相对 resolve 校验）。"""
+    if not value:
+        return
+    if _WINDOWS_DRIVE_RE.match(value) or value.startswith(("/", "\\")):
+        raise PermissionError_(f"命令参数不得使用绝对路径: {token}")
+    if _DOTDOT_RE.search(value):
+        resolve_within(root, value)
+        return
+    if _PATH_SEPARATOR_RE.search(value):
+        resolve_within(root, value)
 
 
 async def _resolve_command(
@@ -377,11 +444,13 @@ async def _resolve_command(
     root = project.root_path
     # P0-2 验收修复：前缀之后剩余参数中的路径必须解析在 workspace 内
     # （cargo --manifest-path / npm --prefix / pytest 路径参数等越界注入拒绝）。
+    # 第二轮（P0-1）：命令感知 schema——pytest -p/--pyargs/--basetemp 等工作区外
+    # 加载能力直接拒绝；path flag 值必须 workspace 内。
     if matched_profile is not None:
         remaining = args[matched_prefix_len:]
     else:
         remaining = args[whitelisted_prefix_length(args):]
-    _reject_out_of_workspace_args(root, remaining)
+    _reject_command_args(root, remaining, _command_key(args))
     env = build_safe_environment()
     max_output_bytes: int | None = None
     result_parser: str | None = None

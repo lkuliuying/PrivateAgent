@@ -595,3 +595,188 @@ async def test_path_uniqueness_case_insensitive(db, tmp_path):
         await _cleanup(
             db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
         )
+
+
+# ===========================================================================
+# 第二轮验收修复（2026-08-21 复核）：P0-1 命令 schema / P0-2 本地 Ollama
+# loopback / P1-1 DB 终态失败回滚 / P1-2 尾随字符规范化
+# ===========================================================================
+
+
+async def test_command_drive_relative_and_module_load_args_rejected(db, tmp_path):
+    """第二轮 P0-1：drive-relative（C:outside）与模块加载参数（-p/--pyargs）拒绝。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project_with_profiles(
+        db,
+        tmp_path,
+        [
+            {"name": "cargo-test", "args": ["cargo", "test"]},
+            {"name": "py-tests", "args": [sys.executable, "-m", "pytest"]},
+        ],
+    )
+    try:
+        cases = [
+            # drive-relative（冒号后无斜杠）
+            ["cargo", "test", "--manifest-path", "C:outside/Cargo.toml"],
+            [sys.executable, "-m", "pytest", "--basetemp=C:outside"],
+            [sys.executable, "-m", "pytest", "C:outside/test_payload.py"],
+            # 工作区外模块/插件加载能力（无路径特征，必须 flag 级拒绝）
+            [sys.executable, "-m", "pytest", "-p", "outside_plugin"],
+            [sys.executable, "-m", "pytest", "--pyargs", "outside_package"],
+            [sys.executable, "-m", "pytest", "--pyargs=outside_pkg"],
+            [sys.executable, "-m", "pytest", "--rootdir", "C:/outside"],
+        ]
+        for args in cases:
+            with pytest.raises(PermissionError_):
+                await _resolve_command(db, project_id, args, timeout=None)
+
+        # 合法参数不受影响
+        ok = await _resolve_command(
+            db, project_id, [sys.executable, "-m", "pytest", "-q", "-x"], timeout=None
+        )
+        assert ok.matched_profile_name == "py-tests"
+        ok2 = await _resolve_command(
+            db,
+            project_id,
+            ["cargo", "test", "--manifest-path", "./Cargo.toml"],
+            timeout=None,
+        )
+        assert ok2.matched_profile_name == "cargo-test"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_local_profile_rejects_remote_ollama_base_url(db, tmp_path, monkeypatch):
+    """第二轮 P0-2：本地 profile 的 ollama_base_url 必须 loopback，远程主机拒绝。"""
+    from personal_assistant.core.model_profiles import (
+        ModelProfileService,
+        ModelProfileUnsupported,
+    )
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    await ModelProfileService(db).upsert(
+        "local-coder",
+        {"provider": "ollama", "display_name": "Local", "native_tool_calls": True},
+    )
+    run = await _run_with_profile(db, project_id, workspace_id, "local-coder")
+
+    async def _settings(_self):
+        return {
+            "provider_type": "ollama",
+            "remote_provider_enabled": "false",
+            "llm_temperature": "0.7",
+            "llm_context_length": "8192",
+            "llm_model": "qwen2.5",
+        }
+
+    monkeypatch.setattr(routes_agent_runs.SettingsService, "get_all", _settings)
+    try:
+        # 远程 Ollama 主机 → 失败关闭（不静默连接，快照 no_send 保持真实）
+        monkeypatch.setattr(cfg, "ollama_base_url", "https://ollama.example.com")
+        with pytest.raises(ModelProfileUnsupported):
+            await routes_agent_runs._model_gateway_for_run(db, run)
+        # loopback 主机 → 正常路由
+        monkeypatch.setattr(cfg, "ollama_base_url", "http://127.0.0.1:11434")
+        gateway = await routes_agent_runs._model_gateway_for_run(db, run)
+        assert gateway.adapter.provider_name == "ollama"
+        assert "127.0.0.1" in gateway.adapter.base_url
+    finally:
+        try:
+            await ModelProfileService(db).delete("local-coder")
+        finally:
+            await _cleanup(
+                db, run_id=run.id, project_id=project_id, workspace_id=workspace_id
+            )
+
+
+async def test_apply_db_terminal_failure_rolls_back_disk(db, tmp_path):
+    """第二轮 P1-1：DB 终态写入普通异常 → 自动回滚磁盘 + 状态 rolled_back。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        preview = await PatchSetService(db).propose(
+            run_id,
+            [_op_update("a.py", "v2\n", _sha256_text("v1\n"))],
+        )
+        await _request_approval_and_approve(db, run_id, _apply_call(preview))
+        svc = PatchSetService(db)
+        orig_transition = svc.repo.transition_status
+        calls: list[tuple] = []
+
+        async def _flaky_transition(patch_set_id, expected, new_status, **kw):
+            calls.append((expected, new_status))
+            if new_status == "applied":
+                raise RuntimeError("simulated SQL/commit failure")
+            return await orig_transition(patch_set_id, expected, new_status, **kw)
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(svc.repo, "transition_status", _flaky_transition)
+        try:
+            with pytest.raises(PatchSetError) as exc:
+                await svc.apply(
+                    run_id,
+                    preview["patch_set_id"],
+                    preview["preview_version"],
+                    preview["parameters_hash"],
+                )
+            assert exc.value.error_code == "patchset_conflict"
+        finally:
+            monkeypatch.undo()
+        # 磁盘已恢复原状（回滚成功），状态落为 rolled_back，零 .pa 残留
+        assert (tmp_path / "a.py").read_text(encoding="utf-8") == "v1\n"
+        assert _no_pa_leftovers(tmp_path) == []
+        stored = await svc.repo.get_by_id(preview["patch_set_id"])
+        assert stored is not None and stored.status == "rolled_back"
+        assert ("previewed", "applied") in calls
+        assert ("previewed", "rolled_back") in calls
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
+
+
+async def test_path_uniqueness_trailing_dot_space_normalized(db, tmp_path):
+    """第二轮 P1-2：尾随点/空格逐组件规范化——README.MD. 与 Readme.md 判重复。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        pairs = [
+            ("Readme.md", "README.MD."),
+            ("a.py", "a.py "),
+            ("dir/x.py", "dir./x.py"),
+            ("A.PY.", "a.py"),
+        ]
+        for first, second in pairs:
+            with pytest.raises(PatchSetError) as exc:
+                await PatchSetService(db).propose(
+                    run_id,
+                    [_op_create(first, "a\n"), _op_create(second, "b\n")],
+                )
+            assert exc.value.error_code == "patchset_invalid", (first, second)
+        assert list(tmp_path.iterdir()) == []
+        # 无冲突路径正常
+        preview = await PatchSetService(db).propose(
+            run_id, [_op_create("a.py", "x\n"), _op_create("b.py", "y\n")]
+        )
+        assert preview["file_count"] == 2
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
