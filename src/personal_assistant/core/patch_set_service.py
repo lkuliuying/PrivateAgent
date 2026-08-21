@@ -37,6 +37,7 @@ from .git_snapshot import GitSnapshotError, read_git_snapshot
 from .patch_workflow import _reject_link_target
 from .projects import ProjectService, resolve_within
 from .repo_coding_patch_sets import (
+    CodingPatchSet,
     CodingPatchSetRepository,
     PatchSetNotFound,
     PatchSetStateConflict,
@@ -181,13 +182,16 @@ def _check_new_content(content: str) -> None:
 
 
 def _windows_normalize(path: str) -> str:
-    """Windows 路径规范化键：逐组件去除尾随点/空格后 lower。
+    """Windows 路径规范化键：逐组件去除尾随点/空格后 lower，跳过空组件。
 
     P1-2 第二轮验收修复：Windows 文件系统忽略路径组件尾部的点和空格
     （`README.MD.` 与 `Readme.md` 指向同一文件），仅 lower 无法覆盖；
-    与设备名规则（_windows_device_name）同一规范化语义。
+    与设备名规则（_windows_device_name）同一规范化语义。第四轮：跳过
+    空组件——`a//b` 与 `a/b` 在 Windows 解析到同一目标，唯一性键必须一致。
     """
-    return "/".join(part.rstrip(" .").lower() for part in path.split("/"))
+    return "/".join(
+        part.rstrip(" .").lower() for part in path.split("/") if part
+    )
 
 
 def _check_path_uniqueness(operations: Sequence[dict]) -> None:
@@ -791,10 +795,10 @@ class PatchSetService:
             # 可能已成功（仅提交后查询失败），此时 DB=applied 而磁盘已改，
             # 回滚磁盘会造成反向分叉，必须按成功路径收敛；确认仍 previewed
             # 才逆序回滚磁盘（备份仍在）并尽力标记 rolled_back/partial_unknown。
-            durable_applied = await self._handle_db_terminal_failure(
+            durable_outcome = await self._handle_db_terminal_failure(
                 patch_set.run_id, patch_set.id, staged, executed, str(exc)
             )
-            if durable_applied:
+            if durable_outcome == "applied":
                 # commit 实际成功（仅查询失败）：终态已 durable，补发事件与投影
                 await self._emit_event(
                     run_id,
@@ -809,6 +813,14 @@ class PatchSetService:
                     run_id, "project_patch_applied", patch_set.id
                 )
                 return self._apply_output(patch_set)
+            if durable_outcome == "unknown":
+                # 第四轮（P1-1）：durable 状态不可判定（DB 暂不可达）——磁盘与
+                # 备份保留（绝不回滚，防与已提交 applied 分叉），状态尽力落
+                # partial_unknown，DB 恢复后人工处置。
+                raise PatchSetError(
+                    "patchset_partial_unknown",
+                    "终态不可判定：磁盘与备份保留，DB 恢复后需人工处置",
+                )
             raise PatchSetError(
                 "patchset_conflict", f"终态持久化失败，已回滚: {type(exc).__name__}"
             ) from exc
@@ -839,24 +851,27 @@ class PatchSetService:
         staged: Sequence[_StagedOp],
         executed: Sequence[int],
         reason: str,
-    ) -> bool:
+    ) -> str:
         """DB 终态写入失败（P1-1）：先经新事务确认 durable 状态，再补偿。
 
-        返回 True 表示终态已 durable（applied，commit 成功仅查询失败）——
-        调用方按成功路径收敛（不回滚磁盘）；返回 False 表示确认仍
-        previewed——本方法已逆序回滚磁盘并尽力标记 rolled_back /
-        partial_unknown（DB 完全不可用时磁盘已恢复原状，残留备份可人工
-        处置），不构成「磁盘已改 + 状态 previewed」幽灵状态。
+        返回三态：
+        - ``applied``：终态已 durable（commit 成功仅查询失败）——调用方按
+          成功路径收敛（不回滚磁盘）；
+        - ``unknown``：durable 状态不可判定（新事务查询也失败，DB 暂不可达）
+          ——磁盘与备份保留（绝不回滚，防与可能已提交的 applied 分叉），
+          尽力落 partial_unknown，DB 恢复后人工处置；
+        - ``rolled_back``：确认仍 previewed——已逆序回滚磁盘并尽力标记
+          rolled_back / partial_unknown，不构成「磁盘已改 + previewed」。
         """
         from .db import async_session_factory
 
+        durable: CodingPatchSet | None = None
+        durable_unknown = False
         try:
             async with async_session_factory() as s:
-                durable = await self.repo.__class__(
-                    s
-                ).get_by_id(patch_set_id)
-        except Exception:  # noqa: BLE001 - DB 不可用，按未持久化处理
-            durable = None
+                durable = await self.repo.__class__(s).get_by_id(patch_set_id)
+        except Exception:  # noqa: BLE001 - DB 不可达，状态不可判定
+            durable_unknown = True
         if durable is not None and durable.status == "applied":
             # commit 已成功（仅提交后查询失败）：终态 durable，按成功路径
             # 清理备份（残留无害）；绝不回滚磁盘（防反向分叉）。
@@ -867,7 +882,28 @@ class PatchSetService:
                     "patch_set applied cleanup failed",
                     patch_set_id=patch_set_id,
                 )
-            return True
+            return "applied"
+        if durable_unknown:
+            # 第四轮（P1-1）：状态不可判定——保留磁盘与备份（commit 可能已
+            # 成功），尽力落 partial_unknown；DB 恢复后由人工处置。
+            try:
+                await self.db.rollback()
+                await self.repo.transition_status(
+                    patch_set_id,
+                    "previewed",
+                    "partial_unknown",
+                    error_code="patchset_partial_unknown",
+                    error_message=reason[:4000],
+                )
+            except Exception:  # noqa: BLE001 - DB 仍不可达
+                await self.db.rollback()
+                logger.error(
+                    "patch_set durable-state unknown, partial_unknown not persisted",
+                    patch_set_id=patch_set_id,
+                    exc_info=True,
+                )
+            return "unknown"
+        # 确认仍 previewed：逆序回滚磁盘（备份仍在），再尽力标记状态
         rollback_ok, _failed_ordinals, _rollback_failures = await asyncio.to_thread(
             _rollback_all, staged, executed
         )
@@ -891,7 +927,7 @@ class PatchSetService:
                 logger.warning(
                     "patch_set cleanup failed", patch_set_id=patch_set_id
                 )
-            return False
+            return "rolled_back"
         # 回滚失败 → partial_unknown（尽力而为；DB 不可用时记录日志）
         try:
             await self.db.rollback()
@@ -909,7 +945,7 @@ class PatchSetService:
                 patch_set_id=patch_set_id,
                 exc_info=True,
             )
-        return False
+        return "rolled_back"
 
     async def _handle_failure(
         self,

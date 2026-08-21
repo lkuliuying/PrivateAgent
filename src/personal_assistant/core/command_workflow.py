@@ -322,6 +322,25 @@ _PYTEST_ALLOWED_FLAGS = frozenset(
         "-l", "--showlocals", "--no-summary", "--no-cov",
     }
 )
+# 第四轮（P0-1）：cargo/npm 补齐完整 allow/path/reject schema——未知 flag 的
+# 内联值也必须经过路径校验（cargo --target=C:outside / npm -- --config=... 等
+# 工作区外配置/目标加载能力）。-- 分隔符（npm run 透传底层工具参数）一律拒绝。
+_CARGO_ALLOWED_FLAGS = frozenset(
+    {
+        "--release", "--all", "--no-run", "--message-format", "--test",
+        "--tests", "--lib", "--bins", "--examples", "--benches", "--doc",
+        "--no-fail-fast", "--quiet", "--features", "--all-features",
+        "--no-default-features", "--locked", "--frozen", "--offline",
+        "--jobs", "--profile", "--workspace", "--exclude", "--package", "-p",
+    }
+)
+_NPM_ALLOWED_FLAGS = frozenset(
+    {
+        "--workspace", "-w", "--workspaces", "--include-workspace-root",
+        "--if-present", "--silent", "--no-audit", "--no-fund",
+        "--ignore-scripts", "--foreground-scripts", "--loglevel",
+    }
+)
 _COMMAND_ARG_POLICY: dict[str, dict[str, frozenset[str]]] = {
     "pytest": {
         "allow": _PYTEST_ALLOWED_FLAGS,
@@ -329,14 +348,14 @@ _COMMAND_ARG_POLICY: dict[str, dict[str, frozenset[str]]] = {
         "reject": frozenset(),
     },
     "cargo": {
-        "allow": frozenset(),
+        "allow": _CARGO_ALLOWED_FLAGS,
         "reject": frozenset({"--config"}),
-        "path": frozenset({"--manifest-path", "--target-dir"}),
+        "path": frozenset({"--manifest-path", "--target", "--target-dir"}),
     },
     "npm": {
-        "allow": frozenset(),
+        "allow": _NPM_ALLOWED_FLAGS,
         "reject": frozenset(),
-        "path": frozenset({"--prefix"}),
+        "path": frozenset({"--prefix", "--cache", "--config"}),
     },
 }
 
@@ -420,11 +439,19 @@ def _reject_command_args(root: str, remaining: Sequence[str], key: str | None) -
         name, sep, val = token.partition("=")
         has_inline_value = bool(sep and val)
         if name.startswith("-"):
+            # 第四轮（P0-1/P0-2）：-- 分隔符会把后续参数透传给底层工具
+            # （npm run -- --config=... → vite），一律拒绝；未列入 schema 的
+            # flag 同样拒绝（cargo/npm 与 pytest 同规则）。
+            if name == "--":
+                raise PermissionError_(
+                    "命令参数 -- 分隔符可透传底层工具参数，已拒绝"
+                )
             if name in reject_flags:
                 raise PermissionError_(
                     f"命令参数 {name} 可加载 workspace 外模块/路径，已拒绝"
                 )
-            if allow_flags and name not in allow_flags:
+            # path flag 本身是允许的（值必须 workspace 内），不在 allow 检查范围
+            if allow_flags and name not in allow_flags and name not in path_flags:
                 raise PermissionError_(
                     f"命令参数 {name} 不在安全 allowlist，已拒绝"
                 )
@@ -438,6 +465,13 @@ def _reject_command_args(root: str, remaining: Sequence[str], key: str | None) -
                     index += 1
                 _check_path_value(root, value, token=f"{name} {value}")
             continue
+        # 位置参数（或带值 flag 的值）：路径必须 workspace 内；
+        # @ 开头是 pytest response file（argsfile）——展开后可重新注入
+        # 被禁用的 -p/--override-ini 等，一律拒绝（第四轮 P0-1）。
+        if token.startswith("@"):
+            raise PermissionError_(
+                f"命令参数 {token} 是 response file（@argsfile），已拒绝"
+            )
         # 位置参数（或带值 flag 的值）：路径必须 workspace 内
         value = val if has_inline_value else token
         _check_path_value(root, value, token=token)
@@ -448,6 +482,14 @@ def _reject_generic_args(root: str, remaining: Sequence[str]) -> None:
     for token in remaining:
         if not token:
             continue
+        if token == "--":
+            raise PermissionError_(
+                "命令参数 -- 分隔符可透传底层工具参数，已拒绝"
+            )
+        if token.startswith("@"):
+            raise PermissionError_(
+                f"命令参数 {token} 是 response file（@argsfile），已拒绝"
+            )
         name, sep, val = token.partition("=")
         value = val if (sep and val) else token
         _check_path_value(root, value, token=token)

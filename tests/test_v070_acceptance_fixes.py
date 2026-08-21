@@ -984,3 +984,167 @@ async def test_path_component_collapses_to_empty_rejected(db, tmp_path):
         await _cleanup(
             db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
         )
+
+
+# ===========================================================================
+# 第四轮验收修复（2026-08-21 复核）：P0-1 @argsfile / P0-2 cargo/npm 内联值 /
+# P1-1 durable 不可判定 / P1-2 重复斜杠别名
+# ===========================================================================
+
+
+async def test_command_argsfile_and_double_dash_rejected(db, tmp_path):
+    """第四轮 P0-1/P0-2：@argsfile 与 -- 分隔符、cargo/npm 未知 flag 内联值拒绝。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project_with_profiles(
+        db,
+        tmp_path,
+        [
+            {"name": "py-tests", "args": [sys.executable, "-m", "pytest"]},
+            {"name": "npm-build", "args": ["npm", "run", "build"]},
+            {"name": "npm-test", "args": ["npm", "test"]},
+            {"name": "cargo-test", "args": ["cargo", "test"]},
+        ],
+    )
+    try:
+        outside = str((tmp_path.parent / "outside").resolve())
+        (tmp_path / "args.txt").write_text("-p outside_plugin", encoding="utf-8")
+        cases = [
+            # pytest @argsfile（展开后可重新注入禁用能力）
+            [sys.executable, "-m", "pytest", "@args.txt"],
+            [sys.executable, "-m", "pytest", f"@{outside}/args.txt"],
+            # -- 分隔符透传底层工具参数（npm run -- --config=... → vite）
+            ["npm", "run", "build", "--", "--config=../outside/vite.config.ts"],
+            ["npm", "test", "--", "--config=C:outside"],
+            ["npm", "test", "--config=../outside/vitest.config.ts"],
+            # cargo/npm 未知 flag 的内联值（--target / --config 外部路径）
+            ["cargo", "test", "--target=C:outside"],
+            ["cargo", "test", "--target-dir=../outside"],
+            ["npm", "run", "build", "--cache=C:outside"],
+        ]
+        for args in cases:
+            with pytest.raises(PermissionError_):
+                await _resolve_command(db, project_id, args, timeout=None)
+
+        # allowlist 内参数合法（含 cargo -p 包选择与 --offline）
+        ok = await _resolve_command(
+            db, project_id, ["cargo", "test", "-p", "my-crate", "--offline"], timeout=None
+        )
+        assert ok.matched_profile_name == "cargo-test"
+        ok2 = await _resolve_command(
+            db,
+            project_id,
+            ["npm", "run", "build", "--if-present"],
+            timeout=None,
+        )
+        assert ok2.matched_profile_name == "npm-build"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_apply_durable_unknown_keeps_disk_and_backup(db, tmp_path, monkeypatch):
+    """第四轮 P1-1：durable 查询也失败（DB 不可达）→ 保留磁盘与备份 + partial_unknown。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    (tmp_path / "a.py").write_text("v1\n", encoding="utf-8")
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        preview = await PatchSetService(db).propose(
+            run_id,
+            [_op_update("a.py", "v2\n", _sha256_text("v1\n"))],
+        )
+        await _request_approval_and_approve(db, run_id, _apply_call(preview))
+        svc = PatchSetService(db)
+        orig_transition = svc.repo.transition_status
+
+        async def _flaky_transition(patch_set_id, expected, new_status, **kw):
+            if new_status == "applied":
+                raise RuntimeError("simulated commit failure")
+            return await orig_transition(patch_set_id, expected, new_status, **kw)
+
+        async def _db_down(*args, **kwargs):
+            raise RuntimeError("database unreachable")
+
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(svc.repo, "transition_status", _flaky_transition)
+        monkeypatch.setattr(
+            "personal_assistant.core.db.async_session_factory",
+            _db_down,
+        )
+        try:
+            with pytest.raises(PatchSetError) as exc:
+                await svc.apply(
+                    run_id,
+                    preview["patch_set_id"],
+                    preview["preview_version"],
+                    preview["parameters_hash"],
+                )
+            assert exc.value.error_code == "patchset_partial_unknown"
+        finally:
+            monkeypatch.undo()
+        # 磁盘保持新内容（未回滚）+ 备份保留（可人工处置），状态尽力落为
+        # partial_unknown（durable 不可判定 → 人工处置态；DB 可用时写入成功）
+        assert (tmp_path / "a.py").read_text(encoding="utf-8") == "v2\n"
+        assert _no_pa_leftovers(tmp_path) != []
+        stored = await svc.repo.get_by_id(preview["patch_set_id"])
+        assert stored is not None and stored.status == "partial_unknown"
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
+
+
+async def test_path_uniqueness_double_slash_normalized(db, tmp_path):
+    """第四轮 P1-2：重复斜杠归一化——a//b 与 a/b 判重复（Windows 同一目标）。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        with pytest.raises(PatchSetError) as exc:
+            await PatchSetService(db).propose(
+                run_id,
+                [
+                    _op_create("src/config.py", "a\n"),
+                    _op_create("src//config.py", "b\n"),
+                ],
+            )
+        assert exc.value.error_code == "patchset_invalid"
+        with pytest.raises(PatchSetError) as exc:
+            await PatchSetService(db).propose(
+                run_id,
+                [
+                    _op_create("a/b.py", "a\n"),
+                    {
+                        "operation": "rename",
+                        "rename": {
+                            "old_path": "x.py",
+                            "new_path": "a//b.py",
+                            "expected_old_sha256": _sha256_text(""),
+                        },
+                    },
+                ],
+            )
+        assert exc.value.error_code == "patchset_invalid"
+        assert list(tmp_path.iterdir()) == []
+        # 无冲突路径正常
+        preview = await PatchSetService(db).propose(
+            run_id, [_op_create("src/config.py", "x\n")]
+        )
+        assert preview["file_count"] == 1
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
