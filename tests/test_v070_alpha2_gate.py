@@ -41,7 +41,6 @@ from personal_assistant.agents import (
     AgentRunLimits,
     AgentRunRepository,
     AgentRuntime,
-    CancellationToken,
     ModelMessage,
     ModelResponse,
     PersistentAgentRunner,

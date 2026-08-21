@@ -1330,7 +1330,6 @@ async def test_e5_flag_matrix_independent_fallback(db, monkeypatch):
     单开 patchset：PatchSet 可见、命令不可见；单开 command：命令可见、
     PatchSet 不可见；单开 run_plan：update_run_plan 可见。
     """
-    from personal_assistant.api import routes_agent_runs
 
     monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
     monkeypatch.setattr(settings, "project_bound_runs_enabled", True)

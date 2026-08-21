@@ -24,7 +24,6 @@ import hashlib
 import json
 import os
 import tempfile
-import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
