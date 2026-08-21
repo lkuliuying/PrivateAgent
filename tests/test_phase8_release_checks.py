@@ -76,7 +76,10 @@ def test_validate_latest_json_missing(tmp_path):
     assert res["status"] == "skipped"
 
 
-def test_validate_latest_json_valid(tmp_path):
+def test_validate_latest_json_valid(tmp_path, monkeypatch):
+    import _release_utils as rutils
+
+    monkeypatch.setattr(rutils, "NSIS_DIR", tmp_path / "empty")
     (tmp_path / "latest.json").write_text(
         json.dumps(
             {
@@ -122,8 +125,66 @@ def test_validate_latest_json_version_mismatch(tmp_path):
     assert "version" in res["detail"]
 
 
-def test_validate_latest_json_prerelease_keeps_stable_channel(tmp_path):
+def test_validate_latest_json_signature_mismatch_disk(monkeypatch, tmp_path):
+    """rc.1：磁盘 .sig 存在时，latest.json 签名与 .sig 不一致必须 failed（旧签名混入）。"""
+    import _release_utils as rutils
+
+    installer = tmp_path / f"PrivateAgent_{CURRENT_VERSION}_x64-setup.exe"
+    installer.write_bytes(b"installer-bytes")
+    sig = tmp_path / (installer.name + ".sig")
+    sig.write_text("disk-sig-content\n", encoding="utf-8")
+    monkeypatch.setattr(rutils, "NSIS_DIR", tmp_path)
+    (tmp_path / "latest.json").write_text(
+        json.dumps(
+            {
+                "version": CURRENT_VERSION,
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": "stale-old-signature",
+                        "url": f"https://github.com/x/y/releases/download/v{CURRENT_VERSION}/{installer.name}",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    res = rc.validate_latest_json(tmp_path)
+    assert res["status"] == "failed"
+    assert "不一致" in res["detail"]
+
+
+def test_validate_latest_json_signature_matches_disk(monkeypatch, tmp_path):
+    """rc.1：latest.json 签名与磁盘 .sig 一致且 URL 含安装包文件名时通过。"""
+    import _release_utils as rutils
+
+    installer = tmp_path / f"PrivateAgent_{CURRENT_VERSION}_x64-setup.exe"
+    installer.write_bytes(b"installer-bytes")
+    sig = tmp_path / (installer.name + ".sig")
+    sig.write_text("disk-sig-content\n", encoding="utf-8")
+    monkeypatch.setattr(rutils, "NSIS_DIR", tmp_path)
+    (tmp_path / "latest.json").write_text(
+        json.dumps(
+            {
+                "version": CURRENT_VERSION,
+                "platforms": {
+                    "windows-x86_64": {
+                        "signature": "disk-sig-content",
+                        "url": f"https://github.com/x/y/releases/download/v{CURRENT_VERSION}/{installer.name}",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    res = rc.validate_latest_json(tmp_path)
+    assert res["status"] == "passed"
+
+
+def test_validate_latest_json_prerelease_keeps_stable_channel(tmp_path, monkeypatch):
     """0.3.0-alpha.2：预发布检查点不更新正式渠道，latest.json 保持旧稳定版合法。"""
+    import _release_utils as rutils
+
+    monkeypatch.setattr(rutils, "NSIS_DIR", tmp_path / "empty")
     if not re.search(r"(?i)(alpha|beta|rc)", CURRENT_VERSION):
         return  # 仅预发布构建有此语义
     (tmp_path / "latest.json").write_text(

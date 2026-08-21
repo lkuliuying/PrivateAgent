@@ -33,7 +33,13 @@ from sqlalchemy import select
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-from _release_utils import NSIS_DIR, read_version  # noqa: E402
+from _release_utils import (  # noqa: E402
+    NSIS_DIR,
+    find_installer,
+    installer_sig,
+    percent_encode_filename,
+    read_version,
+)
 
 DIST = PROJECT_ROOT / "dist"
 
@@ -420,11 +426,14 @@ def _version_key(value: str) -> tuple[int, ...]:
 
 
 def validate_latest_json(dist: Path | None = None) -> dict:
-    """校验 dist/latest.json：version 匹配 tauri.conf.json，platforms 各项 signature/url 非空。
+    """校验 dist/latest.json：version 匹配 tauri.conf.json，platforms 各项 signature/url 非空，
+    且与磁盘构建资产一致（windows-x86_64 的 signature 必须等于新 .sig 内容、
+    url 必须包含安装包文件名）——防止旧签名/旧 URL 混入新发布。
 
     内部预发布检查点（版本含 alpha/beta/rc）不上传正式 updater 渠道：
     latest.json 保持较旧（数字版本不高于当前）的稳定版本视为合法，仅当
     latest.json 版本高于当前版本时才失败；platforms 完整性始终校验。
+    磁盘资产不存在时退化为非空校验（不误报），存在时强校验。
     """
     t0 = time.perf_counter()
     base = dist or DIST
@@ -454,11 +463,28 @@ def validate_latest_json(dist: Path | None = None) -> dict:
         platforms = data.get("platforms", {})
         if not platforms:
             issues.append("platforms 为空")
+        # 磁盘资产（同版本 installer + .sig）存在时做强一致性校验：
+        # signature 必须等于 .sig 内容，url 必须包含百分号编码的安装包文件名。
+        try:
+            installer = find_installer(version)
+        except SystemExit:
+            installer = None
+        sig = installer_sig(installer) if installer else None
         for key, entry in platforms.items():
             if not entry.get("signature"):
                 issues.append(f"{key} signature 为空")
             if not entry.get("url"):
                 issues.append(f"{key} url 为空")
+            if key == "windows-x86_64" and installer is not None:
+                if sig is None or not sig.exists():
+                    issues.append(f"{key} 磁盘 .sig 缺失（installer={installer.name}），无法核对签名")
+                else:
+                    disk_sig = sig.read_text(encoding="utf-8").strip()
+                    if entry.get("signature") != disk_sig:
+                        issues.append(f"{key} signature 与磁盘 .sig 不一致（latest.json 持有旧签名）")
+                    expected = percent_encode_filename(installer.name)
+                    if expected not in (entry.get("url") or ""):
+                        issues.append(f"{key} url 不含安装包文件名 {expected}")
         passed = not issues or (
             is_prerelease
             and len(issues) == 1
