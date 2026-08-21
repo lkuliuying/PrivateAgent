@@ -24,7 +24,7 @@ import asyncio
 import os
 import re
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
@@ -45,6 +45,7 @@ from .code_tools import (
     COMMAND_TIMEOUT,
     is_whitelisted_command,
     parse_command,
+    whitelisted_prefix_length,
 )
 from .patch_sets import _profile_to_args
 from .permissions import PermissionError_
@@ -300,6 +301,39 @@ class _ResolvedCommand:
     max_output_bytes: int | None = None
 
 
+# P0-2 验收修复：命令参数路径特征（盘符/绝对路径/上级引用/子路径分隔符）
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+_PATH_SEPARATOR_RE = re.compile(r"[\\/]")
+_DOTDOT_RE = re.compile(r"(^|[\\/])\.\.([\\/]|$)")
+
+
+def _reject_out_of_workspace_args(root: str, remaining: Sequence[str]) -> None:
+    """白名单/profile 前缀之后剩余参数中的路径必须解析在 workspace 内（P0-2）。
+
+    只检查路径特征 token：盘符/绝对路径直接拒绝；``..`` 上级引用与相对子路径
+    经 ``resolve_within`` 校验（工作区内引用允许，越界拒绝）。纯 flag 名与
+    无路径特征参数不检查；``--flag=path`` 等号形式取 value 检查。
+    """
+    for token in remaining:
+        if not token:
+            continue
+        value = token
+        _name, sep, val = token.partition("=")
+        if sep and val:
+            value = val
+        if not value:
+            continue
+        if _WINDOWS_DRIVE_RE.match(value) or value.startswith(("/", "\\")):
+            # 绝对路径/盘符/UNC：必须用相对路径引用 workspace 内文件
+            raise PermissionError_(f"命令参数不得使用绝对路径: {token}")
+        if _DOTDOT_RE.search(value):
+            resolve_within(root, value)
+            continue
+        if _PATH_SEPARATOR_RE.search(value):
+            # 相对子路径：resolve 后必须在 root 内
+            resolve_within(root, value)
+
+
 async def _resolve_command(
     db: AsyncSession,
     project_id: int,
@@ -316,6 +350,7 @@ async def _resolve_command(
     from .repo_patch_sets import ProjectCommandProfileRepository
 
     matched_profile = None
+    matched_prefix_len = 0
     for profile in await ProjectCommandProfileRepository(db).list_by_project(
         project_id, enabled=True
     ):
@@ -326,6 +361,7 @@ async def _resolve_command(
         lowered = [a.lower() for a in profile_args]
         if lowered and [a.lower() for a in args[: len(lowered)]] == lowered:
             matched_profile = profile
+            matched_prefix_len = len(profile_args)
             break
     if matched_profile is None and not is_whitelisted_command(args):
         raise PermissionError_("非白名单命令，已拒绝执行")
@@ -339,6 +375,13 @@ async def _resolve_command(
         )
     effective_timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
     root = project.root_path
+    # P0-2 验收修复：前缀之后剩余参数中的路径必须解析在 workspace 内
+    # （cargo --manifest-path / npm --prefix / pytest 路径参数等越界注入拒绝）。
+    if matched_profile is not None:
+        remaining = args[matched_prefix_len:]
+    else:
+        remaining = args[whitelisted_prefix_length(args):]
+    _reject_out_of_workspace_args(root, remaining)
     env = build_safe_environment()
     max_output_bytes: int | None = None
     result_parser: str | None = None

@@ -371,12 +371,20 @@ def parse_command(command: str | list[str]) -> list[str]:
     return args
 
 
-def is_whitelisted_command(args: list[str]) -> bool:
+def whitelisted_prefix_length(args: list[str]) -> int:
+    """返回匹配的全局白名单前缀长度；未匹配返回 0。
+
+    v0.7.0 验收修复（P0-2）：前缀匹配后需对剩余参数做 workspace 边界校验。
+    """
     lowered = [a.lower() for a in args]
     for prefix in WHITELISTED_COMMAND_PREFIXES:
         if lowered[: len(prefix)] == list(prefix):
-            return True
-    return False
+            return len(prefix)
+    return 0
+
+
+def is_whitelisted_command(args: list[str]) -> bool:
+    return whitelisted_prefix_length(args) > 0
 
 
 async def _execute_command(

@@ -241,6 +241,9 @@ class OpenAIChatAdapter(_HttpAdapter):
             "temperature": self.temperature,
             "stream": False,
         }
+        # v0.7.0 验收修复（P0-1）：OpenAI 系请求体透传 reasoning_effort
+        if request.reasoning_effort:
+            payload["reasoning_effort"] = request.reasoning_effort
         if request.tools:
             payload["tools"] = _tool_definitions_openai(
                 request,
@@ -309,6 +312,9 @@ class OpenAIChatAdapter(_HttpAdapter):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        # v0.7.0 验收修复（P0-1）：OpenAI 系请求体透传 reasoning_effort
+        if request.reasoning_effort:
+            payload["reasoning_effort"] = request.reasoning_effort
         if request.tools:
             payload["tools"] = _tool_definitions_openai(
                 request,

@@ -58,6 +58,7 @@ from ..core.history import SessionRepository
 from ..core.http_workflow import build_http_tool_registry
 from ..core.models import AgentRun as AgentRunRecord
 from ..core.models import AgentToolExecution as ToolExecutionRecord
+from ..core.models import ModelProfile
 from ..core.models import ToolApproval as ToolApprovalRecord
 from ..core.models import ToolExecutionOutput as ToolExecutionOutputRecord
 from ..core.patch_workflow import build_patch_tool_registry
@@ -470,6 +471,96 @@ async def get_agent_model_client(
 ) -> ModelClient:
     provider_settings = await SettingsService(db).get_all()
     return ProviderRouter(provider_settings).model_gateway()
+
+
+async def _model_gateway_for_run(
+    db: AsyncSession, run: AgentRunRecord | None
+) -> ModelClient:
+    """v0.7.0 验收修复（P0-1）：按 run 绑定的 model_profile_id 解析实际 ModelClient。
+
+    - run 无 profile（legacy / v0.6.0 历史 coding run）→ 全局 ProviderRouter
+      （v0.6.0 行为不变）。
+    - 本地 profile（provider=ollama / is_local=true）→ 强制 Ollama 本地路由，
+      绝不因全局远程设置把工作区上下文发送到远程（快照
+      remote_provider_data_policy=no_send 真实）。
+    - 远程 profile（provider=openai/claude）→ 要求全局 remote_provider_enabled
+      （run 创建已 fail-fast 校验；resume 时再校验以防 profile/设置变化）；
+      secret 仍从全局原生凭据读取（Provider secret 保持在原生凭据边界）。
+    - profile 不可用（删除/禁用/能力变化）→ 失败关闭，不静默回退全局。
+    """
+    from ..core.model_profiles import (
+        ModelProfileService,
+        ModelProfileUnsupported,
+    )
+
+    provider_settings = await SettingsService(db).get_all()
+    if run is None or run.model_profile_id is None:
+        return ProviderRouter(provider_settings).model_gateway()
+    profile = await ModelProfileService(db).get(run.model_profile_id)
+    if profile is None or not profile.enabled or not profile.native_tool_calls:
+        raise ModelProfileUnsupported(
+            f"模型 profile {run.model_profile_id} 不可用"
+            "（需 enabled 且 native_tool_calls=true）"
+        )
+    remote_enabled = (
+        provider_settings.get("remote_provider_enabled", "false").lower() == "true"
+    )
+    temperature = float(
+        provider_settings.get("llm_temperature", cfg.llm_temperature)
+    )
+    provider = (profile.provider or "").strip().lower()
+    if profile.is_local or provider == "ollama":
+        from ..llm import ModelGateway, OllamaChatAdapter
+
+        return ModelGateway(
+            OllamaChatAdapter(
+                base_url=cfg.ollama_base_url,
+                model=provider_settings.get("llm_model") or cfg.llm_model,
+                temperature=temperature,
+                context_length=int(
+                    profile.context_tokens
+                    or provider_settings.get(
+                        "llm_context_length", cfg.llm_context_length
+                    )
+                ),
+            )
+        )
+    if provider == "openai":
+        if not remote_enabled:
+            raise ModelProfileUnsupported(
+                f"模型 profile {run.model_profile_id} 是远程 Provider（openai），"
+                "但全局远程 Provider 未启用"
+            )
+        from ..llm import ModelGateway, OpenAIChatAdapter
+
+        return ModelGateway(
+            OpenAIChatAdapter(
+                base_url=provider_settings.get("openai_base_url")
+                or "https://api.openai.com/v1",
+                api_key=provider_settings.get("openai_api_key") or "",
+                model=provider_settings.get("openai_model") or "gpt-4o-mini",
+                temperature=temperature,
+            )
+        )
+    if provider == "claude":
+        if not remote_enabled:
+            raise ModelProfileUnsupported(
+                f"模型 profile {run.model_profile_id} 是远程 Provider（claude），"
+                "但全局远程 Provider 未启用"
+            )
+        from ..llm import ClaudeMessagesAdapter, ModelGateway
+
+        return ModelGateway(
+            ClaudeMessagesAdapter(
+                api_key=provider_settings.get("claude_api_key") or "",
+                model=provider_settings.get("claude_model")
+                or "claude-3-5-sonnet-latest",
+                temperature=temperature,
+            )
+        )
+    raise ModelProfileUnsupported(
+        f"模型 profile {run.model_profile_id} 的 provider 不受支持: {provider}"
+    )
 
 
 async def _workspace_command_risk(
@@ -1007,6 +1098,9 @@ async def create_agent_run(
             )
         # E4（E0 §5）：模型 profile 校验——不支持原生工具调用的模型只能
         # 用于只读问答，不进入 Coding 执行循环（run 创建时校验）。
+        # P0-1 验收修复：远程 provider profile 需全局启用远程（否则 fail-fast
+        # 422，不静默回退本地）；reasoning_effort 必须落在 profile 声明集合。
+        coding_profile: ModelProfile | None = None
         if request.model_profile_id is not None:
             from ..core.model_profiles import (
                 ModelProfileNotFound,
@@ -1015,14 +1109,52 @@ async def create_agent_run(
             )
 
             try:
-                await ModelProfileService(db).validate_for_coding(
-                    request.model_profile_id
-                )
+                coding_profile = await ModelProfileService(
+                    db
+                ).validate_for_coding(request.model_profile_id)
             except ModelProfileNotFound as exc:
                 return _coding_error(404, "model_profile_not_found", str(exc))
             except ModelProfileUnsupported as exc:
                 return _coding_error(
                     422, "model_profile_unsupported", str(exc)
+                )
+            provider_settings = await SettingsService(db).get_all()
+            remote_enabled = (
+                provider_settings.get("remote_provider_enabled", "false").lower()
+                == "true"
+            )
+            profile_provider = (coding_profile.provider or "").strip().lower()
+            if (
+                not coding_profile.is_local
+                and profile_provider in {"openai", "claude"}
+                and not remote_enabled
+            ):
+                return _coding_error(
+                    422,
+                    "model_profile_unsupported",
+                    f"模型 profile {request.model_profile_id} 是远程 Provider"
+                    f"（{profile_provider}），但全局远程 Provider 未启用；"
+                    "请选择本地 profile 或启用远程 Provider",
+                )
+            if profile_provider not in {"ollama", "openai", "claude"}:
+                return _coding_error(
+                    422,
+                    "model_profile_unsupported",
+                    f"模型 profile {request.model_profile_id} 的 provider"
+                    f" 不受支持: {profile_provider}",
+                )
+            if (
+                coding_profile.reasoning_efforts_json
+                and request.reasoning_effort is not None
+                and request.reasoning_effort
+                not in coding_profile.reasoning_efforts_json
+            ):
+                return _coding_error(
+                    422,
+                    "model_profile_unsupported",
+                    f"reasoning_effort={request.reasoning_effort} 不在模型 profile"
+                    f" {request.model_profile_id} 的允许集合中: "
+                    f"{sorted(coding_profile.reasoning_efforts_json)}",
                 )
         workspace_service = ProjectWorkspaceService(db)
         workspace = await workspace_service.get(request.workspace_id)
@@ -1128,6 +1260,16 @@ async def create_agent_run(
         )
         from ..core.permission_modes import build_permission_snapshot
 
+        # P0-1 验收修复：快照 remote_provider_data_policy 按实际路由记录——
+        # 本地 profile（ollama/is_local）→ no_send（真实）；远程 profile（且全局
+        # 已启用）→ send（上下文会发送到远程 Provider，快照如实声明）。
+        snapshot_data_policy = "no_send"
+        if coding_profile is not None and (
+            not coding_profile.is_local
+            and (coding_profile.provider or "").strip().lower()
+            in {"openai", "claude"}
+        ):
+            snapshot_data_policy = "send"
         permission_snapshot = build_permission_snapshot(
             permission_mode=effective_permission_mode,
             workspace_id=workspace.id,
@@ -1135,6 +1277,7 @@ async def create_agent_run(
             command_profile_version=command_profile_version,
             max_patchset_files=MAX_PATCHSET_FILES,
             max_patchset_total_bytes=MAX_TOTAL_INPUT_BYTES,
+            remote_provider_data_policy=snapshot_data_policy,
         )
     try:
         run = await repository.create_run(
@@ -1198,9 +1341,20 @@ async def create_agent_run(
             tool_definitions = run_dispatcher.model_definitions()
         else:
             tool_definitions = tool_bundle.definitions
+    # P0-1 验收修复：coding run 按 model_profile_id 解析实际 ModelClient
+    # （本地 profile 强制本地路由；远程 profile 需全局启用且已在创建校验）；
+    # 解析失败（profile 被删除/禁用/设置变化）→ 422 失败关闭，不静默回退全局。
+    effective_model = model
+    if coding_mode and run.model_profile_id is not None:
+        from ..core.model_profiles import ModelProfileUnsupported
+
+        try:
+            effective_model = await _model_gateway_for_run(db, run)
+        except ModelProfileUnsupported as exc:
+            return _coding_error(422, "model_profile_unsupported", str(exc))
     agent_run_coordinator.start(
         run_id=effective_run_id,
-        model=model,
+        model=effective_model,
         messages=messages,
         limits=request.limits,
         tool_definitions=tool_definitions,
@@ -1215,6 +1369,7 @@ async def create_agent_run(
             completion_conditions=request.completion_conditions,
         ),
         context_metadata=context_metadata,
+        reasoning_effort=request.reasoning_effort,
     )
     return await _run_response(
         repository, effective_run_id, idempotent_replay=idempotent_replay
@@ -1637,6 +1792,20 @@ async def approve_agent_run_tool(
         raise HTTPException(status_code=409, detail="Agent run is not awaiting approval")
     if tool_bundle is None or tool_bundle.resume_dispatcher_factory is None:
         raise HTTPException(status_code=409, detail="Agent tool resume is unavailable")
+    # P0-1 验收修复：run 绑定 model_profile_id 时按 profile 解析实际 ModelClient
+    # （本地 profile 不因全局远程设置切换到远程；profile 被删除/禁用/设置变化
+    # → 失败关闭，不静默回退全局）；无 profile（legacy / v0.6.0 历史 coding
+    # run）沿用注入的全局 model（v0.6.0 行为不变）。
+    effective_model = model
+    if run.model_profile_id is not None:
+        from ..core.model_profiles import ModelProfileUnsupported
+
+        try:
+            effective_model = await _model_gateway_for_run(db, run)
+        except ModelProfileUnsupported as exc:
+            raise HTTPException(
+                status_code=422, detail=f"model_profile_unsupported: {exc}"
+            ) from exc
 
     approvals = ToolApprovalRepository(db)
     approval = await approvals.get(approval_id)
@@ -1668,7 +1837,7 @@ async def approve_agent_run_tool(
             run_id=run_id,
             approval_id=approved.approval_id,
             approval_token=approved.token,
-            model=model,
+            model=effective_model,
             tool_definitions=resumed_definitions,
             tool_dispatcher_factory=tool_bundle.resume_dispatcher_factory,
             output_verifier_factory=_build_output_verifier_factory(
@@ -1680,6 +1849,7 @@ async def approve_agent_run_tool(
                 # 审批恢复/sidecar 重启后续跑使用同一组条件。
                 completion_conditions=run.completion_conditions_json,
             ),
+            reasoning_effort=run.reasoning_effort,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail="Agent run is already active") from exc

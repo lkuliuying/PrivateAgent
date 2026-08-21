@@ -90,6 +90,8 @@ class AgentRunCoordinator:
         output_verifier_factory: OutputVerifierFactory | None = None,
         context_metadata: Mapping[str, Any] | None = None,
         stream_output: bool = False,
+        # v0.7.0 验收修复（P0-1）：run 绑定的 reasoning_effort 透传到 runtime
+        reasoning_effort: str | None = None,
     ) -> asyncio.Queue[str] | None:
         if run_id in self._tasks:
             raise RuntimeError(f"Agent run is already active: {run_id}")
@@ -109,6 +111,7 @@ class AgentRunCoordinator:
                 output_verifier_factory=output_verifier_factory,
                 context_metadata=context_metadata,
                 output_queue=output_queue,
+                reasoning_effort=reasoning_effort,
             ),
             name=f"agent-run:{run_id}",
         )
@@ -134,6 +137,8 @@ class AgentRunCoordinator:
         tool_definitions: tuple[ModelToolDefinition, ...],
         tool_dispatcher_factory: ApprovalToolDispatcherFactory,
         output_verifier_factory: OutputVerifierFactory | None = None,
+        # v0.7.0 验收修复（P0-1）：resume 沿用 run 绑定的 reasoning_effort
+        reasoning_effort: str | None = None,
     ) -> None:
         """Resume one durable approval checkpoint without exposing its raw token."""
 
@@ -151,6 +156,7 @@ class AgentRunCoordinator:
                 tool_dispatcher_factory=tool_dispatcher_factory,
                 output_verifier_factory=output_verifier_factory,
                 output_queue=self._output_queues.get(run_id),
+                reasoning_effort=reasoning_effort,
             ),
             name=f"agent-run-resume:{run_id}",
         )
@@ -206,6 +212,7 @@ class AgentRunCoordinator:
         output_verifier_factory: OutputVerifierFactory | None,
         context_metadata: Mapping[str, Any] | None,
         output_queue: asyncio.Queue[str] | None,
+        reasoning_effort: str | None = None,
     ) -> None:
         try:
             async with dbmod.async_session_factory() as db:
@@ -236,6 +243,7 @@ class AgentRunCoordinator:
                     ),
                     output_verifier=output_verifier,
                     max_verification_retries=max_verification_retries,
+                    reasoning_effort=reasoning_effort,
                 )
                 result = await runtime.run(
                     messages,
@@ -270,6 +278,7 @@ class AgentRunCoordinator:
         tool_dispatcher_factory: ApprovalToolDispatcherFactory,
         output_verifier_factory: OutputVerifierFactory | None,
         output_queue: asyncio.Queue[str] | None,
+        reasoning_effort: str | None = None,
     ) -> None:
         try:
             async with dbmod.async_session_factory() as db:
@@ -302,6 +311,7 @@ class AgentRunCoordinator:
                         ),
                         output_verifier=output_verifier,
                         max_verification_retries=max_verification_retries,
+                        reasoning_effort=reasoning_effort,
                     ),
                     repository,
                 ).resume(

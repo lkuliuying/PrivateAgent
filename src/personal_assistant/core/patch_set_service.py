@@ -130,6 +130,16 @@ def _parameters_hash(operations: Sequence[dict]) -> str:
 # ===========================================================================
 
 
+def _windows_device_name(part: str) -> str | None:
+    """按 Windows 保留设备名规则提取名称：去除扩展名、尾随点与空格后 lower。
+
+    P1-2 验收修复：`nul.txt` / `CON.md` / `com1.json` 等扩展名形态与
+    `con.` / `con ` 尾随点/空格形态同样按设备名拒绝（MSDN 命名规则）。
+    """
+    base = part.split(".", 1)[0].rstrip(" .").lower()
+    return base if base in _WINDOWS_DEVICE_NAMES else None
+
+
 def _validate_rel_path(rel_path: str) -> None:
     if not rel_path:
         raise PatchSetError("patchset_invalid", "路径不能为空")
@@ -147,7 +157,7 @@ def _validate_rel_path(rel_path: str) -> None:
     if ".." in parts:
         raise PatchSetError("patchset_invalid", "拒绝 .. 越界路径")
     for part in parts:
-        if part.lower() in _WINDOWS_DEVICE_NAMES:
+        if _windows_device_name(part) is not None:
             raise PatchSetError("patchset_invalid", "拒绝设备路径")
 
 
@@ -161,7 +171,11 @@ def _check_new_content(content: str) -> None:
 
 
 def _check_path_uniqueness(operations: Sequence[dict]) -> None:
-    """同一 PatchSet 内路径唯一（含 rename 目标）；create 与 delete 不撞同路径。"""
+    """同一 PatchSet 内路径唯一（含 rename 目标）；create 与 delete 不撞同路径。
+
+    P1-2 验收修复：唯一性按 Windows 大小写不敏感形式归一化（lower）比较，
+    `Readme.md` 与 `readme.md` 视为同一路径拒绝。
+    """
     seen: set[str] = set()
     for item in operations:
         op_type = item["operation"]
@@ -172,9 +186,10 @@ def _check_path_uniqueness(operations: Sequence[dict]) -> None:
             paths = (params["path"],)
         for path in paths:
             _validate_rel_path(path)
-            if path in seen:
+            key = path.lower()
+            if key in seen:
                 raise PatchSetError("patchset_invalid", f"路径重复: {path}")
-            seen.add(path)
+            seen.add(key)
 
 
 def _resolve(root: str, rel_path: str) -> Path:
@@ -738,8 +753,10 @@ class PatchSetService:
             )
             raise PatchSetError("patchset_conflict", "回读验证失败，已回滚")
 
-        # 全部成功：清理临时文件/备份，状态 → applied + verified（T2）
-        await asyncio.to_thread(_cleanup_staged, staged)
+        # 全部成功：先持久化终态（applied + verified，transition_status 内部
+        # commit），DB 提交成功后再清理临时文件/备份（P1-1 验收修复——备份
+        # 清理后置，杜绝「磁盘已修改、PatchSet 仍 previewed 且无法回滚」的
+        # 幽灵状态；清理失败仅残留 .pa-bak 无害文件，不改变已持久化状态）。
         try:
             await self.repo.set_all_files_status(patch_set.id, "applied")
             record = await self.repo.transition_status(
@@ -747,6 +764,13 @@ class PatchSetService:
             )
         except PatchSetStateConflict as exc:  # pragma: no cover - 并发终态竞争
             raise PatchSetError("patchset_partial_unknown", str(exc)) from exc
+        try:
+            await asyncio.to_thread(_cleanup_staged, staged)
+        except Exception:  # noqa: BLE001 - 状态已 applied，残留备份无害
+            logger.warning(
+                "patch set applied but cleanup failed",
+                patch_set_id=patch_set.id,
+            )
         await self._emit_event(
             run_id,
             "patch_set.applied",

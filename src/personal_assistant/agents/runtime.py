@@ -321,6 +321,8 @@ class AgentRuntime:
         model_output_sink: ModelOutputSink | None = None,
         output_verifier: OutputVerifier | None = None,
         max_verification_retries: int | None = None,
+        # v0.7.0 验收修复（P0-1）：run 绑定的 reasoning_effort 透传到模型请求
+        reasoning_effort: str | None = None,
     ) -> None:
         effective_verification_retries = (
             1
@@ -353,6 +355,7 @@ class AgentRuntime:
             else None
         )
         self._max_verification_retries = effective_verification_retries
+        self._reasoning_effort = reasoning_effort
 
     async def run(
         self,
@@ -760,6 +763,7 @@ class AgentRuntime:
                     messages=tuple(conversation),
                     tools=tool_definitions,
                     output_format=self._model_output_format,
+                    reasoning_effort=self._reasoning_effort,
                 ),
                 cancellation=cancellation,
             )

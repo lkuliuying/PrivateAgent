@@ -220,6 +220,9 @@ class ModelRequest(ContractModel):
     messages: tuple[ModelMessage, ...] = Field(min_length=1)
     tools: tuple[ModelToolDefinition, ...] = ()
     output_format: ModelOutputFormat | None = None
+    # v0.7.0 验收修复（P0-1）：run 的 reasoning_effort 透传到模型请求
+    # （additive；OpenAI 系请求体透传，Ollama/Claude 由 adapter 自行决定）。
+    reasoning_effort: str | None = Field(default=None, max_length=32)
 
     @model_validator(mode="after")
     def require_unique_tool_names(self) -> ModelRequest:
