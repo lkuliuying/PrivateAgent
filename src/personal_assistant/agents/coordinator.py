@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,8 +29,10 @@ from .verification import (
 
 logger = get_logger(__name__)
 
-ToolDispatcherFactory = Callable[[AsyncSession, str], ToolDispatcher]
-ApprovalToolDispatcherFactory = Callable[[AsyncSession, str, str, str], ToolDispatcher]
+ToolDispatcherFactory = Callable[[AsyncSession, str], Awaitable[ToolDispatcher]]
+ApprovalToolDispatcherFactory = Callable[
+    [AsyncSession, str, str, str], Awaitable[ToolDispatcher]
+]
 OutputVerifierFactory = Callable[[AsyncSession, str], OutputVerifier]
 
 
@@ -209,7 +211,7 @@ class AgentRunCoordinator:
             async with dbmod.async_session_factory() as db:
                 repository = AgentRunRepository(db)
                 tools = (
-                    tool_dispatcher_factory(db, run_id)
+                    await tool_dispatcher_factory(db, run_id)
                     if tool_dispatcher_factory is not None
                     else _NoToolDispatcher()
                 )
@@ -272,7 +274,7 @@ class AgentRunCoordinator:
         try:
             async with dbmod.async_session_factory() as db:
                 repository = AgentRunRepository(db)
-                tools = tool_dispatcher_factory(
+                tools = await tool_dispatcher_factory(
                     db,
                     run_id,
                     approval_id,

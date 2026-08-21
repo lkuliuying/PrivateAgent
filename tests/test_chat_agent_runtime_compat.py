@@ -815,7 +815,7 @@ async def test_runtime_chat_keeps_sse_open_for_durable_tool_approval(
         result.register(spec)
         return result
 
-    def initial_dispatcher(run_db, run_id):
+    async def initial_dispatcher(run_db, run_id):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),
@@ -823,7 +823,7 @@ async def test_runtime_chat_keeps_sse_open_for_durable_tool_approval(
             execution_store=ToolExecutionRepository(run_db, run_id=run_id),
         )
 
-    def resumed_dispatcher(run_db, run_id, approval_id, token):
+    async def resumed_dispatcher(run_db, run_id, approval_id, token):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),
@@ -1076,7 +1076,7 @@ async def test_verified_rag_chat_uses_runtime_and_projects_trusted_sources(
         result.register(spec)
         return result
 
-    def dispatcher_factory(run_db, run_id):
+    async def dispatcher_factory(run_db, run_id):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(
@@ -1282,7 +1282,7 @@ async def test_sse_disconnect_cancels_active_run(client, db, monkeypatch):
         result.register(spec)
         return result
 
-    def initial_dispatcher(run_db, run_id):
+    async def initial_dispatcher(run_db, run_id):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),
@@ -1290,7 +1290,7 @@ async def test_sse_disconnect_cancels_active_run(client, db, monkeypatch):
             execution_store=ToolExecutionRepository(run_db, run_id=run_id),
         )
 
-    def resumed_dispatcher(run_db, run_id, approval_id, token):
+    async def resumed_dispatcher(run_db, run_id, approval_id, token):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),

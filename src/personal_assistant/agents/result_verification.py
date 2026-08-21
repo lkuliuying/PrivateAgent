@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import sys
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -273,6 +274,9 @@ class CodeCommandResultVerifier(ShellResultVerifier):
             ("npm", "run", "build"),
             ("cargo", "check"),
             ("cargo", "test"),
+            # E4：当前解释器执行 pytest 是标准用法（Windows sidecar / venv
+            # 下 argv[0] 为具体 python.exe 路径，不属于静态前缀）。
+            (sys.executable, "-m", "pytest"),
         ),
         success_markers: Sequence[str] = (
             "passed",

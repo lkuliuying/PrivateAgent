@@ -23,11 +23,8 @@ import pytest
 from sqlalchemy import delete
 
 from personal_assistant.agents import (
-    AgentRunLimits,
-    AgentRunRepository,
     CancellationToken,
 )
-from personal_assistant.agents.contracts import AgentEvent, AgentEventType
 from personal_assistant.core.command_workflow import (
     _resolve_command,
     run_whitelisted_command_trusted,
@@ -455,7 +452,6 @@ async def test_run_whitelisted_command_trusted_adds_parsed(db, tmp_path):
 
 
 async def test_api_command_profile_invalid_422(client, tmp_path):
-    from personal_assistant.config import settings
 
     # 仅 project API 需要（commands 路由无 flag 门禁）
     root = str((tmp_path / "p").resolve())
@@ -501,7 +497,11 @@ async def test_api_command_profile_invalid_422(client, tmp_path):
 
     from sqlalchemy import delete as _del
 
-    from personal_assistant.core.models import Project, ProjectCommandProfile, ProjectWorkspace
+    from personal_assistant.core.models import (
+        Project,
+        ProjectCommandProfile,
+        ProjectWorkspace,
+    )
 
     async with _factory_session() as s:
         await s.execute(
@@ -527,9 +527,9 @@ def _factory_session():
 @pytest.fixture(autouse=True)
 def _inject_immediate_model():
     """注入立即完成的模型，避免触发真实模型调用与长时间后台任务。"""
+    from personal_assistant.agents.contracts import ModelResponse, TokenUsage
     from personal_assistant.api.routes_agent_runs import get_agent_model_client
     from personal_assistant.main_api import app
-    from personal_assistant.agents.contracts import ModelResponse, TokenUsage
 
     class _ImmediateModel:
         async def complete(self, request, *, cancellation):
@@ -612,7 +612,8 @@ async def test_run_snapshot_contains_command_profile_version(client, monkeypatch
         run = await Repo(s).get_run(run_id)
         assert run is not None
         assert run.permission_snapshot_json is not None
-        assert run.permission_snapshot_json["mode"] == "confirm"
+        # E4：快照键契约为 permission_mode（不是 v0.6.0 时期的 mode）
+        assert run.permission_snapshot_json["permission_mode"] == "confirm"
         assert run.permission_snapshot_json["command_profile_version"] == 2
 
     # 清理

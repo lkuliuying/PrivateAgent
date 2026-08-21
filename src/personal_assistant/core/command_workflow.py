@@ -35,6 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..agents.runtime import CancellationToken
 from ..agents.tools import (
     ToolDispatchCancelled,
+    ToolRiskLevel,
     ToolSpec,
     VersionedToolRegistry,
     current_execution_id,
@@ -328,6 +329,14 @@ async def _resolve_command(
             break
     if matched_profile is None and not is_whitelisted_command(args):
         raise PermissionError_("非白名单命令，已拒绝执行")
+    if matched_profile is not None and (
+        matched_profile.risk_level or "confirm"
+    ) == "restricted":
+        # E4（E0 §4.1）：restricted profile 永不自动获批——无论权限模式
+        # 如何切换，匹配即拒绝；MVP 无任何自动放行渠道（仅人工处置）。
+        raise PermissionError_(
+            f"命令 profile「{matched_profile.name}」为 restricted，禁止自动执行"
+        )
     effective_timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
     root = project.root_path
     env = build_safe_environment()
@@ -648,8 +657,13 @@ def build_command_tool_registry(
     *,
     legacy_registry=None,
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
+    command_risk: ToolRiskLevel | None = None,
 ) -> VersionedToolRegistry:
-    """Build the versioned registry containing the audited command tool."""
+    """Build the versioned registry containing the audited command tool.
+
+    ``command_risk``：E4 workspace 模式动态化——项目 enabled profile 全部
+    safe 时传 SAFE（自动允许）；否则为 None（契约默认 confirm，审批把关）。
+    """
     from .tools import default_registry
 
     source = legacy_registry or default_registry
@@ -662,7 +676,9 @@ def build_command_tool_registry(
             f"{_COMMAND_CONTRACT.name}"
         )
     registry = VersionedToolRegistry()
-    registry.register(_build_command_tool_spec(db, on_line=on_line))
+    registry.register(
+        _build_command_tool_spec(db, on_line=on_line, command_risk=command_risk)
+    )
     return registry
 
 
@@ -670,6 +686,7 @@ def _build_command_tool_spec(
     db: AsyncSession,
     *,
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
+    command_risk: ToolRiskLevel | None = None,
 ) -> ToolSpec:
     async def execute(arguments: dict[str, Any], cancellation: CancellationToken) -> Any:
         if cancellation.is_cancelled:
@@ -689,7 +706,7 @@ def _build_command_tool_spec(
         description=_COMMAND_CONTRACT.description,
         input_schema=_COMMAND_CONTRACT.input_schema,
         output_schema=_COMMAND_CONTRACT.output_schema,
-        risk_level=_COMMAND_CONTRACT.risk_level,
+        risk_level=command_risk or _COMMAND_CONTRACT.risk_level,
         required_capabilities=_COMMAND_CONTRACT.required_capabilities,
         timeout_ms=_COMMAND_CONTRACT.timeout_ms,
         max_input_bytes=_COMMAND_CONTRACT.max_input_bytes,

@@ -28,6 +28,7 @@ from personal_assistant.agents import (
     AgentEventType,
     AgentRunLimits,
     AgentRunRepository,
+    ApprovedToolCall,
     CancellationToken,
     SqlToolApprovalConsumer,
     SqlToolApprovalRequester,
@@ -207,10 +208,8 @@ def _dispatcher(
 
 async def _request_approval_and_approve(
     db, run_id: str, call: ToolCall
-) -> "ApprovedToolCall":
+) -> ApprovedToolCall:
     """执行一次会进入 waiting_approval 的调用，批准后返回一次性 token 绑定。"""
-    from personal_assistant.agents import ApprovedToolCall  # noqa: F401
-
     pending = await _dispatcher(db, run_id).execute(call, cancellation=CancellationToken())
     assert pending.success is False
     assert pending.error_code == "approval_required"
@@ -846,9 +845,34 @@ async def test_duplicate_paths_rejected(db, tmp_path):
 # ===========================================================================
 
 
+async def _make_visibility_run(db, permission_mode: str) -> str:
+    """创建带权限模式的 run 记录，供 dispatcher 按模式重建模型可见定义集。"""
+    from uuid import uuid4
+
+    from personal_assistant.agents import AgentRunLimits, AgentRunRepository
+
+    run_id = str(uuid4())
+    await AgentRunRepository(db).create_run(
+        run_id=run_id,
+        limits=AgentRunLimits(),
+        permission_mode=permission_mode,
+        permission_snapshot_json={
+            "permission_mode": permission_mode,
+            "capabilities": ["filesystem.read", "filesystem.write", "process.execute"],
+        },
+        client_request_id=str(uuid4()),
+    )
+    return run_id
+
+
 @pytest.mark.asyncio
 async def test_patchset_tools_invisible_when_flag_off(db, monkeypatch):
-    """flag 关闭时两个 PatchSet 工具不可见；只读/单文件工具不受影响。"""
+    """flag 关闭时两个 PatchSet 工具不可见；单文件/只读工具保留。
+
+    E4：bundle 默认预览是 readonly 最小权限（写工具天然不可见），因此
+    通过 confirm 模式 run dispatcher 验证 flag 回退性——flag 关闭时
+    PatchSet 工具不注册，单文件可信工作流与只读工具仍可见。
+    """
     from personal_assistant.api import routes_agent_runs
     from personal_assistant.config import settings
 
@@ -860,18 +884,32 @@ async def test_patchset_tools_invisible_when_flag_off(db, monkeypatch):
 
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is not None
-    names = {definition.name for definition in bundle.definitions}
-    assert "propose_patch_set" not in names
-    assert "apply_patch_set" not in names
-    # 单文件可信工作流与只读工具保留
-    assert "propose_patch" in names
-    assert "apply_patch_to_workspace" in names
-    assert "read_file" in names
+    run_id = await _make_visibility_run(db, "confirm")
+    try:
+        dispatcher = await bundle.dispatcher_factory(db, run_id)
+        names = {d.name for d in dispatcher.model_definitions()}
+        assert "propose_patch_set" not in names
+        assert "apply_patch_set" not in names
+        # 单文件可信工作流与只读工具保留（confirm 模式暴露写工具）
+        assert "propose_patch" in names
+        assert "apply_patch_to_workspace" in names
+        assert "read_file" in names
+    finally:
+        from sqlalchemy import delete
+
+        from personal_assistant.core.models import AgentRun as AgentRunRecord
+
+        await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.commit()
 
 
 @pytest.mark.asyncio
 async def test_patchset_tools_visible_when_flag_on(db, monkeypatch):
-    """flag 开启时两个 PatchSet 工具注册；apply 工具不授予额外能力。"""
+    """flag 开启时两个 PatchSet 工具注册；apply 工具不授予额外能力。
+
+    E4：写工具仅在 confirm/workspace 模式 run dispatcher 暴露（readonly
+    不注册，模型不可见 = 零写入入口）。
+    """
     from personal_assistant.api import routes_agent_runs
     from personal_assistant.config import settings
 
@@ -883,8 +921,34 @@ async def test_patchset_tools_visible_when_flag_on(db, monkeypatch):
 
     bundle = await routes_agent_runs.get_agent_tool_bundle(db)
     assert bundle is not None
-    names = {definition.name for definition in bundle.definitions}
-    assert "propose_patch_set" in names
-    assert "apply_patch_set" in names
-    # 只读工具未开启时不可见（PatchSet 不隐式开放只读工具）
-    assert "read_file" not in names
+    run_id = await _make_visibility_run(db, "confirm")
+    try:
+        dispatcher = await bundle.dispatcher_factory(db, run_id)
+        names = {d.name for d in dispatcher.model_definitions()}
+        assert "propose_patch_set" in names
+        assert "apply_patch_set" in names
+        # 只读工具未开启时不可见（PatchSet 不隐式开放只读工具）
+        assert "read_file" not in names
+        # E4：readonly run 不暴露写工具（零写入入口）
+        readonly_run_id = await _make_visibility_run(db, "readonly")
+        try:
+            ro_dispatcher = await bundle.dispatcher_factory(db, readonly_run_id)
+            ro_names = {d.name for d in ro_dispatcher.model_definitions()}
+            assert "apply_patch_set" not in ro_names
+            assert "propose_patch_set" in ro_names
+        finally:
+            from sqlalchemy import delete
+
+            from personal_assistant.core.models import AgentRun as AgentRunRecord
+
+            await db.execute(
+                delete(AgentRunRecord).where(AgentRunRecord.id == readonly_run_id)
+            )
+            await db.commit()
+    finally:
+        from sqlalchemy import delete
+
+        from personal_assistant.core.models import AgentRun as AgentRunRecord
+
+        await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.commit()

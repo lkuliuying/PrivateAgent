@@ -38,7 +38,6 @@ from personal_assistant.core.coding_errors import (
     STABLE_EVENTS,
 )
 
-
 # ===========================================================================
 # §9.1 权限模式集合替换（E0 §4.1）
 # ===========================================================================
@@ -386,14 +385,49 @@ def test_v070_flag_dependency_validation():
 # E2–E4 实现后移除 xfail（strict=True：实现后忘记移除会失败提醒）
 # ===========================================================================
 
-
-@pytest.mark.xfail(reason="E4 实现后移除：模型 profile 门禁", strict=True)
-async def test_no_native_tool_calls_model_rejected_for_coding(client, monkeypatch):
-    """不支持原生工具调用的模型 profile 不能进入 Coding 执行循环。"""
-    raise AssertionError("E4 未实现")
+# E4 已实现：以下两个契约测试解除 xfail（实现细节见 tests/test_v070_permissions.py
+# 的对应完整用例，此处保留 E0 契约级断言）。
 
 
-@pytest.mark.xfail(reason="E4 实现后移除：read_only/full_access 拒绝", strict=True)
-async def test_legacy_permission_modes_rejected(client, monkeypatch):
+async def test_no_native_tool_calls_model_rejected_for_coding(
+    client, monkeypatch, tmp_path
+):
+    """不支持原生工具调用的模型 profile 不能进入 Coding 执行循环。
+
+    E0 契约 §5：native_tool_calls=False → 422 model_profile_unsupported。
+    """
+    from test_v070_permissions import _create_coding_env, _post_coding_run
+
+    from personal_assistant.api import routes_agent_runs
+    from personal_assistant.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "coding_permission_models_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    env = await _create_coding_env(client, tmp_path)
+    await client.put(
+        "/agent-model-profiles/qa-only",
+        json={
+            "provider": "ollama",
+            "display_name": "QA only",
+            "native_tool_calls": False,
+        },
+    )
+    resp = await _post_coding_run(client, env, model_profile_id="qa-only")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error_code"] == "model_profile_unsupported"
+
+
+async def test_legacy_permission_modes_rejected(client, monkeypatch, tmp_path):
     """read_only / full_access 创建 coding run → 422 permission_mode_invalid。"""
-    raise AssertionError("E4 未实现")
+    from test_v070_permissions import _create_coding_env, _post_coding_run
+
+    from personal_assistant.api import routes_agent_runs
+
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    env = await _create_coding_env(client, tmp_path)
+    for legacy in ("read_only", "full_access"):
+        resp = await _post_coding_run(client, env, permission_mode=legacy)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["error_code"] == "permission_mode_invalid"

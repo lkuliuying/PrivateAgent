@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
@@ -36,6 +36,7 @@ from ..agents import (
     ToolCapabilityPolicy,
     ToolDispatcher,
     ToolExecutionRepository,
+    ToolRiskLevel,
     ValidatedToolDispatcher,
     VersionedToolRegistry,
 )
@@ -309,9 +310,9 @@ class AgentToolOutputPageResponse(BaseModel):
 @dataclass(frozen=True, slots=True)
 class AgentToolBundle:
     definitions: tuple[ModelToolDefinition, ...]
-    dispatcher_factory: Callable[[AsyncSession, str], ToolDispatcher]
+    dispatcher_factory: Callable[[AsyncSession, str], Awaitable[ToolDispatcher]]
     resume_dispatcher_factory: Callable[
-        [AsyncSession, str, str, str], ToolDispatcher
+        [AsyncSession, str, str, str], Awaitable[ToolDispatcher]
     ] | None = None
     output_verifier_factory: Callable[
         [AsyncSession, str], OutputVerifier
@@ -471,6 +472,32 @@ async def get_agent_model_client(
     return ProviderRouter(provider_settings).model_gateway()
 
 
+async def _workspace_command_risk(
+    run_db: AsyncSession, run_id: str
+) -> ToolRiskLevel | None:
+    """E4（E0 §4.1）：workspace 模式命令工具 risk 动态化。
+
+    项目 enabled 命令 profile 全部 safe → SAFE（自动允许）；存在
+    confirm/restricted → CONFIRM（整体审批把关，restricted 在执行时仍被
+    拦截，永不因模式切换自动获批）；无 profile → None（契约默认，仍按
+    ToolCapabilityPolicy 对 confirm 要求审批）。
+    """
+    run = await run_db.get(AgentRunRecord, run_id)
+    if run is None or run.project_id is None:
+        return None
+    from ..core.repo_patch_sets import ProjectCommandProfileRepository
+
+    profiles = await ProjectCommandProfileRepository(run_db).list_by_project(
+        run.project_id, enabled=True
+    )
+    if not profiles:
+        return None
+    risks = {p.risk_level or "confirm" for p in profiles}
+    if risks <= {"safe"}:
+        return ToolRiskLevel.SAFE
+    return ToolRiskLevel.CONFIRM
+
+
 async def get_agent_tool_bundle(
     db: AsyncSession = Depends(get_session),
 ) -> AgentToolBundle | None:
@@ -502,13 +529,21 @@ async def get_agent_tool_bundle(
         await SqlProfileService(db).repo.list(enabled_only=True)
     ) if cfg.agent_sql_readonly_workflow_enabled else False
 
-    def build_dispatcher(
+    async def build_dispatcher(
         run_db: AsyncSession,
         run_id: str,
         *,
         approval_id: str | None = None,
         approval_token: str | None = None,
     ) -> ToolDispatcher:
+        # E4（E0 §4.1）：按 run 权限快照构建注册表——readonly 不注册写工具
+        # （模型不可见，零写入）；workspace 模式命令 risk 按项目 profile 动态化。
+        # 无权限模式的 run（v0.6.0 历史/非 coding run/默认预览）保持 v0.6.0
+        # 行为：flag 开启的工具全部可见（回退契约 §10）。
+        permission_mode: str | None = None
+        run_record = await run_db.get(AgentRunRecord, run_id)
+        if run_record is not None:
+            permission_mode = run_record.permission_mode
         registry = VersionedToolRegistry()
         result_verifier: ToolResultVerifier | None = None
         if cfg.agent_run_read_only_tools_enabled:
@@ -529,8 +564,16 @@ async def get_agent_tool_bundle(
                 return project.root_path
 
             result_verifier = FileDiffResultVerifier(resolve_root)
-        if cfg.agent_command_workflow_enabled:
-            for spec in build_command_tool_registry(run_db).list():
+        if cfg.agent_command_workflow_enabled and permission_mode != "readonly":
+            # workspace 模式：项目 enabled 命令 profile 全部 safe → 工具自动
+            # 允许；存在 confirm/restricted → 整体审批把关（restricted 永不因
+            # 模式切换自动获批，execute 内还有执行时拦截）。
+            command_risk = None
+            if permission_mode == "workspace":
+                command_risk = await _workspace_command_risk(run_db, run_id)
+            for spec in build_command_tool_registry(
+                run_db, command_risk=command_risk
+            ).list():
                 registry.register(spec)
             # B2：Shell + CodeCommand 组合验证器——退出码/超时/取消结构检查 +
             # 白名单前缀与成功/失败标记检查（可信代码固定注入，模型不能绕过）。
@@ -559,10 +602,20 @@ async def get_agent_tool_bundle(
         if cfg.coding_patchset_enabled:
             # E1：PatchSet 多文件工具（E0 契约 §2）——safe 预览 + confirm 原子
             # 应用；验证器按 DB 持久化 SHA 复核磁盘事实（T2/T3），模型不能绕过。
-            from ..agents.result_verification import PatchSetResultVerifier
+            # E4：readonly 只注册只读预览（propose_patch_set），带写能力工具
+            # 不注册（模型不可见 = 零写入入口）；apply 由审批把关。
+            from ..agents.result_verification import (
+                CompositeToolResultVerifier,
+                PatchSetResultVerifier,
+            )
             from ..core.patch_set_tool import build_patch_set_tool_registry
 
             for spec in build_patch_set_tool_registry(run_db, run_id).list():
+                if (
+                    permission_mode == "readonly"
+                    and ToolCapability.FILESYSTEM_WRITE in spec.required_capabilities
+                ):
+                    continue
                 registry.register(spec)
             patchset_verifier = PatchSetResultVerifier(run_db)
             result_verifier = (
@@ -622,21 +675,33 @@ async def get_agent_tool_bundle(
                 run_db, mcp_records, run_id=run_id
             ).list():
                 registry.register(spec)
-        granted_capabilities = frozenset(
-            {
-                ToolCapability.FILESYSTEM_READ,
-                ToolCapability.PROCESS_EXECUTE,
-                ToolCapability.DATABASE_QUERY,
-                ToolCapability.NETWORK_FETCH,
-                ToolCapability.EXTERNAL_MCP,
-            }
-        )
-        if cfg.agent_patch_workflow_enabled or cfg.coding_patchset_enabled:
-            # 只有 Patch 工作流/PatchSet 开启时才授予写能力（B1/E1 契约：
-            # filesystem.write 不随只读工具开放）。
-            granted_capabilities = granted_capabilities | {
-                ToolCapability.FILESYSTEM_WRITE
-            }
+        # E4（E0 §4.1）：能力集合按权限模式授予——readonly 自动允许
+        # 「搜索、读取、Git 状态/Diff」（FILESYSTEM_READ + DATABASE_QUERY +
+        # PROCESS_EXECUTE），默认拒绝写文件/网络/MCP；confirm/workspace 保持现状。
+        if permission_mode == "readonly":
+            granted_capabilities = frozenset(
+                {
+                    ToolCapability.FILESYSTEM_READ,
+                    ToolCapability.DATABASE_QUERY,
+                    ToolCapability.PROCESS_EXECUTE,
+                }
+            )
+        else:
+            granted_capabilities = frozenset(
+                {
+                    ToolCapability.FILESYSTEM_READ,
+                    ToolCapability.PROCESS_EXECUTE,
+                    ToolCapability.DATABASE_QUERY,
+                    ToolCapability.NETWORK_FETCH,
+                    ToolCapability.EXTERNAL_MCP,
+                }
+            )
+            if cfg.agent_patch_workflow_enabled or cfg.coding_patchset_enabled:
+                # 只有 Patch 工作流/PatchSet 开启时才授予写能力（B1/E1 契约：
+                # filesystem.write 不随只读工具开放）。
+                granted_capabilities = granted_capabilities | {
+                    ToolCapability.FILESYSTEM_WRITE
+                }
         return ValidatedToolDispatcher(
             registry,
             policy=ToolCapabilityPolicy(granted_capabilities=granted_capabilities),
@@ -654,23 +719,25 @@ async def get_agent_tool_bundle(
             result_verifier=result_verifier,
         )
 
-    def dispatcher_factory(run_db: AsyncSession, run_id: str) -> ToolDispatcher:
-        return build_dispatcher(run_db, run_id)
+    async def dispatcher_factory(
+        run_db: AsyncSession, run_id: str
+    ) -> ToolDispatcher:
+        return await build_dispatcher(run_db, run_id)
 
-    def resume_dispatcher_factory(
+    async def resume_dispatcher_factory(
         run_db: AsyncSession,
         run_id: str,
         approval_id: str,
         approval_token: str,
     ) -> ToolDispatcher:
-        return build_dispatcher(
+        return await build_dispatcher(
             run_db,
             run_id,
             approval_id=approval_id,
             approval_token=approval_token,
         )
 
-    dispatcher = dispatcher_factory(db, "definition-preview")
+    dispatcher = await dispatcher_factory(db, "definition-preview")
     output_verifier_factory = None
     if cfg.agent_rag_tools_enabled:
 
@@ -864,18 +931,19 @@ async def create_agent_run(
     tool_bundle: AgentToolBundle | None = Depends(get_agent_tool_bundle),
 ) -> AgentRunResponse:
     # ---- v0.6.0 C2：Coding/legacy 创建模式判定（C0 契约 §5.1）----
-    # 判定字段三件套 = {project_id, workspace_id, permission_mode}；
+    # E4（E0 §4.1）：project_id + workspace_id 同时出现即 coding run；
+    # permission_mode 缺省按默认最小权限（readonly）处理，不再计入判定
+    # 三件套；非法值在 coding 校验链内返回 permission_mode_invalid。
     # client_request_id 是独立全局幂等键（C0-D04/§5.2），单独出现仍按 legacy 处理。
     coding_fields_present = [
         name
         for name, value in (
             ("project_id", request.project_id),
             ("workspace_id", request.workspace_id),
-            ("permission_mode", request.permission_mode),
         )
         if value is not None
     ]
-    coding_mode = len(coding_fields_present) == 3
+    coding_mode = len(coding_fields_present) == 2
     if coding_fields_present and not coding_mode:
         # 部分出现 → 422，零 run 创建，不退回 legacy（C0 §5.1）
         compatibility_telemetry.record(
@@ -884,7 +952,7 @@ async def create_agent_run(
         return _coding_error(
             422,
             "coding_context_incomplete",
-            "project_id/workspace_id/permission_mode must be provided together",
+            "project_id and workspace_id must be provided together",
         )
     if coding_mode and not cfg.project_bound_runs_enabled:
         # 全部出现但 flag 关闭 → 409，legacy 仍可用
@@ -924,15 +992,38 @@ async def create_agent_run(
                 "session_workspace_mismatch",
                 "Session binding does not match the requested project/workspace",
             )
-        if request.permission_mode not in PERMISSION_MODES:
+        # E4（E0 §4.1）：默认最小权限——未显式指定时按 readonly 处理。
+        from ..core.permission_modes import PERMISSION_MODE_DEFAULT
+
+        effective_permission_mode = request.permission_mode or PERMISSION_MODE_DEFAULT
+        if effective_permission_mode not in PERMISSION_MODES:
             compatibility_telemetry.record(
                 path="agent_run_create", mode="project_bound", outcome="rejected"
             )
             return _coding_error(
                 422,
-                "coding_context_incomplete",
+                "permission_mode_invalid",
                 f"permission_mode must be one of {sorted(PERMISSION_MODES)}",
             )
+        # E4（E0 §5）：模型 profile 校验——不支持原生工具调用的模型只能
+        # 用于只读问答，不进入 Coding 执行循环（run 创建时校验）。
+        if request.model_profile_id is not None:
+            from ..core.model_profiles import (
+                ModelProfileNotFound,
+                ModelProfileService,
+                ModelProfileUnsupported,
+            )
+
+            try:
+                await ModelProfileService(db).validate_for_coding(
+                    request.model_profile_id
+                )
+            except ModelProfileNotFound as exc:
+                return _coding_error(404, "model_profile_not_found", str(exc))
+            except ModelProfileUnsupported as exc:
+                return _coding_error(
+                    422, "model_profile_unsupported", str(exc)
+                )
         workspace_service = ProjectWorkspaceService(db)
         workspace = await workspace_service.get(request.workspace_id)
         if workspace is None:
@@ -1026,13 +1117,25 @@ async def create_agent_run(
         versions = [p.profile_version or 1 for p in profiles]
         if versions:
             command_profile_version = max(versions)
-    permission_snapshot = (
-        {"mode": request.permission_mode}
-        if request.permission_mode is not None
-        else None
-    )
-    if permission_snapshot is not None and command_profile_version is not None:
-        permission_snapshot["command_profile_version"] = command_profile_version
+    permission_snapshot = None
+    if coding_mode:
+        # E4（E0 §4.2）：完整权限快照——能力集合/workspace 摘要/命令 profile
+        # 版本/Patch 硬上限/远程数据策略；只存非秘密摘要，历史 run 不因
+        # profile 变化修改。
+        from ..agents.patchset_contracts import (
+            MAX_PATCHSET_FILES,
+            MAX_TOTAL_INPUT_BYTES,
+        )
+        from ..core.permission_modes import build_permission_snapshot
+
+        permission_snapshot = build_permission_snapshot(
+            permission_mode=effective_permission_mode,
+            workspace_id=workspace.id,
+            workspace_root_sha256=workspace.root_path_sha256,
+            command_profile_version=command_profile_version,
+            max_patchset_files=MAX_PATCHSET_FILES,
+            max_patchset_total_bytes=MAX_TOTAL_INPUT_BYTES,
+        )
     try:
         run = await repository.create_run(
             run_id=run_id,
@@ -1048,7 +1151,7 @@ async def create_agent_run(
             base_git_dirty=git_snapshot[2] if git_snapshot else None,
             model_profile_id=request.model_profile_id,
             reasoning_effort=request.reasoning_effort,
-            permission_mode=request.permission_mode if coding_mode else None,
+            permission_mode=effective_permission_mode if coding_mode else None,
             permission_snapshot_json=permission_snapshot,
             client_request_id=request.client_request_id,
             request_payload_sha256=_request_payload_sha256(
@@ -1083,12 +1186,24 @@ async def create_agent_run(
         return await _run_response(
             repository, effective_run_id, idempotent_replay=idempotent_replay
         )
+    # E4（E0 §4.1）：模型可见定义集按 run 权限模式重建——bundle 默认
+    # 预览是 readonly（最小权限）；confirm/workspace run 重建后暴露写工具，
+    # readonly run 保持不暴露（模型不可见 = 零写入入口）。
+    tool_definitions: tuple[ModelToolDefinition, ...] = ()
+    if tool_bundle is not None:
+        if coding_mode:
+            run_dispatcher = await tool_bundle.dispatcher_factory(
+                db, effective_run_id
+            )
+            tool_definitions = run_dispatcher.model_definitions()
+        else:
+            tool_definitions = tool_bundle.definitions
     agent_run_coordinator.start(
         run_id=effective_run_id,
         model=model,
         messages=messages,
         limits=request.limits,
-        tool_definitions=tool_bundle.definitions if tool_bundle is not None else (),
+        tool_definitions=tool_definitions,
         tool_dispatcher_factory=(
             tool_bundle.dispatcher_factory if tool_bundle is not None else None
         ),
@@ -1541,12 +1656,20 @@ async def approve_agent_run_tool(
         raise HTTPException(status_code=409, detail="Tool approval cannot be approved") from exc
 
     try:
+        # E4：resume 定义集按 run 权限快照重建（与 dispatcher 注册表一致；
+        # readonly run 不会处于 waiting_approval，写工具仅在 confirm/
+        # workspace run 恢复时可见）。
+        resumed_definitions = (
+            await tool_bundle.resume_dispatcher_factory(
+                db, run_id, approved.approval_id, approved.token
+            )
+        ).model_definitions()
         agent_run_coordinator.resume(
             run_id=run_id,
             approval_id=approved.approval_id,
             approval_token=approved.token,
             model=model,
-            tool_definitions=tool_bundle.definitions,
+            tool_definitions=resumed_definitions,
             tool_dispatcher_factory=tool_bundle.resume_dispatcher_factory,
             output_verifier_factory=_build_output_verifier_factory(
                 db,

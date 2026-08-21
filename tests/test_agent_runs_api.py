@@ -329,6 +329,10 @@ async def test_agent_run_executes_injected_tool_dispatcher_to_completion(
     monkeypatch.setattr(settings, "agent_runs_api_enabled", True)
     model = ToolCallingModel()
     dispatcher = RecordingToolDispatcher()
+
+    async def make_dispatcher(_db, _run_id):
+        return dispatcher
+
     bundle = AgentToolBundle(
         definitions=(
             ModelToolDefinition(
@@ -341,7 +345,7 @@ async def test_agent_run_executes_injected_tool_dispatcher_to_completion(
                 },
             ),
         ),
-        dispatcher_factory=lambda _db, _run_id: dispatcher,
+        dispatcher_factory=make_dispatcher,
     )
     app.dependency_overrides[get_agent_model_client] = lambda: model
     app.dependency_overrides[get_agent_tool_bundle] = lambda: bundle
@@ -420,7 +424,7 @@ async def test_agent_run_approval_api_resumes_once_without_exposing_arguments(
         result.register(spec)
         return result
 
-    def initial_dispatcher(run_db, run_id):
+    async def initial_dispatcher(run_db, run_id):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),
@@ -428,7 +432,7 @@ async def test_agent_run_approval_api_resumes_once_without_exposing_arguments(
             execution_store=ToolExecutionRepository(run_db, run_id=run_id),
         )
 
-    def resumed_dispatcher(run_db, run_id, approval_id, token):
+    async def resumed_dispatcher(run_db, run_id, approval_id, token):
         return ValidatedToolDispatcher(
             registry(),
             policy=ToolCapabilityPolicy(),

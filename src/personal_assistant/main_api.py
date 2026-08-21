@@ -41,6 +41,7 @@ from .api.routes_learning_reviews import router as learning_reviews_router
 from .api.routes_maintenance import router as maintenance_router
 from .api.routes_mcp import router as mcp_router
 from .api.routes_memories import router as memories_router
+from .api.routes_model_profiles import router as model_profiles_router
 from .api.routes_notifications import router as notifications_router
 from .api.routes_ocr import router as ocr_router
 from .api.routes_patch_sets import router as patch_sets_router
@@ -260,6 +261,7 @@ app.include_router(patch_sets_router)
 app.include_router(plan_router)
 app.include_router(artifacts_router)
 app.include_router(commands_router)
+app.include_router(model_profiles_router)
 app.include_router(providers_router)
 app.include_router(reminders_router)
 app.include_router(search_router)

@@ -482,7 +482,7 @@ async def test_patch_flag_off_keeps_read_only_tools_working(db, tmp_path, monkey
     project_id = await _make_project(db, tmp_path)
     run_id = await _create_run(db, tool_call_id="call-readonly-1")
     try:
-        dispatcher = bundle.dispatcher_factory(db, run_id)
+        dispatcher = await bundle.dispatcher_factory(db, run_id)
         call = ToolCall(
             id="call-readonly-1",
             name="propose_patch",
