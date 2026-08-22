@@ -186,7 +186,7 @@ const renderedLines = computed(() => diffLines.value.slice(0, MAX_RENDER_LINES))
 }
 .diff-loading {
   padding: var(--space-2) var(--space-3);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .diff-truncated {

@@ -384,7 +384,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
   gap: var(--space-3);
 }
 .composer-hint {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .home-submit {

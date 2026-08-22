@@ -197,7 +197,7 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
   gap: 3px;
 }
 .meta-sep {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 .meta-sha {
   font-family: var(--font-mono, monospace);

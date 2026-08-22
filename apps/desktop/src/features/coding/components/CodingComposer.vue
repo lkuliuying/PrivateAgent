@@ -482,7 +482,7 @@ onBeforeUnmount(() => {
   outline-offset: 0;
 }
 .composer-input:disabled {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 .composer-send,
 .composer-stop {
@@ -513,7 +513,7 @@ onBeforeUnmount(() => {
 }
 .pop-hint {
   padding: var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .pop-item {
@@ -545,7 +545,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
 }
 .pop-item small {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 .composer-options {
   display: flex;
@@ -562,7 +562,7 @@ onBeforeUnmount(() => {
 }
 .option-hint {
   margin-left: auto;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-t-11);
 }
 </style>

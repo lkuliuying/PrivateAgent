@@ -32,6 +32,8 @@ export const CODING_RUN_PREVIEW_KEYS = [
   "verification",
   "conflict",
   "partial-unknown",
+  // v0.8.0 W5：5,000 活动记录压力（分段渲染）
+  "stress",
 ] as const;
 
 export type CodingRunPreviewKey = (typeof CODING_RUN_PREVIEW_KEYS)[number];
@@ -287,6 +289,30 @@ function frames(key: CodingRunPreviewKey): RunStreamFrame[] {
         { sequence: 15, type: "patch_set.unknown", payload: { patch_set_id: "ps-1", reason: "回滚中断，磁盘状态未知，需人工处置" } },
         { sequence: 16, type: "run.failed", payload: { output: null, error: "回滚中断", error_code: "patchset_partial_unknown", tool_call_count: 2, input_tokens: 5200, output_tokens: 210, cached_tokens: 0, cost_usd: null } },
       ];
+    // W5：5,000 活动记录压力（tool.requested/started/completed 循环 + 终态）
+    case "stress": {
+      const frames: RunStreamFrame[] = [
+        RUN_STARTED,
+        CONTEXT_PREPARED,
+        MODEL_STARTED,
+        PLAN_CREATED,
+        MODEL_COMPLETED,
+      ];
+      let sequence = frames.length;
+      for (let i = 0; i < 1666; i++) {
+        const toolCallId = `tc-stress-${i}`;
+        frames.push(
+          { sequence: ++sequence, type: "tool.requested", payload: { ordinal: i + 1, kind: "tool", tool_call_id: toolCallId, name: i % 3 === 0 ? "read_code_file" : i % 3 === 1 ? "grep_code" : "run_whitelisted_command" } },
+          { sequence: ++sequence, type: "tool.started", payload: { tool_call_id: toolCallId, name: "tool" } },
+          { sequence: ++sequence, type: "tool.completed", payload: { tool_call_id: toolCallId, name: "tool" } }
+        );
+      }
+      frames.push(
+        { sequence: ++sequence, type: "run.completed", payload: { output: "压力测试完成：5,000 条活动记录已投影。", error: null, error_code: null, tool_call_count: 1666, input_tokens: 999999, output_tokens: 8888, cached_tokens: 0, cost_usd: null } },
+        { sequence: ++sequence, type: "run.terminal", payload: { status: "completed" } }
+      );
+      return frames;
+    }
   }
 }
 

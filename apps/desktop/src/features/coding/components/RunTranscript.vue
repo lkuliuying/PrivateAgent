@@ -91,6 +91,26 @@ const entries = computed(() => props.projection?.entries ?? []);
 const entryCount = computed(() => entries.value.length);
 const pendingApprovals = computed(() => props.approvals.filter((item) => item.status === "pending"));
 
+// 长列表分段渲染（计划 §6.4：窗口化/分段，W5 5,000 条压力前提）：
+// 默认仅渲染最近 RENDER_BATCH 条，「显示更早」按批次扩展；切换 run 重置。
+const RENDER_BATCH = 200;
+const visibleCount = ref(RENDER_BATCH);
+const visibleEntries = computed(() =>
+  entries.value.slice(Math.max(0, entries.value.length - visibleCount.value))
+);
+const hiddenCount = computed(() => entries.value.length - visibleEntries.value.length);
+
+function loadEarlier(): void {
+  visibleCount.value += RENDER_BATCH * 5;
+}
+
+watch(
+  () => props.projection?.runId,
+  () => {
+    visibleCount.value = RENDER_BATCH;
+  }
+);
+
 const scrollEl = ref<HTMLElement | null>(null);
 const anchoredBottom = ref(true);
 const newActivity = ref(false);
@@ -162,8 +182,17 @@ function terminalMeta(): { label: string; tone: string } | null {
           <div class="user-copy">{{ projection.userMessage }}</div>
         </div>
 
+        <button
+          v-if="hiddenCount > 0"
+          class="load-earlier"
+          data-testid="transcript-load-earlier"
+          @click="loadEarlier"
+        >
+          显示更早的活动（{{ hiddenCount.toLocaleString() }} 条）
+        </button>
+
         <div
-          v-for="entry in entries"
+          v-for="entry in visibleEntries"
           :key="entry.key"
           class="entry"
           :class="`entry-${entry.kind}`"
@@ -377,7 +406,7 @@ function terminalMeta(): { label: string; tone: string } | null {
   justify-content: center;
   flex-direction: column;
   gap: var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   text-align: center;
 }
 .transcript-empty p {
@@ -387,7 +416,7 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 .transcript-empty .hint {
   max-width: 420px;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 
@@ -422,6 +451,20 @@ function terminalMeta(): { label: string; tone: string } | null {
   word-break: break-word;
 }
 
+.load-earlier {
+  align-self: center;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+  cursor: pointer;
+}
+.load-earlier:hover {
+  color: var(--color-fg);
+}
+
 .entry {
   display: flex;
   flex-wrap: wrap;
@@ -435,7 +478,7 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 .entry-icon {
   flex-shrink: 0;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 .entry-icon.tone-info { color: var(--color-accent); }
 .entry-icon.tone-success { color: var(--color-success); }
@@ -556,7 +599,7 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 .terminal-usage {
   margin-left: auto;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .terminal-output {
@@ -601,7 +644,7 @@ function terminalMeta(): { label: string; tone: string } | null {
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .preview-tag {
@@ -609,7 +652,7 @@ function terminalMeta(): { label: string; tone: string } | null {
   padding: 2px var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-t-11);
   letter-spacing: 0.1em;
 }

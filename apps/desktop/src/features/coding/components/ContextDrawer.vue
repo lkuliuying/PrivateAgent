@@ -196,7 +196,7 @@ const usage = computed(() => props.projection?.usage);
 }
 .pane-empty {
   padding: var(--space-3) 0;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
   line-height: var(--leading-normal);
 }
@@ -250,7 +250,7 @@ const usage = computed(() => props.projection?.usage);
   font-size: var(--pa-text-meta);
 }
 .meta-row dt {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 .meta-row dd {
   margin: 0;
@@ -262,7 +262,7 @@ const usage = computed(() => props.projection?.usage);
   gap: var(--space-1);
   padding: var(--space-2) var(--space-3);
   border-top: 1px solid var(--color-border);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-t-11);
 }
 </style>

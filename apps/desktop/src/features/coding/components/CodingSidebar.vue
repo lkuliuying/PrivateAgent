@@ -588,13 +588,13 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-1) var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
   letter-spacing: 0.08em;
 }
 .tree-empty {
   padding: var(--space-2) var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--text-xs);
 }
 .tree-scroll {
@@ -610,7 +610,7 @@ onBeforeUnmount(() => {
   flex-shrink: 0;
   border-top: 3px solid transparent;
   border-bottom: 3px solid transparent;
-  border-left: 4px solid var(--color-fg-faint);
+  border-left: 4px solid var(--color-fg-subtle);
   transition: transform var(--pa-motion-fast) var(--ease);
 }
 .row-caret.open {
@@ -667,7 +667,7 @@ onBeforeUnmount(() => {
 }
 .thread-row small {
   flex-shrink: 0;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .tree-children {
@@ -678,7 +678,7 @@ onBeforeUnmount(() => {
 }
 .thread-empty {
   padding: var(--space-1) var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .workspace-row.is-static {
@@ -693,7 +693,7 @@ onBeforeUnmount(() => {
   height: 7px;
   flex-shrink: 0;
   border-radius: var(--radius-full);
-  background: var(--color-fg-faint);
+  background: var(--color-fg-subtle);
 }
 .status-dot.tone-info {
   background: var(--color-accent);
@@ -760,7 +760,7 @@ onBeforeUnmount(() => {
 }
 .user-copy small {
   font-size: var(--pa-text-meta);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
 }
 
 /* 折叠态（72px 图标侧栏）：隐藏文字标签与树，仅保留图标动作 */

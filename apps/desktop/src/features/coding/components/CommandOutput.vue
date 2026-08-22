@@ -178,7 +178,7 @@ function lineClass(kind: string): string {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .output-error {
@@ -206,7 +206,7 @@ function lineClass(kind: string): string {
 }
 .stat.pass { color: var(--color-success-fg); }
 .stat.fail { color: var(--color-danger-fg); }
-.stat.skip { color: var(--color-fg-faint); }
+.stat.skip { color: var(--color-fg-muted); }
 .parsed-failures {
   margin: 0;
   padding: 0 var(--space-2);
@@ -236,10 +236,10 @@ function lineClass(kind: string): string {
 }
 .line-out { color: var(--color-fg); }
 .line-err { color: var(--color-danger-fg); }
-.line-meta { color: var(--color-fg-faint); }
+.line-meta { color: var(--color-fg-subtle); }
 .output-empty {
   padding: var(--space-1) 0;
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .output-truncated {
