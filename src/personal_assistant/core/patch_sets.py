@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
-from .code_tools import _execute_command, _sha256_text, parse_command
+from .code_tools import _sha256_text, parse_command
 from .learning import parse_json_object
 from .models import PatchSet, ProjectCommandProfile
 from .projects import ProjectNotFound, ProjectService, resolve_within
@@ -387,6 +387,9 @@ class CommandProfileService:
 
         E2：落地 cwd_rel（resolve 校验仍在 root 内）、env_allowlist 白名单
         注入（拒绝代理/凭据类）、result_parser 结构化解析与 profile_version。
+        第六轮（P1-1）：统一走受审计执行路径（run_whitelisted_command_trusted）
+        ——argv/schema/网络校验 + Job Object 进程树清理 + 流式有界输出；
+        不再使用旧 _execute_command（无进程树清理与有界流式输出）。
         """
         p = await self.repo.get(profile_id)
         if p is None:
@@ -396,34 +399,23 @@ class CommandProfileService:
         project = await self.projects.get(p.project_id)
         if project is None:
             raise ProjectNotFound(f"项目不存在: {p.project_id}")
-        args = _profile_to_args(p.command_json)
-        root = project.root_path
-        cwd = str(resolve_within(root, p.cwd_rel)) if p.cwd_rel else root
-        env: dict | None = None
-        if p.env_allowlist:
-            from .command_workflow import build_safe_environment
+        from ..agents.runtime import CancellationToken
+        from .command_workflow import run_whitelisted_command_trusted
 
-            env = build_safe_environment()
-            for name in p.env_allowlist:
-                if (
-                    name
-                    and name in os.environ
-                    and not _ENV_REJECT_PATTERN.search(name)
-                ):
-                    env[name] = os.environ[name]
-        result = await _execute_command(
-            args, cwd, timeout=p.timeout_seconds, env=env
+        args = _profile_to_args(p.command_json)
+        result = await run_whitelisted_command_trusted(
+            self.db,
+            p.project_id,
+            args,
+            timeout=p.timeout_seconds,
+            cancellation=CancellationToken(),
+            # 手动运行是用户触发：无 run 权限模式（走全局校验语义）
+            permission_mode=None,
         )
         result["project_id"] = p.project_id
         result["profile_id"] = profile_id
         result["profile_name"] = p.name
         result["profile_version"] = p.profile_version or 1
-        if p.result_parser:
-            from .result_parsers import parse_command_result
-
-            result["parsed"] = parse_command_result(
-                p.result_parser, result.get("output") or ""
-            )
         return result
 
 

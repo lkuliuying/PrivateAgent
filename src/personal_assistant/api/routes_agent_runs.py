@@ -601,7 +601,13 @@ async def _workspace_command_risk(
     if not profiles:
         return None
     risks = {p.risk_level or "confirm" for p in profiles}
-    if risks <= {"safe"}:
+    # 第六轮（P0-1）：allow_network=False 的 profile 不参与自动执行——
+    # workspace SAFE 仅当全部 profile 为 safe 且全部 allow_network=True；
+    # 存在 allow_network=False → CONFIRM（人工审批把关网络行为；argv 正则
+    # 无法实现真实网络隔离，禁止此类 profile 自动执行）。
+    if risks <= {"safe"} and all(
+        getattr(p, "allow_network", False) for p in profiles
+    ):
         return ToolRiskLevel.SAFE
     return ToolRiskLevel.CONFIRM
 

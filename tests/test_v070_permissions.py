@@ -602,6 +602,7 @@ async def _create_profile(
     risk_level: str = "confirm",
     name: str | None = None,
     version: int = 1,
+    allow_network: bool = False,
 ) -> int:
     profile = ProjectCommandProfile(
         project_id=project_id,
@@ -614,6 +615,7 @@ async def _create_profile(
         result_parser="plain",
         max_output_bytes=64 * 1024,
         risk_level=risk_level,
+        allow_network=allow_network,
     )
     db.add(profile)
     await db.commit()
@@ -764,11 +766,17 @@ def bundle_dispatcher_spec(dispatcher, name):
 async def test_workspace_dispatcher_command_risk_safe_when_all_profiles_safe(
     db, tmp_path, monkeypatch
 ):
-    """workspace + 项目全 safe profile → 命令工具 risk=safe（自动允许）。"""
+    """workspace + 项目全 safe profile（allow_network=True）→ 命令工具
+    risk=safe（自动允许）。第六轮 P0-1：allow_network=False 的 safe profile
+    不参与自动执行。"""
     _enable_coding_flags(monkeypatch)
     project_id, workspace_id = await _make_project(db, tmp_path)
     await _create_profile(
-        db, project_id, args=[sys.executable, "-m", "pytest"], risk_level="safe"
+        db,
+        project_id,
+        args=[sys.executable, "-m", "pytest"],
+        risk_level="safe",
+        allow_network=True,
     )
     run_id = await _create_run(
         db,
@@ -821,11 +829,16 @@ async def test_workspace_dispatcher_command_risk_confirm_when_mixed_profiles(
 async def test_workspace_safe_command_executes_without_approval(
     db, tmp_path, monkeypatch
 ):
-    """workspace + safe profile：命令自动允许，真实执行成功且零审批记录。"""
+    """workspace + safe profile（allow_network=True）：命令自动允许，
+    真实执行成功且零审批记录。"""
     _enable_coding_flags(monkeypatch)
     project_id, workspace_id = await _make_project(db, tmp_path)
     await _create_profile(
-        db, project_id, args=[sys.executable, "-m", "pytest"], risk_level="safe"
+        db,
+        project_id,
+        args=[sys.executable, "-m", "pytest"],
+        risk_level="safe",
+        allow_network=True,
     )
     # 项目内放一个可通过的测试文件，保证 pytest 退出码 0
     (tmp_path / "test_ok.py").write_text(

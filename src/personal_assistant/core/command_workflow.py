@@ -564,8 +564,13 @@ async def _resolve_command(
     project = await ProjectService(db).get(project_id)
     from .repo_patch_sets import ProjectCommandProfileRepository
 
+    # 第六轮（P0-3）：策略遮蔽修复——最长前缀优先，同长度取最严格 risk
+    # （restricted > confirm > safe），杜绝后创建的宽泛 safe profile 遮蔽
+    # 更具体的 restricted profile（list_by_project 按 created_at 倒序）。
+    _RISK_RANK = {"restricted": 3, "confirm": 2, "safe": 1}
     matched_profile = None
     matched_prefix_len = 0
+    best_rank = 0
     for profile in await ProjectCommandProfileRepository(db).list_by_project(
         project_id, enabled=True
     ):
@@ -574,10 +579,17 @@ async def _resolve_command(
         except ValueError:
             continue
         lowered = [a.lower() for a in profile_args]
-        if lowered and [a.lower() for a in args[: len(lowered)]] == lowered:
+        if not lowered or [a.lower() for a in args[: len(lowered)]] != lowered:
+            continue
+        rank = _RISK_RANK.get(profile.risk_level or "confirm", 2)
+        if (
+            matched_profile is None
+            or len(profile_args) > matched_prefix_len
+            or (len(profile_args) == matched_prefix_len and rank > best_rank)
+        ):
             matched_profile = profile
             matched_prefix_len = len(profile_args)
-            break
+            best_rank = rank
     if matched_profile is None and not is_whitelisted_command(args):
         raise PermissionError_("非白名单命令，已拒绝执行")
     # 第五轮（P0-1）：workspace 模式只允许「匹配项目 profile」的命令自动
@@ -605,7 +617,20 @@ async def _resolve_command(
         remaining = args[matched_prefix_len:]
     else:
         remaining = args[whitelisted_prefix_length(args):]
-    _reject_command_args(root, remaining, _command_key(args))
+    command_key = _command_key(args)
+    _reject_command_args(root, remaining, command_key)
+    # 第六轮（P0-2）：safe profile 的未知工具（无完整审计 schema）必须精确
+    # argv——remaining 非空即拒绝（node -e / pwsh -EncodedCommand / uv run
+    # 等解释器代码执行入口；pytest/python/cargo/npm 有 schema 仍按 allowlist）。
+    if (
+        matched_profile is not None
+        and (matched_profile.risk_level or "confirm") == "safe"
+        and command_key is None
+        and remaining
+    ):
+        raise PermissionError_(
+            "safe profile 的未知工具必须使用精确 argv（不允许追加参数）"
+        )
     # 第五轮（P0-3）：allow_network=false（默认）时拒绝 URL 形态参数
     if matched_profile is not None and not matched_profile.allow_network:
         _reject_network_args(remaining)

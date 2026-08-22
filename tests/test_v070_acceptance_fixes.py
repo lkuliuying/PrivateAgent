@@ -598,6 +598,239 @@ async def test_path_uniqueness_case_insensitive(db, tmp_path):
 
 
 # ===========================================================================
+# 第六轮验收修复（2026-08-22 复核）：P0-1 网络隔离本质 / P0-2 未知工具代码
+# 执行 / P0-3 前缀策略遮蔽 / P1-1 手动运行路由绕过
+# ===========================================================================
+
+
+async def test_workspace_safe_requires_allow_network_all(db, tmp_path):
+    """第六轮 P0-1：workspace SAFE 仅当全部 profile safe 且全部
+    allow_network=True；存在 allow_network=False → CONFIRM（禁止自动执行）。"""
+    from personal_assistant.agents import ToolRiskLevel
+    from personal_assistant.api.routes_agent_runs import _workspace_command_risk
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="safe-no-net",
+            command_json={"args": ["curl"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=False,
+            risk_level="safe",
+            result_parser="plain",
+        )
+    )
+    await db.commit()
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        risk = await _workspace_command_risk(db, run_id)
+        assert risk == ToolRiskLevel.CONFIRM
+        # 全部 allow_network=True → SAFE（删除 allow_network=False 的 profile
+        # 后添加 allow_network=True 的 safe profile）
+        from personal_assistant.core.models import ProjectCommandProfile as PCP2
+
+        await db.execute(delete(PCP2).where(PCP2.name == "safe-no-net"))
+        db.add(
+            PCP2(
+                project_id=project_id,
+                name="safe-net",
+                command_json={"args": ["wget"]},
+                kind="custom",
+                timeout_seconds=30,
+                enabled=True,
+                profile_version=1,
+                allow_network=True,
+                risk_level="safe",
+                result_parser="plain",
+            )
+        )
+        await db.commit()
+        risk = await _workspace_command_risk(db, run_id)
+        assert risk == ToolRiskLevel.SAFE
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
+
+
+async def test_safe_unknown_tool_requires_exact_argv(db, tmp_path):
+    """第六轮 P0-2：safe profile 的未知工具必须精确 argv（node -e 等拒绝）。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="node-safe",
+            command_json={"args": ["node"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            risk_level="safe",
+            result_parser="plain",
+        )
+    )
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="node-exact",
+            command_json={"args": ["node", "tool.js"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            risk_level="safe",
+            result_parser="plain",
+        )
+    )
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="node-confirm",
+            command_json={"args": ["node", "run-confirm"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            risk_level="confirm",
+            result_parser="plain",
+        )
+    )
+    await db.commit()
+    try:
+        # safe + 未知工具（node 无 schema）+ 追加参数 → 拒绝
+        # （[node] 同长度仅 node-safe，最严格 = safe → 精确 argv 约束）
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db, project_id, ["node", "-e", "process.exit(0)"], timeout=None
+            )
+        # safe + 精确 argv（node tool.js 全等）→ 允许
+        (tmp_path / "tool.js").write_text("console.log(1)", encoding="utf-8")
+        ok = await _resolve_command(
+            db, project_id, ["node", "tool.js"], timeout=None
+        )
+        assert ok.matched_profile_name == "node-exact"
+        # confirm + 未知工具 + 追加参数 → 允许（人工审批把关；
+        # 最长匹配 [node, run-confirm] 优先）
+        ok2 = await _resolve_command(
+            db, project_id, ["node", "run-confirm", "-e", "x"], timeout=None
+        )
+        assert ok2.matched_profile_name == "node-confirm"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_profile_prefix_longest_match_strictest(db, tmp_path):
+    """第六轮 P0-3：最长前缀优先 + 同长度最严格 risk——宽泛 safe 不遮蔽 restricted。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="py-restricted",
+            command_json={"args": [sys.executable, "-m", "pytest"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            risk_level="restricted",
+            result_parser="plain",
+        )
+    )
+    await db.commit()
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="py-safe",
+            command_json={"args": [sys.executable]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            risk_level="safe",
+            result_parser="plain",
+        )
+    )
+    await db.commit()
+    try:
+        # 最长匹配 = [sys.executable, -m, pytest]（restricted）→ 拒绝
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db, project_id, [sys.executable, "-m", "pytest", "-q"], timeout=None
+            )
+        # 未命中 restricted 前缀的调用落到宽泛 safe（精确 argv 约束）
+        (tmp_path / "tool.py").write_text("print(1)", encoding="utf-8")
+        ok = await _resolve_command(
+            db, project_id, [sys.executable, "tool.py"], timeout=None
+        )
+        assert ok.matched_profile_name == "py-safe"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_command_run_route_rejects_cross_project(client, db, tmp_path):
+    """第六轮 P1-1：run 端点校验 project_id 归属——跨项目引用 404；
+    同项目走受审计执行器（含 argv 校验与进程树清理语义）。"""
+    from personal_assistant.core.models import Project
+
+    root_a = tmp_path / "proj-a"
+    root_b = tmp_path / "proj-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    resp = await client.post(
+        "/projects",
+        json={"name": f"r6-a-{uuid4().hex[:6]}", "root_path": str(root_a)},
+    )
+    assert resp.status_code == 201, resp.text
+    project_a = resp.json()["id"]
+    resp = await client.post(
+        "/projects",
+        json={"name": f"r6-b-{uuid4().hex[:6]}", "root_path": str(root_b)},
+    )
+    assert resp.status_code == 201, resp.text
+    project_b = resp.json()["id"]
+    resp = await client.post(
+        f"/projects/{project_a}/commands",
+        json={
+            "name": "echo-run",
+            "command_json": {"args": [sys.executable, "-c", "print(1)"]},
+            "kind": "custom",
+            "timeout_seconds": 30,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    command_id = resp.json()["id"]
+    try:
+        resp = await client.post(f"/projects/{project_b}/commands/{command_id}/run")
+        assert resp.status_code == 404, resp.text
+        resp = await client.post(f"/projects/{project_a}/commands/{command_id}/run")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["succeeded"] is True
+    finally:
+        from personal_assistant.core.models import ProjectCommandProfile as PCP
+
+        await db.execute(delete(PCP).where(PCP.id == command_id))
+        await db.execute(
+            delete(Project).where(Project.id.in_([project_a, project_b]))
+        )
+        await db.commit()
+
+# ===========================================================================
 # 第二轮验收修复（2026-08-21 复核）：P0-1 命令 schema / P0-2 本地 Ollama
 # loopback / P1-1 DB 终态失败回滚 / P1-2 尾随字符规范化
 # ===========================================================================

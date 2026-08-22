@@ -82,19 +82,26 @@ async def test_run_project_command(client, tmp_path, monkeypatch):
         )
     ).json()["id"]
 
-    async def fake_exec(args, cwd, *, timeout=120, env=None):
+    async def fake_exec(db, project_id, command, **kwargs):
         return {
-            "args": args,
-            "cwd": cwd,
+            "args": command,
+            "cwd": ".",
             "returncode": 0,
             "stdout": "ok",
             "stderr": "",
             "output": "ok",
             "truncated": False,
             "succeeded": True,
+            "processes_remaining": 0,
+            "profile": "测试",
+            "profile_version": 1,
         }
 
-    monkeypatch.setattr("personal_assistant.core.patch_sets._execute_command", fake_exec)
+    # 第六轮（P1-1）：手动运行统一走受审计执行器
+    monkeypatch.setattr(
+        "personal_assistant.core.command_workflow.run_whitelisted_command_trusted",
+        fake_exec,
+    )
 
     res = await client.post(f"/projects/{pid}/commands/{cid}/run")
     assert res.status_code == 200, res.text

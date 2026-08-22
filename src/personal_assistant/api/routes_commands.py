@@ -243,9 +243,23 @@ async def delete_command(
 async def run_command(
     project_id: int, command_id: int, db: AsyncSession = Depends(get_session)
 ):
-    """运行项目命令配置（配置即预授权，不经全局白名单）。"""
+    """运行项目命令配置（配置即预授权，不经全局白名单）。
+
+    第六轮（P1-1）：校验路径 project_id 属于该 profile（跨项目引用拒绝），
+    执行统一走受审计路径（CommandProfileService.run →
+    run_whitelisted_command_trusted：argv/schema/网络校验 + Job Object
+    进程树清理 + 流式有界输出）。
+    """
     try:
-        return await CommandProfileService(db).run(command_id)
+        svc = CommandProfileService(db)
+        profile = await svc.repo.get(command_id)
+        if profile is None:
+            raise CommandProfileNotFound(f"命令配置不存在: {command_id}")
+        if profile.project_id != project_id:
+            raise CommandProfileNotFound(
+                f"命令配置 {command_id} 不属于项目 {project_id}"
+            )
+        return await svc.run(command_id)
     except CommandProfileNotFound as e:
         raise HTTPException(404, str(e))
     except ProjectNotFound as e:
