@@ -349,7 +349,13 @@ const W3_EXECUTIONS: RunExecutionRecord[] = [
     error_code: null,
     error_message: null,
     output: {
-      exit_code: 0,
+      // 与后端 run_command 真实 output_json 字段对齐（args/cwd/returncode）；
+      // 参数含凭据形态，验证呈现层脱敏（W6-R）
+      args: ["pytest", "tests", "-q", "--token=sk-demo-secret-0001"],
+      cwd: "F:/workspace/privateagent-demo",
+      returncode: 0,
+      succeeded: true,
+      truncated: false,
       parsed: {
         parser: "pytest",
         summary: "12 passed in 3.42s",

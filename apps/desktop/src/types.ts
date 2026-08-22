@@ -3,11 +3,19 @@
 /**
  * 工作台视图名。第七阶段从 App.vue/NavRail.vue/TodayView.vue 三处重复定义
  * 提取到此处统一维护，新增视图只改这一处。diagnostics 为第七阶段 M5 诊断中心。
+ * v0.8.0 W6-R：今日页六个工作台模块迁入左侧栏独立主区（提醒/收件箱/长期目标/
+ * 主动简报/快速捕获/隐私与维护）。
  */
 export type View =
   | "chat"
   | "coding"
   | "today"
+  | "reminders"
+  | "inbox"
+  | "goals"
+  | "briefings"
+  | "capture"
+  | "privacy"
   | "kb"
   | "projects"
   | "learning"

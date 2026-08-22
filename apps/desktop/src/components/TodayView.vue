@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 import {
   PhArrowClockwise,
   PhArrowRight,
@@ -12,17 +12,12 @@ import {
   PhSparkle,
   PhTarget,
   PhMagnifyingGlass,
-  PhListBullets,
-  PhCode,
-  PhPaperPlaneTilt,
   PhShieldCheck,
   PhSlidersHorizontal,
-  PhCaretDown,
   PhWrench,
   PhWarningCircle,
   PhDotsThree,
   PhUserCircle,
-  PhCloudCheck,
 } from "@phosphor-icons/vue";
 import { createInbox, createTodayBriefing, getToday } from "../api";
 import type {
@@ -35,18 +30,14 @@ import type {
 } from "../types";
 import { useNotifications } from "../stores/notifications";
 import { OverviewCards, PriorityList } from "../features/today";
-import BriefingPanel from "./BriefingPanel.vue";
-import GoalsWorkspace from "./GoalsWorkspace.vue";
-import InboxPanel from "./InboxPanel.vue";
-import PrivacyAuditPanel from "./PrivacyAuditPanel.vue";
-import ReminderPanel from "./ReminderPanel.vue";
-import CapturePanel from "./CapturePanel.vue";
+// v0.8.0 W6-R：提醒/收件箱/长期目标/主动简报/快速捕获/隐私与维护六个模块已迁出今日页，
+// 经左侧栏路由在独立主区挂载（计划 §4.2/§6.6）；今日页只保留只读数字与快捷链接。
 
-type ComposerMode = "chat" | "knowledge" | "plan" | "code";
+// v0.8.0 W6-R：今日页不再直接发起 Agent 对话（删除 today-composer 及发送链）；
+// 对话统一进入 Agent 页，避免两个输入入口产生能力和草稿分叉。
 
 const emit = defineEmits<{
   navigate: [view: View];
-  submit: [text: string, mode: ComposerMode];
   "open-command": [];
 }>();
 const notify = useNotifications();
@@ -55,14 +46,6 @@ const snap = ref<TodaySnapshot | null>(null);
 const loading = ref(false);
 const busy = ref(false);
 const error = ref("");
-const inboxPanel = ref<InstanceType<typeof InboxPanel> | null>(null);
-const reminderPanel = ref<InstanceType<typeof ReminderPanel> | null>(null);
-const briefingPanel = ref<InstanceType<typeof BriefingPanel> | null>(null);
-const capturePanel = ref<InstanceType<typeof CapturePanel> | null>(null);
-const composerInput = ref<HTMLTextAreaElement | null>(null);
-const composerText = ref("");
-const composerMode = ref<ComposerMode>("chat");
-const composerModeOpen = ref(false);
 const contextTab = ref<"memory" | "sources" | "status">("memory");
 
 const filters = reactive<TodayFilters>({});
@@ -161,8 +144,8 @@ const chips = computed(() => {
     { label: "待关注任务", value: sm.attention_tasks, view: "tasks" as View },
     { label: "失败活动", value: sm.failed_activities, view: "kb" as View },
     { label: "候选记忆", value: sm.draft_memories, view: "memory" as View },
-    { label: "到期提醒", value: sm.due_reminders, view: "today" as View },
-    { label: "收件箱", value: sm.open_inbox, view: "today" as View },
+    { label: "到期提醒", value: sm.due_reminders, view: "reminders" as View },
+    { label: "收件箱", value: sm.open_inbox, view: "inbox" as View },
   ];
 });
 
@@ -226,19 +209,6 @@ const weekdayLabel = computed(() =>
     .replace("星期", "周")
 );
 
-const composerPlaceholder = computed(() => {
-  switch (composerMode.value) {
-    case "knowledge":
-      return "输入要从本地知识库中查找的问题…";
-    case "plan":
-      return "描述目标、期限或约束，我来生成计划…";
-    case "code":
-      return "描述代码问题、仓库或期望改动…";
-    default:
-      return "输入问题、想法或指令…";
-  }
-});
-
 const hasFilters = computed(
   () => !!(filters.type || filters.priority || filters.time || filters.status)
 );
@@ -273,9 +243,10 @@ async function generateBriefing() {
   error.value = "";
   try {
     await createTodayBriefing();
-    await briefingPanel.value?.load();
-    notify.success("今日简报已生成", "已添加到下方简报列表");
+    notify.success("今日简报已生成", "已添加到主动简报列表");
     await load();
+    // W6-R：简报模块已迁入独立主区；创建后导航到目标页（保持创建/通知语义）
+    emit("navigate", "briefings");
   } catch (e) {
     notify.error("生成今日简报失败", String(e));
   } finally {
@@ -284,13 +255,13 @@ async function generateBriefing() {
 }
 
 function newReminder() {
-  // 滚动到下方提醒面板的创建表单。
-  reminderPanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  // W6-R：提醒模块在独立主区；快捷动作导航到目标页（焦点落在创建区）
+  emit("navigate", "reminders");
 }
 
 function quickCapture() {
-  // 滚动到下方快速捕获面板。
-  capturePanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  // W6-R：快速捕获模块在独立主区；快捷动作导航到目标页。
+  emit("navigate", "capture");
 }
 
 function importDocument() {
@@ -322,28 +293,6 @@ function fmt(s: string | null | undefined): string {
   )}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-function selectComposerMode(mode: ComposerMode) {
-  composerMode.value = mode;
-  void nextTick(() => composerInput.value?.focus());
-}
-
-function submitComposer() {
-  const value = composerText.value.trim();
-  if (!value) {
-    composerInput.value?.focus();
-    return;
-  }
-  emit("submit", value, composerMode.value);
-  composerText.value = "";
-}
-
-function onComposerKeydown(event: KeyboardEvent) {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    submitComposer();
-  }
-}
-
 async function saveToInbox(it: TodayItem, itemType: InboxItemType) {
   busy.value = true;
   error.value = "";
@@ -354,7 +303,7 @@ async function saveToInbox(it: TodayItem, itemType: InboxItemType) {
       source_type: it.source_type,
       source_id: it.source_id,
     });
-    await inboxPanel.value?.reload();
+    // W6-R：收件箱列表在独立主区自加载；今日页仅刷新自身快照与通知。
     notify.success("已存为收件箱", cardTitle(it));
     await load();
   } catch (e) {
@@ -364,7 +313,7 @@ async function saveToInbox(it: TodayItem, itemType: InboxItemType) {
   }
 }
 
-/** 最近来源条目点击跳转。 */
+/** 最近来源条目点击跳转（W6-R：简报/回顾落入各自独立主区）。 */
 function onRecentClick(it: TodayRecentItem) {
   switch (it.source_type) {
     case "chat_session":
@@ -374,10 +323,10 @@ function onRecentClick(it: TodayRecentItem) {
       emit("navigate", "kb");
       break;
     case "briefing":
-      briefingPanel.value?.$el?.scrollIntoView({ behavior: "smooth", block: "start" });
+      emit("navigate", "briefings");
       break;
     case "goal_checkin":
-      emit("navigate", "today");
+      emit("navigate", "goals");
       break;
     default:
       break;
@@ -497,63 +446,7 @@ onMounted(load);
           </div>
         </section>
 
-        <section class="reminder-strip">
-          <div class="section-head compact">
-            <h2>提醒</h2>
-            <button class="text-action" @click="newReminder">查看全部（{{ snap?.summary.due_reminders ?? 0 }}）</button>
-          </div>
-          <div class="reminder-chips">
-            <button
-              v-for="r in snap?.due_reminders.slice(0, 3) ?? []"
-              :key="r.id"
-              class="reminder-chip"
-              @click="newReminder"
-            >
-              <PhBell :size="14" />
-              <span>{{ cardTitle(r) }}</span>
-            </button>
-            <button v-if="!snap || snap.due_reminders.length === 0" class="reminder-chip muted" @click="newReminder">
-              <PhBell :size="14" />
-              <span>暂无到期提醒</span>
-            </button>
-          </div>
-        </section>
-
-        <section class="today-composer" aria-label="快速开始">
-          <label for="today-composer-input">让 Agent 帮你推进下一步</label>
-          <textarea
-            id="today-composer-input"
-            ref="composerInput"
-            v-model="composerText"
-            rows="2"
-            :placeholder="composerPlaceholder"
-            @keydown="onComposerKeydown"
-          />
-          <div class="composer-actions">
-            <button class="attachment-button" title="添加附件" aria-label="添加附件"><PhPlus :size="17" /></button>
-            <div class="mode-menu-wrap">
-              <button class="mode-trigger" :aria-expanded="composerModeOpen" @click="composerModeOpen = !composerModeOpen">
-                <PhSparkle v-if="composerMode === 'chat'" :size="16" />
-                <PhMagnifyingGlass v-else-if="composerMode === 'knowledge'" :size="16" />
-                <PhListBullets v-else-if="composerMode === 'plan'" :size="16" />
-                <PhCode v-else :size="16" />
-                {{ { chat: '智能对话', knowledge: '知识检索', plan: '计划模式', code: '代码助手' }[composerMode] }}
-                <PhCaretDown :size="13" />
-              </button>
-              <div v-if="composerModeOpen" class="mode-menu" role="menu">
-                <button v-for="mode in ([['chat','智能对话'],['knowledge','搜索知识库'],['plan','生成计划'],['code','代码助手']] as const)" :key="mode[0]" role="menuitem" @click="selectComposerMode(mode[0]); composerModeOpen = false">{{ mode[1] }}</button>
-              </div>
-            </div>
-            <span class="composer-runtime"><PhCloudCheck :size="15" />本地</span>
-            <button class="send" :disabled="!composerText.trim()" aria-label="发送" title="发送（Enter）" @click="submitComposer">
-              <PhPaperPlaneTilt :size="18" weight="fill" />
-            </button>
-          </div>
-          <div class="composer-meta">
-            <span><PhShieldCheck :size="14" />本地优先处理</span>
-            <span>输入 / 可调用更多能力</span><kbd>Enter</kbd><span>发送</span>
-          </div>
-        </section>
+        <!-- v0.8.0 W6-R：reminder-strip 与 today-composer 已移除；提醒摘要改到上下文中心下方 -->
       </main>
 
       <aside class="today-context" aria-label="上下文中心">
@@ -640,16 +533,39 @@ onMounted(load);
             <button class="context-footer" @click="emit('navigate', 'diagnostics')">查看诊断详情 <PhArrowRight :size="13" /></button>
           </div>
         </section>
-      </aside>
-    </div>
 
-    <div class="workbench-modules">
-      <ReminderPanel ref="reminderPanel" />
-      <InboxPanel ref="inboxPanel" />
-      <GoalsWorkspace />
-      <BriefingPanel ref="briefingPanel" />
-      <CapturePanel ref="capturePanel" />
-      <PrivacyAuditPanel />
+        <!-- v0.8.0 W6-R：提醒摘要（上下文中心下方；有界条目 + 跳转，不重复完整管理） -->
+        <section class="context-card reminder-summary" aria-label="提醒摘要" data-testid="today-reminder-summary">
+          <div class="context-head">
+            <div><span class="context-kicker">REMINDERS</span><h2>提醒</h2></div>
+            <button class="icon-btn compact" title="新建提醒" aria-label="新建提醒" data-testid="today-reminder-new" @click="newReminder">
+              <PhPlus :size="15" />
+            </button>
+          </div>
+          <div class="reminder-summary-list">
+            <button
+              v-for="r in snap?.due_reminders.slice(0, 3) ?? []"
+              :key="r.id"
+              class="reminder-summary-row"
+              data-testid="today-reminder-item"
+              @click="emit('navigate', 'reminders')"
+            >
+              <PhBell :size="14" aria-hidden="true" />
+              <span class="reminder-summary-title">{{ cardTitle(r) }}</span>
+              <small v-if="r.due_at">{{ fmt(r.due_at) }}</small>
+            </button>
+            <div v-if="!snap || snap.due_reminders.length === 0" class="reminder-summary-empty">
+              暂无到期提醒。
+            </div>
+          </div>
+          <div class="reminder-summary-footer">
+            <span class="reminder-count" data-testid="today-reminder-count">{{ snap?.summary.due_reminders ?? 0 }} 项到期</span>
+            <button class="text-action" data-testid="today-reminder-all" @click="emit('navigate', 'reminders')">
+              查看全部 <PhArrowRight :size="13" />
+            </button>
+          </div>
+        </section>
+      </aside>
     </div>
   </section>
 </template>
@@ -848,8 +764,7 @@ onMounted(load);
   cursor: not-allowed;
 }
 .focus-section,
-.schedule-section,
-.reminder-strip {
+.schedule-section {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -988,75 +903,56 @@ onMounted(load);
   color: var(--color-fg-faint);
   font-size: var(--text-sm);
 }
-.reminder-chips {
+.reminder-summary-list {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  flex-direction: column;
+  gap: var(--space-1);
 }
-.reminder-chip {
-  height: 36px;
-  display: inline-flex;
+.reminder-summary-row {
+  display: flex;
   align-items: center;
   gap: var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.62);
+  min-width: 0;
+  padding: var(--space-1) var(--space-1);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--color-fg-muted);
-  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.reminder-summary-row:hover {
+  background: color-mix(in srgb, var(--color-accent-soft) 48%, transparent);
+  color: var(--color-fg);
+}
+.reminder-summary-title {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reminder-summary-row small {
+  flex-shrink: 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--text-xs);
+}
+.reminder-summary-empty {
+  padding: var(--space-1) 0;
+  color: var(--color-fg-faint);
   font-size: var(--text-sm);
 }
-.reminder-chip.muted {
-  color: var(--color-fg-faint);
-}
-.today-composer {
-  margin-top: var(--space-8);
-  border: 2px solid var(--color-accent);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  box-shadow: 0 8px 28px rgba(7, 135, 163, 0.08);
-  overflow: hidden;
-}
-.today-composer textarea {
-  width: 100%;
-  border: none;
-  outline: none;
-  resize: none;
-  padding: var(--space-5);
-  font-family: inherit;
-  color: var(--color-fg);
-  background: transparent;
-  cursor: text;
-}
-.composer-actions {
+.reminder-summary-footer {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-3);
   border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
 }
-.composer-actions button {
-  height: 32px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  background: var(--color-surface);
-  color: var(--color-fg-muted);
-  cursor: pointer;
-  padding: 0 var(--space-3);
-}
-.composer-actions .send {
-  margin-left: auto;
-  width: 40px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  background: var(--color-accent);
-  color: var(--color-accent-fg);
-  border-color: var(--color-accent);
-}
-.today-composer p {
-  margin: 0 0 var(--space-3);
-  text-align: center;
-  color: var(--color-fg-faint);
+.reminder-count {
+  color: var(--color-fg-subtle);
   font-size: var(--text-xs);
 }
 .today-context {
@@ -1200,15 +1096,6 @@ onMounted(load);
 .health-ok.warn {
   color: var(--color-warning-fg);
 }
-.workbench-modules {
-  max-width: 1180px;
-  width: 100%;
-  margin: 0 auto;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-5);
-  align-items: start;
-}
 
 @media (max-width: 1180px) {
   .today-grid {
@@ -1240,7 +1127,6 @@ onMounted(load);
     padding: var(--space-5);
   }
   .chips,
-  .workbench-modules,
   .today-context {
     grid-template-columns: 1fr;
   }
@@ -1315,8 +1201,7 @@ onMounted(load);
   width: 40px;
 }
 .focus-section,
-.schedule-section,
-.reminder-strip {
+.schedule-section {
   margin-top: 28px;
   gap: 12px;
 }
@@ -1548,114 +1433,6 @@ onMounted(load);
   color: var(--color-accent-hover);
   cursor: pointer;
 }
-.reminder-strip {
-  margin-top: 20px;
-}
-.reminder-chip {
-  height: 34px;
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--color-surface) 70%, transparent);
-  cursor: pointer;
-}
-.reminder-chip:hover {
-  color: var(--color-accent-hover);
-  border-color: var(--color-accent);
-}
-.today-composer {
-  margin-top: 24px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--color-surface) 90%, transparent);
-  box-shadow: 0 14px 38px rgba(48, 42, 32, 0.07), inset 0 1px rgba(255, 255, 255, 0.7);
-}
-.today-composer:focus-within {
-  border-color: var(--color-accent);
-  box-shadow: 0 16px 40px rgba(47, 123, 105, 0.1),
-    0 0 0 3px color-mix(in srgb, var(--color-accent-soft) 72%, transparent);
-}
-.today-composer label {
-  display: block;
-  padding: 18px 18px 0;
-  color: var(--color-fg);
-  font-size: 17px;
-  font-weight: var(--font-medium);
-}
-.today-composer textarea {
-  min-height: 70px;
-  padding: 16px 18px 12px;
-  font-size: var(--text-md);
-  line-height: 1.55;
-}
-.today-composer textarea::placeholder {
-  color: var(--color-fg-faint);
-}
-.composer-actions {
-  gap: 8px;
-  padding: 12px 16px;
-  border-top-color: var(--color-border);
-}
-.composer-actions button {
-  height: 34px;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  border-radius: 8px;
-  background: transparent;
-  transition: color var(--duration-fast) var(--ease),
-    border-color var(--duration-fast) var(--ease),
-    background var(--duration-fast) var(--ease),
-    transform var(--duration-fast) var(--ease-out);
-}
-.composer-actions button:hover {
-  color: var(--color-accent-hover);
-  border-color: var(--color-accent);
-  transform: translateY(-1px);
-}
-.composer-actions button.active {
-  color: var(--color-accent-hover);
-  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
-  background: var(--color-accent-soft);
-}
-.composer-actions .send {
-  width: 44px;
-  height: 44px;
-  border-radius: 10px;
-  background: var(--color-accent);
-  color: white;
-  box-shadow: 0 8px 18px color-mix(in srgb, var(--color-accent) 24%, transparent);
-}
-.composer-actions .send:disabled {
-  opacity: 0.42;
-  cursor: not-allowed;
-  transform: none;
-}
-.composer-meta {
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 16px 10px;
-  color: var(--color-fg-faint);
-  font-size: var(--text-xs);
-}
-.composer-meta > span:first-child {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-right: auto;
-  color: var(--color-fg-subtle);
-}
-.composer-meta > span:first-child svg {
-  color: var(--color-accent);
-}
-.composer-meta kbd {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 5px;
-  background: var(--color-surface-sunken);
-  padding: 2px 5px;
-}
 .today-context {
   gap: 14px;
   padding-top: 92px;
@@ -1801,10 +1578,6 @@ onMounted(load);
   color: var(--color-accent-hover);
   border-color: var(--color-accent);
   background: var(--color-accent-soft);
-}
-.workbench-modules {
-  max-width: 1280px;
-  gap: 24px;
 }
 @media (max-width: 1280px) {
   .today-shell {
@@ -1965,9 +1738,9 @@ onMounted(load);
 .today-head { min-height: 64px; padding-bottom: 18px; border-bottom: 1px solid var(--color-border); }
 .today-head h1 { font-size: 24px; font-weight: 650; letter-spacing: -0.02em; }
 .eyebrow { margin-top: 5px; font-size: var(--text-sm); }
-.head-actions { margin-left: auto; height: 36px; }
+.head-actions { margin-left: auto; min-height: 36px; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); justify-content: flex-end; }
 .head-actions button, .runtime-pill { white-space: nowrap; }
-.command-entry { width: min(250px, 20vw); height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-fg-subtle); cursor: pointer; }
+.command-entry { width: clamp(360px, 38vw, 560px); height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-surface-sunken); color: var(--color-fg-subtle); cursor: pointer; }
 .command-entry span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .command-entry kbd { margin-left: auto; font: 10px var(--font-mono); color: var(--color-fg-faint); }
 .command-entry:hover, .command-entry:focus-visible { border-color: var(--color-accent); background: var(--color-surface); outline: none; }
@@ -2021,7 +1794,7 @@ onMounted(load);
 .context-footer { align-self: flex-start; margin-top: auto; display: inline-flex; align-items: center; gap: 4px; border: 0; background: transparent; color: var(--color-accent); cursor: pointer; font-size: var(--text-xs); }
 .health-summary { display: flex; align-items: center; justify-content: space-between; padding: 8px 2px; }
 .compact { width: 30px; height: 30px; }
-@media (max-width: 1320px) { .command-entry { width: 44px; } .command-entry span, .command-entry kbd, .runtime-pill { display: none; } .today-grid { grid-template-columns: minmax(0, 1fr) 300px; } }
+@media (max-width: 1320px) { .command-entry { width: clamp(220px, 30vw, 440px); } .today-grid { grid-template-columns: minmax(0, 1fr) 300px; } }
 @media (max-width: 1050px) { .today-grid { grid-template-columns: 1fr; } .today-context { padding-top: 0; display: block; } .today-overview { grid-template-columns: repeat(2, 1fr); } .overview-item:nth-child(2) { border-right: 0; } .overview-item:nth-child(-n+2) { border-bottom: 1px solid var(--color-border); } }
-@media (max-width: 720px) { .today-head { align-items: flex-start; } .head-actions { flex-wrap: wrap; justify-content: flex-end; } .primary-action span { display: none; } .activity-row { grid-template-columns: 34px minmax(0, 1fr) auto; } .activity-row time, .activity-more { display: none; } }
+@media (max-width: 720px) { .today-head { align-items: flex-start; } .head-actions { flex-wrap: wrap; justify-content: flex-end; } .command-entry { width: 100%; } .command-entry kbd { display: none; } .primary-action span { display: none; } .activity-row { grid-template-columns: 34px minmax(0, 1fr) auto; } .activity-row time, .activity-more { display: none; } }
 </style>

@@ -1,17 +1,17 @@
 <script setup lang="ts">
 /**
- * TaskComposerV2 · 任务输入组合器（0.4.0 D3）
- * 底部输入区使用占位空间；区分「正在请求停止」与「已停止」：
- * 停止后按钮立即进入「正在停止…」禁用态，由父层在流结束后复位。
+ * TaskComposerV2 · 任务输入组合器（0.4.0 D3；v0.8.0 W6-R3 重排）
+ *
+ * 底部输入区：输入/附件/发送停止。W6-R3：删除「知识检索」「生成记忆」手动按钮、
+ * 快捷键与空占位（能力改为自动运行，见 model/autoContext.ts）；工具栏提供
+ * toolbar-left（权限下拉位）与 toolbar-right（模型入口/上下文用量位）插槽；
+ * 控制行在 1280/150%/长模型名下有序换行，不遮挡执行按钮。
  */
 import { computed } from "vue";
 import {
-  PhBrain,
-  PhDatabase,
   PhPaperclip,
   PhPlay,
   PhStop,
-  PhX,
 } from "@phosphor-icons/vue";
 import PaStatusIndicator from "../../design/PaStatusIndicator.vue";
 
@@ -20,17 +20,15 @@ const props = withDefaults(
   defineProps<{
     streaming: boolean;
     pendingTool: boolean;
-    knowledgeBase: boolean;
+    providerLabel?: string;
     stopRequested?: boolean;
     stopped?: boolean;
   }>(),
-  { stopRequested: false, stopped: false }
+  { providerLabel: "本地", stopRequested: false, stopped: false }
 );
 const emit = defineEmits<{
   send: [text: string];
   stop: [];
-  "toggle-kb": [];
-  "gen-candidates": [];
 }>();
 
 const canSend = computed(() => Boolean(model.value.trim()) && !props.streaming && !props.pendingTool);
@@ -46,13 +44,8 @@ function submit() {
 <template>
   <div class="composer-wrap" data-testid="task-composer">
     <div class="composer" :class="{ 'is-busy': streaming, 'is-stopping': stopRequested }">
-      <div v-if="knowledgeBase || pendingTool" class="composer-context" aria-label="已引用上下文">
-        <button v-if="knowledgeBase" class="context-chip" @click="emit('toggle-kb')">
-          <PhDatabase :size="13" />
-          <span>本地知识库</span>
-          <PhX :size="11" />
-        </button>
-        <span v-if="pendingTool" class="context-chip context-chip--warning">等待工具审批</span>
+      <div v-if="pendingTool" class="composer-context" aria-label="已引用上下文">
+        <span class="context-chip context-chip--warning">等待工具审批</span>
       </div>
 
       <textarea
@@ -70,36 +63,22 @@ function submit() {
           class="composer-icon"
           type="button"
           disabled
-          aria-label="添加附件（请先在右侧 Files 授权路径）"
-          title="请先在右侧 Files 授权文件或目录"
+          aria-label="添加附件（请先在授权路径中选择文件）"
+          title="请先在授权文件或目录中选择"
         >
           <PhPaperclip :size="18" />
         </button>
-        <button
-          class="composer-chip"
-          :class="{ active: knowledgeBase }"
-          type="button"
-          :aria-pressed="knowledgeBase"
-          @click="emit('toggle-kb')"
-        >
-          <PhDatabase :size="14" />
-          <span>知识检索</span>
-        </button>
-        <button
-          class="composer-chip"
-          type="button"
-          :disabled="streaming"
-          @click="emit('gen-candidates')"
-        >
-          <PhBrain :size="14" />
-          <span>生成记忆</span>
-        </button>
+        <!-- W6-R3：原知识检索位 = 命令权限下拉（由父层插槽提供） -->
+        <slot name="toolbar-left" />
+
+        <!-- W6-R3：模型/Provider 入口与上下文用量（由父层插槽提供） -->
+        <slot name="toolbar-right" />
 
         <PaStatusIndicator
           class="composer-mode"
           :tone="streaming ? 'info' : 'ok'"
           :pulse="streaming"
-          :label="streaming ? 'PrivateAgent · 运行中' : 'PrivateAgent · 本地'"
+          :label="streaming ? `PrivateAgent · 运行中` : `PrivateAgent · ${providerLabel}`"
         />
 
         <button
@@ -208,6 +187,7 @@ textarea:disabled {
 }
 .composer-toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3) var(--space-3);

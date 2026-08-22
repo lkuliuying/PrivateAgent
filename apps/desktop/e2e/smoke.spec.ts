@@ -194,7 +194,7 @@ test.describe("E2E smoke", () => {
     expect(chatStreamCalls).toBe(1);
   });
 
-  test("Today 首屏渲染", async ({ page }) => {
+  test("Today 首屏渲染（W6-R：六模块迁出，收件项在独立主区验证）", async ({ page }) => {
     await mockApi(page, (url) => {
       if (url.includes("/health")) return GREEN_HEALTH;
       if (url.includes("/today")) return TODAY_SNAPSHOT;
@@ -227,7 +227,11 @@ test.describe("E2E smoke", () => {
     // 当前产品默认进入 Agent 工作区；显式进入 Today 后再验证首屏。
     await navigate(page, "today");
     await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-current", "page");
-    // Today 视图渲染了模拟收件项（宽超时，等待 /today 返回后渲染）
+    // v0.8.0 W6-R：今日页不再内嵌六个完整面板；收件箱只读数字仍在（宽超时，等 /today 返回）
+    await expect(page.locator(".workbench-modules")).toHaveCount(0);
+    await expect(page.getByText("收件箱").first()).toBeVisible({ timeout: 20_000 });
+    // 收件项在独立收件箱主区呈现（路由归属迁移，业务能力保真）
+    await navigate(page, "inbox");
     await expect(page.getByText("E2E测试收件项")).toBeVisible({ timeout: 20_000 });
   });
 
@@ -315,7 +319,8 @@ test.describe("E2E smoke", () => {
       }));
       expect(metrics.body).toBeLessThanOrEqual(metrics.viewport);
       expect(metrics.root).toBeLessThanOrEqual(metrics.viewport);
-      await expect(page.locator(".today-composer")).toBeVisible();
+      // W6-R2：today-composer 已移除；头部加长搜索入口仍在且无溢出
+      await expect(page.locator(".command-entry")).toBeVisible();
       if (viewport.width === 1440) {
         await page.screenshot({ path: "test-results/today-workbench-1440x900.png", fullPage: false });
       }

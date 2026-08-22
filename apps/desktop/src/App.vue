@@ -15,6 +15,13 @@ import ProjectWorkspace from "./components/ProjectWorkspace.vue";
 import LearningWorkspace from "./components/LearningWorkspace.vue";
 import MemoryWorkspace from "./components/MemoryWorkspace.vue";
 import TodayView from "./components/TodayView.vue";
+// v0.8.0 W6-R：今日页六模块迁入左侧栏独立主区（计划 §4.1/§6.6）
+import ReminderPanel from "./components/ReminderPanel.vue";
+import InboxPanel from "./components/InboxPanel.vue";
+import GoalsWorkspace from "./components/GoalsWorkspace.vue";
+import BriefingPanel from "./components/BriefingPanel.vue";
+import CapturePanel from "./components/CapturePanel.vue";
+import PrivacyAuditPanel from "./components/PrivacyAuditPanel.vue";
 import SettingsView from "./components/SettingsView.vue";
 import DiagnosticsView from "./components/DiagnosticsView.vue";
 import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
@@ -34,6 +41,7 @@ import {
   cmdRelaunchApp,
   isDesktopRuntime,
   getApiInfo,
+  getToday,
 } from "./api";
 import type { View } from "./types";
 import { viewLabel } from "./models/viewRegistry";
@@ -95,6 +103,22 @@ const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
 const searchOpen = ref(false);
 
+// v0.8.0 W6-R：个人工作区待处理徽标（今日快照只读数字；拉取失败不阻断导航）
+const personalCounts = ref<Partial<Record<View, number>>>({});
+async function loadPersonalCounts(): Promise<void> {
+  try {
+    const snapshot = await getToday();
+    personalCounts.value = {
+      reminders: snapshot.summary.due_reminders,
+      inbox: snapshot.summary.open_inbox,
+      privacy:
+        snapshot.maintenance.failed_activities + snapshot.maintenance.orphan_evidence,
+    };
+  } catch {
+    /* 徽标缺失不影响入口可用性 */
+  }
+}
+
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
 type BootState = "checking" | "wizard" | "starting" | "done" | "dev" | "error";
@@ -137,6 +161,7 @@ const {
   hasPendingTool,
   taskState,
   currentSession,
+  runtimeCapabilities,
   selectSession,
   newSession,
   sendMessage,
@@ -157,19 +182,17 @@ const previewMode =
 const workspacePreview = previewMode ? createAgentWorkspacePreview() : null;
 // 当前在上下文中展示的引用片段 id（点击来源后设置）
 const currentChunkId = ref<number | null>(null);
-// 右侧上下文栏折叠状态：宽屏默认展开，窄屏默认收起
+// 右侧上下文栏：W6-R2 改为按需抽屉（不作永久第三列），经 SessionHeader 入口打开
 const INSPECTOR_MIN_W = 1320;
 // v0.8.0 W1：coding 侧栏 <1280px 进入抽屉模式（W0 冻结 §2.2），rail 槽收为 0 宽
 const CODING_RAIL_DRAWER_MAX = 1280;
 const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280
 );
-const inspectorOpen = ref(
-  typeof window !== "undefined" && window.innerWidth >= INSPECTOR_MIN_W
-);
-const inspectorToggleable = computed(
-  () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
-);
+// 右侧上下文栏：W6-R3 已移除顶部上下文按钮（上下文由 Runtime 自动装配，
+// 底部用量模块反馈）；v2 壳不再提供顶栏切换入口，旧壳保留既有行为。
+const inspectorOpen = ref(false);
+const inspectorToggleable = computed(() => false);
 let pageAnimations: AnimationHandle | null = null;
 
 // 顶栏标题（视图注册表 + 会话标题）
@@ -409,34 +432,17 @@ function onSearchNavigate(v: View) {
 
 async function initializeConnectedWorkspace() {
   await legacyChat.initializeLegacyWorkspace();
-  // v0.8.0 W1：coding 工作台就绪后加载项目树并落在首页（计划 §1：首页为核心入口）
+  // v0.8.0 W1：coding 工作台就绪后加载项目树并落在首页（计划 §1：首页为核心入口）；
+  // W6-R：深链/刷新后保持已恢复的视图（仅默认 chat 回落 coding 首页）。
   if (codingEnabled) {
     if (!codingPreviewStore.value) void codingStore.bootstrap();
-    if (view.value !== "coding") onNavigate("coding");
+    if (view.value === "chat") onNavigate("coding");
+    void loadPersonalCounts();
   }
 }
 
-type TodayComposerMode = "chat" | "knowledge" | "plan" | "code";
-
-async function onTodaySubmit(text: string, mode: TodayComposerMode) {
-  const value = text.trim();
-  if (!value || streaming.value || hasPendingTool.value) return;
-
-  if (!currentSession.value) {
-    await newSession();
-  }
-  if (!currentSession.value) return;
-
-  const prefixes: Record<TodayComposerMode, string> = {
-    chat: "",
-    knowledge: "请优先结合本地知识库回答：",
-    plan: "请帮我生成一个清晰、可执行的计划：",
-    code: "请作为代码助手协助我：",
-  };
-  knowledgeBase.value = mode === "knowledge";
-  history.navigate({ view: "chat" });
-  sendMessage(`${prefixes[mode]}${value}`);
-}
+// v0.8.0 W6-R2：今日页已移除 Agent 对话框，onTodaySubmit 发送链随之删除；
+// 发起对话统一进入 Agent 页（计划 §4.2 布局约束）。
 
 </script>
 
@@ -509,6 +515,7 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
           :store="codingActiveStoreRef"
           :active-view="view"
           :collapsed="railCollapsed"
+          :personal-counts="personalCounts"
           @navigate="onNavigate"
           @new-task="onCodingNewTask"
           @open-command="commandPaletteOpen = true"
@@ -549,9 +556,27 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
       <TodayView
         v-else-if="view === 'today'"
         @navigate="onNavigate"
-        @submit="onTodaySubmit"
         @open-command="commandPaletteOpen = true"
       />
+      <!-- v0.8.0 W6-R：六模块独立主区（沿用既有业务组件，能力/确认/通知语义保真） -->
+      <section v-else-if="view === 'reminders'" class="personal-view" aria-label="提醒">
+        <ReminderPanel />
+      </section>
+      <section v-else-if="view === 'inbox'" class="personal-view" aria-label="收件箱">
+        <InboxPanel />
+      </section>
+      <section v-else-if="view === 'goals'" class="personal-view" aria-label="长期目标">
+        <GoalsWorkspace />
+      </section>
+      <section v-else-if="view === 'briefings'" class="personal-view" aria-label="主动简报">
+        <BriefingPanel />
+      </section>
+      <section v-else-if="view === 'capture'" class="personal-view" aria-label="快速捕获">
+        <CapturePanel />
+      </section>
+      <section v-else-if="view === 'privacy'" class="personal-view" aria-label="隐私与维护">
+        <PrivacyAuditPanel />
+      </section>
       <KnowledgeView v-else-if="view === 'kb'" />
       <ProjectWorkspace v-else-if="view === 'projects'" />
       <LearningWorkspace v-else-if="view === 'learning'" />
@@ -561,19 +586,22 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
         v-else-if="view === 'chat' && currentSession"
         :messages="messages"
         :streaming="streaming"
-        :knowledge-base="knowledgeBase"
         :pending-tool="hasPendingTool"
         :task-state="taskState"
+        :sessions="sessions"
+        :current-session-id="currentSessionId"
+        :capabilities="runtimeCapabilities"
         @send="sendMessage"
         @stop="stopGenerate"
-        @toggle-kb="knowledgeBase = !knowledgeBase"
         @approve="onApproveToolCall"
         @reject="onRejectToolCall"
         @approve-agent="onApproveAgentRunTool"
         @reject-agent="onRejectAgentRunTool"
         @select-chunk="currentChunkId = $event"
-        @gen-candidates="onGenCandidates"
         @save-inbox="onSaveMessageToInbox"
+        @select-session="(id) => void selectSession(id, false)"
+        @new-session="newSession"
+        @configure-model="onNavigate('settings')"
       />
       <div v-else class="welcome">
         <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
@@ -639,9 +667,27 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
       <TodayView
         v-else-if="view === 'today'"
         @navigate="onNavigate"
-        @submit="onTodaySubmit"
         @open-command="commandPaletteOpen = true"
       />
+      <!-- v0.8.0 W6-R：旧壳回退路径同样可经命令面板/今日页链接到达六模块 -->
+      <section v-else-if="view === 'reminders'" class="personal-view" aria-label="提醒">
+        <ReminderPanel />
+      </section>
+      <section v-else-if="view === 'inbox'" class="personal-view" aria-label="收件箱">
+        <InboxPanel />
+      </section>
+      <section v-else-if="view === 'goals'" class="personal-view" aria-label="长期目标">
+        <GoalsWorkspace />
+      </section>
+      <section v-else-if="view === 'briefings'" class="personal-view" aria-label="主动简报">
+        <BriefingPanel />
+      </section>
+      <section v-else-if="view === 'capture'" class="personal-view" aria-label="快速捕获">
+        <CapturePanel />
+      </section>
+      <section v-else-if="view === 'privacy'" class="personal-view" aria-label="隐私与维护">
+        <PrivacyAuditPanel />
+      </section>
       <KnowledgeView v-else-if="view === 'kb'" />
       <ProjectWorkspace v-else-if="view === 'projects'" />
       <LearningWorkspace v-else-if="view === 'learning'" />
@@ -755,6 +801,14 @@ async function onTodaySubmit(text: string, mode: TodayComposerMode) {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* v0.8.0 W6-R：个人工作区独立主区容器（面板自带内部布局，壳层仅提供滚动与边距） */
+.personal-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
 }
 
 /* chat 无会话时的欢迎占位（位于主工作区） */

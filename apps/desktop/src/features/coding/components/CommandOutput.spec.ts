@@ -12,6 +12,11 @@ function execution(overrides: Partial<RunExecutionRecord> = {}): RunExecutionRec
     error_code: null,
     error_message: null,
     output: {
+      // 与后端真实 output_json 字段对齐（args/cwd/returncode）
+      args: ["pytest", "tests", "-q"],
+      cwd: "F:/workspace/demo",
+      returncode: 0,
+      succeeded: true,
       exit_code: 0,
       parsed: {
         parser: "pytest",
@@ -82,6 +87,10 @@ describe("CommandOutput", () => {
         finished: true,
       },
     });
+    // W6-R：输出体默认折叠，展开后渲染行（长输出不拖垮页面）
+    expect(wrapper.find('[data-testid="command-output-body"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("2 行");
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="command-output-body"]').text()).toContain("collected 12 items");
     expect(wrapper.find('[data-testid="command-output-body"]').text()).toContain("warning: something");
   });
@@ -96,5 +105,63 @@ describe("CommandOutput", () => {
     expect(wrapper.text()).toContain("输出进行中");
     await wrapper.find('[data-testid="command-output-poll"]').trigger("click");
     expect(wrapper.emitted("load")).toBeTruthy();
+  });
+
+  // ============ v0.8.0 W6-R：命令卡可追溯事实（计划 §4.3/§6.6） ============
+  it("默认呈现脱敏命令文本、工作目录范围、退出码与耗时", () => {
+    const wrapper = mount(CommandOutput, { props: { execution: execution(), page: null } });
+    const command = wrapper.find('[data-testid="command-line"]');
+    expect(command.text()).toContain("pytest tests -q");
+    expect(wrapper.find('[data-testid="command-cwd"]').text()).toContain("F:/workspace/demo");
+    expect(wrapper.find('[data-testid="command-exit-code"]').text()).toContain("退出码 0");
+    expect(wrapper.find('[data-testid="command-duration"]').text()).toContain("耗时");
+  });
+
+  it("命令参数中的凭据呈现为 [REDACTED]（零容忍：不泄露敏感信息）", () => {
+    const wrapper = mount(CommandOutput, {
+      props: {
+        execution: execution({
+          output: {
+            args: [
+              "git",
+              "push",
+              "https://user:hunter2@example.com/repo.git",
+              "--token=sk-live-abcdef",
+            ],
+            cwd: "F:/workspace/demo",
+            returncode: 0,
+          },
+        }),
+        page: null,
+      },
+    });
+    const text = wrapper.find('[data-testid="command-line"]').text();
+    expect(text).not.toContain("hunter2");
+    expect(text).not.toContain("sk-live-abcdef");
+    expect(text).toContain("[REDACTED]");
+  });
+
+  it("非零退出码呈现失败语义色", () => {
+    const wrapper = mount(CommandOutput, {
+      props: {
+        execution: execution({ status: "failed", output: { returncode: 2 } }),
+        page: null,
+      },
+    });
+    const exit = wrapper.find('[data-testid="command-exit-code"]');
+    expect(exit.text()).toContain("退出码 2");
+    expect(exit.classes()).toContain("bad");
+  });
+
+  it("无公开命令事实时不虚构命令/目录（只显示状态与错误）", () => {
+    const wrapper = mount(CommandOutput, {
+      props: {
+        execution: execution({ output: null, error_message: "工具执行超时" }),
+        page: null,
+      },
+    });
+    expect(wrapper.find('[data-testid="command-line"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="command-cwd"]').exists()).toBe(false);
+    expect(wrapper.text()).toContain("工具执行超时");
   });
 });

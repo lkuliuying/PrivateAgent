@@ -110,4 +110,89 @@ describe("RunTranscript", () => {
     const wrapper = mount(RunTranscript, { props: { projection: null } });
     expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(true);
   });
+
+  // ============ v0.8.0 W6-R：工具卡可追溯详情（计划 §4.3/§6.6） ============
+  const CMD_EXECUTION = {
+    id: "exec-cmd",
+    tool_name: "run_whitelisted_command",
+    tool_version: "1.0.0",
+    status: "succeeded",
+    error_code: null,
+    error_message: null,
+    output: {
+      args: ["pytest", "tests", "--token=sk-demo"],
+      cwd: "F:/workspace/demo",
+      returncode: 0,
+      parsed: { parser: "pytest", summary: "12 passed in 3.42s" },
+    },
+    created_at: "2026-08-22T00:10:00Z",
+    completed_at: "2026-08-22T00:10:04Z",
+  };
+
+  function toolProjection() {
+    return projection([
+      [1, "run.started", {}],
+      [2, "tool.started", { tool_call_id: "tc-cmd", name: "run_whitelisted_command" }],
+      [3, "tool.completed", { tool_call_id: "tc-cmd", name: "run_whitelisted_command", ordinal: 1 }],
+    ]);
+  }
+
+  it("工具卡呈现脱敏命令、起止时间、耗时与结果摘要", () => {
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: toolProjection(),
+        approvals: [],
+        executionByTool: { "tc-cmd": CMD_EXECUTION },
+        executions: [CMD_EXECUTION],
+      },
+      attachTo: document.body,
+    });
+    const command = wrapper.find('[data-testid="tool-command"]');
+    expect(command.text()).toContain("pytest tests");
+    expect(command.text()).not.toContain("sk-demo");
+    expect(command.text()).toContain("[REDACTED]");
+    expect(wrapper.find('[data-testid="tool-time"]').text()).toContain("4.0s");
+    expect(wrapper.find('[data-testid="tool-result"]').text()).toContain("12 passed in 3.42s");
+    // 单次执行不呈现重试徽标（不虚构）
+    expect(wrapper.find('[data-testid="tool-retry"]').exists()).toBe(false);
+  });
+
+  it("同名执行 ≥2 次时呈现重试序号（公开事实）", () => {
+    const first = { ...CMD_EXECUTION, id: "exec-1", completed_at: "2026-08-22T00:10:02Z" };
+    const second = { ...CMD_EXECUTION, id: "exec-2", status: "failed" };
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "run.started", {}],
+          [2, "tool.started", { tool_call_id: "tc-a", name: "run_whitelisted_command" }],
+          [3, "tool.failed", { tool_call_id: "tc-a", name: "run_whitelisted_command", error: "退出码 1" }],
+          [4, "tool.started", { tool_call_id: "tc-b", name: "run_whitelisted_command" }],
+          [5, "tool.completed", { tool_call_id: "tc-b", name: "run_whitelisted_command", ordinal: 2 }],
+        ]),
+        approvals: [],
+        executionByTool: { "tc-a": first, "tc-b": second },
+        executions: [first, second],
+      },
+      attachTo: document.body,
+    });
+    const retries = wrapper.findAll('[data-testid="tool-retry"]');
+    expect(retries.length).toBe(2);
+    expect(retries[0].text()).toContain("1/2");
+    expect(retries[1].text()).toContain("2/2");
+  });
+
+  it("无执行记录的工具卡不虚构时序/参数（只呈现状态事实）", () => {
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "tool.started", { tool_call_id: "tc-x", name: "search_kb" }],
+        ]),
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-testid="tool-command"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tool-time"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="tool-result"]').exists()).toBe(false);
+  });
 });

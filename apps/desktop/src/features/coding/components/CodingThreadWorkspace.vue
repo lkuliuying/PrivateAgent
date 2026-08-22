@@ -363,6 +363,7 @@ function toggleContext(): void {
             :approval-previews="approvalPreviews"
             :preview-loading="previewLoading"
             :execution-by-tool="executionByTool"
+            :executions="executions"
             :output-pages="outputPages"
             :output-loading="outputLoading"
             :preview-mode="previewMode"

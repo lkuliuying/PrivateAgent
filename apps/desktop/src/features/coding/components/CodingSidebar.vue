@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * CodingSidebar · v0.8.0 W1
+ * CodingSidebar · v0.8.0 W1（W6-R 增补）
  *
  * W0 冻结 §2.1 左侧栏：一级动作（新建任务/搜索/自动化/扩展）+
- * Project → Workspace/branch → Thread 树 + 底部（用户与本地数据状态/
+ * 个人工作区六入口（提醒/收件箱/长期目标/主动简报/快速捕获/隐私与维护，
+ * W6-R 计划 §4.1）+ Project → Workspace/branch → Thread 树 + 底部（用户与本地数据状态/
  * 设置/诊断/折叠）。240px；折叠 72px 图标态；<1280px 抽屉模式
  * （Teleport 覆盖层 + 浮标入口，matchMedia 监听随卸载清理）。
  * 数据经 codingWorkspaceStore 注入（默认单例），组件不自取 API。
@@ -12,16 +13,22 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   PhActivity,
   PhArrowClockwise,
+  PhBell,
   PhChatsCircle,
   PhFolderSimple,
   PhGearSix,
   PhGitBranch,
   PhListChecks,
   PhMagnifyingGlass,
+  PhNewspaper,
+  PhNotePencil,
   PhPlus,
   PhPuzzlePiece,
+  PhShieldCheck,
   PhSidebarSimple,
   PhSparkle,
+  PhTarget,
+  PhTray,
   PhUserCircle,
   PhX,
 } from "@phosphor-icons/vue";
@@ -32,17 +39,34 @@ import {
 } from "../model/contracts";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 
+/** 个人工作区六入口（W6-R：今日页迁出的纵向模块，计划 §4.1/§6.6） */
+const PERSONAL_ENTRIES: ReadonlyArray<{
+  view: View;
+  label: string;
+  icon: typeof PhBell;
+}> = [
+  { view: "reminders", label: "提醒", icon: PhBell },
+  { view: "inbox", label: "收件箱", icon: PhTray },
+  { view: "goals", label: "长期目标", icon: PhTarget },
+  { view: "briefings", label: "主动简报", icon: PhNewspaper },
+  { view: "capture", label: "快速捕获", icon: PhNotePencil },
+  { view: "privacy", label: "隐私与维护", icon: PhShieldCheck },
+];
+
 const props = withDefaults(
   defineProps<{
     store?: CodingWorkspaceStore;
     /** 当前壳视图（高亮首页/旧页入口） */
     activeView?: View;
     collapsed?: boolean;
+    /** 待处理数量徽标（今日快照只读数字；缺省不展示） */
+    personalCounts?: Partial<Record<View, number>> | null;
   }>(),
   {
     store: () => useCodingWorkspace(),
     activeView: "coding" as View,
     collapsed: false,
+    personalCounts: null,
   }
 );
 
@@ -58,6 +82,14 @@ const loadPhase = computed(() => props.store.loadPhase.value);
 const selectedProjectId = computed(() => props.store.selectedProjectId.value);
 const selectedWorkspaceId = computed(() => props.store.selectedWorkspaceId.value);
 const selectedThreadId = computed(() => props.store.selectedThreadId.value);
+
+const personalEntries = PERSONAL_ENTRIES;
+
+/** 待处理徽标：仅展示正整数（只读数字，不呈现完整模块） */
+function personalCount(view: View): number | null {
+  const value = props.personalCounts?.[view];
+  return typeof value === "number" && value > 0 ? value : null;
+}
 
 const onCodingHome = computed(
   () => props.activeView === "coding" && selectedThreadId.value === null
@@ -249,6 +281,32 @@ onBeforeUnmount(() => {
           <PhPuzzlePiece :size="16" />
           <span class="action-label">扩展</span>
         </button>
+      </div>
+
+      <!-- W6-R：个人工作区六入口（独立主区；只读待处理徽标） -->
+      <div class="sidebar-personal" data-testid="coding-personal">
+        <div v-if="!collapsed || isNarrow" class="personal-heading">个人工作区</div>
+        <div class="personal-items">
+          <button
+            v-for="entry in personalEntries"
+            :key="entry.view"
+            class="action-item personal-item"
+            :class="{ active: activeView === entry.view }"
+            :aria-current="activeView === entry.view ? 'page' : undefined"
+            :title="collapsed && !isNarrow ? entry.label : undefined"
+            :aria-label="entry.label"
+            :data-testid="`coding-personal-${entry.view}`"
+            @click="emit('navigate', entry.view)"
+          >
+            <component :is="entry.icon" :size="16" />
+            <span class="action-label">{{ entry.label }}</span>
+            <span
+              v-if="personalCount(entry.view) !== null"
+              class="personal-badge"
+              :data-testid="`coding-personal-badge-${entry.view}`"
+            >{{ personalCount(entry.view) }}</span>
+          </button>
+        </div>
       </div>
 
       <div v-if="!collapsed || isNarrow" class="sidebar-tree" data-testid="coding-tree">
@@ -574,6 +632,49 @@ onBeforeUnmount(() => {
 }
 .action-item[aria-current="page"] {
   box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.sidebar-personal {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-2) 0;
+  border-top: 1px solid var(--color-border);
+  margin-top: var(--space-2);
+}
+.personal-heading {
+  padding: 0 var(--space-2) var(--space-1);
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+  letter-spacing: 0.08em;
+}
+.personal-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.personal-item {
+  position: relative;
+}
+.personal-badge {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-full);
+  background: var(--color-warning-soft);
+  color: var(--color-warning-fg);
+  font-size: var(--pa-text-meta);
+  text-align: center;
+}
+.is-collapsed .personal-badge {
+  position: absolute;
+  top: 2px;
+  right: 10px;
+  min-width: 8px;
+  height: 8px;
+  padding: 0;
+  overflow: hidden;
+  color: transparent;
 }
 
 .sidebar-tree {

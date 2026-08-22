@@ -191,28 +191,21 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
     await expect(page.getByText("只读事务")).toBeVisible();
   });
 
-  test("Diff 弹窗 Esc 关闭后焦点回到触发按钮", async ({ page }) => {
+  test("对话框 Esc 关闭后焦点回到触发按钮（W6-R3：上下文栏入口已移除，载体改为设置页对话框）", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockApi(page, "approved");
     await page.goto("/?ui=v2");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
-    await page.getByRole("button", { name: "键盘检查会话" }).first().click();
-    await page.getByTestId("task-composer-input").fill("请修改文件");
-    await page.getByTestId("task-composer-submit").click();
-
-    // 中间断言：ContextRail 存在且 executions 已加载（不允许跳过）
-    await expect(page.locator(".context-rail")).toBeVisible({ timeout: 10_000 });
-    const railText = await page.locator(".context-rail").innerText();
-    expect(railText).toContain("src/main.py");
-    expect(railText).toContain("已修改");
-
-    const diffTrigger = page.getByRole("button", { name: "查看文件变更" });
+    // W6-R3：Agent 页上下文栏/顶部控件已移除，PaDialog 焦点恢复契约改用仍活跃的载体验证（不允许跳过）
+    await expect(page.getByTestId("session-context-toggle")).toHaveCount(0);
+    await page.getByTestId("nav-settings").click();
+    const diffTrigger = page.getByRole("button", { name: "新建连接" }).first();
     await expect(diffTrigger).toBeVisible({ timeout: 10_000 });
     await diffTrigger.focus();
     await diffTrigger.click();
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await expect(dialog).toContainText("src/main.py");
+    await expect(dialog).toContainText("新建只读连接");
     await page.keyboard.press("Escape");
     await expect(dialog).not.toBeVisible();
     // 焦点必须回到触发按钮（PaDialog 卸载时恢复 previousFocus）

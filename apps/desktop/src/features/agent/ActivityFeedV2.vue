@@ -30,8 +30,10 @@ const props = withDefaults(
     messages: AgentWorkspaceMessage[];
     streaming: boolean;
     taskState?: AgentTaskState;
+    /** W6-R2：嵌入 turn 容器时隐藏流标题（逐轮分组） */
+    showHeading?: boolean;
   }>(),
-  { taskState: "idle" }
+  { taskState: "idle", showHeading: true }
 );
 
 const emit = defineEmits<{
@@ -85,8 +87,8 @@ function toolStatusLabel(status: string): string {
 </script>
 
 <template>
-  <section class="feed" aria-labelledby="feed-title">
-    <div class="feed-heading">
+  <section class="feed" :aria-labelledby="showHeading ? 'feed-title' : undefined">
+    <div v-if="showHeading" class="feed-heading">
       <div>
         <span class="feed-kicker">ACTIVITY</span>
         <h2 id="feed-title">任务活动</h2>

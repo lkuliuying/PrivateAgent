@@ -241,7 +241,13 @@ function mockW3(page: Page, scenario: W3Scenario) {
               error_code: null,
               error_message: null,
               output: {
-                exit_code: 0,
+                // 与后端 run_command 真实 output_json 字段对齐（args/cwd/returncode）；
+                // 参数含凭据形态，验证呈现层脱敏（W6-R）
+                args: ["pytest", "tests", "-q", "--token=sk-e2e-secret"],
+                cwd: "F:/workspace/privateagent-demo",
+                returncode: 0,
+                succeeded: true,
+                truncated: false,
                 parsed: { parser: "pytest", summary: "12 passed in 3.42s", passed: 12, failed: 0, skipped: 0, errors: 0, failures: [], truncated: false },
               },
               created_at: "2026-08-22T00:10:00Z",
@@ -334,16 +340,27 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await expect(page.getByTestId("thread-run-status")).toHaveText(/已完成/, { timeout: 20000 });
   });
 
-  test("命令输出与测试报告：parsed 摘要 + 按需加载输出行（矩阵 12）", async ({ page }) => {
+  test("命令输出与测试报告：脱敏命令/退出码/耗时 + parsed 摘要 + 按需展开输出行（矩阵 12，W6-R 增强）", async ({ page }) => {
     await mockW3(page, { frames: commandFrames }).route;
     await openThread(page);
     await page.getByTestId("coding-composer-input").fill("运行测试");
     await page.getByTestId("coding-composer-send").click();
 
-    // parsed 摘要随执行结果出现（不阻塞主区，输出按需加载）
+    // W6-R：命令卡默认呈现脱敏命令、工作目录范围、退出码与耗时（不阻塞主区）
+    await expect(page.getByTestId("command-line")).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId("command-line")).toContainText("pytest tests -q --token=[REDACTED]");
+    await expect(page.getByTestId("command-line")).not.toContainText("sk-e2e-secret");
+    await expect(page.getByTestId("command-cwd")).toContainText("工作目录");
+    await expect(page.getByTestId("command-exit-code")).toContainText("退出码 0");
+    await expect(page.getByTestId("command-duration")).toBeVisible();
+
+    // parsed 摘要随执行结果出现；输出默认折叠，按需展开（长输出不拖垮页面）
     await expect(page.getByTestId("command-parsed")).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId("command-parsed")).toContainText("12 passed in 3.42s");
     await page.getByTestId("command-output-load").click();
+    // 终态卡随后出现并自动跟随到底部；展开输出用 DOM 事件（避免跟随滚动的命中遮挡）
+    await page.getByTestId("command-output-toggle").scrollIntoViewIfNeeded();
+    await page.getByTestId("command-output-toggle").dispatchEvent("click");
     await expect(page.getByTestId("command-output-body")).toContainText("12 passed in 3.42s");
     await expect(page.getByTestId("terminal-output")).toContainText("命令已执行", { timeout: 15000 });
   });

@@ -6,6 +6,7 @@
  */
 import { ref } from "vue";
 import {
+  PhArrowRight,
   PhCommand,
   PhFolderSimple,
   PhPlus,
@@ -120,33 +121,49 @@ function formatRelative(value: string): string {
             </button>
           </li>
         </ul>
-      </section>
 
-      <section class="recent-section" aria-labelledby="rail-recent-title">
-        <div class="recent-heading">
-          <span id="rail-recent-title">最近任务</span>
-          <span>{{ sessions.length }}</span>
-        </div>
-        <div v-if="sessions.length === 0" class="recent-empty">新建任务后会显示在这里</div>
-        <button
-          v-for="session in sessions.slice(0, 6)"
-          :key="session.id"
-          class="recent-task"
-          :class="{ active: active === 'chat' && session.id === currentId }"
-          :title="session.title"
-          @click="emit('select-session', session.id)"
+        <!-- W6-R3：最近任务紧随「Agent 执行」入口（同一数据源/稳定 id/排序/状态，
+             旧独立区已删除；与 Agent 页 ConversationList 职责不同） -->
+        <div
+          v-if="group === 'agent' && groupOpen[group]"
+          class="recent-section"
+          data-testid="rail-recent-tasks"
+          aria-label="最近任务"
         >
-          <span class="recent-icon"><PhFolderSimple :size="15" /></span>
-          <span class="recent-copy">
-            <strong>{{ session.title }}</strong>
-            <small>{{ formatRelative(session.updated_at) }}</small>
-          </span>
-          <span
-            class="recent-status"
-            :class="{ running: active === 'chat' && session.id === currentId }"
-            :aria-label="active === 'chat' && session.id === currentId ? '当前任务' : '已保存'"
-          />
-        </button>
+          <div class="recent-heading">
+            <span>最近任务</span>
+            <span>{{ sessions.length }}</span>
+          </div>
+          <div v-if="sessions.length === 0" class="recent-empty">新建任务后会显示在这里</div>
+          <button
+            v-for="session in sessions.slice(0, 6)"
+            :key="session.id"
+            class="recent-task"
+            :class="{ active: active === 'chat' && session.id === currentId }"
+            :title="session.title"
+            :data-testid="`rail-recent-task-${session.id}`"
+            @click="emit('select-session', session.id)"
+          >
+            <span class="recent-icon"><PhFolderSimple :size="15" /></span>
+            <span class="recent-copy">
+              <strong>{{ session.title }}</strong>
+              <small>{{ formatRelative(session.updated_at) }}</small>
+            </span>
+            <span
+              class="recent-status"
+              :class="{ running: active === 'chat' && session.id === currentId }"
+              :aria-label="active === 'chat' && session.id === currentId ? '当前任务' : '已保存'"
+            />
+          </button>
+          <button
+            v-if="sessions.length > 0"
+            class="recent-all"
+            data-testid="rail-recent-all"
+            @click="emit('navigate', 'chat')"
+          >
+            查看全部 <PhArrowRight :size="12" />
+          </button>
+        </div>
       </section>
 
       <section class="rail-group system-group" aria-label="系统">
@@ -288,7 +305,7 @@ function formatRelative(value: string): string {
 .rail-label { overflow: hidden; font-size: var(--pa-text-compact); text-overflow: ellipsis; white-space: nowrap; }
 .system-group { margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--color-rail-border); }
 .system-heading { display: block; padding: 0 var(--space-2) var(--space-1); color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); font-weight: var(--font-semibold); letter-spacing: 0.12em; text-transform: uppercase; }
-.recent-section { margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--color-rail-border); }
+.recent-section { margin: var(--space-1) 0 var(--space-1); padding: var(--space-1) 0 0 var(--space-2); border-left: 1px solid var(--color-rail-border); }
 .recent-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 var(--space-2) var(--space-2); color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); font-weight: var(--font-semibold); letter-spacing: 0.06em; }
 .recent-empty { padding: var(--space-2); color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); line-height: 1.5; }
 .recent-task { display: flex; width: 100%; min-width: 0; align-items: center; gap: var(--space-2); padding: var(--space-2); border: 1px solid transparent; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg-muted); text-align: left; cursor: pointer; }
@@ -300,6 +317,8 @@ function formatRelative(value: string): string {
 .recent-copy small { color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); }
 .recent-status { width: 7px; height: 7px; flex: 0 0 7px; border-radius: var(--radius-full); background: var(--color-success); }
 .recent-status.running { background: var(--color-rail-accent); box-shadow: 0 0 0 3px var(--pa-rail-running-glow); }
+.recent-all { display: inline-flex; align-items: center; gap: 4px; margin-top: var(--space-1); padding: var(--space-1) var(--space-2); border: none; border-radius: var(--radius-sm); background: transparent; color: var(--color-rail-fg-muted); font-size: var(--pa-t-11); cursor: pointer; }
+.recent-all:hover { background: var(--color-rail-surface); color: var(--color-rail-fg-strong); }
 .rail-footer { flex-shrink: 0; padding-top: var(--space-2); border-top: 1px solid var(--color-rail-border); }
 .profile-entry { display: flex; width: 100%; align-items: center; gap: var(--space-2); padding: var(--space-2); border: none; border-radius: var(--radius-md); background: transparent; color: var(--color-rail-fg); text-align: left; cursor: pointer; }
 .profile-entry:hover { background: var(--color-rail-surface); }

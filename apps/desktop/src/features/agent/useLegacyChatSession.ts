@@ -57,6 +57,8 @@ export interface LegacyChatSession {
   sessionActivities: Ref<Activity[]>;
   trustedPaths: Ref<TrustedPath[]>;
   useLegacyToolPlanner: Ref<boolean>;
+  /** W6-R3：公开 capability（自动化能力判断事实源） */
+  runtimeCapabilities: Ref<Record<string, unknown> | null>;
   hasPendingTool: ComputedRef<boolean>;
   taskState: ComputedRef<AgentTaskState>;
   currentSession: ComputedRef<Session | null>;
@@ -115,6 +117,8 @@ export function useLegacyChatSession(options: {
   let contextSeq = 0;
   // Capability discovery is backward-compatible: unknown/old backends retain the legacy planner.
   const useLegacyToolPlanner = ref(true);
+  /** W6-R3：公开 capability 原样缓存（供自动化能力判断，不猜测内部状态） */
+  const runtimeCapabilities = ref<Record<string, unknown> | null>(null);
   const knowledgeBase = ref(false);
 
   let controller: AbortController | null = null;
@@ -148,11 +152,21 @@ export function useLegacyChatSession(options: {
   );
 
   async function initializeLegacyWorkspace() {
+    let capabilities: import("../../api").RuntimeCapabilities | null = null;
     try {
-      const capabilities = await getRuntimeCapabilities();
-      useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(capabilities);
+      capabilities = await getRuntimeCapabilities();
     } catch {
-      useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(null);
+      capabilities = null;
+    }
+    runtimeCapabilities.value = capabilities as unknown as Record<string, unknown> | null;
+    useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(capabilities);
+    // W6-R3：知识检索改为自动运行——RAG 能力就绪时随每轮对话执行（公开
+    // 证据 = 助手消息 sources）；移除手动按钮后不得静默关闭原启用能力。
+    if (
+      capabilities?.rag_chat_runtime_enabled === true &&
+      capabilities?.chat_execution_mode === "agent_runtime"
+    ) {
+      knowledgeBase.value = true;
     }
     await loadSessions();
   }
@@ -190,7 +204,9 @@ export function useLegacyChatSession(options: {
       activityTimer = null;
     }
     try {
-      trustedPaths.value = await listTrustedPaths();
+      const paths = await listTrustedPaths();
+      // W6-R2：同 activities——非数组响应不得污染只读数组（下游有可迭代假设）
+      trustedPaths.value = Array.isArray(paths) ? paths : [];
     } catch {
       trustedPaths.value = [];
     }
@@ -199,7 +215,9 @@ export function useLegacyChatSession(options: {
     const refreshActivities = async () => {
       if (mine !== contextSeq || currentSessionId.value !== sessionId) return;
       try {
-        sessionActivities.value = await listActivities(sessionId);
+        const data = await listActivities(sessionId);
+        // W6-R2：非数组响应（异常/兼容后端）不得污染只读数组，避免下游渲染崩溃
+        if (Array.isArray(data)) sessionActivities.value = data;
       } catch {
         // 后端未连接时保留现有数据，不因瞬时失败清空
       }
@@ -646,6 +664,7 @@ export function useLegacyChatSession(options: {
     sessionActivities,
     trustedPaths,
     useLegacyToolPlanner,
+    runtimeCapabilities,
     hasPendingTool,
     taskState,
     currentSession,

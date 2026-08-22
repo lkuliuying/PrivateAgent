@@ -31,6 +31,7 @@ import type {
   RunExecutionRecord,
 } from "../model/runContracts";
 import { RUN_STATUS_META } from "../model/runContracts";
+import { redactCommandArgs, redactSecretText } from "../model/redaction";
 import DiffArtifact from "./DiffArtifact.vue";
 import CommandOutput from "./CommandOutput.vue";
 
@@ -45,6 +46,8 @@ const props = withDefaults(
     previewLoading?: string[];
     /** W3：工具执行结果（键为 toolCallId，按工具名+完成顺序关联） */
     executionByTool?: Record<string, RunExecutionRecord>;
+    /** W6-R：全量执行记录（重试计数/公开时序事实源） */
+    executions?: RunExecutionRecord[];
     /** W3：流式输出页（键为 executionId） */
     outputPages?: Record<string, RunExecutionOutputPage | null>;
     outputLoading?: string[];
@@ -57,6 +60,7 @@ const props = withDefaults(
     approvalPreviews: () => ({}),
     previewLoading: () => [],
     executionByTool: () => ({}),
+    executions: () => [],
     outputPages: () => ({}),
     outputLoading: () => [],
     previewMode: false,
@@ -157,6 +161,100 @@ function toolEntryClass(entry: Extract<TranscriptEntry, { kind: "tool" }>): stri
   return `tone-${TOOL_STATE_LABEL[entry.state]?.tone ?? "neutral"}`;
 }
 
+// ============ W6-R：工具卡可追溯详情（公开事实，不猜测） ============
+
+type ToolDetail = {
+  startedAt: string | null;
+  completedAt: string | null;
+  durationLabel: string | null;
+  attempt: number | null;
+  attemptCount: number;
+  commandText: string | null;
+  resultSummary: string | null;
+};
+
+function formatClock(value: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatDuration(startIso: string | null, endIso: string | null): string | null {
+  if (!startIso || !endIso) return null;
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
+  const ms = end - start;
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+}
+
+/** 同名执行 ≥2 次时呈现重试序号（按创建顺序；公开事实，不推测原因） */
+function executionAttempt(execution: RunExecutionRecord): { attempt: number; total: number } {
+  const sameName = props.executions.filter((item) => item.tool_name === execution.tool_name);
+  if (sameName.length < 2) return { attempt: 1, total: sameName.length };
+  const index = sameName.findIndex((item) => item.id === execution.id);
+  return { attempt: index >= 0 ? index + 1 : 1, total: sameName.length };
+}
+
+/** 结果摘要：仅从脱敏持久层 output 里提取有限字段（不展示完整输出） */
+function executionResultSummary(execution: RunExecutionRecord): string | null {
+  const output = execution.output;
+  if (!output || typeof output !== "object") return null;
+  const record = output as Record<string, unknown>;
+  const parts: string[] = [];
+  const parsed = record.parsed as Record<string, unknown> | undefined;
+  if (parsed && typeof parsed === "object" && typeof parsed.summary === "string") {
+    parts.push(parsed.summary);
+  }
+  if (record.verified === true) parts.push("已验证");
+  if (typeof record.profile === "string") parts.push(`profile: ${record.profile}`);
+  if (typeof record.file_count === "number") parts.push(`${record.file_count} 个文件`);
+  if (!parts.length) return null;
+  return redactSecretText(parts.join(" · "));
+}
+
+function toolDetail(entry: Extract<TranscriptEntry, { kind: "tool" }>): ToolDetail {
+  const execution = props.executionByTool[entry.toolCallId];
+  if (!execution) {
+    return {
+      startedAt: null,
+      completedAt: null,
+      durationLabel: null,
+      attempt: null,
+      attemptCount: 0,
+      commandText: null,
+      resultSummary: null,
+    };
+  }
+  const { attempt, total } = executionAttempt(execution);
+  const output =
+    execution.output && typeof execution.output === "object"
+      ? (execution.output as Record<string, unknown>)
+      : null;
+  const args =
+    output && Array.isArray(output.args)
+      ? output.args.filter((item): item is string => typeof item === "string")
+      : [];
+  return {
+    startedAt: formatClock(execution.created_at),
+    completedAt: formatClock(execution.completed_at),
+    durationLabel: formatDuration(execution.created_at, execution.completed_at),
+    attempt: total >= 2 ? attempt : null,
+    attemptCount: total,
+    commandText: args.length ? redactCommandArgs(args) : null,
+    resultSummary: executionResultSummary(execution),
+  };
+}
+
 function terminalMeta(): { label: string; tone: string } | null {
   const status = props.projection?.status;
   if (!status) return null;
@@ -239,13 +337,32 @@ function terminalMeta(): { label: string; tone: string } | null {
             </span>
           </button>
 
-          <!-- 工具卡（摘要行 + W3 执行输出按需加载） -->
+          <!-- 工具卡（摘要行 + W6-R 可追溯详情 + W3 执行输出按需加载） -->
           <template v-else-if="entry.kind === 'tool'">
             <span class="entry-icon" :class="toolEntryClass(entry)" aria-hidden="true">●</span>
             <span class="entry-copy mono">{{ entry.name }}</span>
             <span class="entry-state" :class="toolEntryClass(entry)">
               <PhCircleNotch v-if="entry.state === 'started' || entry.state === 'requested'" :size="12" class="spin" />
               {{ TOOL_STATE_LABEL[entry.state]?.label ?? entry.state }}
+            </span>
+            <span v-if="toolDetail(entry).attempt !== null" class="entry-retry" data-testid="tool-retry">
+              重试 {{ toolDetail(entry).attempt }}/{{ toolDetail(entry).attemptCount }}
+            </span>
+            <span
+              v-if="toolDetail(entry).startedAt"
+              class="entry-time"
+              data-testid="tool-time"
+            >
+              {{ toolDetail(entry).startedAt }}<template v-if="toolDetail(entry).completedAt"> → {{ toolDetail(entry).completedAt }}</template>
+              <template v-if="toolDetail(entry).durationLabel"> · {{ toolDetail(entry).durationLabel }}</template>
+            </span>
+            <code
+              v-if="toolDetail(entry).commandText"
+              class="entry-command mono"
+              data-testid="tool-command"
+            >$ {{ toolDetail(entry).commandText }}</code>
+            <span v-if="toolDetail(entry).resultSummary" class="entry-result" data-testid="tool-result">
+              {{ toolDetail(entry).resultSummary }}
             </span>
             <span v-if="entry.errorMessage" class="entry-error" :title="entry.errorMessage">
               {{ entry.errorType || "错误" }}：{{ entry.errorMessage }}
@@ -503,6 +620,36 @@ function terminalMeta(): { label: string; tone: string } | null {
 .entry-error {
   flex-basis: 100%;
   color: var(--color-danger-fg);
+  font-size: var(--pa-text-meta);
+  word-break: break-word;
+}
+.entry-retry {
+  padding: 1px var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
+  border-radius: var(--radius-full);
+  color: var(--color-warning-fg);
+  font-size: var(--pa-text-meta);
+}
+.entry-time {
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.entry-command {
+  flex-basis: 100%;
+  max-height: 84px;
+  overflow-y: auto;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--pa-text-meta);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.entry-result {
+  flex-basis: 100%;
+  color: var(--color-fg-muted);
   font-size: var(--pa-text-meta);
   word-break: break-word;
 }

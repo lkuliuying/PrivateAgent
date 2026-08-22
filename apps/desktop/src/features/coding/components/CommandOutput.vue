@@ -1,18 +1,21 @@
 <script setup lang="ts">
 /**
- * CommandOutput · v0.8.0 W3
+ * CommandOutput · v0.8.0 W3（W6-R 增强）
  *
- * 命令执行输出（按需加载）：流式行（stdout/stderr 语义色）+ parsed 测试
- * 摘要（11 种冻结 parser 的统一字段：passed/failed/skipped/errors +
+ * 命令执行卡（计划 §4.3/§6.6）：默认展示脱敏后的命令文本、运行状态与
+ * 工作目录范围；展开后持续更新 stdout/stderr 流、退出码、耗时与 parsed
+ * 测试摘要（11 种冻结 parser 的统一字段：passed/failed/skipped/errors +
  * failures ≤50）。轮询与拉取在父层（工作区）发生，组件只呈现与发起
  * 「加载更多/继续跟随」意图（不阻塞主区：行数上限 + 独立滚动）。
+ * 命令文本经呈现层脱敏（redactCommandArgs）；流式行由后端持久化前脱敏。
  */
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { PhTerminalWindow } from "@phosphor-icons/vue";
 import type {
   RunExecutionOutputPage,
   RunExecutionRecord,
 } from "../model/runContracts";
+import { redactCommandArgs, redactSecretText } from "../model/redaction";
 
 const props = withDefaults(
   defineProps<{
@@ -29,6 +32,56 @@ const emit = defineEmits<{
 
 const MAX_RENDER_LINES = 600;
 const lines = computed(() => (props.page ? props.page.lines.slice(0, MAX_RENDER_LINES) : []));
+
+// 后端持久化的命令事实（已脱敏/限长）：args/cwd/returncode 来自
+// run_whitelisted_command 的 output_json（公开事实，不由前端猜测）。
+const outputFacts = computed(() => {
+  const output = props.execution.output;
+  if (!output || typeof output !== "object") return null;
+  const record = output as Record<string, unknown>;
+  const rawExit = record.returncode ?? record.exit_code;
+  return {
+    args: Array.isArray(record.args)
+      ? record.args.filter((item): item is string => typeof item === "string")
+      : null,
+    cwd: typeof record.cwd === "string" ? record.cwd : null,
+    returncode: typeof rawExit === "number" ? rawExit : null,
+    truncated: record.truncated === true,
+  };
+});
+
+/** 脱敏后的实际命令文本（§6.6：命令卡默认展示） */
+const commandText = computed(() => {
+  const facts = outputFacts.value;
+  if (!facts?.args?.length) return null;
+  return redactCommandArgs(facts.args);
+});
+
+/** 工作目录范围：展示用户授权的项目根路径（公开事实） */
+const cwdLabel = computed(() => outputFacts.value?.cwd ?? null);
+
+const exitCode = computed(() => outputFacts.value?.returncode ?? null);
+
+/** 耗时：执行记录 created_at → completed_at（durable 事实） */
+const durationLabel = computed(() => {
+  const started = props.execution.created_at;
+  const ended = props.execution.completed_at;
+  if (!started || !ended) return null;
+  const start = new Date(started).getTime();
+  const end = new Date(ended).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
+  const ms = end - start;
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+});
+
+const detailOpen = ref(false);
+function toggleDetail(): void {
+  detailOpen.value = !detailOpen.value;
+  if (detailOpen.value && !props.page && !props.loading) emit("load");
+}
 
 interface ParsedSummary {
   parser: string;
@@ -70,6 +123,11 @@ function lineClass(kind: string): string {
   if (kind === "stdout") return "line-out";
   return "line-meta";
 }
+
+function redactLine(text: string): string {
+  // 后端持久化前已脱敏；呈现层同语义再过一次（纵深防御，幂等）
+  return redactSecretText(text);
+}
 </script>
 
 <template>
@@ -80,6 +138,13 @@ function lineClass(kind: string): string {
       <span class="output-status" :class="{ failed: execution.status !== 'succeeded' }">
         {{ execution.status === "succeeded" ? "成功" : execution.status === "failed" ? "失败" : execution.status }}
       </span>
+      <span
+        v-if="exitCode !== null"
+        class="output-fact"
+        :class="{ bad: exitCode !== 0 }"
+        data-testid="command-exit-code"
+      >退出码 {{ exitCode }}</span>
+      <span v-if="durationLabel" class="output-fact" data-testid="command-duration">耗时 {{ durationLabel }}</span>
       <button
         v-if="!page && !loading"
         class="load-btn"
@@ -89,6 +154,12 @@ function lineClass(kind: string): string {
         查看输出
       </button>
       <span v-else-if="loading" class="output-hint">加载中…</span>
+    </div>
+
+    <!-- W6-R：脱敏后的实际命令文本 + 工作目录范围（默认呈现，可展开详情） -->
+    <code v-if="commandText" class="command-line mono" data-testid="command-line">$ {{ commandText }}</code>
+    <div v-if="cwdLabel" class="command-cwd" data-testid="command-cwd" :title="cwdLabel">
+      工作目录：{{ cwdLabel }}
     </div>
 
     <p v-if="execution.error_message" class="output-error">{{ execution.error_message }}</p>
@@ -107,15 +178,28 @@ function lineClass(kind: string): string {
       </ul>
     </template>
 
-    <pre v-if="page && lines.length" class="output-body" data-testid="command-output-body"><code
+    <button
+      v-if="page"
+      class="detail-toggle"
+      data-testid="command-output-toggle"
+      :aria-expanded="detailOpen"
+      @click="toggleDetail"
+    >
+      {{ detailOpen ? "收起输出" : "展开输出" }}
+    </button>
+
+    <pre v-if="page && detailOpen && lines.length" class="output-body" data-testid="command-output-body"><code
       ><span
         v-for="line in lines"
         :key="line.seq"
         class="output-line"
         :class="lineClass(line.kind)"
-      >{{ line.text }}
+      >{{ redactLine(line.text) }}
 </span></code></pre>
-    <div v-else-if="page && !lines.length" class="output-empty">（无输出行）</div>
+    <div v-else-if="page && detailOpen && !lines.length" class="output-empty">（无输出行）</div>
+    <div v-else-if="page && !detailOpen" class="output-collapsed">
+      stdout/stderr 共 {{ page.lines.length.toLocaleString() }} 行，点击展开查看。
+    </div>
 
     <div v-if="page && !page.finished" class="output-hint">
       输出进行中…
@@ -143,6 +227,52 @@ function lineClass(kind: string): string {
   align-items: center;
   gap: var(--space-2);
   color: var(--color-fg);
+  font-size: var(--pa-text-meta);
+}
+.output-fact {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-fg-subtle);
+}
+.output-fact.bad {
+  color: var(--color-danger-fg);
+}
+.command-line {
+  display: block;
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-size: var(--pa-text-meta);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.command-cwd {
+  overflow: hidden;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.detail-toggle {
+  align-self: flex-start;
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+  cursor: pointer;
+}
+.detail-toggle:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-fg);
+}
+.output-collapsed {
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .output-tool {

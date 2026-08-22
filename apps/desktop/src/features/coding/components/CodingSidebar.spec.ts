@@ -67,6 +67,46 @@ describe("CodingSidebar", () => {
     expect(lastEmitted(wrapper, "navigate")).toEqual(["diagnostics"]);
   });
 
+  // ============ v0.8.0 W6-R：个人工作区六入口（计划 §4.1/§6.1） ============
+  const PERSONAL_VIEWS = ["reminders", "inbox", "goals", "briefings", "capture", "privacy"] as const;
+
+  it("渲染六个个人工作入口，点击导航到各自独立主区", async () => {
+    const { wrapper } = await mountSidebar();
+    expect(wrapper.find('[data-testid="coding-personal"]').exists()).toBe(true);
+    for (const view of PERSONAL_VIEWS) {
+      const entry = wrapper.find(`[data-testid="coding-personal-${view}"]`);
+      expect(entry.exists()).toBe(true);
+      expect(entry.element.tagName.toLowerCase()).toBe("button"); // 键盘可达
+      await entry.trigger("click");
+      expect(lastEmitted(wrapper, "navigate")).toEqual([view]);
+    }
+  });
+
+  it("当前个人页高亮（aria-current=page）", async () => {
+    const { wrapper } = await mountSidebar({ activeView: "reminders" });
+    expect(wrapper.find('[data-testid="coding-personal-reminders"]').attributes("aria-current")).toBe("page");
+  });
+
+  it("待处理徽标仅呈现正整数（只读数字，非完整模块）", async () => {
+    const { wrapper } = await mountSidebar({
+      personalCounts: { reminders: 3, inbox: 0, privacy: 1 },
+    });
+    const badge = wrapper.find('[data-testid="coding-personal-badge-reminders"]');
+    expect(badge.exists()).toBe(true);
+    expect(badge.text()).toBe("3");
+    expect(wrapper.find('[data-testid="coding-personal-badge-inbox"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="coding-personal-badge-privacy"]').text()).toBe("1");
+  });
+
+  it("折叠态个人入口保留可辨识图标、tooltip 与键盘可达名称", async () => {
+    const { wrapper } = await mountSidebar({ collapsed: true });
+    for (const view of PERSONAL_VIEWS) {
+      const entry = wrapper.find(`[data-testid="coding-personal-${view}"]`);
+      expect(entry.attributes("aria-label")).toBeTruthy();
+      expect(entry.attributes("title")).toBeTruthy();
+    }
+  });
+
   it("折叠态隐藏文字标签，icon-only 按钮保留可访问名称", async () => {
     const { wrapper } = await mountSidebar({ collapsed: true });
     const newTask = wrapper.find('[data-testid="coding-new-task"]');

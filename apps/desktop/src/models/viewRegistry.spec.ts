@@ -8,13 +8,19 @@ import {
 } from "./viewRegistry";
 
 describe("viewRegistry", () => {
-  it("覆盖全部 View 联合类型成员（v0.8.0 W1 新增 coding）", () => {
+  it("覆盖全部 View 联合类型成员（v0.8.0 W1 新增 coding，W6-R 新增个人工作区六视图）", () => {
     const keys = Object.keys(VIEW_REGISTRY).sort();
     expect(keys).toEqual(
       [
         "chat",
         "coding",
         "today",
+        "reminders",
+        "inbox",
+        "goals",
+        "briefings",
+        "capture",
+        "privacy",
         "kb",
         "projects",
         "learning",
@@ -27,6 +33,17 @@ describe("viewRegistry", () => {
         "backup",
       ].sort()
     );
+  });
+
+  it("W6-R：六个个人工作区视图属 daily 组且带中文短名/命令面板关键词", () => {
+    const personal = ["reminders", "inbox", "goals", "briefings", "capture", "privacy"] as const;
+    for (const key of personal) {
+      const meta = VIEW_REGISTRY[key];
+      expect(meta.group).toBe("daily");
+      expect(meta.label.length).toBeGreaterThan(0);
+      expect(meta.keywords.length).toBeGreaterThan(0);
+    }
+    expect(groupViews("daily").map((m) => m.key)).toContain("reminders");
   });
 
   it("一级导航分组与系统分组互不重叠且覆盖全部旧视图；coding 组不进旧 NavRail", () => {
