@@ -112,6 +112,10 @@ if (codingPreviewKey) {
 const codingThreadSelected = computed(
   () => codingActiveStoreRef.value.selectedThreadId.value !== null
 );
+// 任务页按 thread 重建（:key）：切换任务即卸载 run 流/定时器（W2 清理语义）
+const codingThreadKey = computed(
+  () => codingActiveStoreRef.value.selectedThreadId.value ?? "none"
+);
 // 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
@@ -1068,6 +1072,7 @@ function stopGenerate() {
       />
       <CodingThreadWorkspace
         v-else-if="codingEnabled && view === 'coding'"
+        :key="codingThreadKey"
         :store="codingActiveStoreRef"
         @navigate="onNavigate"
       />

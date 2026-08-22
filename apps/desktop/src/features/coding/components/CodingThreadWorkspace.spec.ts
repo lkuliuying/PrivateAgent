@@ -11,32 +11,33 @@ async function mountWorkspace(selectThreadId?: number) {
   return { wrapper, store };
 }
 
-describe("CodingThreadWorkspace（W1 占位形态）", () => {
-  it("头部摘要：标题 + 项目 + 分支（公开事实，不猜测 run 状态）", async () => {
+describe("CodingThreadWorkspace（W2 组装）", () => {
+  it("头部摘要：标题 + 项目 + 分支（公开事实）", async () => {
     const { wrapper } = await mountWorkspace(11);
     const header = wrapper.find('[data-testid="coding-thread-header"]');
     expect(header.text()).toContain("修复窄屏侧栏遮挡问题");
     expect(header.text()).toContain("PrivateAgent");
-    // 线程 11 属 root 工作区（无分支名 → 根工作区标签）
     expect(header.text()).toContain("根工作区");
   });
 
-  it("worktree 线程头部呈现分支名", async () => {
-    const { wrapper } = await mountWorkspace(12);
-    expect(wrapper.find('[data-testid="coding-thread-header"]').text()).toContain(
-      "feature/coding-workbench"
-    );
+  it("无 run 时：transcript 空态 + 输入器可用（Enter 发送语义存在）", async () => {
+    const { wrapper } = await mountWorkspace(11);
+    expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(true);
+    const input = wrapper.find('[data-testid="coding-thread-composer-input"]');
+    expect(input.exists()).toBe(true);
+    expect(input.attributes("placeholder")).toContain("Enter 发送");
   });
 
-  it("正文为 W2 交付说明，不含虚构的执行状态", async () => {
+  it("无 run 时无状态徽标/停止按钮；计划入口仅在计划存在时出现", async () => {
     const { wrapper } = await mountWorkspace(11);
-    expect(wrapper.text()).toContain("任务页建设中");
-    expect(wrapper.text()).toContain("RunTranscript");
+    expect(wrapper.find('[data-testid="thread-run-status"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="thread-cancel"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="thread-plan-toggle"]').exists()).toBe(false);
   });
 
   it("回到首页：清线程选择并导航 coding 视图", async () => {
     const { wrapper, store } = await mountWorkspace(11);
-    await wrapper.find("button.pa-button").trigger("click");
+    await wrapper.find('[data-testid="thread-back-home"]').trigger("click");
     expect(store.selectedThreadId.value).toBeNull();
     expect(wrapper.emitted("navigate")?.[0]).toEqual(["coding"]);
   });

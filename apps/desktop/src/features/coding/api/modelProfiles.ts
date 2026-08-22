@@ -33,7 +33,12 @@ export async function fetchCodingModelProfiles(): Promise<CodingModelProfilesRes
     const error = await toCodingApiError(response);
     return { status: "error", message: error.message };
   }
-  const list = (await response.json()) as ModelProfileDto[];
+  const body: unknown = await response.json();
+  // 兼容非数组响应体（旧后端/代理兜底页）：按可恢复错误处理，不让 bootstrap 整体失败
+  if (!Array.isArray(body)) {
+    return { status: "error", message: "模型配置响应格式异常" };
+  }
+  const list = body as ModelProfileDto[];
   const profiles = list
     .filter((dto) => dto.enabled)
     .map((dto) => ({
