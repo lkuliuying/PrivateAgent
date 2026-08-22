@@ -22,14 +22,19 @@ from personal_assistant.core.projects import ProjectService
 
 
 def _tasklist_has_pid(pid: int) -> bool:
+    """tasklist 存活检测（E-2 修复：字节级匹配）。
+
+    tasklist 输出为本地码页（如 GBK），``text=True`` 在 UTF-8 语义的 Python 上
+    会让 reader 线程解码失败（stdout=None → TypeError 被 except 吞掉）→ 恒返回
+    False 的假阴性。PID 与 CSV 引号均为 ASCII，改为在原始字节中匹配。
+    """
     try:
         out = subprocess.run(
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV"],
             capture_output=True,
-            text=True,
             timeout=10,
         )
-        return f"\"{pid}\"" in out.stdout
+        return f"\"{pid}\"".encode("ascii") in out.stdout
     except Exception:  # noqa: BLE001
         return False
 
@@ -57,6 +62,32 @@ async def test_execute_command_kills_subprocess_on_cancellation(tmp_path):
 
     await asyncio.sleep(0.5)
     assert _tasklist_has_pid(child_pid) is False, "取消后子进程仍然存活"
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(sys.platform != "win32", reason="tasklist 存活检测仅 Windows")
+async def test_tasklist_helper_detects_live_process(tmp_path):
+    """E-2 反向用例：故意不杀进程，证明存活检测可返回 True（防假阴性回归）。"""
+    pidfile = tmp_path / "alive.pid"
+    script = (
+        f"import os,time;open({str(pidfile)!r},'w').write(str(os.getpid()));"
+        "time.sleep(60)"
+    )
+    process = subprocess.Popen([sys.executable, "-c", script])
+    try:
+        deadline = asyncio.get_event_loop().time() + 10
+        while not pidfile.exists() and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.05)
+        assert pidfile.exists(), "子进程未在超时前写入 PID"
+        child_pid = int(pidfile.read_text().strip())
+        assert _tasklist_has_pid(child_pid) is True, (
+            "存活进程未被检测到：E-2 假阴性回归（解码失败被吞）"
+        )
+    finally:
+        process.kill()
+        process.wait(timeout=10)
+    await asyncio.sleep(0.3)
+    assert _tasklist_has_pid(child_pid) is False, "kill 后进程不应再被检测到"
 
 
 @pytest.mark.asyncio
