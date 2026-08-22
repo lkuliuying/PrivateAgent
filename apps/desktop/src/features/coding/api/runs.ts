@@ -7,12 +7,22 @@
  */
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
 import { apiFetch, ensureApiBase } from "../../../api/http";
-import { approveAgentRunTool, rejectAgentRunTool } from "../../../api/agentRuns";
+import {
+  approveAgentRunTool,
+  getAgentApprovalPreview,
+  getAgentToolOutput,
+  listAgentRunExecutions,
+  rejectAgentRunTool,
+} from "../../../api/agentRuns";
+import type { AgentApprovalPreview, AgentToolExecution } from "../../../types";
 import type {
   CodingRunCreateInput,
+  RunApprovalPreviewRecord,
   RunApprovalRecord,
   RunCancelResult,
   RunEventPage,
+  RunExecutionOutputPage,
+  RunExecutionRecord,
   RunSnapshot,
   RunStreamFrame,
 } from "../model/runContracts";
@@ -54,6 +64,50 @@ export async function approveRunApproval(runId: string, approvalId: string): Pro
 
 export async function rejectRunApproval(runId: string, approvalId: string): Promise<void> {
   await rejectAgentRunTool(runId, approvalId);
+}
+
+/** 审批影响范围预览（基于当前磁盘事实重算的 diff；previewable=false 时仅 reason） */
+export async function fetchRunApprovalPreview(
+  runId: string,
+  approvalId: string
+): Promise<RunApprovalPreviewRecord> {
+  const preview = (await getAgentApprovalPreview(runId, approvalId)) as AgentApprovalPreview;
+  return {
+    tool_name: preview.tool_name,
+    previewable: preview.previewable,
+    rel_path: preview.rel_path,
+    creates_file: preview.creates_file,
+    old_sha256: preview.old_sha256,
+    new_sha256: preview.new_sha256,
+    diff: preview.diff,
+    truncated: preview.truncated,
+    reason: preview.reason,
+  };
+}
+
+/** 已脱敏有界的工具执行结果（命令输出 parsed 摘要在此） */
+export async function fetchRunExecutions(runId: string): Promise<RunExecutionRecord[]> {
+  const list = (await listAgentRunExecutions(runId)) as AgentToolExecution[];
+  return list.map((item) => ({
+    id: item.id,
+    tool_name: item.tool_name,
+    tool_version: item.tool_version,
+    status: item.status,
+    error_code: item.error_code,
+    error_message: item.error_message,
+    output: item.output,
+    created_at: item.created_at,
+    completed_at: item.completed_at ?? null,
+  }));
+}
+
+/** 流式输出行续读（after_seq 增量；finished=false 时轮询） */
+export async function fetchRunExecutionOutput(
+  runId: string,
+  executionId: string,
+  afterSeq = -1
+): Promise<RunExecutionOutputPage> {
+  return (await getAgentToolOutput(runId, executionId, afterSeq)) as RunExecutionOutputPage;
 }
 
 export interface RunStreamCallbacks {

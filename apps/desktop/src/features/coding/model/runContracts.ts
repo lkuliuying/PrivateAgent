@@ -204,6 +204,53 @@ export type RunConnectionPhase =
   | "terminal"
   | "error";
 
+/** GET /agent-runs/{id}/approvals/{aid}/preview（W3：审批完整影响范围） */
+export interface RunApprovalPreviewRecord {
+  tool_name: string;
+  previewable: boolean;
+  rel_path: string | null;
+  creates_file: boolean | null;
+  old_sha256: string | null;
+  new_sha256: string | null;
+  diff: string | null;
+  truncated: boolean | null;
+  reason: string | null;
+}
+
+/** GET /agent-runs/{id}/executions 项（脱敏有界 output；无 tool_call_id，按工具名+完成顺序关联） */
+export interface RunExecutionRecord {
+  id: string;
+  tool_name: string;
+  tool_version: string;
+  status: string;
+  error_code: string | null;
+  error_message: string | null;
+  output: Record<string, unknown> | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+/** GET /agent-runs/{id}/executions/{eid}/output?after_seq=（流式行续读） */
+export interface RunExecutionOutputPage {
+  lines: Array<{ seq: number; kind: string; text: string }>;
+  last_seq: number;
+  finished: boolean;
+}
+
+/** @ 上下文发现（GET /projects/{id}/search?kind=name） */
+export interface CodingFileHint {
+  relPath: string;
+  name: string;
+  language: string | null;
+}
+
+/** 权限三模式呈现（v0.7.0 冻结 PERMISSION_MODES） */
+export const PERMISSION_MODE_META: Record<string, { label: string; hint: string }> = {
+  readonly: { label: "只读", hint: "仅读取文件与查询，不执行写入" },
+  confirm: { label: "写入需确认", hint: "写工具逐次审批后执行" },
+  workspace: { label: "工作区自动", hint: "工作区内的写操作自动执行" },
+};
+
 /** run 状态呈现语义（权限/风险语义用警告色系，W0 §2.3） */
 export const RUN_STATUS_META: Record<
   AgentRunStatus,

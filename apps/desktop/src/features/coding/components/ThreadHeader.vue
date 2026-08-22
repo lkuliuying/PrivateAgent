@@ -15,6 +15,7 @@ import {
   PhGitBranch,
   PhListChecks,
   PhProhibit,
+  PhSidebarSimple,
   PhWarning,
   PhWarningCircle,
 } from "@phosphor-icons/vue";
@@ -31,6 +32,7 @@ const props = withDefaults(
     runStatus?: AgentRunStatus | null;
     planAvailable?: boolean;
     planOpen?: boolean;
+    contextOpen?: boolean;
     cancellable?: boolean;
     cancelling?: boolean;
   }>(),
@@ -42,6 +44,7 @@ const props = withDefaults(
     runStatus: null,
     planAvailable: false,
     planOpen: false,
+    contextOpen: false,
     cancellable: false,
     cancelling: false,
   }
@@ -51,6 +54,7 @@ const emit = defineEmits<{
   "back-home": [];
   cancel: [];
   "toggle-plan": [];
+  "toggle-context": [];
 }>();
 
 const STATUS_ICONS: Record<AgentRunStatus, Component> = {
@@ -123,6 +127,17 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
       >
         <PhListChecks :size="15" />
         <span>计划</span>
+      </button>
+      <button
+        class="plan-toggle"
+        :class="{ active: contextOpen }"
+        :aria-expanded="contextOpen"
+        aria-label="任务上下文"
+        data-testid="thread-context-toggle"
+        :title="contextOpen ? '收起上下文' : '展开上下文'"
+        @click="emit('toggle-context')"
+      >
+        <PhSidebarSimple :size="15" />
       </button>
       <button
         v-if="cancellable"

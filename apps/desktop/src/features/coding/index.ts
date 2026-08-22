@@ -8,6 +8,11 @@ export { default as CodingThreadWorkspace } from "./components/CodingThreadWorks
 export { default as ThreadHeader } from "./components/ThreadHeader.vue";
 export { default as RunTranscript } from "./components/RunTranscript.vue";
 export { default as RunPlanPopover } from "./components/RunPlanPopover.vue";
+export { default as DiffArtifact } from "./components/DiffArtifact.vue";
+export { default as CommandOutput } from "./components/CommandOutput.vue";
+export { default as ContextDrawer } from "./components/ContextDrawer.vue";
+export { default as CodingComposer } from "./components/CodingComposer.vue";
+export type { CodingComposerSendPayload } from "./components/CodingComposer.vue";
 export {
   createCodingWorkspaceStore,
   useCodingWorkspace,
@@ -41,14 +46,19 @@ export {
 export {
   RUN_STATUS_META,
   PLAN_ITEM_META,
+  PERMISSION_MODE_META,
   TERMINAL_RUN_STATUSES,
   isTerminalRunStatus,
   type AgentRunStatus,
+  type CodingFileHint,
   type CodingRunCreateInput,
+  type RunApprovalPreviewRecord,
   type RunApprovalRecord,
   type RunConnectionPhase,
   type RunEventPage,
   type RunEventRecord,
+  type RunExecutionOutputPage,
+  type RunExecutionRecord,
   type RunPlanItemRecord,
   type RunPlanItemStatus,
   type RunPlanState,

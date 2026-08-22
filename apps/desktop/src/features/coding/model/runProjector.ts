@@ -530,6 +530,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
         output: typeof payload.output === "string" ? payload.output : null,
         errorCode: str(payload, "error_code") || null,
       });
+      applyTerminalUsage(projection, payload);
       break;
     }
     case "run.terminal": {
@@ -574,6 +575,21 @@ function applyTerminal(
     errorCode: facts.errorCode,
     output: facts.output,
   });
+}
+
+/** 终态 payload 的用量/工具计数是 durable 事实（_terminal_payload） */
+function applyTerminalUsage(
+  projection: RunProjection,
+  payload: Record<string, unknown>
+): void {
+  const toolCallCount = nullableNum(payload, "tool_call_count");
+  const inputTokens = nullableNum(payload, "input_tokens");
+  const outputTokens = nullableNum(payload, "output_tokens");
+  const costUsd = nullableNum(payload, "cost_usd");
+  if (toolCallCount !== null) projection.usage.toolCallCount = toolCallCount;
+  if (inputTokens !== null) projection.usage.inputTokens = inputTokens;
+  if (outputTokens !== null) projection.usage.outputTokens = outputTokens;
+  if (costUsd !== null) projection.usage.costUsd = costUsd;
 }
 
 function findLastModelOrdinal(projection: RunProjection): number {

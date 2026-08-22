@@ -6,6 +6,7 @@
  */
 import type { Project, ProjectWorkspace } from "../../../types";
 import type { CodingProjectSummary, CodingWorkspaceSummary } from "../model/contracts";
+import type { CodingFileHint } from "../model/runContracts";
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
 
 export function toProjectSummary(dto: Project): CodingProjectSummary {
@@ -49,4 +50,22 @@ export async function ensureCodingRootWorkspace(projectId: number): Promise<Codi
     codingJsonInit("POST", {})
   );
   return toWorkspaceSummary(dto, projectId);
+}
+
+/** @ 上下文发现：按名称搜索项目文件（GET /projects/{id}/search?kind=name） */
+export async function searchCodingProjectFiles(
+  projectId: number,
+  query: string
+): Promise<CodingFileHint[]> {
+  const result = await codingFetchJson<{
+    results: Array<{ rel_path: string; name: string; language: string | null }>;
+    count: number;
+  }>(
+    `/projects/${projectId}/search?query=${encodeURIComponent(query)}&kind=name`
+  );
+  return (result.results ?? []).slice(0, 8).map((item) => ({
+    relPath: item.rel_path,
+    name: item.name,
+    language: item.language,
+  }));
 }

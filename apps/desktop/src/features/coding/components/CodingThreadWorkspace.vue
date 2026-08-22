@@ -1,32 +1,42 @@
 <script setup lang="ts">
 /**
- * CodingThreadWorkspace · v0.8.0 W2
+ * CodingThreadWorkspace · v0.8.0 W3
  *
- * 任务页：ThreadHeader + RunTranscript + RunPlanPopover + 极简输入器。
- * run 生命周期由 useRunStream 管理（App.vue :key 按 thread 重建，切换任务
- * 即卸载清理流/定时器——零容忍 §10）。审批详情经 GET /agent-runs/{id}/approvals
- * 补全（事件只带 approval_id）。W3 将以 CodingComposer 取代极简输入器并扩展
- * Diff/命令输出。
+ * 任务页组装：ThreadHeader + RunTranscript + RunPlanPopover + CodingComposer
+ * + ContextDrawer。run 生命周期由 useRunStream 管理（App.vue :key 按 thread
+ * 重建，切换任务即卸载清理）。W3 增补：审批影响范围预览自动加载（Diff），
+ * 工具执行输出按需加载与轮询（finished 后停表，卸载清理），@ 上下文发现
+ * 经注入 searchFiles 传入 Composer（API 不进组件）。
  */
-import { computed, ref, shallowRef, watch } from "vue";
-import { PhChatsCircle, PhPaperPlaneRight, PhProhibit } from "@phosphor-icons/vue";
+import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
+import { PhChatsCircle } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
 import PaButton from "../../../design/PaButton.vue";
-import PaInlineNotice from "../../../design/PaInlineNotice.vue";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import { useRunStream } from "../composables/useRunStream";
-import type { RunApprovalRecord } from "../model/runContracts";
+import type {
+  RunApprovalPreviewRecord,
+  RunApprovalRecord,
+  RunExecutionOutputPage,
+  RunExecutionRecord,
+} from "../model/runContracts";
 import { isTerminalRunStatus } from "../model/runContracts";
 import type { RunProjection } from "../model/runProjector";
 import {
   approveRunApproval,
+  fetchRunApprovalPreview,
   fetchRunApprovals,
+  fetchRunExecutionOutput,
+  fetchRunExecutions,
   rejectRunApproval,
 } from "../api/runs";
+import { searchCodingProjectFiles } from "../api/projects";
 import ThreadHeader from "./ThreadHeader.vue";
 import RunTranscript from "./RunTranscript.vue";
 import RunPlanPopover from "./RunPlanPopover.vue";
+import ContextDrawer from "./ContextDrawer.vue";
+import CodingComposer, { type CodingComposerSendPayload } from "./CodingComposer.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -54,7 +64,9 @@ const branchLabel = computed(() => {
 // ============ run 流（真实计划/工具/审批/终态均来自 durable 事件） ============
 const stream = useRunStream();
 const planOpen = ref(false);
+const contextOpen = ref(false);
 const cancelling = ref(false);
+const lastPermissionMode = ref<string | null>(null);
 const approvalRecords = shallowRef<RunApprovalRecord[]>([]);
 
 // ?coding-run-preview=<state>：任务页事件流静态预览（W0 矩阵 L2，生产不进入）
@@ -67,9 +79,13 @@ if (previewKey) {
   void import("../dev/codingRunPreview").then((module) => {
     const keys: readonly string[] = module.CODING_RUN_PREVIEW_KEYS;
     if (keys.includes(previewKey)) {
-      previewProjection.value = module.createStaticProjection(
+      const fixture = module.createStaticProjection(
         previewKey as Parameters<typeof module.createStaticProjection>[0]
-      ).projection;
+      );
+      previewProjection.value = fixture.projection;
+      approvalPreviews.value = fixture.approvalPreviews ?? {};
+      executions.value = fixture.executions ?? [];
+      outputPages.value = fixture.outputPages ?? {};
       previewMode.value = true;
     }
   });
@@ -85,16 +101,7 @@ const runActive = computed(() => {
   return !previewMode.value && status !== null && !isTerminalRunStatus(status);
 });
 
-// 未决审批 → 拉取审批详情（risk_level/capabilities/expires 只在 approvals API）
-const pendingApprovalKey = computed(() => {
-  const current = stream.projection.value;
-  if (!current) return "";
-  return current.entries
-    .filter((entry) => entry.kind === "approval")
-    .map((entry) => (entry.kind === "approval" ? `${entry.approvalId}:${entry.resolved ? 1 : 0}` : ""))
-    .join(",");
-});
-
+// ============ 审批：详情 + 影响范围预览（W3：审批显示完整影响范围） ============
 async function refreshApprovals(): Promise<void> {
   const runId = stream.projection.value?.runId;
   if (!runId) {
@@ -108,8 +115,45 @@ async function refreshApprovals(): Promise<void> {
   }
 }
 
+const approvalPreviews = ref<Record<string, RunApprovalPreviewRecord | null>>({});
+const previewLoading = ref<string[]>([]);
+
+async function ensureApprovalPreviews(): Promise<void> {
+  const runId = stream.projection.value?.runId;
+  if (!runId) return;
+  const pending = approvalRecords.value.filter(
+    (item) =>
+      (item.status === "pending" || item.status === "consumed") &&
+      !(item.id in approvalPreviews.value)
+  );
+  for (const item of pending) {
+    previewLoading.value = [...previewLoading.value, item.id];
+    try {
+      approvalPreviews.value = {
+        ...approvalPreviews.value,
+        [item.id]: await fetchRunApprovalPreview(runId, item.id),
+      };
+    } catch {
+      approvalPreviews.value = { ...approvalPreviews.value, [item.id]: null };
+    } finally {
+      previewLoading.value = previewLoading.value.filter((id) => id !== item.id);
+    }
+  }
+}
+
+const pendingApprovalKey = computed(() => {
+  const current = stream.projection.value;
+  if (!current) return "";
+  return current.entries
+    .filter((entry) => entry.kind === "approval")
+    .map((entry) => (entry.kind === "approval" ? `${entry.approvalId}:${entry.resolved ? 1 : 0}` : ""))
+    .join(",");
+});
+
 watch(pendingApprovalKey, (next, previous) => {
-  if (next && next !== previous && !previewMode.value) void refreshApprovals();
+  if (next && next !== previous && !previewMode.value) {
+    void refreshApprovals().then(() => ensureApprovalPreviews());
+  }
 });
 
 async function onApprove(approvalId: string): Promise<void> {
@@ -132,38 +176,121 @@ async function onReject(approvalId: string): Promise<void> {
   }
 }
 
-// ============ 极简输入器（W3 由 CodingComposer 取代：@上下文、/ 命令、权限/模型/推理） ============
-const composerText = ref("");
-const composerError = ref("");
+// ============ 工具执行输出（W3：按需加载 + finished 前轮询，卸载清理） ============
+const executions = shallowRef<RunExecutionRecord[]>([]);
+const executionsLoadedForRun = ref<string | null>(null);
+const outputPages = shallowRef<Record<string, RunExecutionOutputPage | null>>({});
+const outputLoading = ref<string[]>([]);
+let outputPollTimer: number | null = null;
 
+/** executions 无 tool_call_id：按工具名 + 完成顺序与 transcript 工具条目关联 */
+const executionByTool = computed<Record<string, RunExecutionRecord>>(() => {
+  const current = projection.value;
+  const map: Record<string, RunExecutionRecord> = {};
+  if (!current) return map;
+  const byName = new Map<string, number>();
+  for (const execution of executions.value) {
+    const nextIndex = byName.get(execution.tool_name) ?? 0;
+    byName.set(execution.tool_name, nextIndex + 1);
+    const matches = current.entries.filter(
+      (entry) => entry.kind === "tool" && entry.name === execution.tool_name
+    );
+    const target = matches[nextIndex];
+    if (target && target.kind === "tool") {
+      map[target.toolCallId] = execution;
+    }
+  }
+  return map;
+});
+
+async function loadExecutions(): Promise<void> {
+  const runId = stream.projection.value?.runId;
+  if (!runId || executionsLoadedForRun.value === runId) return;
+  executionsLoadedForRun.value = runId;
+  try {
+    executions.value = await fetchRunExecutions(runId);
+  } catch {
+    executions.value = [];
+  }
+}
+
+// 终态或出现已完成工具时拉取一次执行结果（脱敏持久层，不依赖流）
+watch(
+  () => [projection.value?.status, projection.value?.entries.filter((e) => e.kind === "tool" && e.state === "completed").length] as const,
+  () => {
+    if (!previewMode.value && projection.value?.runId) void loadExecutions();
+  },
+  { immediate: true }
+);
+
+async function loadOutput(executionId: string): Promise<void> {
+  const runId = stream.projection.value?.runId;
+  if (!runId || outputLoading.value.includes(executionId)) return;
+  outputLoading.value = [...outputLoading.value, executionId];
+  try {
+    const previous = outputPages.value[executionId];
+    const after = previous ? previous.last_seq : -1;
+    const page = await fetchRunExecutionOutput(runId, executionId, after);
+    outputPages.value = { ...outputPages.value, [executionId]: page };
+  } catch {
+    // 输出拉取失败保留已加载页；用户可再次触发
+  } finally {
+    outputLoading.value = outputLoading.value.filter((id) => id !== executionId);
+    scheduleOutputPoll();
+  }
+}
+
+function scheduleOutputPoll(): void {
+  const unfinished = Object.entries(outputPages.value)
+    .filter(([, page]) => page && !page.finished)
+    .map(([id]) => id);
+  if (!unfinished.length) {
+    if (outputPollTimer !== null) {
+      window.clearTimeout(outputPollTimer);
+      outputPollTimer = null;
+    }
+    return;
+  }
+  if (outputPollTimer !== null) return;
+  outputPollTimer = window.setTimeout(() => {
+    outputPollTimer = null;
+    for (const id of unfinished) void loadOutput(id);
+  }, 1500);
+}
+
+onBeforeUnmount(() => {
+  if (outputPollTimer !== null) {
+    window.clearTimeout(outputPollTimer);
+    outputPollTimer = null;
+  }
+});
+
+// ============ 输入器（W3 CodingComposer：权限/模型/推理/@ 上下文/草稿） ============
 const composerBusy = computed(
   () => !previewMode.value && ["starting", "streaming", "reconnecting"].includes(stream.phase.value)
 );
 
-async function send(): Promise<void> {
-  const message = composerText.value.trim();
-  if (!message || composerBusy.value || !thread.value) return;
+async function send(payload: CodingComposerSendPayload): Promise<void> {
+  if (!thread.value) return;
   const projectId = props.store.selectedProjectId.value ?? thread.value.projectId;
   const workspaceId = props.store.selectedWorkspaceId.value ?? thread.value.workspaceId;
-  if (projectId === null || workspaceId === null) {
-    composerError.value = "项目或工作区不可用，无法发起任务";
-    return;
-  }
-  composerError.value = "";
+  if (projectId === null || workspaceId === null) return;
+  lastPermissionMode.value = payload.permissionMode;
   await stream.startRun({
     session_id: thread.value.id,
-    message,
+    message: payload.message,
     project_id: projectId,
     workspace_id: workspaceId,
+    permission_mode: payload.permissionMode,
+    model_profile_id: payload.modelProfileId ?? undefined,
+    reasoning_effort: payload.reasoningEffort ?? undefined,
   });
-  if (stream.phase.value !== "error") composerText.value = "";
 }
 
-function onComposerKeydown(event: KeyboardEvent): void {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    void send();
-  }
+function searchFiles(query: string) {
+  const projectId = props.store.selectedProjectId.value;
+  if (projectId === null) return Promise.resolve([]);
+  return searchCodingProjectFiles(projectId, query);
 }
 
 async function cancelRun(): Promise<void> {
@@ -182,6 +309,17 @@ function backToHome(): void {
 
 function openPlanFromTranscript(): void {
   planOpen.value = true;
+  contextOpen.value = false;
+}
+
+function togglePlan(): void {
+  planOpen.value = !planOpen.value;
+  if (planOpen.value) contextOpen.value = false;
+}
+
+function toggleContext(): void {
+  contextOpen.value = !contextOpen.value;
+  if (contextOpen.value) planOpen.value = false;
 }
 </script>
 
@@ -206,73 +344,47 @@ function openPlanFromTranscript(): void {
         :run-status="runStatus"
         :plan-available="projection?.plan != null"
         :plan-open="planOpen"
+        :context-open="contextOpen"
         :cancellable="runActive"
         :cancelling="cancelling"
         @back-home="backToHome"
         @cancel="cancelRun"
-        @toggle-plan="planOpen = !planOpen"
+        @toggle-plan="togglePlan"
+        @toggle-context="toggleContext"
       />
 
-      <div class="thread-body" :class="{ 'has-plan': planOpen && projection?.plan }">
+      <div class="thread-body">
         <div class="thread-main">
           <RunTranscript
             :projection="projection"
             :phase="phase"
             :connection-error="connectionError"
             :approvals="approvalRecords"
+            :approval-previews="approvalPreviews"
+            :preview-loading="previewLoading"
+            :execution-by-tool="executionByTool"
+            :output-pages="outputPages"
+            :output-loading="outputLoading"
             :preview-mode="previewMode"
             @approve="onApprove"
             @reject="onReject"
             @open-plan="openPlanFromTranscript"
             @retry-stream="stream.retryConnection()"
+            @load-output="loadOutput"
           />
 
-          <div class="thread-composer" data-testid="coding-thread-composer">
-            <PaInlineNotice
-              v-if="composerError"
-              tone="danger"
-              title="无法发送"
-              class="composer-notice"
-            >
-              {{ composerError }}
-            </PaInlineNotice>
-            <div class="composer-row">
-              <textarea
-                v-model="composerText"
-                class="composer-input"
-                data-testid="coding-thread-composer-input"
-                rows="2"
-                :disabled="composerBusy || previewMode"
-                :placeholder="
-                  previewMode
-                    ? '预览模式：静态事件流演示'
-                    : composerBusy
-                      ? '任务执行中…可点击停止'
-                      : '描述要执行的内容（Enter 发送 · Shift+Enter 换行）'
-                "
-                @keydown="onComposerKeydown"
-              />
-              <button
-                v-if="!runActive"
-                class="pa-btn pa-btn--primary composer-send"
-                data-testid="coding-thread-composer-send"
-                :disabled="composerBusy || previewMode || !composerText.trim()"
-                @click="send()"
-              >
-                <PhPaperPlaneRight :size="15" />
-                发送
-              </button>
-              <button
-                v-else
-                class="pa-btn pa-btn--ghost composer-stop"
-                data-testid="coding-thread-composer-stop"
-                :disabled="cancelling"
-                @click="cancelRun()"
-              >
-                <PhProhibit :size="15" />
-                {{ cancelling ? "停止中…" : "停止" }}
-              </button>
-            </div>
+          <div class="thread-composer">
+            <CodingComposer
+              :store="store"
+              :thread-id="thread.id"
+              :busy="composerBusy"
+              :stopping="cancelling"
+              :running="runActive"
+              :preview-mode="previewMode"
+              :search-files="searchFiles"
+              @send="send"
+              @stop="cancelRun"
+            />
           </div>
         </div>
 
@@ -280,6 +392,14 @@ function openPlanFromTranscript(): void {
           v-if="planOpen"
           :plan="projection?.plan ?? null"
           @close="planOpen = false"
+        />
+
+        <ContextDrawer
+          v-if="contextOpen"
+          :projection="projection"
+          :previews="approvalPreviews"
+          :permission-mode="lastPermissionMode"
+          @close="contextOpen = false"
         />
       </div>
     </template>
@@ -294,6 +414,7 @@ function openPlanFromTranscript(): void {
   flex-direction: column;
 }
 .thread-body {
+  position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
@@ -310,56 +431,15 @@ function openPlanFromTranscript(): void {
   border-top: 1px solid var(--color-border);
   background: var(--color-surface);
 }
-.composer-notice {
-  margin-bottom: var(--space-2);
-}
-.composer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
-}
-.composer-input {
-  flex: 1;
-  min-height: 44px;
-  max-height: 160px;
-  resize: none;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
-  color: var(--color-fg);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  line-height: var(--leading-normal);
-}
-.composer-input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 0;
-}
-.composer-input:disabled {
-  color: var(--color-fg-faint);
-}
-.composer-send,
-.composer-stop {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  flex-shrink: 0;
-}
-.composer-stop {
-  color: var(--color-danger-fg);
-}
 @media (max-width: 1080px) {
-  .thread-body :deep(.plan-popover) {
+  .thread-body :deep(.plan-popover),
+  .thread-body :deep(.context-drawer) {
     position: absolute;
     top: 0;
     right: 0;
     bottom: 0;
     z-index: var(--z-raised);
     box-shadow: var(--shadow-lg);
-  }
-  .thread-body {
-    position: relative;
   }
 }
 </style>

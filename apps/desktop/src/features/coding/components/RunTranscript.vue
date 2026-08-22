@@ -23,8 +23,16 @@ import {
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { TranscriptEntry, RunProjection } from "../model/runProjector";
-import type { RunApprovalRecord, RunConnectionPhase } from "../model/runContracts";
+import type {
+  RunApprovalPreviewRecord,
+  RunApprovalRecord,
+  RunConnectionPhase,
+  RunExecutionOutputPage,
+  RunExecutionRecord,
+} from "../model/runContracts";
 import { RUN_STATUS_META } from "../model/runContracts";
+import DiffArtifact from "./DiffArtifact.vue";
+import CommandOutput from "./CommandOutput.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -32,12 +40,25 @@ const props = withDefaults(
     phase?: RunConnectionPhase;
     connectionError?: string | null;
     approvals?: RunApprovalRecord[];
+    /** W3：审批影响范围预览（父层按需加载；键为 approvalId） */
+    approvalPreviews?: Record<string, RunApprovalPreviewRecord | null>;
+    previewLoading?: string[];
+    /** W3：工具执行结果（键为 toolCallId，按工具名+完成顺序关联） */
+    executionByTool?: Record<string, RunExecutionRecord>;
+    /** W3：流式输出页（键为 executionId） */
+    outputPages?: Record<string, RunExecutionOutputPage | null>;
+    outputLoading?: string[];
     previewMode?: boolean;
   }>(),
   {
     phase: "idle" as RunConnectionPhase,
     connectionError: null,
     approvals: () => [],
+    approvalPreviews: () => ({}),
+    previewLoading: () => [],
+    executionByTool: () => ({}),
+    outputPages: () => ({}),
+    outputLoading: () => [],
     previewMode: false,
   }
 );
@@ -47,6 +68,7 @@ const emit = defineEmits<{
   reject: [approvalId: string];
   "open-plan": [];
   "retry-stream": [];
+  "load-output": [executionId: string];
 }>();
 
 const TOOL_STATE_LABEL: Record<string, { label: string; tone: string }> = {
@@ -188,7 +210,7 @@ function terminalMeta(): { label: string; tone: string } | null {
             </span>
           </button>
 
-          <!-- 工具卡（摘要行） -->
+          <!-- 工具卡（摘要行 + W3 执行输出按需加载） -->
           <template v-else-if="entry.kind === 'tool'">
             <span class="entry-icon" :class="toolEntryClass(entry)" aria-hidden="true">●</span>
             <span class="entry-copy mono">{{ entry.name }}</span>
@@ -199,6 +221,14 @@ function terminalMeta(): { label: string; tone: string } | null {
             <span v-if="entry.errorMessage" class="entry-error" :title="entry.errorMessage">
               {{ entry.errorType || "错误" }}：{{ entry.errorMessage }}
             </span>
+            <CommandOutput
+              v-if="executionByTool[entry.toolCallId]"
+              :execution="executionByTool[entry.toolCallId]"
+              :page="outputPages[executionByTool[entry.toolCallId].id] ?? null"
+              :loading="outputLoading.includes(executionByTool[entry.toolCallId].id)"
+              class="entry-execution"
+              @load="emit('load-output', executionByTool[entry.toolCallId].id)"
+            />
           </template>
 
           <!-- 审批卡 -->
@@ -218,7 +248,15 @@ function terminalMeta(): { label: string; tone: string } | null {
             <div v-if="entry.resolved || approvalById(entry.approvalId)?.status !== 'pending'" class="approval-resolved">
               已处理（{{ approvalById(entry.approvalId)?.status ?? "resolved" }}）
             </div>
-            <div v-else class="approval-actions">
+            <DiffArtifact
+              v-if="approvalPreviews[entry.approvalId] !== undefined || previewLoading.includes(entry.approvalId)"
+              :preview="approvalPreviews[entry.approvalId] ?? null"
+              :loading="previewLoading.includes(entry.approvalId)"
+            />
+            <div
+              v-if="!entry.resolved && approvalById(entry.approvalId)?.status === 'pending'"
+              class="approval-actions"
+            >
               <button class="pa-btn pa-btn--primary" :data-testid="`approval-approve-${entry.approvalId}`" @click="emit('approve', entry.approvalId)">
                 批准执行
               </button>
@@ -424,6 +462,9 @@ function terminalMeta(): { label: string; tone: string } | null {
   color: var(--color-danger-fg);
   font-size: var(--pa-text-meta);
   word-break: break-word;
+}
+.entry-execution {
+  flex-basis: 100%;
 }
 .plan-entry {
   border: none;

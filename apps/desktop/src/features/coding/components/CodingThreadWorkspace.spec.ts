@@ -23,7 +23,7 @@ describe("CodingThreadWorkspace（W2 组装）", () => {
   it("无 run 时：transcript 空态 + 输入器可用（Enter 发送语义存在）", async () => {
     const { wrapper } = await mountWorkspace(11);
     expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(true);
-    const input = wrapper.find('[data-testid="coding-thread-composer-input"]');
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
     expect(input.exists()).toBe(true);
     expect(input.attributes("placeholder")).toContain("Enter 发送");
   });

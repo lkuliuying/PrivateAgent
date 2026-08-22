@@ -10,7 +10,12 @@ import {
   createRunProjection,
   type RunProjection,
 } from "../model/runProjector";
-import type { RunStreamFrame } from "../model/runContracts";
+import type {
+  RunApprovalPreviewRecord,
+  RunExecutionOutputPage,
+  RunExecutionRecord,
+  RunStreamFrame,
+} from "../model/runContracts";
 
 export const CODING_RUN_PREVIEW_KEYS = [
   "running-early",
@@ -21,6 +26,12 @@ export const CODING_RUN_PREVIEW_KEYS = [
   "failed",
   "cancelled",
   "limit-exceeded",
+  // v0.8.0 W3（W0 矩阵第 11/12/13/17/19 项）
+  "patch-preview",
+  "command-output",
+  "verification",
+  "conflict",
+  "partial-unknown",
 ] as const;
 
 export type CodingRunPreviewKey = (typeof CODING_RUN_PREVIEW_KEYS)[number];
@@ -211,18 +222,159 @@ function frames(key: CodingRunPreviewKey): RunStreamFrame[] {
         ...TOOL_READ,
         { sequence: 9, type: "run.limit_exceeded", payload: { output: null, error: "达到最大步数", error_code: "max_steps", tool_call_count: 8, input_tokens: 9800, output_tokens: 700, cached_tokens: 0, cost_usd: null } },
       ];
+    // W3：PatchSet 预览（审批等待 + 预览 diff，矩阵 11）
+    case "patch-preview":
+      return frames("waiting-approval");
+    // W3：命令运行与流式输出（矩阵 12）
+    case "command-output":
+      return [
+        RUN_STARTED,
+        CONTEXT_PREPARED,
+        MODEL_STARTED,
+        PLAN_CREATED,
+        MODEL_COMPLETED,
+        ...TOOL_READ,
+        PLAN_ITEM_MOVED,
+        TOOL_WRITE_APPROVAL,
+        PATCH_PREVIEW,
+        { sequence: 12, type: "tool.approval_resolved", payload: { tool_call_id: "tc-write", name: "apply_patch_to_workspace", approval_id: "ap-preview-1" } },
+        { sequence: 13, type: "tool.completed", payload: { tool_call_id: "tc-write", name: "apply_patch_to_workspace" } },
+        { sequence: 14, type: "tool.requested", payload: { ordinal: 3, kind: "tool", tool_call_id: "tc-cmd", name: "run_whitelisted_command" } },
+        { sequence: 15, type: "tool.started", payload: { tool_call_id: "tc-cmd", name: "run_whitelisted_command" } },
+      ];
+    // W3：验证中（矩阵 13）
+    case "verification":
+      return [
+        RUN_STARTED,
+        CONTEXT_PREPARED,
+        MODEL_STARTED,
+        PLAN_CREATED,
+        MODEL_COMPLETED,
+        ...TOOL_READ,
+        VALIDATION_STARTED,
+      ];
+    // W3：workspace 冲突（patchset_conflict，矩阵 17）
+    case "conflict":
+      return [
+        RUN_STARTED,
+        CONTEXT_PREPARED,
+        MODEL_STARTED,
+        PLAN_CREATED,
+        MODEL_COMPLETED,
+        ...TOOL_READ,
+        PLAN_ITEM_MOVED,
+        TOOL_WRITE_APPROVAL,
+        PATCH_PREVIEW,
+        { sequence: 12, type: "tool.approval_resolved", payload: { tool_call_id: "tc-write", name: "apply_patch_to_workspace", approval_id: "ap-preview-1" } },
+        { sequence: 13, type: "patch_set.failed", payload: { patch_set_id: "ps-1", error_code: "patchset_conflict", error_message: "目标文件已被外部修改，预览基于的内容过期" } },
+        { sequence: 14, type: "run.failed", payload: { output: null, error: "PatchSet 应用失败", error_code: "patchset_conflict", tool_call_count: 2, input_tokens: 5000, output_tokens: 200, cached_tokens: 0, cost_usd: null } },
+      ];
+    // W3：partial_unknown 人工处置（矩阵 19）
+    case "partial-unknown":
+      return [
+        RUN_STARTED,
+        CONTEXT_PREPARED,
+        MODEL_STARTED,
+        PLAN_CREATED,
+        MODEL_COMPLETED,
+        ...TOOL_READ,
+        PLAN_ITEM_MOVED,
+        TOOL_WRITE_APPROVAL,
+        PATCH_PREVIEW,
+        { sequence: 12, type: "tool.approval_resolved", payload: { tool_call_id: "tc-write", name: "apply_patch_to_workspace", approval_id: "ap-preview-1" } },
+        { sequence: 13, type: "patch_set.applied", payload: { patch_set_id: "ps-1", preview_version: 3, verified: true } },
+        { sequence: 14, type: "patch_set.rolled_back", payload: { patch_set_id: "ps-1", reason: "验证失败后回滚部分完成" } },
+        { sequence: 15, type: "patch_set.unknown", payload: { patch_set_id: "ps-1", reason: "回滚中断，磁盘状态未知，需人工处置" } },
+        { sequence: 16, type: "run.failed", payload: { output: null, error: "回滚中断", error_code: "patchset_partial_unknown", tool_call_count: 2, input_tokens: 5200, output_tokens: 210, cached_tokens: 0, cost_usd: null } },
+      ];
   }
 }
 
+const PREVIEW_DIFF = [
+  "@@ -12,7 +12,9 @@",
+  " export function useSidebar() {",
+  "-  const open = ref(false);",
+  "+  const open = ref(false);",
+  '+  const overlay = useMediaQuery("(max-width: 1279px)");',
+  "+  watchEffect(() => { if (!overlay.value) drawerOpen.value = false; });",
+  "   return { open };",
+].join("\n");
+
+const W3_APPROVAL_PREVIEWS: Record<string, RunApprovalPreviewRecord | null> = {
+  "ap-preview-1": {
+    tool_name: "apply_patch_to_workspace",
+    previewable: true,
+    rel_path: "src/features/coding/components/CodingSidebar.vue",
+    creates_file: false,
+    old_sha256: "1".repeat(64),
+    new_sha256: "2".repeat(64),
+    diff: PREVIEW_DIFF,
+    truncated: false,
+    reason: null,
+  },
+};
+
+const W3_EXECUTIONS: RunExecutionRecord[] = [
+  {
+    id: "exec-cmd-1",
+    tool_name: "run_whitelisted_command",
+    tool_version: "1.0.0",
+    status: "succeeded",
+    error_code: null,
+    error_message: null,
+    output: {
+      exit_code: 0,
+      parsed: {
+        parser: "pytest",
+        summary: "12 passed in 3.42s",
+        passed: 12,
+        failed: 0,
+        skipped: 0,
+        errors: 0,
+        failures: [],
+        truncated: false,
+      },
+    },
+    created_at: "2026-08-22T00:10:00Z",
+    completed_at: "2026-08-22T00:10:04Z",
+  },
+];
+
+const W3_OUTPUT_PAGE: RunExecutionOutputPage = {
+  lines: [
+    { seq: 1, kind: "stdout", text: "============================= test session starts =============================" },
+    { seq: 2, kind: "stdout", text: "collected 12 items" },
+    { seq: 3, kind: "stdout", text: "tests/test_sidebar.py .......                                             [ 58%]" },
+    { seq: 4, kind: "stdout", text: "tests/test_composer.py .....                                              [100%]" },
+    { seq: 5, kind: "stdout", text: "======================== 12 passed in 3.42s ==========================" },
+  ],
+  last_seq: 5,
+  finished: true,
+};
+
 export interface CodingRunPreviewResult {
   projection: RunProjection;
+  approvalPreviews?: Record<string, RunApprovalPreviewRecord | null>;
+  executions?: RunExecutionRecord[];
+  outputPages?: Record<string, RunExecutionOutputPage | null>;
 }
 
-/** 由帧序列构建静态投影（userMessage 为演示输入原文） */
+/** 由帧序列构建静态投影（userMessage 为演示输入原文；W3 键附带预览/执行/输出夹具） */
 export function createStaticProjection(key: CodingRunPreviewKey): CodingRunPreviewResult {
   const projection = createRunProjection("run-preview", "修复侧栏在窄窗口下的布局遮挡问题");
   for (const frame of frames(key)) {
     applyRunFrame(projection, frame);
+  }
+  if (key === "command-output") {
+    return {
+      projection,
+      approvalPreviews: W3_APPROVAL_PREVIEWS,
+      executions: W3_EXECUTIONS,
+      outputPages: { "exec-cmd-1": W3_OUTPUT_PAGE },
+    };
+  }
+  if (key === "patch-preview" || key === "conflict" || key === "partial-unknown") {
+    return { projection, approvalPreviews: W3_APPROVAL_PREVIEWS };
   }
   return { projection };
 }

@@ -314,12 +314,12 @@ async function openThread(page: Page) {
   await page.goto("/?coding=1");
   await expect(page.getByTestId("coding-thread-11")).toBeVisible({ timeout: 10000 });
   await page.getByTestId("coding-thread-11").click();
-  await expect(page.getByTestId("coding-thread-composer-input")).toBeVisible();
+  await expect(page.getByTestId("coding-composer-input")).toBeVisible();
 }
 
 async function sendMessage(page: Page, text: string) {
-  await page.getByTestId("coding-thread-composer-input").fill(text);
-  await page.getByTestId("coding-thread-composer-send").click();
+  await page.getByTestId("coding-composer-input").fill(text);
+  await page.getByTestId("coding-composer-send").click();
 }
 
 test.describe("v0.8.0 W2 任务页与真实计划", () => {
