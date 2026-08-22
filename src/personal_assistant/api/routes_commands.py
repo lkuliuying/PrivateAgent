@@ -22,6 +22,7 @@ from ..core.patch_sets import (
     CommandProfileService,
     DiagnosticsService,
 )
+from ..core.permissions import PermissionError_
 from ..core.projects import ProjectNotFound
 from ..core.provider import ProviderError
 
@@ -267,6 +268,11 @@ async def run_command(
     except ValueError as e:
         # E0 §6：禁用/非法配置 → command_profile_invalid 422
         raise HTTPException(422, str(e))
+    except PermissionError_ as e:
+        # 第七轮（O-1）：权限/白名单拒绝（restricted profile、argv 校验
+        # 拒绝等）→ 403，不再落入 RuntimeError 的 500（命令零执行不变，
+        # 仅 HTTP 语义修正；与 routes_projects/routes_integrations 惯例一致）。
+        raise HTTPException(403, str(e))
     except RuntimeError as e:
         raise HTTPException(500, str(e))
     except TimeoutError as e:

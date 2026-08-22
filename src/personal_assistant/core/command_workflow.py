@@ -554,6 +554,11 @@ async def _resolve_command(
     # 第五轮（P0-1）：workspace 模式下命令自动允许仅适用于匹配项目 profile
     # 的命令；未匹配 profile 的全局白名单兜底不得在 SAFE 工具级下自动放行。
     permission_mode: str | None = None,
+    # 第七轮（O-2）：dispatcher 注册时计算的命令工具 risk（SAFE = 自动允许）。
+    # workspace 自动允许在执行时按**当前**匹配 profile 复核——注册后 profile
+    # 变更（confirm / allow_network=False）不再沿用本回合的 SAFE 自动放行，
+    # 杜绝「run 进行中收紧配置、当回合仍免确认执行」的单回合 TOCTOU 窗口。
+    command_risk: ToolRiskLevel | None = None,
 ) -> _ResolvedCommand:
     """白名单合并：全局默认前缀 + 项目 command profile（预授权）。
 
@@ -606,6 +611,24 @@ async def _resolve_command(
         # 如何切换，匹配即拒绝；MVP 无任何自动放行渠道（仅人工处置）。
         raise PermissionError_(
             f"命令 profile「{matched_profile.name}」为 restricted，禁止自动执行"
+        )
+    # 第七轮（O-2）：SAFE 自动允许仅当执行时匹配 profile 仍为 safe 且
+    # allow_network=True。工具 risk 在 dispatcher 构建时（run start/resume）
+    # 求值；项目 profile 在本回合内被改为 confirm / allow_network=False 时，
+    # 旧 SAFE 判定不得继续免确认放行——失败关闭，下一回合按审批流程收敛。
+    if (
+        permission_mode == "workspace"
+        and command_risk == ToolRiskLevel.SAFE
+        and matched_profile is not None
+        and (
+            (matched_profile.risk_level or "confirm") != "safe"
+            or not matched_profile.allow_network
+        )
+    ):
+        raise PermissionError_(
+            "workspace 自动允许的命令在执行时不再是 safe 且 allow_network=True"
+            " 的 profile（项目命令 profile 已变化），已拒绝；重新发起后按审批"
+            "流程执行"
         )
     effective_timeout = max(1.0, min(float(timeout or COMMAND_TIMEOUT), COMMAND_TIMEOUT))
     root = project.root_path
@@ -907,6 +930,8 @@ async def run_whitelisted_command_trusted(
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
     # 第五轮（P0-1）：workspace 模式命令级约束（未匹配 profile 拒绝）
     permission_mode: str | None = None,
+    # 第七轮（O-2）：注册时 SAFE 自动允许的执行时复核依据
+    command_risk: ToolRiskLevel | None = None,
 ) -> dict[str, Any]:
     """审批后在授权项目根目录运行白名单命令（参数数组，不经 shell）。
 
@@ -914,7 +939,12 @@ async def run_whitelisted_command_trusted(
     """
     args = parse_command(command)
     resolved = await _resolve_command(
-        db, project_id, args, timeout, permission_mode=permission_mode
+        db,
+        project_id,
+        args,
+        timeout,
+        permission_mode=permission_mode,
+        command_risk=command_risk,
     )
     execution_id = current_execution_id()
     persister = (
@@ -1007,6 +1037,7 @@ def _build_command_tool_spec(
             cancellation=cancellation,
             on_line=on_line,
             permission_mode=permission_mode,
+            command_risk=command_risk,
         )
 
     return ToolSpec(

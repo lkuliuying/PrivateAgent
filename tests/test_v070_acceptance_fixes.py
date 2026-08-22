@@ -1565,3 +1565,129 @@ async def test_path_uniqueness_dot_component_normalized(db, tmp_path):
         await _cleanup(
             db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
         )
+
+
+# ===========================================================================
+# 第七轮验收修复（2026-08-22 复核）：O-1 手动运行权限拒绝 403 /
+# O-2 workspace SAFE 执行时按匹配 profile 复核（单回合 TOCTOU 关闭）
+# ===========================================================================
+
+
+async def test_command_run_route_restricted_profile_returns_403(client, db, tmp_path):
+    """第七轮 O-1：手动运行 restricted profile → 403（原为 RuntimeError 500）。
+
+    命令零执行的 fail-closed 语义不变，仅 HTTP 状态语义修正
+    （与 routes_projects / routes_integrations 的 PermissionError_ 惯例一致）。
+    """
+    from personal_assistant.core.models import Project
+
+    root = tmp_path / "proj-r7"
+    root.mkdir()
+    resp = await client.post(
+        "/projects",
+        json={"name": f"r7-{uuid4().hex[:6]}", "root_path": str(root)},
+    )
+    assert resp.status_code == 201, resp.text
+    project_id = resp.json()["id"]
+    resp = await client.post(
+        f"/projects/{project_id}/commands",
+        json={
+            "name": "restricted-echo",
+            "command_json": {"args": [sys.executable, "-c", "print(1)"]},
+            "kind": "custom",
+            "timeout_seconds": 30,
+            "risk_level": "restricted",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    command_id = resp.json()["id"]
+    try:
+        resp = await client.post(f"/projects/{project_id}/commands/{command_id}/run")
+        assert resp.status_code == 403, resp.text
+        assert "restricted" in resp.json()["detail"]
+    finally:
+        from personal_assistant.core.models import ProjectCommandProfile as PCP
+
+        await db.execute(delete(PCP).where(PCP.id == command_id))
+        await db.execute(delete(Project).where(Project.id == project_id))
+        await db.commit()
+
+
+async def test_workspace_safe_revalidates_matched_profile_at_execution(db, tmp_path):
+    """第七轮 O-2：SAFE 自动允许在执行时按**当前**匹配 profile 复核。
+
+    工具 risk 在 dispatcher 构建时求值（run start/resume）；本回合内 profile
+    被改为 confirm / allow_network=False 时，旧 SAFE 判定不得继续免确认放行
+    （单回合 TOCTOU 窗口关闭）；CONFIRM 工具（整体审批把关）不受影响。
+    """
+    from personal_assistant.agents import ToolRiskLevel
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    profile = ProjectCommandProfile(
+        project_id=project_id,
+        name="node-safe-net",
+        command_json={"args": ["node", "tool.js"]},
+        kind="custom",
+        timeout_seconds=30,
+        enabled=True,
+        profile_version=1,
+        allow_network=True,
+        risk_level="safe",
+        result_parser="plain",
+    )
+    db.add(profile)
+    await db.commit()
+    (tmp_path / "tool.js").write_text("console.log(1)", encoding="utf-8")
+    try:
+        # 注册时 SAFE + 执行时仍 safe 且 allow_network=True → 自动允许
+        ok = await _resolve_command(
+            db,
+            project_id,
+            ["node", "tool.js"],
+            timeout=None,
+            permission_mode="workspace",
+            command_risk=ToolRiskLevel.SAFE,
+        )
+        assert ok.matched_profile_name == "node-safe-net"
+        # 本回合内 profile 被改为 confirm → SAFE 自动允许不再放行
+        profile.risk_level = "confirm"
+        await db.commit()
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db,
+                project_id,
+                ["node", "tool.js"],
+                timeout=None,
+                permission_mode="workspace",
+                command_risk=ToolRiskLevel.SAFE,
+            )
+        # 改回 safe 但 allow_network=False → 同样拒绝（第六轮语义执行时复核）
+        profile.risk_level = "safe"
+        profile.allow_network = False
+        await db.commit()
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db,
+                project_id,
+                ["node", "tool.js"],
+                timeout=None,
+                permission_mode="workspace",
+                command_risk=ToolRiskLevel.SAFE,
+            )
+        # CONFIRM 工具（审批把关）+ confirm profile → resolve 层放行
+        profile.allow_network = True
+        profile.risk_level = "confirm"
+        await db.commit()
+        ok2 = await _resolve_command(
+            db,
+            project_id,
+            ["node", "tool.js"],
+            timeout=None,
+            permission_mode="workspace",
+            command_risk=ToolRiskLevel.CONFIRM,
+        )
+        assert ok2.matched_profile_name == "node-safe-net"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
