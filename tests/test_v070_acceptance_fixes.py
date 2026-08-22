@@ -1069,7 +1069,9 @@ async def test_apply_durable_unknown_keeps_disk_and_backup(db, tmp_path, monkeyp
                 raise RuntimeError("simulated commit failure")
             return await orig_transition(patch_set_id, expected, new_status, **kw)
 
-        async def _db_down(*args, **kwargs):
+        def _db_down(*args, **kwargs):
+            # 同步抛异常（async_session_factory 被调用时直接失败，
+            # 避免未 await 的 coroutine 警告）
             raise RuntimeError("database unreachable")
 
         monkeypatch = pytest.MonkeyPatch()
@@ -1144,6 +1146,188 @@ async def test_path_uniqueness_double_slash_normalized(db, tmp_path):
             run_id, [_op_create("src/config.py", "x\n")]
         )
         assert preview["file_count"] == 1
+    finally:
+        await _cleanup(
+            db, run_id=run_id, project_id=project_id, workspace_id=workspace_id
+        )
+
+
+# ===========================================================================
+# 第五轮验收修复（2026-08-22 复核）：P0-1 SAFE 工具级泄漏 / P0-2 -W 与 python
+# 代码参数 / P0-3 allow_network 执行层约束 / P1-1 . 组件唯一性键
+# ===========================================================================
+
+
+async def test_workspace_mode_unmatched_profile_rejected(db, tmp_path):
+    """第五轮 P0-1：workspace 模式 SAFE 只对匹配项目 profile 的命令生效——
+    未匹配 profile 的全局白名单命令执行时拒绝（不因工具级 SAFE 自动放行）。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project_with_profiles(
+        db,
+        tmp_path,
+        [
+            {"name": "cargo-test", "args": ["cargo", "test"], "risk_level": "safe"},
+            {"name": "py-tests", "args": [sys.executable, "-m", "pytest"], "risk_level": "safe"},
+        ],
+    )
+    try:
+        # 匹配项目 profile（全部 safe）→ workspace 模式自动允许
+        ok = await _resolve_command(
+            db,
+            project_id,
+            ["cargo", "test", "-q"],
+            timeout=None,
+            permission_mode="workspace",
+        )
+        assert ok.matched_profile_name == "cargo-test"
+        # 未匹配 profile 的全局白名单命令（python -m pytest 是全局前缀，
+        # 但项目 profile 是 [sys.executable, -m, pytest] 不匹配此形态）
+        # → workspace 模式拒绝，即使命令工具整体是 SAFE
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db,
+                project_id,
+                ["python", "-m", "pytest", "-q"],
+                timeout=None,
+                permission_mode="workspace",
+            )
+        # 非 workspace 模式（confirm/无权限）保持全局白名单兜底
+        ok2 = await _resolve_command(
+            db, project_id, ["python", "-m", "pytest", "-q"], timeout=None
+        )
+        assert ok2.args == ["python", "-m", "pytest", "-q"]
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_pytest_w_flag_and_python_code_args_rejected(db, tmp_path):
+    """第五轮 P0-2：pytest -W（警告类别触发模块导入）与 python -c/-m/-i/-W 拒绝。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project_with_profiles(
+        db,
+        tmp_path,
+        [
+            {"name": "py-tests", "args": [sys.executable, "-m", "pytest"]},
+            {"name": "py-run", "args": [sys.executable]},
+        ],
+    )
+    try:
+        cases = [
+            # pytest -W 警告类别可触发外部模块导入
+            [sys.executable, "-m", "pytest", "-W", "ignore::outside_plugin.CustomWarning"],
+            [sys.executable, "-m", "pytest", "-W=ignore::outside_plugin.CustomWarning"],
+            # python 代码/模块执行参数（profile 前缀为 python 时模型不可追加）
+            [sys.executable, "-c", "__import__('outside_plugin')"],
+            [sys.executable, "-m", "os"],
+            [sys.executable, "-i"],
+            [sys.executable, "-W", "ignore"],
+        ]
+        for args in cases:
+            with pytest.raises(PermissionError_):
+                await _resolve_command(db, project_id, args, timeout=None)
+
+        # 合法：python 运行工作区内脚本 / 安全选项
+        (tmp_path / "tool.py").write_text("print(1)", encoding="utf-8")
+        ok = await _resolve_command(
+            db, project_id, [sys.executable, "-B", "tool.py"], timeout=None
+        )
+        assert ok.matched_profile_name == "py-run"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_allow_network_false_rejects_url_args(db, tmp_path):
+    """第五轮 P0-3：allow_network=false（默认）执行层拒绝 URL 参数。"""
+    from personal_assistant.core.command_workflow import _resolve_command
+    from personal_assistant.core.models import ProjectCommandProfile
+    from personal_assistant.core.permissions import PermissionError_
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="fetch-no-net",
+            command_json={"args": ["curl"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=False,
+            result_parser="plain",
+        )
+    )
+    db.add(
+        ProjectCommandProfile(
+            project_id=project_id,
+            name="fetch-net",
+            command_json={"args": ["wget"]},
+            kind="custom",
+            timeout_seconds=30,
+            enabled=True,
+            profile_version=1,
+            allow_network=True,
+            result_parser="plain",
+        )
+    )
+    await db.commit()
+    try:
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db, project_id, ["curl", "https://example.com/data"], timeout=None
+            )
+        with pytest.raises(PermissionError_):
+            await _resolve_command(
+                db, project_id, ["curl", "--url=http://example.com"], timeout=None
+            )
+        # allow_network=True 放行
+        ok = await _resolve_command(
+            db, project_id, ["wget", "https://example.com/data"], timeout=None
+        )
+        assert ok.matched_profile_name == "fetch-net"
+        # 无 URL 参数不受影响
+        ok2 = await _resolve_command(
+            db, project_id, ["curl", "-s", "--version"], timeout=None
+        )
+        assert ok2.matched_profile_name == "fetch-no-net"
+    finally:
+        await _cleanup(db, project_id=project_id, workspace_id=workspace_id)
+
+
+async def test_path_uniqueness_dot_component_normalized(db, tmp_path):
+    """第五轮 P1-1：. 组件归一化——src/./x.py 与 src/x.py 判重复（Windows 同一目标）。"""
+    from personal_assistant.core.patch_set_service import (
+        PatchSetError,
+        PatchSetService,
+    )
+
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_coding_run(
+        db, project_id=project_id, workspace_id=workspace_id
+    )
+    try:
+        with pytest.raises(PatchSetError) as exc:
+            await PatchSetService(db).propose(
+                run_id,
+                [
+                    _op_create("src/x.py", "a\n"),
+                    _op_create("src/./x.py", "b\n"),
+                ],
+            )
+        assert exc.value.error_code == "patchset_invalid"
+        with pytest.raises(PatchSetError) as exc:
+            await PatchSetService(db).propose(
+                run_id,
+                [
+                    _op_create("./a.py", "a\n"),
+                    _op_create("a.py", "b\n"),
+                ],
+            )
+        assert exc.value.error_code == "patchset_invalid"
+        assert list(tmp_path.iterdir()) == []
     finally:
         await _cleanup(
             db, run_id=run_id, project_id=project_id, workspace_id=workspace_id

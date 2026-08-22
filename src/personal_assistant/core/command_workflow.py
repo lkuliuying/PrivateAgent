@@ -317,17 +317,26 @@ _PYTEST_ALLOWED_FLAGS = frozenset(
         "-q", "--quiet", "-v", "--verbose", "-x", "--exitfirst",
         "-k", "--maxfail", "-s", "--capture", "--tb", "--color", "-r",
         "--lf", "--ff", "--co", "--collect-only", "--disable-warnings",
-        "--no-header", "-W", "--strict", "--strict-markers", "--timeout",
+        "--no-header", "--strict", "--strict-markers", "--timeout",
         "-m", "--markers", "--deselect", "--continue-on-collection-errors",
         "-l", "--showlocals", "--no-summary", "--no-cov",
+        # 第五轮（P0-2）：-W 警告过滤可触发类别模块导入
+        # （-W ignore::outside_plugin.CustomWarning），已从集合移除。
     }
 )
+# 第五轮（P0-2）：python/py 工具 schema——-c（任意代码）、-m（任意模块）、
+# -i（交互）、-W（警告类别可触发模块导入）一律拒绝；profile 前缀为 python
+# 时模型不能追加代码执行参数。
+_PYTHON_ALLOWED_FLAGS = frozenset(
+    {"-V", "--version", "-B", "-E", "-O", "-OO", "-q", "-u", "-v"}
+)
+_PYTHON_REJECT_FLAGS = frozenset({"-c", "-m", "-i", "-W"})
 # 第四轮（P0-1）：cargo/npm 补齐完整 allow/path/reject schema——未知 flag 的
 # 内联值也必须经过路径校验（cargo --target=C:outside / npm -- --config=... 等
 # 工作区外配置/目标加载能力）。-- 分隔符（npm run 透传底层工具参数）一律拒绝。
 _CARGO_ALLOWED_FLAGS = frozenset(
     {
-        "--release", "--all", "--no-run", "--message-format", "--test",
+        "-q", "--release", "--all", "--no-run", "--message-format", "--test",
         "--tests", "--lib", "--bins", "--examples", "--benches", "--doc",
         "--no-fail-fast", "--quiet", "--features", "--all-features",
         "--no-default-features", "--locked", "--frozen", "--offline",
@@ -336,7 +345,7 @@ _CARGO_ALLOWED_FLAGS = frozenset(
 )
 _NPM_ALLOWED_FLAGS = frozenset(
     {
-        "--workspace", "-w", "--workspaces", "--include-workspace-root",
+        "-q", "--workspace", "-w", "--workspaces", "--include-workspace-root",
         "--if-present", "--silent", "--no-audit", "--no-fund",
         "--ignore-scripts", "--foreground-scripts", "--loglevel",
     }
@@ -346,6 +355,11 @@ _COMMAND_ARG_POLICY: dict[str, dict[str, frozenset[str]]] = {
         "allow": _PYTEST_ALLOWED_FLAGS,
         "path": frozenset({"--ignore"}),
         "reject": frozenset(),
+    },
+    "python": {
+        "allow": _PYTHON_ALLOWED_FLAGS,
+        "reject": _PYTHON_REJECT_FLAGS,
+        "path": frozenset(),
     },
     "cargo": {
         "allow": _CARGO_ALLOWED_FLAGS,
@@ -394,6 +408,8 @@ def _command_key(args: Sequence[str]) -> str | None:
             and args[index + 1].lower() == "pytest"
         ):
             return "pytest"
+        # 第五轮（P0-2）：纯 python 调用归 python 工具（-c/-m/-i/-W 拒绝）
+        return "python"
     if exe == "uv":
         # uv run [--offline/--no-sync/...] pytest：跳过 uv 选项定位 pytest
         index = 1
@@ -508,11 +524,36 @@ def _check_path_value(root: str, value: str, *, token: str) -> None:
         resolve_within(root, value)
 
 
+# 第五轮（P0-3）：网络地址形态（allow_network=false 执行层约束）
+_URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*://")
+
+
+def _reject_network_args(remaining: Sequence[str]) -> None:
+    """allow_network=false 时拒绝命令参数中的网络地址形态（URL 直连）。
+
+    workspace 合约要求默认拒绝任意网络；profile.allow_network 只被保存
+    未参与执行是本轮修复——URL 参数（http://、ftp:// 等）在执行前拒绝。
+    （代理类环境变量已由 env_allowlist 拒绝；直连 URL 在此拦截。）
+    """
+    for token in remaining:
+        if not token:
+            continue
+        name, sep, val = token.partition("=")
+        value = val if (sep and val) else token
+        if _URL_SCHEME_RE.match(value):
+            raise PermissionError_(
+                f"命令参数含网络地址，profile allow_network=false: {token}"
+            )
+
+
 async def _resolve_command(
     db: AsyncSession,
     project_id: int,
     args: list[str],
     timeout: float | None,
+    # 第五轮（P0-1）：workspace 模式下命令自动允许仅适用于匹配项目 profile
+    # 的命令；未匹配 profile 的全局白名单兜底不得在 SAFE 工具级下自动放行。
+    permission_mode: str | None = None,
 ) -> _ResolvedCommand:
     """白名单合并：全局默认前缀 + 项目 command profile（预授权）。
 
@@ -539,6 +580,13 @@ async def _resolve_command(
             break
     if matched_profile is None and not is_whitelisted_command(args):
         raise PermissionError_("非白名单命令，已拒绝执行")
+    # 第五轮（P0-1）：workspace 模式只允许「匹配项目 profile」的命令自动
+    # 执行——SAFE 是工具注册级 risk，未匹配 profile 的全局白名单命令不得
+    # 因此免确认（E0 §4.1：workspace 自动允许「匹配项目命令 profile」）。
+    if permission_mode == "workspace" and matched_profile is None:
+        raise PermissionError_(
+            "workspace 模式仅允许匹配项目命令 profile 的命令执行"
+        )
     if matched_profile is not None and (
         matched_profile.risk_level or "confirm"
     ) == "restricted":
@@ -558,6 +606,9 @@ async def _resolve_command(
     else:
         remaining = args[whitelisted_prefix_length(args):]
     _reject_command_args(root, remaining, _command_key(args))
+    # 第五轮（P0-3）：allow_network=false（默认）时拒绝 URL 形态参数
+    if matched_profile is not None and not matched_profile.allow_network:
+        _reject_network_args(remaining)
     env = build_safe_environment()
     max_output_bytes: int | None = None
     result_parser: str | None = None
@@ -829,13 +880,17 @@ async def run_whitelisted_command_trusted(
     timeout: float | None = None,
     cancellation: CancellationToken,
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
+    # 第五轮（P0-1）：workspace 模式命令级约束（未匹配 profile 拒绝）
+    permission_mode: str | None = None,
 ) -> dict[str, Any]:
     """审批后在授权项目根目录运行白名单命令（参数数组，不经 shell）。
 
     ``on_line`` 为可选行回调（测试钩子/未来 UI 复用），默认持久化流式行。
     """
     args = parse_command(command)
-    resolved = await _resolve_command(db, project_id, args, timeout)
+    resolved = await _resolve_command(
+        db, project_id, args, timeout, permission_mode=permission_mode
+    )
     execution_id = current_execution_id()
     persister = (
         _OutputPersister(db, execution_id) if execution_id is not None else None
@@ -877,11 +932,14 @@ def build_command_tool_registry(
     legacy_registry=None,
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
     command_risk: ToolRiskLevel | None = None,
+    # 第五轮（P0-1）：workspace 模式命令级约束透传
+    permission_mode: str | None = None,
 ) -> VersionedToolRegistry:
     """Build the versioned registry containing the audited command tool.
 
     ``command_risk``：E4 workspace 模式动态化——项目 enabled profile 全部
     safe 时传 SAFE（自动允许）；否则为 None（契约默认 confirm，审批把关）。
+    ``permission_mode``：第五轮——workspace 模式未匹配 profile 的命令拒绝。
     """
     from .tools import default_registry
 
@@ -896,7 +954,12 @@ def build_command_tool_registry(
         )
     registry = VersionedToolRegistry()
     registry.register(
-        _build_command_tool_spec(db, on_line=on_line, command_risk=command_risk)
+        _build_command_tool_spec(
+            db,
+            on_line=on_line,
+            command_risk=command_risk,
+            permission_mode=permission_mode,
+        )
     )
     return registry
 
@@ -906,6 +969,7 @@ def _build_command_tool_spec(
     *,
     on_line: Callable[[str, str], Awaitable[None]] | None = None,
     command_risk: ToolRiskLevel | None = None,
+    permission_mode: str | None = None,
 ) -> ToolSpec:
     async def execute(arguments: dict[str, Any], cancellation: CancellationToken) -> Any:
         if cancellation.is_cancelled:
@@ -917,6 +981,7 @@ def _build_command_tool_spec(
             timeout=arguments.get("timeout"),
             cancellation=cancellation,
             on_line=on_line,
+            permission_mode=permission_mode,
         )
 
     return ToolSpec(

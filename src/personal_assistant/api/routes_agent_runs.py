@@ -679,8 +679,13 @@ async def get_agent_tool_bundle(
             command_risk = None
             if permission_mode == "workspace":
                 command_risk = await _workspace_command_risk(run_db, run_id)
+            # 第五轮（P0-1）：permission_mode 透传——workspace 模式命令工具
+            # SAFE 只对匹配项目 profile 的命令生效，未匹配（全局白名单兜底）
+            # 在执行层拒绝（E0 §4.1 自动允许范围 = 匹配 profile 的命令）。
             for spec in build_command_tool_registry(
-                run_db, command_risk=command_risk
+                run_db,
+                command_risk=command_risk,
+                permission_mode=permission_mode,
             ).list():
                 registry.register(spec)
             # B2：Shell + CodeCommand 组合验证器——退出码/超时/取消结构检查 +

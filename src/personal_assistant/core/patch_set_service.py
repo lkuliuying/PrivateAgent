@@ -182,15 +182,19 @@ def _check_new_content(content: str) -> None:
 
 
 def _windows_normalize(path: str) -> str:
-    """Windows 路径规范化键：逐组件去除尾随点/空格后 lower，跳过空组件。
+    """Windows 路径规范化键：逐组件去除尾随点/空格后 lower，跳过空与 . 组件。
 
-    P1-2 第二轮验收修复：Windows 文件系统忽略路径组件尾部的点和空格
+    P1-2 验收修复：Windows 文件系统忽略路径组件尾部的点和空格
     （`README.MD.` 与 `Readme.md` 指向同一文件），仅 lower 无法覆盖；
     与设备名规则（_windows_device_name）同一规范化语义。第四轮：跳过
     空组件——`a//b` 与 `a/b` 在 Windows 解析到同一目标，唯一性键必须一致。
+    第五轮：跳过规范化后为 `.` 的组件——`src/./x.py` 与 `src/x.py`
+    （PurePosixPath 折叠 `.`，校验看不到，但 split 保留）同样判重复。
     """
     return "/".join(
-        part.rstrip(" .").lower() for part in path.split("/") if part
+        part.rstrip(" .").lower()
+        for part in path.split("/")
+        if part.rstrip(" .").lower()
     )
 
 
