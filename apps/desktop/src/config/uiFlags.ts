@@ -22,3 +22,18 @@ export function uiMode(): UiMode {
 export function isUiV2(): boolean {
   return uiMode() === "v2";
 }
+
+/**
+ * v0.8.0 CodingWorkbench 内部启用开关（W0 冻结 §5）
+ *
+ * 不是 ui_v3 版本开关：新代码只落在 features/coding/；开关只切换 renderer
+ * 的侧栏与主区（AppShell rail 换 CodingSidebar），不改变后端执行与数据。
+ * 内部启用（默认关闭）：?coding=1 或 localStorage pa_coding_workbench=1；
+ * 旧壳回退入口（?ui=v1 / pa_ui_v2=0）不受影响。
+ */
+export function isCodingWorkbench(): boolean {
+  const param = new URLSearchParams(window.location.search).get("coding");
+  if (param === "1") return true;
+  if (param === "0") return false;
+  return window.localStorage.getItem("pa_coding_workbench") === "1";
+}

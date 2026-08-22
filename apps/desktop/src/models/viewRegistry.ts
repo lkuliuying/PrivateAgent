@@ -11,6 +11,7 @@ import {
   PhBooks,
   PhBrain,
   PhChatsCircle,
+  PhCode,
   PhDatabase,
   PhFolderSimple,
   PhGearSix,
@@ -22,8 +23,8 @@ import {
 } from "@phosphor-icons/vue";
 import type { View } from "../types";
 
-/** 导航分组（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §4） */
-export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system";
+/** 导航分组（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §4）；coding 为 v0.8.0 新增、不进入旧 NavRail 分组 */
+export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system" | "coding";
 
 export interface ViewMeta {
   key: View;
@@ -47,9 +48,19 @@ export const VIEW_GROUP_META: Record<ViewGroup, { label: string }> = {
   knowledge: { label: "知识" },
   connect: { label: "连接" },
   system: { label: "系统" },
+  coding: { label: "Coding" },
 };
 
 export const VIEW_REGISTRY: Record<View, ViewMeta> = {
+  coding: {
+    key: "coding",
+    label: "Coding",
+    icon: PhCode,
+    group: "coding",
+    keywords: ["coding", "代码", "工作台", "项目", "分支", "branch"],
+    // v0.8.0 W1：文档式主区（首页/任务页自带头部），不渲染通用顶栏。
+    showTopbar: false,
+  },
   today: {
     key: "today",
     label: "今日",

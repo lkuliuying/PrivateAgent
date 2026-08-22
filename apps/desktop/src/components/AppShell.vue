@@ -27,6 +27,8 @@ const props = withDefaults(
     contextOpen?: boolean;
     contextToggleable?: boolean;
     railCollapsed?: boolean;
+    /** v0.8.0 W1：coding 窄窗口抽屉模式下侧栏以覆盖层呈现，rail 槽收起为 0 宽 */
+    railHidden?: boolean;
     canGoBack?: boolean;
     canGoForward?: boolean;
   }>(),
@@ -36,6 +38,7 @@ const props = withDefaults(
     contextOpen: false,
     contextToggleable: false,
     railCollapsed: false,
+    railHidden: false,
     canGoBack: false,
     canGoForward: false,
   }
@@ -60,7 +63,10 @@ const meta = () => viewMeta(props.view);
 </script>
 
 <template>
-  <div class="appshell" :class="{ 'is-rail-collapsed': railCollapsed }">
+  <div
+    class="appshell"
+    :class="{ 'is-rail-collapsed': railCollapsed, 'is-rail-hidden': railHidden }"
+  >
     <div class="appshell-body">
       <aside class="appshell-rail">
         <slot name="rail" />
@@ -154,6 +160,12 @@ const meta = () => viewMeta(props.view);
 }
 .is-rail-collapsed .appshell-rail {
   width: var(--rail-collapsed-w);
+}
+/* v0.8.0 W1：coding 抽屉模式（<1280px）时侧栏走覆盖层，rail 槽收为 0 宽 */
+.is-rail-hidden .appshell-rail {
+  width: 0;
+  overflow: hidden;
+  border-right: none;
 }
 .appshell-main {
   display: flex;

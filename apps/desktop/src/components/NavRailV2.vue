@@ -48,6 +48,8 @@ const groupOpen = ref<Record<ViewGroup, boolean>>({
   knowledge: true,
   connect: true,
   system: true,
+  // coding 组不进入旧 NavRail 渲染（NAV_GROUPS 不含），仅为满足 Record 类型
+  coding: true,
 });
 
 function toggleGroup(group: ViewGroup) {

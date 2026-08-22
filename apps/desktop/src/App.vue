@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, shallowRef } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
@@ -65,10 +65,17 @@ import {
   type AgentWorkspaceMessage,
 } from "./models/agentWorkspace";
 import { createAgentWorkspacePreview } from "./dev/agentWorkspacePreview";
-import { isUiV2 } from "./config/uiFlags";
+import { isUiV2, isCodingWorkbench } from "./config/uiFlags";
 import { useViewHistory } from "./composables/useViewHistory";
 import { useShortcuts } from "./composables/useShortcuts";
 import { AgentWorkspace } from "./features/agent";
+import {
+  CodingHome,
+  CodingSidebar,
+  CodingThreadWorkspace,
+  useCodingWorkspace,
+  type CodingWorkspaceStore,
+} from "./features/coding";
 import UiLab from "./dev/UiLab.vue";
 
 // 统一通知/确认/toast store（第七阶段 M4 基建）
@@ -79,6 +86,32 @@ const uiLabEnabled =
   new URLSearchParams(window.location.search).get("ui-lab") === "1";
 // ui_v2：alpha.1 默认兼容壳，新壳按开关开启（?ui=v2 / pa_ui_v2=1）。
 const uiV2 = isUiV2();
+// v0.8.0 W1：CodingWorkbench 内部启用（?coding=1 / pa_coding_workbench=1），基于
+// v2 壳只切换 renderer 侧栏与主区；旧壳回退（?ui=v1 / pa_ui_v2=0）不受影响。
+const codingEnabled = uiV2 && isCodingWorkbench();
+const codingStore = useCodingWorkspace();
+// ?coding-preview=<key>：首页六状态开发预览（动态 import，生产构建不进入）
+const codingPreviewKey = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get("coding-preview")
+  : null;
+const codingPreviewStore = shallowRef<CodingWorkspaceStore | null>(null);
+// 活动 store 用 shallowRef 持有（预览夹具异步就绪后整体替换，避免深层解包改写 Ref 字段类型）
+const codingActiveStoreRef = shallowRef<CodingWorkspaceStore>(codingStore);
+if (codingPreviewKey) {
+  void import("./features/coding/dev/codingHomePreview").then((preview) => {
+    const keys: readonly string[] = preview.CODING_HOME_PREVIEW_KEYS;
+    if (keys.includes(codingPreviewKey)) {
+      const previewStore = preview.createCodingWorkspacePreviewStore(
+        codingPreviewKey as Parameters<typeof preview.createCodingWorkspacePreviewStore>[0]
+      );
+      codingPreviewStore.value = previewStore;
+      codingActiveStoreRef.value = previewStore;
+    }
+  });
+}
+const codingThreadSelected = computed(
+  () => codingActiveStoreRef.value.selectedThreadId.value !== null
+);
 // 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
@@ -154,6 +187,8 @@ const workspacePreview = previewMode ? createAgentWorkspacePreview() : null;
 const currentChunkId = ref<number | null>(null);
 // 右侧上下文栏折叠状态：宽屏默认展开，窄屏默认收起
 const INSPECTOR_MIN_W = 1320;
+// v0.8.0 W1：coding 侧栏 <1280px 进入抽屉模式（W0 冻结 §2.2），rail 槽收为 0 宽
+const CODING_RAIL_DRAWER_MAX = 1280;
 const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280
 );
@@ -229,7 +264,8 @@ onBeforeUnmount(() => {
 // 全局快捷键：Ctrl/Cmd+K 命令面板；Ctrl/Cmd+N 新建任务；Alt+←/→ 视图历史
 useShortcuts({
   openCommand: () => (commandPaletteOpen.value = true),
-  newSession: () => void newSession(),
+  // v0.8.0 W1：coding 模式下 Ctrl+N 进入首页输入器而非旧会话
+  newSession: () => (codingEnabled ? onCodingNewTask() : void newSession()),
   goBack: () => {
     const target = history.back();
     if (target?.sessionId && target.view === "chat") {
@@ -398,7 +434,18 @@ async function quitApp() {
 // ============ 导航 ============
 
 function onNavigate(v: View) {
-  history.navigate({ view: v });
+  // coding 视图仅内部 flag 开启时可达；命令面板等入口在关闭时回落旧 Agent 视图
+  history.navigate({ view: v === "coding" && !codingEnabled ? "chat" : v });
+}
+
+// v0.8.0 W1：coding 首页/侧栏动作接线（线程选择由 codingWorkspaceStore 维护）
+function onCodingNewTask() {
+  codingActiveStoreRef.value.startNewTask();
+  onNavigate("coding");
+}
+
+function onCodingThreadCreated() {
+  onNavigate("coding");
 }
 
 function onGoBack() {
@@ -438,6 +485,11 @@ async function initializeConnectedWorkspace() {
     useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(null);
   }
   await loadSessions();
+  // v0.8.0 W1：coding 工作台就绪后加载项目树并落在首页（计划 §1：首页为核心入口）
+  if (codingEnabled) {
+    if (!codingPreviewStore.value) void codingStore.bootstrap();
+    if (view.value !== "coding") onNavigate("coding");
+  }
 }
 
 async function loadSessions() {
@@ -971,10 +1023,11 @@ function stopGenerate() {
       :view="view"
       :title="pageTitle"
       :task-state="taskState"
-      :show-dev-tag="bootState === 'dev' || previewMode"
+      :show-dev-tag="bootState === 'dev' || previewMode || !!codingPreviewStore"
       :context-open="view === 'chat' && inspectorOpen"
       :context-toggleable="inspectorToggleable"
       :rail-collapsed="railCollapsed"
+      :rail-hidden="codingEnabled && viewportWidth < CODING_RAIL_DRAWER_MAX"
       :can-go-back="history.state().canGoBack"
       :can-go-forward="history.state().canGoForward"
       @toggle-context="inspectorOpen = !inspectorOpen"
@@ -982,7 +1035,18 @@ function stopGenerate() {
       @go-forward="onGoForward"
     >
       <template #rail>
+        <CodingSidebar
+          v-if="codingEnabled"
+          :store="codingActiveStoreRef"
+          :active-view="view"
+          :collapsed="railCollapsed"
+          @navigate="onNavigate"
+          @new-task="onCodingNewTask"
+          @open-command="commandPaletteOpen = true"
+          @toggle-collapse="railCollapsed = !railCollapsed"
+        />
         <NavRailV2
+          v-else
           :active="view"
           :sessions="sessions"
           :current-id="currentSessionId"
@@ -995,7 +1059,19 @@ function stopGenerate() {
         />
       </template>
 
-      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <!-- v0.8.0 W1：coding 首页/任务页（内部 flag 启用；任务页 W2 起补全） -->
+      <CodingHome
+        v-if="codingEnabled && view === 'coding' && !codingThreadSelected"
+        :store="codingActiveStoreRef"
+        @navigate="onNavigate"
+        @thread-created="onCodingThreadCreated"
+      />
+      <CodingThreadWorkspace
+        v-else-if="codingEnabled && view === 'coding'"
+        :store="codingActiveStoreRef"
+        @navigate="onNavigate"
+      />
+      <SettingsView v-else-if="view === 'settings'" @reconfigure="reconfigure" />
       <DiagnosticsView v-else-if="view === 'diagnostics'" />
       <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
       <IntegrationImportPanel v-else-if="view === 'integrations'" />

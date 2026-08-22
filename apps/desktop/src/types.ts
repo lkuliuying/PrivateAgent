@@ -6,6 +6,7 @@
  */
 export type View =
   | "chat"
+  | "coding"
   | "today"
   | "kb"
   | "projects"
