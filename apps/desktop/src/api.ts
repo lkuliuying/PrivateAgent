@@ -195,6 +195,7 @@ export { listTestRuns, listUpgradeSmokeRuns } from "./api/testing";
 export {
   getRuntimeCapabilities,
   shouldUseLegacyToolPlanner,
+  supportsCodingRunCreation,
 } from "./api/runtime";
 export type {
   ChatExecutionMode,

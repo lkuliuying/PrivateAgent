@@ -43,6 +43,7 @@ import {
   getApiInfo,
   getToday,
   getRuntimeCapabilities,
+  supportsCodingRunCreation,
 } from "./api";
 import type { View } from "./types";
 import { viewLabel } from "./models/viewRegistry";
@@ -54,7 +55,6 @@ import {
   isUiV2,
   isCodingWorkbench,
   setCodingUiCapability,
-  hasExplicitCodingChoice,
 } from "./config/uiFlags";
 import {
   recordCodingFallback,
@@ -461,11 +461,11 @@ function onSearchNavigate(v: View) {
 
 async function initializeConnectedWorkspace() {
   await legacyChat.initializeLegacyWorkspace();
-  // v0.9.0 H1：启动后核对后端能力位——PA_CODING_AGENT_UI_ENABLED=false 短期回退：
-  // 非显式选择时回落旧 UI 并本地计数（计划 §3.3；回退原因可解释）。
+  // v0.9.0 H1：启动后核对创建执行所需的完整能力链。UI/API/project-bound
+  // 任一缺失都回落旧 UI，避免用户发送后才收到隐藏端点的 404。
   try {
     const caps = await getRuntimeCapabilities();
-    if (caps.coding_agent_ui_enabled === false && !hasExplicitCodingChoice()) {
+    if (!supportsCodingRunCreation(caps)) {
       setCodingUiCapability(false);
       if (codingUiActive.value) {
         codingUiActive.value = false;

@@ -36,6 +36,7 @@ class RuntimeCapabilities(BaseModel):
     http_workflow_enabled: bool = False
     sql_readonly_workflow_enabled: bool = False
     # v0.9.0 H0 §3（additive，默认 False）
+    agent_runs_api_enabled: bool = False
     coding_agent_ui_enabled: bool = False
     project_bound_runs_enabled: bool = False
     coding_workspace_auto_approve: bool = False
@@ -81,6 +82,7 @@ async def capabilities() -> RuntimeCapabilities:
         sql_readonly_workflow_enabled=settings.agent_sql_readonly_workflow_enabled,
         # v0.9.0 H0 §3：能力位只反映 flag 事实；UI 据此启用选项，
         # workspace_auto_approve 额外要求命令 profile 子系统可用。
+        agent_runs_api_enabled=settings.agent_runs_api_enabled,
         coding_agent_ui_enabled=settings.coding_agent_ui_enabled,
         project_bound_runs_enabled=settings.project_bound_runs_enabled,
         coding_workspace_auto_approve=(

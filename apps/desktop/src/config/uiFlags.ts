@@ -28,8 +28,8 @@ export function isUiV2(): boolean {
  *
  * - 新安装/升级默认显示 Coding Home（DEFAULT_CODING_WORKBENCH=true）；
  * - 显式回退键常驻：?coding=0 或 localStorage pa_coding_workbench=0；
- * - 后端能力位回退：/capabilities.coding_agent_ui_enabled === false
- *   （PA_CODING_AGENT_UI_ENABLED=false 短期回退）→ 非显式开启时回落旧 UI；
+ * - 后端能力位回退：Coding UI、Agent Runs API、project-bound 三项必须明确
+ *   可用；任一缺失/关闭时回落旧 UI，避免呈现可发送但创建执行恒 404 的入口；
  * - 开关只切 renderer 的侧栏与主区，不改变后端数据与执行路径；
  * - 旧壳回退入口（?ui=v1 / pa_ui_v2=0）不受影响。
  */

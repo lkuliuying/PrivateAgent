@@ -17,6 +17,7 @@ export interface RuntimeCapabilities {
    * coding 默认切换、三档权限能力位、上下文预算、执行详情与 worktree。
    * workspace 与 full_access 独立声明，不是别名。
    */
+  agent_runs_api_enabled?: boolean;
   coding_agent_ui_enabled?: boolean;
   project_bound_runs_enabled?: boolean;
   coding_workspace_auto_approve?: boolean;
@@ -43,6 +44,17 @@ export function shouldUseLegacyToolPlanner(
   capabilities: RuntimeCapabilities | null
 ): boolean {
   return capabilities?.chat_execution_mode !== "agent_runtime";
+}
+
+/** Coding 工作台只有在 UI、执行创建 API 与 project-bound 三项都明确可用时启用。 */
+export function supportsCodingRunCreation(
+  capabilities: RuntimeCapabilities | null
+): boolean {
+  return (
+    capabilities?.coding_agent_ui_enabled === true &&
+    capabilities.agent_runs_api_enabled === true &&
+    capabilities.project_bound_runs_enabled === true
+  );
 }
 
 export async function getRuntimeCapabilities(): Promise<RuntimeCapabilities> {

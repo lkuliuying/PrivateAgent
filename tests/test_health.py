@@ -57,6 +57,7 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
         "http_workflow_enabled": False,
         "sql_readonly_workflow_enabled": False,
         # v0.9.0 H0 §3 additive（默认 False；时区为常量声明）
+        "agent_runs_api_enabled": False,
         "coding_agent_ui_enabled": False,
         "project_bound_runs_enabled": False,
         "coding_workspace_auto_approve": False,
@@ -78,6 +79,20 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
     assert legacy.json()["legacy_tool_planner_enabled"] is True
     assert legacy.json()["rag_chat_runtime_enabled"] is False
     assert legacy.json()["patch_workflow_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_capabilities_expose_complete_coding_run_creation_chain(client, monkeypatch):
+    monkeypatch.setattr(routes_health.settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_health.settings, "coding_agent_ui_enabled", True)
+    monkeypatch.setattr(routes_health.settings, "project_bound_runs_enabled", True)
+
+    runtime = await client.get("/capabilities")
+
+    assert runtime.status_code == 200
+    assert runtime.json()["agent_runs_api_enabled"] is True
+    assert runtime.json()["coding_agent_ui_enabled"] is True
+    assert runtime.json()["project_bound_runs_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -163,6 +178,7 @@ async def test_capabilities_four_key_combinations(
             "http_workflow_enabled": False,
             "sql_readonly_workflow_enabled": False,
             # v0.9.0 H0 §3 additive
+            "agent_runs_api_enabled": False,
             "coding_agent_ui_enabled": False,
             "project_bound_runs_enabled": False,
             "coding_workspace_auto_approve": False,
@@ -210,6 +226,7 @@ async def test_capabilities_expose_four_independent_workflow_flags(client, monke
         "http_workflow_enabled": False,
         "sql_readonly_workflow_enabled": False,
         # v0.9.0 H0 §3 additive
+        "agent_runs_api_enabled": False,
         "coding_agent_ui_enabled": False,
         "project_bound_runs_enabled": False,
         "coding_workspace_auto_approve": False,

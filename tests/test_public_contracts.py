@@ -45,6 +45,7 @@ def test_capabilities_fields_frozen():
         "http_workflow_enabled",
         "sql_readonly_workflow_enabled",
         # v0.9.0 H0 additive
+        "agent_runs_api_enabled",
         "coding_agent_ui_enabled",
         "project_bound_runs_enabled",
         "coding_workspace_auto_approve",
