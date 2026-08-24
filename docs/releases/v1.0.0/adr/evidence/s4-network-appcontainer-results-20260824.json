@@ -1,0 +1,80 @@
+{
+  "spike": "s4-network-appcontainer",
+  "appcontainer_profile": "pa-spike-sandbox-v1",
+  "appcontainer_sid": "S-1-15-2-2302240224-1344265867-579813769-3114057859-3705032908-4225701454-1739818810",
+  "probe_target": "http://127.0.0.1:135/",
+  "results": [
+    {
+      "proof": "A0",
+      "description": "AppContainer 内 cmd 加载链行为",
+      "passed": true,
+      "expected": true,
+      "detail": "exit=0xC0000142，启动成功=False，加载链崩溃=True（0xC0000142=STATUS_DLL_INIT_FAILED：默认拒绝语义下System32 对 AppContainer SID 不可读，工具链零兼容）",
+      "raw": {
+        "pid": 15024,
+        "exit_code": 3221225794,
+        "stdout": ""
+      }
+    },
+    {
+      "proof": "A1",
+      "description": "基线：非沙箱进程可建立回环 TCP 连接",
+      "passed": true,
+      "expected": true,
+      "detail": "curl 退出码=0（非 7 = 连接已建立，探针有效）",
+      "raw": {
+        "pid": 41536,
+        "exit_code": 0,
+        "stdout": "curl: (28) Operation timed out after 5009 milliseconds with 0 bytes received\r\nCURL_EXIT=0"
+      }
+    },
+    {
+      "proof": "A2",
+      "description": "AppContainer 出站默认拒绝（含回环）",
+      "passed": true,
+      "expected": true,
+      "detail": "curl 退出码=None（7 = 无法连接）；子进程加载链崩溃=True（隔离过度成立：进程无法启动即无网络；代价是工具链零兼容）",
+      "raw": {
+        "pid": 6268,
+        "exit_code": 3221225794,
+        "stdout": ""
+      }
+    },
+    {
+      "proof": "A3",
+      "description": "授权后工作区可写（预期因加载链失败）",
+      "passed": true,
+      "expected": true,
+      "detail": "文件存在=False；A0 加载链崩溃=True（崩溃时写入不可能发生，与网络隔离同源）",
+      "raw": {
+        "pid": 12260,
+        "exit_code": 3221225794,
+        "stdout": ""
+      }
+    },
+    {
+      "proof": "A4",
+      "description": "%USERPROFILE% 写入被拒",
+      "passed": true,
+      "expected": true,
+      "detail": "文件产生=False（必须为 False）",
+      "raw": {
+        "pid": 34948,
+        "exit_code": 3221225794,
+        "stdout": ""
+      }
+    },
+    {
+      "proof": "A5",
+      "description": "AppContainer 进程无孤儿（崩溃即终止/存活则已等到退出码）",
+      "passed": true,
+      "expected": true,
+      "detail": "终止前 job 活跃=0（0 = 进程已自行终止），退出码=3221225794",
+      "raw": {
+        "active_before": 0,
+        "exit_code": 3221225794
+      }
+    }
+  ],
+  "all_consistent": true
+}

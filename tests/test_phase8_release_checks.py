@@ -267,6 +267,32 @@ def test_shell_step_captures_output_without_pipe(tmp_path):
     assert "release-check-output" in result["detail"]
 
 
+def test_release_pytest_step_uses_reviewed_timeout(monkeypatch):
+    observed: dict[str, object] = {}
+
+    def fake_shell_step(name, cmd, cwd=None, timeout=600, env=None):
+        observed.update(name=name, cmd=cmd, cwd=cwd, timeout=timeout, env=env)
+        return {
+            "name": name,
+            "kind": "shell",
+            "status": "passed",
+            "duration_ms": 1,
+            "returncode": 0,
+            "detail": "",
+        }
+
+    monkeypatch.setattr(rc, "run_shell_step", fake_shell_step)
+
+    result = rc.run_pytest_step()
+
+    assert result["status"] == "passed"
+    assert observed["name"] == "pytest"
+    assert observed["cmd"] == ["uv", "run", "pytest", "-q"]
+    assert observed["cwd"] == str(rc.PROJECT_ROOT)
+    assert observed["timeout"] == 900
+    assert observed["env"] is None
+
+
 def test_managed_e2e_uses_external_server_and_stops_it(tmp_path, monkeypatch):
     vite_entry = tmp_path / "node_modules" / "vite" / "bin" / "vite.js"
     vite_entry.parent.mkdir(parents=True)

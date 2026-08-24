@@ -1,0 +1,52 @@
+{
+  "baseline": "v0.9.0-fe7bd1a",
+  "purpose": "S1-T9 性能基线（§19.3 证据输入；阈值审批归项目/发布负责人，D7）",
+  "measured_at_utc": "2026-08-24T02:22:45.872376+00:00",
+  "database": "127.0.0.1:3306/personal_assistant_test",
+  "python": "3.13.13 (tags/v3.13.13:01104ce, Apr  7 2026, 19:25:48) [MSC v.1944 64 bit (AMD64)]",
+  "metrics": {
+    "M1_sessions_list_backend": {
+      "n": 30,
+      "p50_ms": 313.714,
+      "p95_ms": 476.812,
+      "max_ms": 646.895,
+      "mean_ms": 353.783
+    },
+    "M2_event_persistence": {
+      "n": 100,
+      "p50_ms": 8.323,
+      "p95_ms": 12.128,
+      "max_ms": 16.239,
+      "mean_ms": 9.209
+    },
+    "M3_kill_tree": {
+      "n": 3,
+      "p50_ms": 0.212,
+      "p95_ms": 0.334,
+      "max_ms": 0.334,
+      "mean_ms": 0.228
+    }
+  },
+  "deferred_metrics": [
+    {
+      "metric": "M4_5000_item_first_interactive",
+      "target": "p95 ≤ 1.5 s（分页/虚拟化，§19.3）",
+      "status": "desktop_harness_required",
+      "method": "S5 桌面 harness：注入 5000 Item 夹具 Thread，测量首次可交互时间"
+    },
+    {
+      "metric": "M5_reconnect_gap_convergence",
+      "target": "1000 事件缺口 2 s 内收敛（§19.3）",
+      "status": "v2_transport_required",
+      "method": "S5：after_sequence 补读 1000 事件 + 实时订阅收敛时间"
+    },
+    {
+      "metric": "M6_bounded_queue_saturation",
+      "target": "饱和时显式拒绝、无无界内存增长（§19.3）",
+      "status": "measured_by_s1_spike",
+      "method": "见 evidence/s1-transport-spike-results-20260824.json T6：队列 64 / 洪泛 384 → 65 正常处理 + 319 显式 retryable 拒绝，零丢失零死锁"
+    }
+  ],
+  "approval": "approved_default_budgets_2026-08-24",
+  "approval_note": "保持上位计划 §19.3 默认预算；M1 仅为后端代理，M4/M5 待 S5 真实桌面 harness 复核，复核前不放宽"
+}

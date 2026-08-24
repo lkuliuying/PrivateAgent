@@ -1,10 +1,13 @@
-# PrivateAgent Python dependencies for pip-based development and packaging.
-# pyproject.toml is the canonical dependency source; keep this file in sync.
+# PrivateAgent convenience dependencies for pip-based local development only.
+# This file is not a complete release mirror and is not consumed by the release
+# pipeline. pyproject.toml defines dependencies; uv.lock is the only reproducible
+# dependency lock used for builds and releases.
 
 # Runtime: API and configuration
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.12
+tzdata>=2024.1
 httpx[socks]>=0.27
 pydantic-settings>=2.6
 structlog>=24.4
@@ -18,6 +21,7 @@ sqlalchemy[asyncio]>=2.0.36
 aiomysql>=0.2.3
 alembic>=1.14
 cryptography>=49.0.0
+sqlglot>=30.15.0
 
 # Runtime: agent orchestration and local retrieval
 langchain>=0.3
@@ -34,4 +38,5 @@ markdown>=3.7
 # Tests and Windows sidecar packaging
 pytest>=8.3
 pytest-asyncio>=0.24
+ruff>=0.16
 pyinstaller>=6.21.0

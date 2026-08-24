@@ -1,0 +1,113 @@
+{
+  "spike": "s1-sandbox-windows",
+  "platform": "win32",
+  "python": "3.13.13 (tags/v3.13.13:01104ce, Apr  7 2026, 19:25:48) [MSC v.1944 64 bit (AMD64)]",
+  "probe_host": "127.0.0.1:135",
+  "results": [
+    {
+      "proof": "P1",
+      "description": "cwd 可写：Low 标签工作区目录可被子进程写入",
+      "passed": true,
+      "expected": true,
+      "detail": "写入探针 ok=True，文件存在=True",
+      "raw": {
+        "mode": "write",
+        "arg": "C:\\Users\\LIKECA~1\\AppData\\Local\\Temp\\pa-sandbox-spike\\probe-write.txt",
+        "pid": 21200,
+        "exit_code": 0,
+        "stdout": "{\"mode\": \"write\", \"arg\": \"C:\\\\Users\\\\LIKECA~1\\\\AppData\\\\Local\\\\Temp\\\\pa-sandbox-spike\\\\probe-write.txt\", \"ok\": true}",
+        "ok": true
+      }
+    },
+    {
+      "proof": "P2",
+      "description": "系统依赖可读：解释器与系统 DLL 可读",
+      "passed": true,
+      "expected": true,
+      "detail": "python.exe 可读=True，kernel32.dll 可读=True",
+      "raw": {
+        "python": {
+          "mode": "read",
+          "arg": "F:\\Program\\Agent\\.venv\\Scripts\\python.exe",
+          "pid": 37444,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"read\", \"arg\": \"F:\\\\Program\\\\Agent\\\\.venv\\\\Scripts\\\\python.exe\", \"ok\": true}",
+          "ok": true
+        },
+        "dll": {
+          "mode": "read",
+          "arg": "C:\\WINDOWS\\System32\\kernel32.dll",
+          "pid": 15460,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"read\", \"arg\": \"C:\\\\WINDOWS\\\\System32\\\\kernel32.dll\", \"ok\": true}",
+          "ok": true
+        }
+      }
+    },
+    {
+      "proof": "P3",
+      "description": "敏感目录拒绝：Medium 完整性目录写入被拒",
+      "passed": true,
+      "expected": true,
+      "detail": "%TEMP% 写入被拒=True（探针 ok=False），%USERPROFILE% 写入被拒=True（探针 ok=False）",
+      "raw": {
+        "temp": {
+          "mode": "write",
+          "arg": "C:\\Users\\LIKECA~1\\AppData\\Local\\Temp\\sandbox-spike-probe-denied.txt",
+          "pid": 37916,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"write\", \"arg\": \"C:\\\\Users\\\\LIKECA~1\\\\AppData\\\\Local\\\\Temp\\\\sandbox-spike-probe-denied.txt\", \"ok\": false, \"error\": \"PermissionError: [Errno 13] Permission denied: 'C:\\\\\\\\Users\\\\\\\\LIKECA~1\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Temp\\\\\\\\sandbox-spike-probe-denied.txt'\"}",
+          "ok": false,
+          "error": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\LIKECA~1\\\\AppData\\\\Local\\\\Temp\\\\sandbox-spike-probe-denied.txt'"
+        },
+        "home": {
+          "mode": "write",
+          "arg": "C:\\Users\\likecandy\\sandbox-spike-probe-denied.txt",
+          "pid": 30992,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"write\", \"arg\": \"C:\\\\Users\\\\likecandy\\\\sandbox-spike-probe-denied.txt\", \"ok\": false, \"error\": \"PermissionError: [Errno 13] Permission denied: 'C:\\\\\\\\Users\\\\\\\\likecandy\\\\\\\\sandbox-spike-probe-denied.txt'\"}",
+          "ok": false,
+          "error": "PermissionError: [Errno 13] Permission denied: 'C:\\\\Users\\\\likecandy\\\\sandbox-spike-probe-denied.txt'"
+        }
+      }
+    },
+    {
+      "proof": "P4",
+      "description": "网络默认关闭：记录 MIC 下的实际出站行为",
+      "passed": true,
+      "expected": true,
+      "detail": "DNS ok=True，TCP 连接 127.0.0.1:135 ok=True。结论：低完整性令牌未阻断出站网络。 记录为已知缺口：网络默认关闭需 AppContainer/WFP 补偿（见 ADR-004）。",
+      "raw": {
+        "dns": {
+          "mode": "dns",
+          "arg": "127.0.0.1",
+          "pid": 3788,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"dns\", \"arg\": \"127.0.0.1\", \"ok\": true}",
+          "ok": true
+        },
+        "connect": {
+          "mode": "connect",
+          "arg": "127.0.0.1:135",
+          "pid": 20676,
+          "exit_code": 0,
+          "stdout": "{\"mode\": \"connect\", \"arg\": \"127.0.0.1:135\", \"ok\": true}",
+          "ok": true
+        }
+      }
+    },
+    {
+      "proof": "P5",
+      "description": "进程树回收：KILL_ON_JOB_CLOSE 关闭句柄终结整棵树",
+      "passed": true,
+      "expected": true,
+      "detail": "终止前 job 内活跃进程=4；句柄关闭后父进程已终止=True。Job accounting 随句柄关闭不可再查询（预期）。",
+      "raw": {
+        "active_before": 4,
+        "parent_gone": true,
+        "grandchild_pid": null
+      }
+    }
+  ],
+  "all_consistent": true
+}

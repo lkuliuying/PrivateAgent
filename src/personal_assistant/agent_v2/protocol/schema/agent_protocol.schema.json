@@ -1,0 +1,95 @@
+{
+  "protocol": {
+    "name": "privateagent.agent",
+    "version_major": 1,
+    "version_draft": "1.0-draft.1",
+    "jsonrpc": "2.0",
+    "wire": {
+      "format": "jsonl",
+      "encoding": "utf-8",
+      "line_terminator": "\n",
+      "max_line_bytes": 1048576,
+      "notes": "每行一个 UTF-8 JSON（ADR-002 §3.1：禁止依赖控制台代码页）"
+    }
+  },
+  "methods": [
+    {"name": "initialize", "kind": "connection", "write": false, "idempotency_key": false},
+    {"name": "server/capabilities", "kind": "connection", "write": false, "idempotency_key": false},
+    {"name": "thread/start", "kind": "thread", "write": true, "idempotency_key": true},
+    {"name": "thread/resume", "kind": "thread", "write": false, "idempotency_key": false},
+    {"name": "thread/read", "kind": "thread", "write": false, "idempotency_key": false},
+    {"name": "thread/list", "kind": "thread", "write": false, "idempotency_key": false},
+    {"name": "thread/archive", "kind": "thread", "write": true, "idempotency_key": false},
+    {"name": "thread/name/set", "kind": "thread", "write": true, "idempotency_key": false},
+    {"name": "turn/start", "kind": "turn", "write": true, "idempotency_key": true},
+    {"name": "turn/steer", "kind": "turn", "write": true, "idempotency_key": false},
+    {"name": "turn/interrupt", "kind": "turn", "write": true, "idempotency_key": false},
+    {"name": "turn/read", "kind": "turn", "write": false, "idempotency_key": false},
+    {"name": "turn/items/list", "kind": "turn", "write": false, "idempotency_key": false},
+    {"name": "approval/resolve", "kind": "approval", "write": true, "idempotency_key": false},
+    {"name": "execution/output/read", "kind": "execution", "write": false, "idempotency_key": false},
+    {"name": "execution/unknown/resolve", "kind": "execution", "write": true, "idempotency_key": false},
+    {"name": "context/compact", "kind": "context", "write": true, "idempotency_key": false}
+  ],
+  "notifications": [
+    "thread/started",
+    "thread/status/changed",
+    "turn/started",
+    "turn/status/changed",
+    "item/started",
+    "item/delta",
+    "item/completed",
+    "item/failed",
+    "approval/required",
+    "turn/completed",
+    "server/overloaded"
+  ],
+  "envelopes": {
+    "request": ["jsonrpc", "id", "method", "params"],
+    "response": ["jsonrpc", "id", "result", "error"],
+    "notification_envelope_required": ["thread_id", "turn_id", "sequence", "schema_version"],
+    "error": ["code", "message", "retryable", "details", "trace_id"]
+  },
+  "domain": {
+    "thread_statuses": ["active", "archived"],
+    "turn_statuses": [
+      "queued",
+      "running",
+      "waiting_approval",
+      "completed",
+      "interrupted",
+      "failed",
+      "timed_out",
+      "limit_exceeded"
+    ],
+    "item_kinds": [
+      "user_message",
+      "agent_message",
+      "public_reasoning_summary",
+      "plan",
+      "plan_step",
+      "command_execution",
+      "file_change",
+      "patch_set",
+      "tool_call",
+      "approval_request",
+      "approval_resolution",
+      "verification",
+      "artifact",
+      "context_compaction",
+      "error"
+    ],
+    "item_lifecycle": ["started", "delta", "completed", "failed"],
+    "item_required_fields": [
+      "item_id", "thread_id", "turn_id", "kind", "status", "sequence",
+      "created_at", "completed_at", "public_payload", "content_ref", "schema_version"
+    ],
+    "context_fragment_kinds": [
+      "instruction", "user_input", "project_file", "retrieval", "tool_output", "summary"
+    ]
+  },
+  "reserved": {
+    "thread_nullable_extension_fields": ["parent_thread_id", "source_kind", "budget_inheritance"],
+    "note": "1.0 预留不启用（上位计划 §13.3）；Schema 变更政策：1.x 只 additive，破坏性变化升 major"
+  }
+}
