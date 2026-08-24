@@ -9,6 +9,7 @@
 import { computed, onMounted, ref } from "vue";
 import { PhChatsCircle, PhMagnifyingGlass, PhPlus } from "@phosphor-icons/vue";
 import type { Session } from "../../types";
+import { formatRelative as timeFormatRelative } from "../../services/timeDisplay";
 
 const props = withDefaults(
   defineProps<{
@@ -52,15 +53,9 @@ const filtered = computed(() => {
 });
 
 function formatRelative(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const diff = Date.now() - date.getTime();
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (date.toDateString() === new Date().toDateString()) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
-  }
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+  // v0.9.0 H1：统一 Asia/Shanghai 显示服务（禁止组件各自调用本机 locale）
+  const formatted = timeFormatRelative(value);
+  return formatted === "—" ? "" : formatted;
 }
 </script>
 

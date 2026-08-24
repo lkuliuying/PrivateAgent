@@ -38,6 +38,11 @@ export interface CodingThreadSummary {
   workspaceId: number | null;
   updatedAt: string;
   lastRunId: string | null;
+  /** v0.9.0 H4：置顶/归档事实（可选，旧构造不受影响） */
+  pinnedAt?: string | null;
+  archivedAt?: string | null;
+  /** legacy/unbound 会话（更多工作区次级入口） */
+  kind?: string | null;
 }
 
 /** 模型 profile 摘要（GET /agent-model-profiles，无任何 secret 字段） */
@@ -70,6 +75,84 @@ export type CodingModelProfilesResult =
   | { status: "error"; message: string };
 
 /**
+ * v0.9.0 H1-D（计划 §5.8）：模型 profile 详情（设置页管理区消费）。
+ * 无任何 secret 字段；model_name 是具体模型路由事实。
+ */
+export interface CodingModelProfileDetail {
+  id: string;
+  provider: "ollama" | "openai" | "claude";
+  displayName: string;
+  modelName: string | null;
+  isDefault: boolean;
+  isLocal: boolean;
+  nativeToolCalls: boolean;
+  supportsStreaming: boolean;
+  supportsStructuredOutput: boolean;
+  supportsVision: boolean;
+  contextTokens: number;
+  reasoningEfforts: string[] | null;
+  usageReporting: boolean;
+  enabled: boolean;
+}
+
+/** profile 创建/更新输入（camelCase → 后端 snake_case 在 API 层映射） */
+export interface CodingModelProfileUpsert {
+  provider: "ollama" | "openai" | "claude";
+  displayName: string;
+  modelName: string | null;
+  isLocal: boolean;
+  nativeToolCalls: boolean;
+  supportsStreaming: boolean;
+  supportsStructuredOutput: boolean;
+  supportsVision: boolean;
+  contextTokens: number;
+  reasoningEfforts: string[] | null;
+  usageReporting: boolean;
+  enabled: boolean;
+  isDefault: boolean;
+}
+
+/** 受限探测状态码（后端冻结词汇；不按名称推断工具能力） */
+export type CodingModelProbeStatus =
+  | "ok"
+  | "profile_disabled"
+  | "model_route_missing"
+  | "tools_unsupported"
+  | "feature_disabled"
+  | "credentials_missing"
+  | "provider_unreachable"
+  | "model_missing"
+  | "probe_failed";
+
+export interface CodingModelProbeResult {
+  status: CodingModelProbeStatus;
+  providerReachable: boolean | null;
+  modelExists: boolean | null;
+  nativeToolCalls: boolean | null;
+  detail: string;
+}
+
+/** 旧配置导入状态（一次性向导依据；低基数） */
+export interface CodingProfileImportStatus {
+  importState:
+    | "pending"
+    | "wizard"
+    | "not_needed"
+    | "auto_imported"
+    | "imported"
+    | "dismissed";
+  reasonCode: string | null;
+  provider: string | null;
+  modelAvailable: boolean;
+}
+
+export interface CodingProfileImportResult {
+  imported: boolean;
+  alreadyExists: boolean;
+  profileId: string | null;
+}
+
+/**
  * 首页状态（计划 §4.2 + W0 冻结矩阵 §3 第 1–6 项）。
  * 派生优先级见 codingWorkspaceStore.homeState。
  */
@@ -99,6 +182,8 @@ export interface CodingWorkspaceFetchers {
   health: () => Promise<boolean>;
   createThread: (input: CodingThreadCreateInput) => Promise<CodingThreadSummary>;
   ensureRootWorkspace: (projectId: number) => Promise<CodingWorkspaceSummary>;
+  /** v0.9.0 H1-A：/capabilities 能力位（权限选项可用性；失败按未提供处理） */
+  capabilities?: () => Promise<Record<string, unknown> | null>;
 }
 
 /** 侧栏树节点：Project → Workspace/branch → Thread（W0 冻结 §2.1） */

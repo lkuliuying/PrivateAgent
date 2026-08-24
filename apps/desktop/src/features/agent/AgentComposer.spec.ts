@@ -5,7 +5,6 @@ import {
   agentPermissionOptions,
   currentAgentCapabilityFacts,
 } from "./model/agentCapabilities";
-import { contextUsageUnavailable, deriveContextUsage } from "./model/contextUsage";
 
 function mountComposer(props: Record<string, unknown> = {}) {
   return mount(AgentComposer, {
@@ -42,12 +41,13 @@ describe("AgentComposer（W6-R3 底部控制重排）", () => {
     expect(wrapper.find('[data-testid="composer-reasoning"]').exists()).toBe(false);
   });
 
-  it("底部模型/Provider 入口呈现当前模型与运行位置；点击进入配置", async () => {
+  it("底部唯一 PrivateAgent 入口呈现模型与运行位置；点击进入配置", async () => {
     const wrapper = mountComposer({
       modelName: "qwen3:4b",
       providerLabel: "本地",
     });
     const entry = wrapper.find('[data-testid="composer-model-entry"]');
+    expect(entry.text()).toContain("PrivateAgent");
     expect(entry.text()).toContain("qwen3:4b");
     expect(entry.text()).toContain("本地");
     await entry.trigger("click");
@@ -66,15 +66,27 @@ describe("AgentComposer（W6-R3 底部控制重排）", () => {
     expect(entry.text()).toContain("系统默认模型");
   });
 
-  it("上下文用量模块渲染真实事实；不可用时不显示百分比（不伪造）", () => {
-    const ready = mountComposer({
-      usageFacts: deriveContextUsage(1600, 8192),
-    });
-    expect(ready.find('[data-testid="context-usage-meter"]').text()).toContain("20%");
+  it("上下文用量为紧凑圆环；矩形模块不存在（v0.9.0 H1-A）", () => {
+    const wrapper = mountComposer({ sessionId: 1 });
+    // 矩形「上下文用量不可用」模块已移除（零容忍：不残留隐藏 DOM）
+    expect(wrapper.find('[data-testid="context-usage-meter"]').exists()).toBe(false);
+    // 圆环存在且带文本替代；能力位未开启时如实不可用（不伪造百分比）
+    const ring = wrapper.find('[data-testid="context-usage-ring"]');
+    expect(ring.exists()).toBe(true);
+    expect(ring.attributes("aria-label")).toContain("上下文用量不可用");
+    expect(wrapper.text()).not.toContain("%");
+  });
 
-    const unavailable = mountComposer({ usageFacts: contextUsageUnavailable() });
-    expect(unavailable.find('[data-testid="context-usage-meter"]').text()).toContain("不可用");
-    expect(unavailable.find('[data-testid="context-usage-meter"]').text()).not.toContain("%");
+  it("能力位开启且有会话时圆环进入读取态（按会话拉取真实计量）", () => {
+    const wrapper = mountComposer({
+      sessionId: 7,
+      capabilities: { coding_context_budget_enabled: true },
+    });
+    const ring = wrapper.find('[data-testid="context-usage-ring"]');
+    expect(ring.exists()).toBe(true);
+    // 初始为读取中/不可用（未 mock API，不伪造数值）
+    const label = ring.attributes("aria-label") ?? "";
+    expect(label.includes("读取中") || label.includes("不可用")).toBe(true);
   });
 
   it("发送/停止事件透传（沿用既有输入语义）", async () => {
@@ -92,7 +104,7 @@ describe("agentCapabilities（契约事实）", () => {
     expect(facts.fullAccessSupported).toBe(false);
     const options = agentPermissionOptions(facts);
     expect(options.find((o) => o.id === "full_access")?.available).toBe(false);
-    const future = currentAgentCapabilityFacts({ full_access_enabled: true });
+    const future = currentAgentCapabilityFacts({ coding_full_access_supported: true });
     expect(future.fullAccessSupported).toBe(true);
   });
 });

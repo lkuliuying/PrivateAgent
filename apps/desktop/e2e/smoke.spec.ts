@@ -79,6 +79,53 @@ async function navigate(page: import("@playwright/test").Page, view: string) {
 }
 
 test.describe("E2E smoke", () => {
+  test("v0.9.0 默认切换：新安装首启进入 Coding 工作台（显式回退键保留）", async ({ page }) => {
+    await mockApi(page, (url) => {
+      if (url.includes("/health")) return GREEN_HEALTH;
+      if (url.includes("/capabilities")) {
+        return {
+          chat_execution_mode: "legacy",
+          legacy_tool_planner_enabled: true,
+          agent_read_only_tools_enabled: false,
+          rag_chat_runtime_enabled: false,
+          coding_agent_ui_enabled: true,
+          project_bound_runs_enabled: true,
+          product_timezone: "Asia/Shanghai",
+        };
+      }
+      return [];
+    });
+
+    // 默认（无显式参数）进入 Coding 侧栏与首页空态（无项目）
+    await page.goto("/");
+    await expect(page.getByTestId("coding-sidebar")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("coding-home-no-projects")).toBeVisible();
+
+    // 显式回退键：?coding=0 回到旧 Agent 界面（计划 §3.3）
+    await page.goto("/?coding=0");
+    await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
+  });
+
+  test("能力位回退：后端声明关闭且非显式选择时回落旧 UI", async ({ page }) => {
+    await mockApi(page, (url) => {
+      if (url.includes("/health")) return GREEN_HEALTH;
+      if (url.includes("/capabilities")) {
+        return {
+          chat_execution_mode: "legacy",
+          legacy_tool_planner_enabled: true,
+          agent_read_only_tools_enabled: false,
+          rag_chat_runtime_enabled: false,
+          coding_agent_ui_enabled: false,
+        };
+      }
+      return [];
+    });
+
+    await page.goto("/");
+    // 短暂出现后回落旧壳（能力位关闭；回落原因本地计数）
+    await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("coding-sidebar")).toHaveCount(0);
+  });
   test("Agent Runtime 模式的新消息绕过旧工具规划器", async ({ page }) => {
     let plannerCalls = 0;
     let chatStreamCalls = 0;
@@ -109,6 +156,18 @@ test.describe("E2E smoke", () => {
         });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/tools/plan") {
         plannerCalls += 1;
         await route.fulfill({ json: { tool_call: null } });
@@ -129,7 +188,7 @@ test.describe("E2E smoke", () => {
       await route.fulfill({ json: [] });
     });
 
-    await page.goto("/");
+    await page.goto("/?coding=0");
     await page.getByTestId("task-composer-input").fill("Use the runtime");
     await page.getByTestId("task-composer-submit").click();
 
@@ -167,6 +226,18 @@ test.describe("E2E smoke", () => {
         });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/tools/plan") {
         plannerCalls += 1;
         await route.fulfill({ json: { tool_call: null } });
@@ -185,7 +256,7 @@ test.describe("E2E smoke", () => {
       await route.fulfill({ json: [] });
     });
 
-    await page.goto("/");
+    await page.goto("/?coding=0");
     await page.getByTestId("task-composer-input").fill("Use legacy");
     await page.getByTestId("task-composer-submit").click();
 
@@ -221,7 +292,7 @@ test.describe("E2E smoke", () => {
       return [];
     });
 
-    await page.goto("/");
+    await page.goto("/?coding=0");
     // 应用外壳启动（两种壳均有主导航，v2 为 .rail-brand；等待 nav 项更稳）
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     // 当前产品默认进入 Agent 工作区；显式进入 Today 后再验证首屏。
@@ -242,7 +313,7 @@ test.describe("E2E smoke", () => {
       r.fulfill({ status: 503 })
     );
 
-    await page.goto("/");
+    await page.goto("/?coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     // 进入设置页，应显示后端未连接提示
     await navigate(page, "settings");
@@ -282,7 +353,7 @@ test.describe("E2E smoke", () => {
       return [];
     });
 
-    await page.goto("/");
+    await page.goto("/?coding=0");
     await navigate(page, "kb");
     // v2 壳顶部栏与知识库页各有一个「知识库」标题
     await expect(page.getByRole("heading", { name: "知识库" }).first()).toBeVisible();
@@ -309,7 +380,7 @@ test.describe("E2E smoke", () => {
         if (url.includes("/today")) return TODAY_SNAPSHOT;
         return [];
       });
-      await page.goto("/");
+      await page.goto("/?coding=0");
       await navigate(page, "today");
       await expect(page.getByRole("heading", { name: "今日工作台" })).toBeVisible();
       const metrics = await page.evaluate(() => ({

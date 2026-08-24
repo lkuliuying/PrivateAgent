@@ -184,7 +184,7 @@ function mockW6r3Api(page: Page) {
 async function openAgent(page: Page, width = 1440, height = 900) {
   await page.setViewportSize({ width, height });
   await mockW6r3Api(page);
-  await page.goto("/?ui=v2");
+  await page.goto("/?ui=v2&coding=0");
   await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
   await page.getByTestId("nav-chat").click();
   await expect(page.getByTestId("session-header")).toBeVisible({ timeout: 10000 });
@@ -194,7 +194,7 @@ test.describe("v0.8.0 W6-R3 · 第三轮试用反馈修订", () => {
   test("主侧栏最近任务归位「Agent 执行」下方；原位置无重复实例", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockW6r3Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
 
     // 「Agent 执行」分组标题 + 紧随其后的最近任务（DOM 连续）
@@ -291,14 +291,14 @@ test.describe("v0.8.0 W6-R3 · 第三轮试用反馈修订", () => {
     await expect(page.getByTestId("nav-settings")).toHaveAttribute("aria-current", "page");
   });
 
-  test("上下文用量（第四轮决策）：真实能力未就绪时诚实不可用，不伪造数值", async ({ page }) => {
+  test("上下文用量（v0.9.0 圆环）：能力未开启时诚实不可用，不伪造数值", async ({ page }) => {
     await openAgent(page);
-    const meter = page.getByTestId("context-usage-meter");
-    await expect(meter).toBeVisible();
-    // v0.8.0 口径：真实 token 窗口/压缩状态为 v0.9.0 目标；当前如实「不可用」，
-    // 不用前端状态补齐，不呈现百分比/负数/伪造数值（零容忍）
-    await expect(meter).toContainText("上下文用量不可用");
-    const text = await meter.innerText();
+    const ring = page.getByTestId("context-usage-ring");
+    await expect(ring).toBeVisible();
+    // v0.9.0 口径：矩形模块已移除，圆环按后端 typed budget 呈现；
+    // 能力位未开启/不可用时如实「不可用」，不呈现百分比/负数/伪造数值（零容忍）
+    await expect(ring).toHaveAttribute("aria-label", /上下文用量不可用/);
+    const text = await ring.innerText();
     expect(text).not.toMatch(/\d+\s*%/);
     expect(text).not.toMatch(/-\d/);
   });
@@ -319,7 +319,7 @@ test.describe("v0.8.0 W6-R3 · 第三轮试用反馈修订", () => {
   test("窄窗口抽屉：可打开、Escape 关闭并恢复焦点", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 800 });
     await mockW6r3Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-chat").click();
     await expect(page.getByTestId("agent-conversations-tab")).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId("agent-conversations")).toHaveCount(0);

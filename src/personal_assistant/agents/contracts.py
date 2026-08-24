@@ -69,6 +69,14 @@ class AgentEventType(StrEnum):
     PATCH_SET_ROLLED_BACK = "patch_set.rolled_back"
     PATCH_SET_FAILED = "patch_set.failed"
     PATCH_SET_UNKNOWN = "patch_set.unknown"
+    # v0.9.0 H0 §7.2/§8：公开决策摘要与上下文压缩 durable 事件（additive）。
+    # decision.summary payload 只含结构化公开摘要（目标/方法/判断/依据/
+    # 下一步/风险/验证），不含隐藏 chain-of-thought。
+    DECISION_SUMMARY = "decision.summary"
+    CONTEXT_COMPACTION_STARTED = "context.compaction_started"
+    CONTEXT_COMPACTION_COMPLETED = "context.compaction_completed"
+    CONTEXT_COMPACTION_FAILED = "context.compaction_failed"
+    PERMISSION_DOWNGRADED = "permission.downgraded"
 
 
 class ContractModel(BaseModel):

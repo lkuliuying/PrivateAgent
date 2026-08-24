@@ -17,6 +17,9 @@ export function toThreadSummary(dto: Session, projectId: number): CodingThreadSu
     workspaceId: dto.workspace_id ?? null,
     updatedAt: dto.updated_at,
     lastRunId: dto.last_run_id ?? null,
+    pinnedAt: dto.pinned_at ?? null,
+    archivedAt: dto.archived_at ?? null,
+    kind: dto.kind ?? null,
   };
 }
 
@@ -43,4 +46,86 @@ export async function createCodingThread(input: CodingThreadCreateInput): Promis
     })
   );
   return toThreadSummary(dto, input.projectId);
+}
+
+/**
+ * v0.9.0 H1：legacy/unbound 会话显式迁移绑定到项目（唯一入口）。
+ * 契约（H0 §4.2）：不批量、不按最近项目猜测；已绑定会话拒绝重复绑定。
+ */
+export async function bindSessionToProject(
+  sessionId: number,
+  projectId: number,
+  workspaceId: number
+): Promise<CodingThreadSummary> {
+  const dto = await codingFetchJson<Session>(
+    `/sessions/${sessionId}/bind-project`,
+    codingJsonInit("POST", { project_id: projectId, workspace_id: workspaceId })
+  );
+  return toThreadSummary(dto, projectId);
+}
+
+// ============================================================================
+// v0.9.0 H4：线程管理（重命名/归档/置顶/搜索/最近任务）
+// ============================================================================
+
+/** 重命名线程标题（后端有界校验）。 */
+export async function renameThread(
+  sessionId: number,
+  title: string
+): Promise<Session> {
+  return codingFetchJson<Session>(
+    `/sessions/${sessionId}/title`,
+    codingJsonInit("PATCH", { title })
+  );
+}
+
+/** 归档/恢复（软删除，不物理删除数据）。 */
+export async function setThreadArchived(
+  sessionId: number,
+  archived: boolean
+): Promise<Session> {
+  return codingFetchJson<Session>(
+    `/sessions/${sessionId}/${archived ? "archive" : "unarchive"}`,
+    codingJsonInit("POST", {})
+  );
+}
+
+/** 置顶/取消置顶（最近任务优先呈现）。 */
+export async function setThreadPinned(
+  sessionId: number,
+  pinned: boolean
+): Promise<Session> {
+  return codingFetchJson<Session>(
+    `/sessions/${sessionId}/${pinned ? "pin" : "unpin"}`,
+    codingJsonInit("POST", {})
+  );
+}
+
+/** 最近任务：置顶优先 → 更新时间倒序（不含已归档）。 */
+export async function fetchRecentThreads(
+  limit = 10
+): Promise<CodingThreadSummary[]> {
+  const list = await codingFetchJson<Session[]>(
+    `/sessions/recent?kind=coding&limit=${limit}`
+  );
+  return list.map((dto) => toThreadSummary(dto, dto.project_id ?? 0));
+}
+
+/** 按标题搜索线程（不含已归档）。 */
+export async function searchThreads(
+  keyword: string,
+  limit = 30
+): Promise<CodingThreadSummary[]> {
+  const list = await codingFetchJson<Session[]>(
+    `/sessions/search?q=${encodeURIComponent(keyword)}&kind=coding&limit=${limit}`
+  );
+  return list.map((dto) => toThreadSummary(dto, dto.project_id ?? 0));
+}
+
+/** 更多工作区：未绑定的 legacy 会话（次级入口；仅显式绑定迁移）。 */
+export async function fetchUnboundLegacyThreads(): Promise<CodingThreadSummary[]> {
+  const list = await codingFetchJson<Session[]>("/sessions");
+  return list
+    .filter((dto) => (dto.kind ?? "legacy") !== "coding" && dto.project_id == null)
+    .map((dto) => toThreadSummary(dto, 0));
 }

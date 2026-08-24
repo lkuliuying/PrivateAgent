@@ -111,9 +111,11 @@ async def test_completes_without_tools_and_aggregates_usage():
         AgentEventType.RUN_STARTED,
         AgentEventType.MODEL_STARTED,
         AgentEventType.MODEL_COMPLETED,
+        # v0.9.0 H0 §8：逐轮公开决策摘要（additive，只含公开事实）
+        AgentEventType.DECISION_SUMMARY,
         AgentEventType.RUN_COMPLETED,
     ]
-    assert [event.sequence for event in result.events] == [1, 2, 3, 4]
+    assert [event.sequence for event in result.events] == [1, 2, 3, 4, 5]
 
 
 @pytest.mark.asyncio

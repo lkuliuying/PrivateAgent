@@ -76,7 +76,7 @@ const PAGES: PageCheck[] = [
 async function openApp(page: Page) {
   await page.setViewportSize({ width: 1280, height: 800 });
   await mockApi(page);
-  await page.goto("/?ui=v2");
+  await page.goto("/?ui=v2&coding=0");
   await expect(page.getByTestId("nav-chat")).toBeVisible();
   await page.waitForLoadState("networkidle");
 }
@@ -126,7 +126,7 @@ test.describe("0.4.0 D4 全生产页面验收", () => {
       }
       await route.fallback();
     });
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.getByTestId("nav-kb").click();
     // 数据未返回期间加载态可见
@@ -141,7 +141,7 @@ test.describe("0.4.0 D4 全生产页面验收", () => {
     await page.route("**://127.0.0.1:8000/health", (r) =>
       r.fulfill({ status: 503 })
     );
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.getByTestId("nav-settings").click();
     await expect(

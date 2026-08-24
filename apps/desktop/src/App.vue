@@ -42,6 +42,7 @@ import {
   isDesktopRuntime,
   getApiInfo,
   getToday,
+  getRuntimeCapabilities,
 } from "./api";
 import type { View } from "./types";
 import { viewLabel } from "./models/viewRegistry";
@@ -49,7 +50,16 @@ import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
 import { createAgentWorkspacePreview } from "./dev/agentWorkspacePreview";
 import { useLegacyChatSession } from "./features/agent/useLegacyChatSession";
-import { isUiV2, isCodingWorkbench } from "./config/uiFlags";
+import {
+  isUiV2,
+  isCodingWorkbench,
+  setCodingUiCapability,
+  hasExplicitCodingChoice,
+} from "./config/uiFlags";
+import {
+  recordCodingFallback,
+  recordCodingViewEntry,
+} from "./features/coding/model/codingUiTelemetry";
 import { useViewHistory } from "./composables/useViewHistory";
 import { useShortcuts } from "./composables/useShortcuts";
 import { AgentWorkspace } from "./features/agent";
@@ -68,9 +78,10 @@ const uiLabEnabled =
   new URLSearchParams(window.location.search).get("ui-lab") === "1";
 // ui_v2：alpha.1 默认兼容壳，新壳按开关开启（?ui=v2 / pa_ui_v2=1）。
 const uiV2 = isUiV2();
-// v0.8.0 W1：CodingWorkbench 内部启用（?coding=1 / pa_coding_workbench=1），基于
-// v2 壳只切换 renderer 侧栏与主区；旧壳回退（?ui=v1 / pa_ui_v2=0）不受影响。
-const codingEnabled = uiV2 && isCodingWorkbench();
+// v0.9.0 H1：Coding UI 默认开启（计划 §3.1）；启动后按 /capabilities 的
+// coding_agent_ui_enabled 能力位回退（仅非显式选择时），回退原因本地计数。
+const codingUiActive = ref(uiV2 && isCodingWorkbench());
+const codingEnabled = computed(() => codingUiActive.value);
 const codingStore = useCodingWorkspace();
 // ?coding-preview=<key>：首页六状态开发预览（动态 import，生产构建不进入）
 const codingPreviewKey = import.meta.env.DEV
@@ -222,7 +233,7 @@ onBeforeUnmount(() => {
 useShortcuts({
   openCommand: () => (commandPaletteOpen.value = true),
   // v0.8.0 W1：coding 模式下 Ctrl+N 进入首页输入器而非旧会话
-  newSession: () => (codingEnabled ? onCodingNewTask() : void newSession()),
+  newSession: () => (codingEnabled.value ? onCodingNewTask() : void newSession()),
   goBack: () => {
     const target = history.back();
     if (target?.sessionId && target.view === "chat") {
@@ -387,8 +398,26 @@ async function quitApp() {
 // ============ 导航 ============
 
 function onNavigate(v: View) {
-  // coding 视图仅内部 flag 开启时可达；命令面板等入口在关闭时回落旧 Agent 视图
-  history.navigate({ view: v === "coding" && !codingEnabled ? "chat" : v });
+  // coding 视图仅在启用时可达；命令面板等入口在关闭时回落旧 Agent 视图
+  history.navigate({ view: v === "coding" && !codingEnabled.value ? "chat" : v });
+}
+
+// v0.9.0 H1-D（计划 §5.8）：配置闭环——PrivateAgent 入口与 Coding 首页阻塞操作都进入同一个模型管理区；
+// 往返保留项目/会话/草稿（由各自组件维护），保存后自动返回并原位重探测解除阻塞。
+const settingsFocus = ref<{ section: string; returnTo: View } | null>(null);
+
+function openModelSettings(returnTo: View) {
+  settingsFocus.value = { section: "model-profiles", returnTo };
+  onNavigate("settings");
+}
+
+function onSettingsReturn() {
+  const target = settingsFocus.value?.returnTo ?? null;
+  settingsFocus.value = null;
+  if (target === null) return;
+  // 返回后重拉 profile/能力位：首页阻塞原位解除，无需新建项目或重启应用。
+  if (target === "coding") void codingActiveStoreRef.value.refresh();
+  onNavigate(target);
 }
 
 // v0.8.0 W1：coding 首页/侧栏动作接线（线程选择由 codingWorkspaceStore 维护）
@@ -432,12 +461,30 @@ function onSearchNavigate(v: View) {
 
 async function initializeConnectedWorkspace() {
   await legacyChat.initializeLegacyWorkspace();
+  // v0.9.0 H1：启动后核对后端能力位——PA_CODING_AGENT_UI_ENABLED=false 短期回退：
+  // 非显式选择时回落旧 UI 并本地计数（计划 §3.3；回退原因可解释）。
+  try {
+    const caps = await getRuntimeCapabilities();
+    if (caps.coding_agent_ui_enabled === false && !hasExplicitCodingChoice()) {
+      setCodingUiCapability(false);
+      if (codingUiActive.value) {
+        codingUiActive.value = false;
+        recordCodingFallback("capability_disabled");
+        if (view.value === "coding") onNavigate("chat");
+      }
+    }
+  } catch {
+    /* 能力位获取失败不阻断启动；保持默认呈现 */
+  }
   // v0.8.0 W1：coding 工作台就绪后加载项目树并落在首页（计划 §1：首页为核心入口）；
   // W6-R：深链/刷新后保持已恢复的视图（仅默认 chat 回落 coding 首页）。
-  if (codingEnabled) {
+  if (codingEnabled.value) {
     if (!codingPreviewStore.value) void codingStore.bootstrap();
     if (view.value === "chat") onNavigate("coding");
+    recordCodingViewEntry("coding");
     void loadPersonalCounts();
+  } else {
+    recordCodingViewEntry("legacy");
   }
 }
 
@@ -540,6 +587,7 @@ async function initializeConnectedWorkspace() {
         v-if="codingEnabled && view === 'coding' && !codingThreadSelected"
         :store="codingActiveStoreRef"
         @navigate="onNavigate"
+        @configure-provider="openModelSettings('coding')"
         @thread-created="onCodingThreadCreated"
       />
       <CodingThreadWorkspace
@@ -547,8 +595,15 @@ async function initializeConnectedWorkspace() {
         :key="codingThreadKey"
         :store="codingActiveStoreRef"
         @navigate="onNavigate"
+        @configure-provider="openModelSettings('coding')"
       />
-      <SettingsView v-else-if="view === 'settings'" @reconfigure="reconfigure" />
+      <SettingsView
+        v-else-if="view === 'settings'"
+        :focus-section="settingsFocus?.section ?? null"
+        :return-to="settingsFocus?.returnTo ?? null"
+        @reconfigure="reconfigure"
+        @return="onSettingsReturn"
+      />
       <DiagnosticsView v-else-if="view === 'diagnostics'" />
       <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
       <IntegrationImportPanel v-else-if="view === 'integrations'" />
@@ -601,7 +656,7 @@ async function initializeConnectedWorkspace() {
         @save-inbox="onSaveMessageToInbox"
         @select-session="(id) => void selectSession(id, false)"
         @new-session="newSession"
-        @configure-model="onNavigate('settings')"
+        @configure-model="openModelSettings('chat')"
       />
       <div v-else class="welcome">
         <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
@@ -659,7 +714,13 @@ async function initializeConnectedWorkspace() {
         />
       </template>
 
-      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <SettingsView
+        v-if="view === 'settings'"
+        :focus-section="settingsFocus?.section ?? null"
+        :return-to="settingsFocus?.returnTo ?? null"
+        @reconfigure="reconfigure"
+        @return="onSettingsReturn"
+      />
       <DiagnosticsView v-else-if="view === 'diagnostics'" />
       <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
       <IntegrationImportPanel v-else-if="view === 'integrations'" />

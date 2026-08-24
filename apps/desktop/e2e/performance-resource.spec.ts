@@ -48,6 +48,18 @@ function mockApi(page: Page, streamTokens = 0) {
       await route.fulfill({ json: { tool_call: null } });
       return;
     }
+    if (path === "/settings") {
+      // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+      await route.fulfill({
+        json: {
+          provider_type: "ollama",
+          llm_model: "qwen2.5:14b-instruct-q4_K_M",
+          remote_provider_enabled: false,
+          llm_context_length: 32768,
+        },
+      });
+      return;
+    }
     if (path === "/chat/stream") {
       if (streamTokens > 0) {
         const frames: string[] = [
@@ -205,7 +217,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("页面切换与主要操作：无 50ms 级无必要长任务", async ({ page }) => {
     await installProbes(page);
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
@@ -254,7 +266,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("长 SSE 活动流压力：150 帧流式更新可交互且收敛", async ({ page }) => {
     await installProbes(page);
     await mockApi(page, 150);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
 
@@ -275,7 +287,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("重复切换视图与会话：无定时器/监听器残留增长", async ({ page }) => {
     await installProbes(page);
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));

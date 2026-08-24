@@ -377,6 +377,9 @@ class WorkflowCompletionOutputVerifier:
     - ``final_git_diff``（E3/E0 §7）：any/nonempty/empty——最终 Git Diff
       判定基于 workspace 当前 dirty 状态；非 git 目录时 nonempty/empty
       不可判定即失败关闭。
+    - ``min_tool_executions``（v0.9.0 H1-B/计划 §5.6）：可执行意图 run 的
+      最小工具/命令执行证据数——基于 durable executions 事实计数，
+      禁止无执行证据的“完成”宣称（不得退化为纯问答）。
 
     条件未满足 → run 以 output_validation_failed 失败关闭，不进入 completed。
     """
@@ -394,6 +397,7 @@ class WorkflowCompletionOutputVerifier:
         must_pass_command_profiles: tuple[str, ...] = (),
         no_pending_patchsets: bool = False,
         final_git_diff: str = "any",
+        min_tool_executions: int = 0,
     ) -> None:
         if not callable(fact_loader):
             raise TypeError("workflow completion fact loader must be callable")
@@ -401,6 +405,8 @@ class WorkflowCompletionOutputVerifier:
             raise ValueError("max_failed_tools must be non-negative")
         if final_git_diff not in {"any", "nonempty", "empty"}:
             raise ValueError("final_git_diff must be any|nonempty|empty")
+        if min_tool_executions < 0:
+            raise ValueError("min_tool_executions must be non-negative")
         self._loader = fact_loader
         self._must_succeed = tuple(must_succeed_tools)
         self._max_failed = int(max_failed_tools)
@@ -408,6 +414,7 @@ class WorkflowCompletionOutputVerifier:
         self._must_pass_profiles = tuple(must_pass_command_profiles)
         self._no_pending_patchsets = bool(no_pending_patchsets)
         self._final_git_diff = final_git_diff
+        self._min_tool_executions = int(min_tool_executions)
 
     async def verify(self, output: str, *, attempt: int) -> OutputVerification:
         del output, attempt
@@ -426,6 +433,17 @@ class WorkflowCompletionOutputVerifier:
             by_tool.setdefault(name, []).append(execution)
 
         unmet: list[str] = []
+        # v0.9.0 H1-B（计划 §5.6）：可执行意图的最小执行证据门槛——
+        # executions 计数是 durable 事实（含失败的命令：失败也是证据），
+        # 模型不能用文本宣称替代真实工具/命令执行。
+        if self._min_tool_executions > 0:
+            evidence = len(facts.executions)
+            if evidence < self._min_tool_executions:
+                unmet.append(
+                    f"工具/命令执行证据 {evidence} 条，少于要求的"
+                    f" {self._min_tool_executions} 条；可执行请求必须调用"
+                    "工具收集证据，不得只回复文字教程"
+                )
         for tool_name in self._must_succeed:
             records = by_tool.get(tool_name, [])
             if not any(record.get("status") == "succeeded" for record in records):

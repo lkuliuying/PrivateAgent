@@ -19,6 +19,9 @@ import PaSelect from "../../../design/PaSelect.vue";
 import type { CodingFileHint } from "../model/runContracts";
 import { PERMISSION_MODE_META } from "../model/runContracts";
 import type { CodingWorkspaceStore } from "../model/codingWorkspaceStore";
+// v0.9.0 §5.3：full_access 授予查询/撤销 + 有效期显示（产品时区）
+import { fetchFullAccessGrant, revokeFullAccessGrant } from "../api/fullAccess";
+import { formatDateTime } from "../../../services/timeDisplay";
 
 export interface CodingComposerSendPayload {
   message: string;
@@ -36,6 +39,16 @@ const props = withDefaults(
     running?: boolean;
     previewMode?: boolean;
     searchFiles?: (query: string) => Promise<CodingFileHint[]>;
+    /**
+     * v0.9.0 H1-A：发送前守卫（如 full_access 二次确认/授予）。返回 false 时
+     * 不发送、不清空输入（不丢失用户草稿），由调用方呈现原因。
+     */
+    beforeSend?: (payload: CodingComposerSendPayload) => Promise<boolean>;
+    /**
+     * v0.9.0 H1-B（计划 §5.5/§5.6）：创建失败留在草稿态——父层把未成功的
+     * 输入回填（不丢失输入）；引用变化即应用。
+     */
+    restoreRequest?: { message: string; seq: number } | null;
   }>(),
   {
     store: undefined,
@@ -45,6 +58,8 @@ const props = withDefaults(
     running: false,
     previewMode: false,
     searchFiles: undefined,
+    beforeSend: undefined,
+    restoreRequest: null,
   }
 );
 
@@ -187,10 +202,129 @@ function applyCommand(prompt: string): void {
 }
 
 // ============ 权限/模型/推理（v0.7.0 冻结契约） ============
-const permissionMode = ref("readonly");
+// v0.9.0 H1（计划 §3.1）：产品默认权限为 confirm（不是 workspace/readonly）；
+// 服务端未显式指定时仍按最小权限 readonly 失败关闭（后端语义不变）。
+// v0.9.0 H1-C（计划 §5.7）：权限选择按会话（thread）持久化，切换对话不丢；
+// 只存合法枚举值，能力位不可用时回落 confirm（不静默使用更高权限）。
+const PERMISSION_MODE_KEYS = ["readonly", "confirm", "workspace", "full_access"];
+
+function permissionKey(threadId: number | null): string {
+  return `pa_coding_permission_${threadId ?? "none"}`;
+}
+
+function loadPermissionMode(): string {
+  try {
+    const stored = window.localStorage.getItem(permissionKey(props.threadId));
+    if (stored && PERMISSION_MODE_KEYS.includes(stored)) return stored;
+  } catch {
+    // 本地存储不可用时静默回落默认值（权限选择非关键数据）
+  }
+  return "confirm";
+}
+
+const permissionMode = ref(loadPermissionMode());
+watch(() => props.threadId, () => {
+  permissionMode.value = loadPermissionMode();
+});
+watch(permissionMode, () => {
+  if (props.previewMode) return;
+  try {
+    window.localStorage.setItem(permissionKey(props.threadId), permissionMode.value);
+  } catch {
+    // 同上：存储不可用时不阻断交互
+  }
+});
 const modelProfileId = ref("");
 const reasoningEffort = ref("");
 
+// v0.9.0 H1-A（计划 §5.3）：三档权限选项可用性绑定后端能力位——
+// workspace/full_access 仅在 /capabilities 显式声明时可选；能力位缺失时
+// 选项置灰说明，不在前端扩大授权（零容忍）。
+const workspaceAutoApproveSupported = computed(
+  () => props.store?.capabilities.value?.coding_workspace_auto_approve === true
+);
+// §5.3：审计/撤销独立声明——能力位开启但审计或撤销被显式声明不可用时失败关闭。
+const fullAccessSupported = computed(() => {
+  const caps = props.store?.capabilities.value;
+  return (
+    caps?.coding_full_access_supported === true &&
+    caps?.coding_full_access_audit !== false &&
+    caps?.coding_full_access_revoke !== false
+  );
+});
+
+const permissionOptions = computed(() => [
+  { value: "readonly", label: PERMISSION_MODE_META.readonly.label },
+  { value: "confirm", label: PERMISSION_MODE_META.confirm.label },
+  {
+    value: "workspace",
+    // v0.9.0 H1-C（§5.7）：不可用选项必须在项旁说明具体原因，禁止无响应项。
+    label: workspaceAutoApproveSupported.value
+      ? PERMISSION_MODE_META.workspace.label
+      : `${PERMISSION_MODE_META.workspace.label}（不可用：Runtime 未提供自动批准能力）`,
+    disabled: !workspaceAutoApproveSupported.value,
+  },
+  {
+    value: "full_access",
+    label: fullAccessSupported.value
+      ? PERMISSION_MODE_META.full_access.label
+      : `${PERMISSION_MODE_META.full_access.label}（不可用：Runtime 未提供完全访问能力）`,
+    disabled: !fullAccessSupported.value,
+  },
+]);
+
+// 能力位变化导致当前选择不可用时回落 confirm（不静默使用更高权限）
+watch([workspaceAutoApproveSupported, fullAccessSupported], () => {
+  if (permissionMode.value === "workspace" && !workspaceAutoApproveSupported.value) {
+    permissionMode.value = "confirm";
+  }
+  if (permissionMode.value === "full_access" && !fullAccessSupported.value) {
+    permissionMode.value = "confirm";
+  }
+});
+
+// v0.9.0 §5.3：full_access 授予状态与即时撤销（threadId 即会话 id）
+const activeGrant = ref<{ grantId: string; expiresAt: string | null } | null>(null);
+const revoking = ref(false);
+
+async function refreshGrantState(): Promise<void> {
+  if (permissionMode.value !== "full_access" || props.threadId === null) {
+    activeGrant.value = null;
+    return;
+  }
+  try {
+    const state = await fetchFullAccessGrant(props.threadId);
+    activeGrant.value =
+      state.active && state.grantId
+        ? { grantId: state.grantId, expiresAt: state.expiresAt }
+        : null;
+  } catch {
+    activeGrant.value = null;
+  }
+}
+
+watch(
+  [() => props.threadId, permissionMode],
+  () => void refreshGrantState(),
+  { immediate: true }
+);
+
+async function onRevokeFullAccess(): Promise<void> {
+  const grant = activeGrant.value;
+  if (!grant || revoking.value) return;
+  const confirmed = window.confirm(
+    "撤销当前会话的完全访问？\n\n撤销后写入与命令将恢复逐次确认。"
+  );
+  if (!confirmed) return;
+  revoking.value = true;
+  try {
+    await revokeFullAccessGrant(grant.grantId);
+    activeGrant.value = null;
+    permissionMode.value = "confirm";
+  } finally {
+    revoking.value = false;
+  }
+}
 const profiles = computed(() => {
   const result = props.store?.modelProfiles.value;
   return result?.status === "ok" ? result.profiles : [];
@@ -231,7 +365,7 @@ function buildMessage(): string {
   return [text.value.trim(), ...chipLines].filter(Boolean).join("\n");
 }
 
-function send(): void {
+async function send(): Promise<void> {
   if (disabled.value) return;
   const payload: CodingComposerSendPayload = {
     message: buildMessage(),
@@ -239,12 +373,43 @@ function send(): void {
     modelProfileId: modelProfileId.value || null,
     reasoningEffort: reasoningEffort.value || null,
   };
+  // v0.9.0 H1-A：发送前守卫（full_access 二次确认/授予）。返回 false 时
+  // 不发送、不清空草稿，避免丢失用户输入。
+  if (props.beforeSend) {
+    const proceed = await props.beforeSend(payload);
+    if (!proceed) return;
+  }
   emit("send", payload);
   text.value = "";
   chips.value = [];
   atQuery.value = null;
   slashQuery.value = null;
 }
+
+// v0.9.0 H1-B（§5.5）：创建失败留在草稿态——父层回填未成功的输入。
+// message 末尾的 @relPath 行还原为 chip（与 buildMessage 序列化互逆）。
+watch(
+  () => props.restoreRequest,
+  (request) => {
+    if (!request) return;
+    const lines = request.message.split("\n");
+    const restoredChips: CodingFileHint[] = [];
+    const textLines: string[] = [];
+    for (const line of lines) {
+      const chipMatch = /^@([\w./\\-]+)$/.exec(line.trim());
+      if (chipMatch) {
+        const relPath = chipMatch[1];
+        const name = relPath.split(/[\\/]/).pop() ?? relPath;
+        restoredChips.push({ relPath, name, language: null });
+      } else if (line.trim()) {
+        textLines.push(line);
+      }
+    }
+    text.value = textLines.join("\n");
+    chips.value = restoredChips;
+    inputEl.value?.focus();
+  }
+);
 
 function onKeydown(event: KeyboardEvent): void {
   if (atQuery.value !== null && atHints.value.length) {
@@ -270,7 +435,7 @@ function onKeydown(event: KeyboardEvent): void {
   }
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    send();
+    void send();
   }
 }
 
@@ -311,7 +476,7 @@ onBeforeUnmount(() => {
         class="pa-btn pa-btn--primary composer-send"
         data-testid="coding-composer-send"
         :disabled="disabled"
-        @click="send()"
+        @click="void send()"
       >
         <PhPaperPlaneRight :size="15" />
         发送
@@ -382,17 +547,25 @@ onBeforeUnmount(() => {
         <span>权限</span>
         <PaSelect
           :model-value="permissionMode"
-          :options="[
-            { value: 'readonly', label: '只读' },
-            { value: 'confirm', label: '写入需确认' },
-            { value: 'workspace', label: '工作区自动' },
-          ]"
+          :options="permissionOptions"
           size="sm"
           data-testid="composer-permission"
           :title="PERMISSION_MODE_META[permissionMode]?.hint"
           @update:model-value="permissionMode = String($event)"
         />
       </label>
+      <!-- v0.9.0 §5.3：full_access 授予状态与即时撤销（显示有效期，可一键撤销） -->
+      <button
+        v-if="activeGrant"
+        type="button"
+        class="grant-revoke"
+        data-testid="composer-grant-revoke"
+        :disabled="revoking"
+        :title="activeGrant.expiresAt ? `有效期至 ${formatDateTime(activeGrant.expiresAt)}；点击撤销` : '点击撤销完全访问'"
+        @click="void onRevokeFullAccess()"
+      >
+        完全访问生效中<template v-if="activeGrant.expiresAt"> · {{ formatDateTime(activeGrant.expiresAt) }}</template> · 撤销
+      </button>
       <label class="option">
         <span>模型</span>
         <PaSelect
@@ -552,6 +725,26 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-3);
+}
+/* v0.9.0 §5.3：full_access 授予状态与撤销入口 */
+.grant-revoke {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, var(--color-border));
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  color: var(--color-warning-fg);
+  font-size: var(--pa-text-meta);
+  cursor: pointer;
+}
+.grant-revoke:hover {
+  border-color: var(--color-warning);
+}
+.grant-revoke:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 .option {
   display: inline-flex;

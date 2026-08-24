@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { toProjectSummary, toWorkspaceSummary } from "./projects";
 import { toThreadSummary } from "./threads";
 import { toCodingApiError } from "./codingHttp";
+import { toModelProfileDetail } from "./modelProfiles";
 import type { Project, ProjectWorkspace, Session } from "../../../types";
 
 describe("coding api 映射层", () => {
@@ -74,6 +75,10 @@ describe("coding api 映射层", () => {
       workspaceId: 101,
       updatedAt: "2026-08-22T02:00:00Z",
       lastRunId: "run-abc",
+      // v0.9.0 H4：置顶/归档/类型事实（additive）
+      pinnedAt: null,
+      archivedAt: null,
+      kind: "coding",
     });
   });
 
@@ -93,5 +98,38 @@ describe("coding api 映射层", () => {
     const fallback = await toCodingApiError(htmlError);
     expect(fallback.code).toBe("unknown");
     expect(fallback.status).toBe(502);
+  });
+
+  // v0.9.0 H1-D（§5.8）：profile 详情映射（含具体模型路由字段与默认标记）
+  it("模型 profile 映射携带 model_name/is_default；旧字段缺失不猜默认能力", () => {
+    const detail = toModelProfileDetail({
+      id: "ollama-default",
+      provider: "ollama",
+      display_name: "本地编码模型",
+      model_name: "qwen3-coder",
+      is_default: true,
+      is_local: true,
+      reasoning_efforts: ["low", "high"],
+      enabled: true,
+    });
+    expect(detail).toMatchObject({
+      id: "ollama-default",
+      modelName: "qwen3-coder",
+      isDefault: true,
+      displayName: "本地编码模型",
+      contextTokens: 8192,
+      enabled: true,
+    });
+    // 历史 profile（无 model_name）如实为 null（运行期失败关闭，不回填全局值）
+    const legacy = toModelProfileDetail({
+      id: "legacy",
+      provider: "ollama",
+      display_name: "历史",
+      is_local: true,
+      reasoning_efforts: null,
+      enabled: true,
+    });
+    expect(legacy.modelName).toBeNull();
+    expect(legacy.isDefault).toBe(false);
   });
 });

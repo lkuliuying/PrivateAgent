@@ -195,7 +195,7 @@ async function mockApi(page: Page, options: MockOptions = {}) {
 test.describe("anime.js motion system", () => {
   test("Agent card hover uses transform, shadow and border glow", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/");
+    await page.goto("/?coding=0");
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
@@ -224,7 +224,7 @@ test.describe("anime.js motion system", () => {
   test("reduced motion keeps the interface stable", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await mockApi(page);
-    await page.goto("/");
+    await page.goto("/?coding=0");
 
     const card = page.locator("[data-agent-card]").first();
     await expect(card).toBeVisible();
@@ -242,7 +242,7 @@ test.describe("anime.js motion system", () => {
 
   test("workflow draws SVG paths, activates a node and reveals checks", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/");
+    await page.goto("/?coding=0");
     await navigate(page, "tasks");
 
     const steps = page.locator("[data-workflow-step]");

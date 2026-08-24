@@ -116,6 +116,8 @@ async def test_local_profile_forces_local_route_even_with_remote_enabled(
         {
             "provider": "ollama",
             "display_name": "Local",
+            # v0.9.0 H1-D：具体模型路由字段（实际传给 Provider 的 model）
+            "model_name": "local-route-model",
             "is_local": True,
             "native_tool_calls": True,
             "context_tokens": 32768,
@@ -137,6 +139,8 @@ async def test_local_profile_forces_local_route_even_with_remote_enabled(
     monkeypatch.setattr(routes_agent_runs.SettingsService, "get_all", _remote_settings)
     gateway = await routes_agent_runs._model_gateway_for_run(db, run)
     assert gateway.adapter.provider_name == "ollama"
+    # v0.9.0 H1-D：实际 model = profile 路由字段（不回落全局 openai_model）
+    assert gateway.adapter.model_name == "local-route-model"
     try:
         await ModelProfileService(db).delete("local-coder")
     finally:
@@ -196,6 +200,8 @@ async def test_remote_profile_drives_remote_route_and_snapshot_send(
         json={
             "provider": "openai",
             "display_name": "Remote",
+            # v0.9.0 H1-D：具体模型路由字段（不回落全局 openai_model）
+            "model_name": "gpt-4o-route",
             "is_local": False,
             "native_tool_calls": True,
         },
@@ -213,6 +219,8 @@ async def test_remote_profile_drives_remote_route_and_snapshot_send(
         # coordinator 收到按 profile 解析的远程 gateway（provider=openai_compatible）
         model = captured["model"]
         assert model.adapter.provider_name == "openai_compatible"
+        # v0.9.0 H1-D：实际 model = profile 路由字段（快照 send 声明不变）
+        assert model.adapter.model_name == "gpt-4o-route"
         # 独立 session 查询（HTTP 请求独立 session 提交，测试 session 的
         # REPEATABLE READ 快照看不到；沿用 E1 _run_events 约定）
         from personal_assistant.core.db import async_session_factory
@@ -240,6 +248,7 @@ async def test_reasoning_effort_validated_and_passed_to_coordinator(
         json={
             "provider": "ollama",
             "display_name": "QA",
+            "model_name": "qa-route-model",
             "native_tool_calls": True,
             "reasoning_efforts": ["low", "high"],
         },
@@ -891,7 +900,12 @@ async def test_local_profile_rejects_remote_ollama_base_url(db, tmp_path, monkey
     project_id, workspace_id = await _make_project(db, tmp_path)
     await ModelProfileService(db).upsert(
         "local-coder",
-        {"provider": "ollama", "display_name": "Local", "native_tool_calls": True},
+        {
+            "provider": "ollama",
+            "display_name": "Local",
+            "model_name": "loopback-route-model",
+            "native_tool_calls": True,
+        },
     )
     run = await _run_with_profile(db, project_id, workspace_id, "local-coder")
 
@@ -910,11 +924,12 @@ async def test_local_profile_rejects_remote_ollama_base_url(db, tmp_path, monkey
         monkeypatch.setattr(cfg, "ollama_base_url", "https://ollama.example.com")
         with pytest.raises(ModelProfileUnsupported):
             await routes_agent_runs._model_gateway_for_run(db, run)
-        # loopback 主机 → 正常路由
+        # loopback 主机 → 正常路由（实际 model = profile 路由字段）
         monkeypatch.setattr(cfg, "ollama_base_url", "http://127.0.0.1:11434")
         gateway = await routes_agent_runs._model_gateway_for_run(db, run)
         assert gateway.adapter.provider_name == "ollama"
         assert "127.0.0.1" in gateway.adapter.base_url
+        assert gateway.adapter.model_name == "loopback-route-model"
     finally:
         try:
             await ModelProfileService(db).delete("local-coder")

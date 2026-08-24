@@ -9,12 +9,13 @@
  * 经注入 searchFiles 传入 Composer（API 不进组件）。
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
-import { PhChatsCircle } from "@phosphor-icons/vue";
+import { PhChatsCircle, PhWarningCircle } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
 import PaButton from "../../../design/PaButton.vue";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import { useRunStream } from "../composables/useRunStream";
+import { describeRunBlocker } from "../model/runBlocking";
 import type {
   RunApprovalPreviewRecord,
   RunApprovalRecord,
@@ -32,6 +33,10 @@ import {
   rejectRunApproval,
 } from "../api/runs";
 import { searchCodingProjectFiles } from "../api/projects";
+import {
+  createFullAccessGrant,
+  fetchFullAccessGrant,
+} from "../api/fullAccess";
 import ThreadHeader from "./ThreadHeader.vue";
 import RunTranscript from "./RunTranscript.vue";
 import RunPlanPopover from "./RunPlanPopover.vue";
@@ -49,6 +54,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   navigate: [view: View];
+  /** v0.9.0 H1-D（§5.8）：模型类阻塞 → 进入同一模型管理区（带 returnTo） */
+  "configure-provider": [];
 }>();
 
 const thread = computed(() => props.store.selectedThread.value);
@@ -94,6 +101,54 @@ if (previewKey) {
 const projection = computed(() => previewProjection.value ?? stream.projection.value);
 const phase = computed(() => (previewMode.value ? "idle" : stream.phase.value));
 const connectionError = computed(() => (previewMode.value ? null : stream.connectionError.value));
+
+// ============ v0.9.0 H1-B（计划 §5.6）：创建失败关闭与恢复入口 ============
+// 阻塞项不得静默隐藏：创建失败时原位展示具体阻塞项 + 可操作恢复入口；
+// 同时把未成功的输入回填草稿（不丢失），重试/配置往返不产生假完成记录。
+const createBlocker = computed(() => {
+  if (previewMode.value || stream.phase.value !== "error") return null;
+  return describeRunBlocker(stream.createErrorCode.value);
+});
+const lastSentPayload = ref<CodingComposerSendPayload | null>(null);
+const restoreRequest = ref<{ message: string; seq: number } | null>(null);
+let restoreSeq = 0;
+
+watch(
+  () => stream.phase.value,
+  (next, previous) => {
+    if (next === "error" && previous === "starting" && lastSentPayload.value) {
+      restoreSeq += 1;
+      restoreRequest.value = {
+        message: lastSentPayload.value.message,
+        seq: restoreSeq,
+      };
+    }
+  }
+);
+
+async function retryBlockedSend(): Promise<void> {
+  const payload = lastSentPayload.value;
+  if (!payload) return;
+  await send(payload);
+}
+
+function recoverFromBlocker(): void {
+  const blocker = createBlocker.value;
+  if (!blocker) return;
+  switch (blocker.recovery) {
+    case "configure-model":
+      // 配置往返保留当前会话与草稿（回填已在上述 watch 完成）；
+      // H1-D：模型类阻塞定位到同一模型管理区，保存后原位解除阻塞。
+      emit("configure-provider");
+      return;
+    case "select-project":
+    case "reauthorize":
+      backToHome();
+      return;
+    default:
+      void retryBlockedSend();
+  }
+}
 
 const runStatus = computed(() => projection.value?.status ?? null);
 const runActive = computed(() => {
@@ -270,12 +325,42 @@ const composerBusy = computed(
   () => !previewMode.value && ["starting", "streaming", "reconnecting"].includes(stream.phase.value)
 );
 
+/**
+ * v0.9.0 H1-A：full_access 二次确认守卫（H0 §6.3）。
+ * - 已有有效授予 → 直接放行；
+ * - 无授予 → 向用户显式说明范围/有效期/边界并二次确认；确认后创建授予；
+ * - 拒绝或授予失败 → 中止发送（保留草稿），不得静默降级执行。
+ */
+async function guardFullAccess(payload: CodingComposerSendPayload): Promise<boolean> {
+  if (payload.permissionMode !== "full_access") return true;
+  const current = thread.value;
+  if (!current) return false;
+  try {
+    const state = await fetchFullAccessGrant(current.id);
+    if (state.active) return true;
+    const confirmed = window.confirm(
+      "启用完全访问？\n\n" +
+        "范围：当前系统用户可访问的本机文件与常规命令，免逐次审批。\n" +
+        "有效期：4 小时；切换项目、退出应用或手动撤销后立即失效。\n" +
+        "边界：不获得管理员权限，不绕过系统权限；凭据、秘密与远程外发仍受硬边界约束，全程保留审计。\n\n" +
+        "确认为当前会话启用完全访问吗？"
+    );
+    if (!confirmed) return false;
+    const granted = await createFullAccessGrant(current.id);
+    return granted.active;
+  } catch {
+    // 能力位关闭/授予失败：失败关闭，不静默以更高权限执行
+    return false;
+  }
+}
+
 async function send(payload: CodingComposerSendPayload): Promise<void> {
   if (!thread.value) return;
   const projectId = props.store.selectedProjectId.value ?? thread.value.projectId;
   const workspaceId = props.store.selectedWorkspaceId.value ?? thread.value.workspaceId;
   if (projectId === null || workspaceId === null) return;
   lastPermissionMode.value = payload.permissionMode;
+  lastSentPayload.value = payload;
   await stream.startRun({
     session_id: thread.value.id,
     message: payload.message,
@@ -329,7 +414,7 @@ function toggleContext(): void {
       v-if="!thread"
       :icon="PhChatsCircle"
       title="未选择任务"
-      description="从侧栏选择一个任务，或回到首页新建任务。"
+      description="从侧栏选择一个对话，或回到首页新建对话。"
     >
       <PaButton variant="primary" @click="backToHome">回到首页</PaButton>
     </PaEmptyState>
@@ -374,6 +459,36 @@ function toggleContext(): void {
             @load-output="loadOutput"
           />
 
+          <!-- v0.9.0 H1-B（§5.6）：创建失败阻塞卡片（具体阻塞项 + 恢复入口） -->
+          <div
+            v-if="createBlocker"
+            class="create-blocker"
+            role="alert"
+            data-testid="run-create-blocker"
+          >
+            <PhWarningCircle :size="16" aria-hidden="true" />
+            <div class="blocker-copy">
+              <strong>{{ createBlocker.title }}</strong>
+              <span class="blocker-hint">{{ createBlocker.hint }}</span>
+              <span v-if="connectionError" class="blocker-detail">{{ connectionError }}</span>
+            </div>
+            <div class="blocker-actions">
+              <PaButton
+                size="sm"
+                variant="primary"
+                data-testid="run-blocker-recover"
+                @click="recoverFromBlocker"
+              >{{ createBlocker.recoveryLabel }}</PaButton>
+              <PaButton
+                v-if="createBlocker.recovery !== 'retry' && lastSentPayload"
+                size="sm"
+                variant="ghost"
+                data-testid="run-blocker-retry"
+                @click="void retryBlockedSend()"
+              >重试</PaButton>
+            </div>
+          </div>
+
           <div class="thread-composer">
             <CodingComposer
               :store="store"
@@ -383,6 +498,8 @@ function toggleContext(): void {
               :running="runActive"
               :preview-mode="previewMode"
               :search-files="searchFiles"
+              :before-send="guardFullAccess"
+              :restore-request="restoreRequest"
               @send="send"
               @stop="cancelRun"
             />
@@ -431,6 +548,47 @@ function toggleContext(): void {
   padding: var(--space-3) var(--space-5) var(--space-4);
   border-top: 1px solid var(--color-border);
   background: var(--color-surface);
+}
+.create-blocker {
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+  flex-shrink: 0;
+  margin: 0 var(--space-5);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  color: var(--color-fg);
+}
+.create-blocker > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--color-warning);
+}
+.blocker-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.blocker-hint {
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta, 12px);
+}
+.blocker-detail {
+  overflow: hidden;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta, 12px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blocker-actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  flex-shrink: 0;
 }
 @media (max-width: 1080px) {
   .thread-body :deep(.plan-popover),

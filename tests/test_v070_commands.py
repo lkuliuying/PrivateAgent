@@ -61,6 +61,8 @@ def test_parsers_enum_frozen():
         "cargo_test",
         "cargo_check",
         "plain",
+        # v0.9.0 H1-B additive（计划 §5.6）：内置诊断 typed service probe
+        "windows_service_probe",
     }
 
 

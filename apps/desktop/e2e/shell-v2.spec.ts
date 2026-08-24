@@ -68,7 +68,7 @@ function mockApi(page: Page) {
 
 async function openApp(page: Page, ui = "v2") {
   await mockApi(page);
-  await page.goto(`/?ui=${ui}`);
+  await page.goto(`/?ui=${ui}&coding=0`);
   await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
 }
 
@@ -98,7 +98,7 @@ test.describe("0.4.0 AppShell v2", () => {
     await expect(page.getByLabel("切换上下文栏")).toHaveCount(0);
     await expect(page.getByTestId("session-context-toggle")).toHaveCount(0);
     // 上下文改由底部用量模块反馈（真实事实或不可用态，不伪造）
-    await expect(page.getByTestId("context-usage-meter")).toBeVisible();
+    await expect(page.getByTestId("context-usage-ring")).toBeVisible();
   });
 
   test("Ctrl/Cmd+K 打开命令面板并包含注册表视图命令", async ({ page }) => {
@@ -151,6 +151,18 @@ test.describe("0.4.0 AppShell v2", () => {
         await route.fulfill({ json: [] });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/chat/stream") {
         streamCount += 1;
         await route.fulfill({
@@ -192,7 +204,7 @@ test.describe("0.4.0 AppShell v2", () => {
       await route.fulfill({ json: {} });
     });
 
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
     // 发送任务
@@ -249,6 +261,18 @@ test.describe("0.4.0 AppShell v2", () => {
         await route.fulfill({ json: { tool_call: null } });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/chat/stream") {
         // 延迟返回，保持「运行中」窗口以验证停止按钮与即时反馈
         await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -262,7 +286,7 @@ test.describe("0.4.0 AppShell v2", () => {
       await route.fulfill({ json: {} });
     });
 
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     const input = page.getByTestId("task-composer-input");
     await input.fill("生成一份草稿");

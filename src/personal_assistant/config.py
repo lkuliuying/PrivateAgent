@@ -155,6 +155,32 @@ class Settings(BaseSettings):
     coding_artifacts_enabled: bool = False
     coding_permission_models_enabled: bool = False
 
+    # === v0.9.0 Coding Agent 默认切换与可靠性（全部默认关闭） ===
+    # H0 契约：docs/releases/v0.9.0/v0.9.0-h0-contracts-20260823.md §2。
+    # coding_agent_ui_enabled：capabilities 声明位，前端默认切换依据；
+    # 安装版经发布门禁后可置 true，显式回退保持短期可用（计划 §3.3）。
+    coding_agent_ui_enabled: bool = False
+    # workspace 档真实自动批准能力位（依赖 project-bound + 命令 profile）。
+    coding_workspace_auto_approve_enabled: bool = False
+    # 独立 full_access capability：授予/撤销/到期/审计（不是 workspace 别名）。
+    coding_full_access_enabled: bool = False
+    # full_access 授予有效期（分钟）；到期/退出应用/切换项目自动失效。
+    coding_full_access_ttl_minutes: int = Field(default=240, ge=60, le=1440)
+    # 上下文 budget/compaction 公开端点与事件。
+    coding_context_budget_enabled: bool = False
+    # 自动压缩阈值（usage_percent）；达到后下一轮执行前压缩旧上下文。
+    coding_context_compaction_threshold: int = Field(default=80, ge=50, le=99)
+    # 保留输出预算（tokens）：上下文窗口中为模型输出预留的额度（H0 §7.1）。
+    coding_context_reserved_output_tokens: int = Field(
+        default=1024, ge=128, le=131_072
+    )
+    # 压缩时保留的最近消息条数（最新用户请求与近期事实不被丢弃）。
+    coding_context_keep_recent_messages: int = Field(default=8, ge=2, le=200)
+    # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
+    coding_execution_detail_enabled: bool = False
+    # 可选 Git worktree（H3）：显式创建/清理，模型无 Git 管理权限。
+    coding_worktree_enabled: bool = False
+
     @model_validator(mode="after")
     def validate_v060_flag_order(self) -> Settings:
         """C0 §10：flag 开启顺序固定 project-bound → plan → stream。"""
@@ -186,6 +212,41 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"{env_name} requires PA_PROJECT_BOUND_RUNS_ENABLED"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_v090_coding_flag_order(self) -> Settings:
+        """H0 §2.3：v0.9.0 flag 依赖 project-bound；auto_approve 额外要求命令 profile。"""
+        v090_flags = (
+            ("PA_CODING_FULL_ACCESS_ENABLED", self.coding_full_access_enabled),
+            ("PA_CODING_CONTEXT_BUDGET_ENABLED", self.coding_context_budget_enabled),
+            (
+                "PA_CODING_EXECUTION_DETAIL_ENABLED",
+                self.coding_execution_detail_enabled,
+            ),
+            ("PA_CODING_WORKTREE_ENABLED", self.coding_worktree_enabled),
+        )
+        for env_name, enabled in v090_flags:
+            if enabled and not self.project_bound_runs_enabled:
+                raise ValueError(
+                    f"{env_name} requires PA_PROJECT_BOUND_RUNS_ENABLED"
+                )
+        if (
+            self.coding_workspace_auto_approve_enabled
+            and not self.project_bound_runs_enabled
+        ):
+            raise ValueError(
+                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED requires "
+                "PA_PROJECT_BOUND_RUNS_ENABLED"
+            )
+        if (
+            self.coding_workspace_auto_approve_enabled
+            and not self.coding_command_profiles_enabled
+        ):
+            raise ValueError(
+                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED requires "
+                "PA_CODING_COMMAND_PROFILES_ENABLED"
+            )
         return self
 
     @model_validator(mode="after")

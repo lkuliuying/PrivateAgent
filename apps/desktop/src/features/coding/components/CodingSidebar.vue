@@ -12,6 +12,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   PhActivity,
+  PhArchive,
   PhArrowClockwise,
   PhBell,
   PhChatsCircle,
@@ -22,7 +23,9 @@ import {
   PhMagnifyingGlass,
   PhNewspaper,
   PhNotePencil,
+  PhPencil,
   PhPlus,
+  PhPushPin,
   PhPuzzlePiece,
   PhShieldCheck,
   PhSidebarSimple,
@@ -33,11 +36,24 @@ import {
   PhX,
 } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
+import { formatRelative as timeFormatRelative } from "../../../services/timeDisplay";
 import {
   WORKSPACE_STATUS_META,
   type CodingProjectNode,
+  type CodingThreadSummary,
 } from "../model/contracts";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
+// v0.9.0 H4：线程管理（重命名/归档/置顶）与更多工作区（legacy 显式绑定迁移）
+import {
+  bindSessionToProject,
+  fetchRecentThreads,
+  fetchUnboundLegacyThreads,
+  renameThread,
+  setThreadArchived,
+  setThreadPinned,
+} from "../api/threads";
+// v0.9.0 H1：新建项目对话框（选目录+授权；与新建对话拆分为两个清晰动作）
+import NewProjectDialog from "./NewProjectDialog.vue";
 
 /** 个人工作区六入口（W6-R：今日页迁出的纵向模块，计划 §4.1/§6.6） */
 const PERSONAL_ENTRIES: ReadonlyArray<{
@@ -75,6 +91,8 @@ const emit = defineEmits<{
   "new-task": [];
   "open-command": [];
   "toggle-collapse": [];
+  /** v0.9.0 H1：新建项目完成（父层可据此联动） */
+  "project-created": [projectId: number];
 }>();
 
 const tree = computed(() => props.store.tree.value);
@@ -141,6 +159,23 @@ function onNewTask(): void {
   emit("navigate", "coding");
 }
 
+// v0.9.0 H1：新建项目对话框状态；创建成功后刷新树并选中新项目。
+const newProjectDialogOpen = ref(false);
+
+function openNewProjectDialog(): void {
+  newProjectDialogOpen.value = true;
+}
+
+async function onProjectCreated(projectId: number): Promise<void> {
+  newProjectDialogOpen.value = false;
+  emit("project-created", projectId);
+  await props.store.refresh();
+  if (projectId > 0) {
+    props.store.selectProject(projectId);
+    emit("navigate", "coding");
+  }
+}
+
 function branchLabel(node: { workspace: { kind: string; branchName: string | null } }): string {
   if (node.workspace.branchName) return node.workspace.branchName;
   return node.workspace.kind === "root" ? "根工作区" : "工作区";
@@ -151,15 +186,96 @@ function workspaceStatusTone(status: keyof typeof WORKSPACE_STATUS_META): string
 }
 
 function formatRelative(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const diff = Date.now() - date.getTime();
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (date.toDateString() === new Date().toDateString()) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+  // v0.9.0 H1：统一 Asia/Shanghai 显示服务（禁止组件各自调用本机 locale）
+  const formatted = timeFormatRelative(value);
+  return formatted === "—" ? "" : formatted;
+}
+
+// ============ v0.9.0 H4：线程管理（置顶/重命名/归档） ============
+const threadActionBusy = ref(false);
+
+async function onTogglePin(thread: CodingThreadSummary): Promise<void> {
+  if (threadActionBusy.value) return;
+  threadActionBusy.value = true;
+  try {
+    await setThreadPinned(thread.id, !thread.pinnedAt);
+    await props.store.refresh();
+  } finally {
+    threadActionBusy.value = false;
   }
-  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+async function onRenameThread(thread: CodingThreadSummary): Promise<void> {
+  if (threadActionBusy.value) return;
+  const next = window.prompt("重命名对话", thread.title);
+  if (next === null || !next.trim()) return;
+  threadActionBusy.value = true;
+  try {
+    await renameThread(thread.id, next.trim());
+    await props.store.refresh();
+  } finally {
+    threadActionBusy.value = false;
+  }
+}
+
+async function onArchiveThread(thread: CodingThreadSummary): Promise<void> {
+  if (threadActionBusy.value) return;
+  const confirmed = window.confirm(
+    `归档对话「${thread.title}」？\n\n归档为软删除：不物理删除消息与审计，可从搜索/旧界面找回。`
+  );
+  if (!confirmed) return;
+  threadActionBusy.value = true;
+  try {
+    await setThreadArchived(thread.id, true);
+    await props.store.refresh();
+  } finally {
+    threadActionBusy.value = false;
+  }
+}
+
+// ============ v0.9.0 H4：最近任务（置顶优先 → 更新时间倒序） ============
+const recentThreads = ref<CodingThreadSummary[]>([]);
+
+async function loadRecentThreads(): Promise<void> {
+  try {
+    recentThreads.value = await fetchRecentThreads(6);
+  } catch {
+    recentThreads.value = [];
+  }
+}
+
+function openRecentThread(thread: CodingThreadSummary): void {
+  if (thread.projectId) props.store.selectProject(thread.projectId);
+  props.store.selectThread(thread.id);
+  emit("navigate", "coding");
+}
+
+// ============ v0.9.0 H4：更多工作区（未绑定 legacy 会话次级入口） ============
+// 契约（H0 §4.2）：只呈现，不批量/不猜测绑定；迁移必须逐条显式选择项目。
+const legacyThreads = ref<CodingThreadSummary[]>([]);
+const legacyOpen = ref(false);
+
+async function loadLegacyThreads(): Promise<void> {
+  try {
+    legacyThreads.value = await fetchUnboundLegacyThreads();
+  } catch {
+    legacyThreads.value = [];
+  }
+}
+
+async function onBindLegacyThread(thread: CodingThreadSummary, projectId: number): Promise<void> {
+  if (threadActionBusy.value) return;
+  const workspaces = props.store.workspacesByProject.value[projectId] ?? [];
+  const target = workspaces[0];
+  if (!target) return;
+  threadActionBusy.value = true;
+  try {
+    await bindSessionToProject(thread.id, projectId, target.id);
+    await loadLegacyThreads();
+    await props.store.refresh();
+  } finally {
+    threadActionBusy.value = false;
+  }
 }
 
 // <1280px 抽屉模式（W0 冻结 §2.2）：覆盖层 + 浮标；监听器随卸载清理
@@ -174,6 +290,7 @@ function onMediaChange(event: MediaQueryListEvent): void {
 }
 
 onMounted(() => {
+  void loadRecentThreads();
   if (typeof window.matchMedia !== "function") return;
   media = window.matchMedia(DRAWER_MEDIA);
   isNarrow.value = media.matches;
@@ -239,13 +356,24 @@ onBeforeUnmount(() => {
         <button
           class="action-primary"
           :class="{ active: onCodingHome }"
-          :title="collapsed && !isNarrow ? '新建任务' : undefined"
-          :aria-label="collapsed && !isNarrow ? '新建任务' : undefined"
+          :title="collapsed && !isNarrow ? '新建对话' : undefined"
+          :aria-label="collapsed && !isNarrow ? '新建对话' : undefined"
           data-testid="coding-new-task"
           @click="onNewTask"
         >
           <PhPlus :size="16" weight="bold" />
-          <span class="action-label">新建任务</span>
+          <!-- v0.9.0 H1：新建任务更名为新建对话（任务由对话中的 run 表达） -->
+          <span class="action-label">新建对话</span>
+        </button>
+        <button
+          class="action-item"
+          :title="collapsed && !isNarrow ? '新建项目' : undefined"
+          :aria-label="collapsed && !isNarrow ? '新建项目' : undefined"
+          data-testid="coding-new-project"
+          @click="openNewProjectDialog"
+        >
+          <PhFolderSimple :size="16" />
+          <span class="action-label">新建项目</span>
         </button>
         <button
           class="action-item"
@@ -317,9 +445,36 @@ onBeforeUnmount(() => {
             aria-label="刷新项目树"
             data-testid="coding-refresh"
             :disabled="loadPhase === 'loading'"
-            @click="props.store.refresh()"
+            @click="props.store.refresh(); void loadRecentThreads()"
           >
             <PhArrowClockwise :size="14" :class="{ spin: loadPhase === 'loading' }" />
+          </button>
+        </div>
+
+        <!-- v0.9.0 H4：最近任务（置顶优先 → 更新时间倒序，不含已归档） -->
+        <div
+          v-if="recentThreads.length > 0"
+          class="recent-block"
+          data-testid="coding-recent"
+        >
+          <div class="recent-heading">最近任务</div>
+          <button
+            v-for="thread in recentThreads"
+            :key="`recent-${thread.id}`"
+            class="thread-row"
+            :data-testid="`coding-recent-thread-${thread.id}`"
+            :title="thread.title"
+            @click="openRecentThread(thread)"
+          >
+            <PhChatsCircle :size="13" aria-hidden="true" />
+            <PhPushPin
+              v-if="thread.pinnedAt"
+              :size="11"
+              class="thread-pin"
+              aria-label="已置顶"
+            />
+            <span class="row-label">{{ thread.title }}</span>
+            <small>{{ formatRelative(thread.updatedAt) }}</small>
           </button>
         </div>
 
@@ -374,21 +529,62 @@ onBeforeUnmount(() => {
                   class="tree-threads"
                   role="group"
                 >
-                  <button
+                  <div
                     v-for="thread in child.threads"
                     :key="thread.id"
                     class="thread-row"
                     :class="{ active: selectedThreadId === thread.id }"
                     :data-testid="`coding-thread-${thread.id}`"
                     role="treeitem"
+                    tabindex="0"
                     :aria-current="selectedThreadId === thread.id ? 'page' : undefined"
                     :title="thread.title"
                     @click="openThread(thread.id)"
+                    @keydown.enter.prevent="openThread(thread.id)"
                   >
                     <PhChatsCircle :size="13" aria-hidden="true" />
+                    <PhPushPin
+                      v-if="thread.pinnedAt"
+                      :size="11"
+                      class="thread-pin"
+                      aria-label="已置顶"
+                    />
                     <span class="row-label">{{ thread.title }}</span>
                     <small>{{ formatRelative(thread.updatedAt) }}</small>
-                  </button>
+                    <!-- v0.9.0 H4：线程管理动作（置顶/重命名/归档） -->
+                    <span class="thread-actions" @click.stop>
+                      <button
+                        class="thread-action"
+                        :aria-label="thread.pinnedAt ? '取消置顶' : '置顶'"
+                        :title="thread.pinnedAt ? '取消置顶' : '置顶'"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-pin-${thread.id}`"
+                        @click="void onTogglePin(thread)"
+                      >
+                        <PhPushPin :size="12" />
+                      </button>
+                      <button
+                        class="thread-action"
+                        aria-label="重命名"
+                        title="重命名"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-rename-${thread.id}`"
+                        @click="void onRenameThread(thread)"
+                      >
+                        <PhPencil :size="12" />
+                      </button>
+                      <button
+                        class="thread-action"
+                        aria-label="归档"
+                        title="归档（软删除）"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-archive-${thread.id}`"
+                        @click="void onArchiveThread(thread)"
+                      >
+                        <PhArchive :size="12" />
+                      </button>
+                    </span>
+                  </div>
                   <div v-if="child.threads.length === 0" class="thread-empty">暂无任务</div>
                 </div>
               </div>
@@ -421,6 +617,48 @@ onBeforeUnmount(() => {
                 无工作区，请在首页创建
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- v0.9.0 H4（计划 §8 任务 3）：更多工作区——未绑定 legacy 会话次级入口。
+           只呈现与显式逐条绑定（不批量/不猜测）；旧会话仍可读可导出。 -->
+      <div v-if="(!collapsed || isNarrow) && loadPhase === 'ready'" class="sidebar-legacy" data-testid="coding-legacy-section">
+        <button
+          class="legacy-toggle"
+          :aria-expanded="legacyOpen"
+          data-testid="coding-legacy-toggle"
+          @click="legacyOpen = !legacyOpen; legacyOpen && void loadLegacyThreads()"
+        >
+          <span class="row-caret" :class="{ open: legacyOpen }" aria-hidden="true" />
+          更多工作区
+          <small v-if="legacyThreads.length">{{ legacyThreads.length }}</small>
+        </button>
+        <div v-if="legacyOpen" class="legacy-list">
+          <div v-if="legacyThreads.length === 0" class="legacy-empty">
+            无未绑定的旧会话；也可通过旧界面（?ui=v1）访问全部历史数据。
+          </div>
+          <div
+            v-for="thread in legacyThreads"
+            :key="thread.id"
+            class="legacy-row"
+            :data-testid="`coding-legacy-thread-${thread.id}`"
+          >
+            <span class="legacy-title" :title="thread.title">{{ thread.title }}</span>
+            <select
+              class="legacy-bind-select"
+              aria-label="绑定到项目"
+              :disabled="threadActionBusy"
+              :data-testid="`coding-legacy-bind-${thread.id}`"
+              @change="(e) => { const v = Number((e.target as HTMLSelectElement).value); if (v) void onBindLegacyThread(thread, v); }"
+            >
+              <option value="">绑定到项目…</option>
+              <option
+                v-for="project in props.store.projects.value"
+                :key="project.id"
+                :value="project.id"
+              >{{ project.name }}</option>
+            </select>
           </div>
         </div>
       </div>
@@ -471,6 +709,13 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </div>
+
+      <!-- v0.9.0 H1：新建项目对话框（选择并授权工作目录） -->
+      <NewProjectDialog
+        v-if="newProjectDialogOpen"
+        @close="newProjectDialogOpen = false"
+        @created="(id) => void onProjectCreated(id)"
+      />
     </nav>
   </Teleport>
 </template>
@@ -769,6 +1014,107 @@ onBeforeUnmount(() => {
 .thread-row small {
   flex-shrink: 0;
   color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+/* v0.9.0 H4：线程管理动作与更多工作区 */
+.recent-block {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+.recent-heading {
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.thread-row:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(80, 140, 200, 0.55));
+}
+.thread-pin {
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+.thread-actions {
+  display: none;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 2px;
+}
+.thread-row:hover .thread-actions,
+.thread-row:focus-within .thread-actions {
+  display: inline-flex;
+}
+.thread-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-fg-subtle);
+  cursor: pointer;
+}
+.thread-action:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-fg);
+}
+.thread-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sidebar-legacy {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.legacy-toggle {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--color-fg-subtle);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+.legacy-toggle small {
+  color: var(--color-fg-subtle);
+}
+.legacy-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) 0 0 var(--space-3);
+}
+.legacy-empty {
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+  line-height: 1.5;
+}
+.legacy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.legacy-title {
+  overflow: hidden;
+  color: var(--color-fg-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.legacy-bind-select {
+  height: 22px;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
   font-size: var(--pa-text-meta);
 }
 .tree-children {

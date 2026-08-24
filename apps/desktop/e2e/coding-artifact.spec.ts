@@ -470,7 +470,7 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await expect(page.getByTestId("context-drawer")).toBeVisible();
     await expect(page.getByTestId("context-pane-files")).toContainText("CodingSidebar.vue");
     await page.getByTestId("context-tab-context").click();
-    await expect(page.getByTestId("context-pane-context")).toContainText("写入需确认");
+    await expect(page.getByTestId("context-pane-context")).toContainText("总是询问");
     await page.getByTestId("context-tab-sources").click();
     await expect(page.getByTestId("context-pane-sources")).toContainText("不使用 RAG 来源");
   });

@@ -17,6 +17,7 @@ import {
   PhFilePlus,
   PhGitDiff,
   PhLightning,
+  PhPath,
   PhProhibit,
   PhShieldWarning,
   PhUser,
@@ -324,6 +325,22 @@ function terminalMeta(): { label: string; tone: string } | null {
             </span>
           </template>
 
+          <!-- v0.9.0 H0 §8：逐轮公开决策摘要（结构化公开事实，不含隐藏推理） -->
+          <div
+            v-else-if="entry.kind === 'decision-summary'"
+            class="entry decision-entry"
+            data-testid="transcript-decision-summary"
+          >
+            <PhPath :size="14" class="entry-icon" aria-hidden="true" />
+            <span class="entry-copy">
+              决策：{{ entry.goal }}
+              <template v-if="entry.method"> · {{ entry.method }}</template>
+            </span>
+            <span v-if="entry.nextSteps.length" class="decision-steps">
+              后续：{{ entry.nextSteps.join("、") }}
+            </span>
+          </div>
+
           <!-- 计划摘要 -->
           <button
             v-else-if="entry.kind === 'plan'"
@@ -455,6 +472,15 @@ function terminalMeta(): { label: string; tone: string } | null {
                 {{ projection.usage.toolCallCount }} 次工具 · {{ projection.usage.outputTokens.toLocaleString() }} 输出 tokens
               </span>
             </div>
+            <!-- v0.9.0 H1-B（§5.5/§5.6）：无工具/命令事件的完成态如实标注，
+                 不把无执行证据的回答呈现为“已完成的可执行任务”。 -->
+            <p
+              v-if="entry.status === 'completed' && projection.usage.toolCallCount === 0"
+              class="terminal-no-evidence"
+              data-testid="terminal-no-evidence"
+            >
+              本轮未执行工具/命令；以上为文字回答，不含执行证据。
+            </p>
             <pre
               v-if="entry.output || projection.output"
               class="terminal-output"
@@ -463,8 +489,9 @@ function terminalMeta(): { label: string; tone: string } | null {
           </div>
         </div>
 
-        <!-- 断线重连提示 -->
-        <div v-if="phase === 'reconnecting' || connectionError" class="stream-notice" data-testid="stream-reconnect-notice">
+        <!-- 断线重连提示（仅存在 durable run 时；创建失败由阻塞卡片呈现，
+             v0.9.0 H1-B §5.6：不显示无 run 的误导性重连提示） -->
+        <div v-if="(phase === 'reconnecting' || connectionError) && projection" class="stream-notice" data-testid="stream-reconnect-notice">
           <PhClock :size="14" aria-hidden="true" />
           <span>连接中断，正在重连…（任务在本地继续执行，已完成步骤不会丢失）</span>
           <button class="notice-btn" @click="emit('retry-stream')">立即重试</button>
@@ -603,6 +630,16 @@ function terminalMeta(): { label: string; tone: string } | null {
 .entry-icon.tone-danger { color: var(--color-danger); }
 .entry-copy {
   min-width: 0;
+}
+/* v0.9.0 H0 §8：公开决策摘要（结构化公开事实；不呈现隐藏推理） */
+.decision-entry .entry-icon {
+  color: var(--color-accent);
+}
+.decision-steps {
+  flex-basis: 100%;
+  padding-left: 22px;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
 }
 .entry-state {
   display: inline-flex;
@@ -747,6 +784,15 @@ function terminalMeta(): { label: string; tone: string } | null {
 .terminal-usage {
   margin-left: auto;
   color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.terminal-no-evidence {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-warning-soft);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: var(--color-warning-fg);
   font-size: var(--pa-text-meta);
 }
 .terminal-output {

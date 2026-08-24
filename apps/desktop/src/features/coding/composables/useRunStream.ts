@@ -52,11 +52,34 @@ export interface RunStreamController {
   projection: ShallowRef<RunProjection | null>;
   phase: Ref<RunConnectionPhase>;
   connectionError: Ref<string | null>;
+  /**
+   * v0.9.0 H1-B（计划 §5.6）：创建失败的平铺 error_code（后端
+   * coding_errors 契约）；供阻塞项诊断与恢复入口派生，未知为 null。
+   */
+  createErrorCode: Ref<string | null>;
   startRun: (input: CodingRunCreateInput) => Promise<void>;
   attachRun: (runId: string) => Promise<void>;
   cancelActive: () => Promise<void>;
   retryConnection: () => Promise<void>;
   detach: () => void;
+}
+
+/** CodingApiError 形状判定（{status, code, message}，非 Error 实例）。 */
+function asCodingApiError(
+  error: unknown
+): { code: string; message: string } | null {
+  if (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    "message" in error &&
+    typeof (error as { code: unknown }).code === "string" &&
+    typeof (error as { message: unknown }).message === "string"
+  ) {
+    const parsed = error as { code: string; message: string };
+    return { code: parsed.code, message: parsed.message };
+  }
+  return null;
 }
 
 function eventItemToFrame(item: {
@@ -85,6 +108,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
   const projection = shallowRef<RunProjection | null>(null);
   const phase = ref<RunConnectionPhase>("idle");
   const connectionError = ref<string | null>(null);
+  const createErrorCode = ref<string | null>(null);
 
   let generation = 0;
   let controller: AbortController | null = null;
@@ -207,6 +231,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     reconnectAttempts = 0;
     phase.value = "starting";
     connectionError.value = null;
+    createErrorCode.value = null;
     try {
       const snapshot = await source.createRun(input);
       if (mine !== generation) return;
@@ -217,7 +242,16 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     } catch (error) {
       if (mine !== generation) return;
       phase.value = "error";
-      connectionError.value = error instanceof Error ? error.message : String(error);
+      // 创建失败是失败关闭状态（无 run、不产生假完成记录）：结构化错误码交给
+      // 阻塞项诊断派生恢复入口，而不是显示「[object Object]」或静默吞掉。
+      const parsed = asCodingApiError(error);
+      if (parsed) {
+        createErrorCode.value = parsed.code;
+        connectionError.value = parsed.message;
+      } else {
+        connectionError.value =
+          error instanceof Error ? error.message : String(error);
+      }
     }
   }
 
@@ -252,6 +286,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     clearReconnectTimer();
     phase.value = "idle";
     connectionError.value = null;
+    createErrorCode.value = null;
   }
 
   onScopeDispose(detach);
@@ -260,6 +295,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     projection,
     phase,
     connectionError,
+    createErrorCode,
     startRun,
     attachRun,
     cancelActive,

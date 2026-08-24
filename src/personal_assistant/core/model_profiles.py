@@ -1,8 +1,12 @@
-"""模型 profile 服务（v0.7.0 E0 §5）。
+"""模型 profile 服务（v0.7.0 E0 §5；v0.9.0 H1-D 配置闭环扩展）。
 
 能力全部是 profile 显式声明的事实（``native_tool_calls`` 等），**不通过
 模型名称猜测**；不支持原生工具调用的模型只能用于只读问答，不进入 Coding
 执行循环（run 创建时校验，``model_profile_unsupported`` 422）。
+
+v0.9.0 H1-D（计划 §5.8）：``model_name`` 是具体模型路由字段，Runtime 按
+run 绑定 profile 的该字段解析实际 provider/model；``is_default`` 排他标记
+默认 Coding profile。
 
 Provider secret 保持在原生凭据边界：本模块不接收、不持久化任何 secret /
 token / API key；``permission_snapshot_json`` 只存非秘密策略摘要。
@@ -70,6 +74,13 @@ def _validate_fields(fields: Mapping[str, Any]) -> None:
             raise ModelProfileError("reasoning_efforts 必须是字符串数组")
         if len(value) > 16:
             raise ModelProfileError("reasoning_efforts 项数超限（上限 16）")
+    # v0.9.0 H1-D：具体模型路由字段可选（历史 profile 允许缺失，运行期失败关闭）
+    if "model_name" in fields and fields["model_name"] is not None:
+        value = fields["model_name"]
+        if not isinstance(value, str) or len(value) > 200:
+            raise ModelProfileError("model_name 必须是 ≤200 字符的字符串")
+    if "is_default" in fields and not isinstance(fields["is_default"], bool):
+        raise ModelProfileError("is_default 必须是布尔值")
 
 
 class ModelProfileService:
@@ -94,12 +105,17 @@ class ModelProfileService:
         if len(profile_id) > 128:
             raise ModelProfileError("profile id 过长（上限 128 字符）")
         _validate_fields(fields)
+        model_name = fields.get("model_name")
+        normalized_model_name = (
+            model_name.strip() if isinstance(model_name, str) and model_name.strip() else None
+        )
         existing = await self.db.get(ModelProfile, profile_id)
         if existing is None:
             profile = ModelProfile(
                 id=profile_id,
                 provider=fields["provider"].strip(),
                 display_name=fields["display_name"].strip(),
+                model_name=normalized_model_name,
                 is_local=bool(fields.get("is_local", False)),
                 native_tool_calls=bool(fields.get("native_tool_calls", True)),
                 supports_streaming=bool(fields.get("supports_streaming", False)),
@@ -115,9 +131,15 @@ class ModelProfileService:
             self.db.add(profile)
             await self.db.commit()
             await self.db.refresh(profile)
+            # 创建时声明默认：排他维护唯一性（与 set_default 同口径）
+            if bool(fields.get("is_default", False)):
+                await self.set_default(profile_id)
+                return await self.get(profile_id) or profile
             return profile
         for name in ("provider", "display_name"):
             setattr(existing, name, fields[name].strip())
+        if "model_name" in fields:
+            existing.model_name = normalized_model_name
         for name in _BOOL_FIELDS:
             if name in fields:
                 setattr(existing, name, bool(fields[name]))
@@ -127,6 +149,9 @@ class ModelProfileService:
             existing.reasoning_efforts_json = fields["reasoning_efforts"]
         await self.db.commit()
         await self.db.refresh(existing)
+        if bool(fields.get("is_default", False)):
+            await self.set_default(profile_id)
+            return await self.get(profile_id) or existing
         return existing
 
     async def delete(self, profile_id: str) -> None:
@@ -135,6 +160,51 @@ class ModelProfileService:
             raise ModelProfileNotFound(f"模型 profile 不存在: {profile_id}")
         await self.db.delete(existing)
         await self.db.commit()
+
+    async def set_default(self, profile_id: str) -> ModelProfile:
+        """v0.9.0 H1-D：设为默认 Coding profile（排他；不存在抛 NotFound）。"""
+        target = await self.db.get(ModelProfile, profile_id)
+        if target is None:
+            raise ModelProfileNotFound(f"模型 profile 不存在: {profile_id}")
+        stmt = select(ModelProfile).where(ModelProfile.is_default.is_(True))
+        for profile in (await self.db.execute(stmt)).scalars():
+            if profile.id != profile_id:
+                profile.is_default = False
+        target.is_default = True
+        await self.db.commit()
+        await self.db.refresh(target)
+        return target
+
+    async def get_default(self) -> ModelProfile | None:
+        """当前默认 profile（仅返回启用项；未设置/已禁用返回 None）。"""
+        stmt = (
+            select(ModelProfile)
+            .where(ModelProfile.is_default.is_(True))
+            .where(ModelProfile.enabled.is_(True))
+            .order_by(ModelProfile.id)
+        )
+        return (await self.db.execute(stmt)).scalars().first()
+
+    async def backfill_model_name(
+        self, provider: str, model_name: str
+    ) -> int:
+        """v0.9.0 H1-D 升级回填：同 provider 且 model_name 为空的既有
+        profile 幂等回填具体模型路由字段；返回回填条数。"""
+        provider_normalized = (provider or "").strip().lower()
+        model_normalized = (model_name or "").strip()
+        if not provider_normalized or not model_normalized:
+            return 0
+        stmt = select(ModelProfile).where(
+            ModelProfile.provider == provider_normalized,
+            ModelProfile.model_name.is_(None),
+        )
+        count = 0
+        for profile in (await self.db.execute(stmt)).scalars():
+            profile.model_name = model_normalized
+            count += 1
+        if count:
+            await self.db.commit()
+        return count
 
     async def validate_for_coding(self, profile_id: str) -> ModelProfile:
         """run 创建时校验（E0 §5）：不存在 → 404；禁用/无原生工具调用 → 422。

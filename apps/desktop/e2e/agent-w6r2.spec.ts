@@ -163,7 +163,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
   test("今日页二次精简：无 Agent 输入/发送；搜索加长；提醒摘要有界且可跳转", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockW6r2Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-today").click();
 
     // 退出条件 1：DOM 与键盘路径中不再存在 Agent 输入框/发送按钮
@@ -194,7 +194,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
     for (const width of [1280, 1920]) {
       await page.setViewportSize({ width, height: 900 });
       await mockW6r2Api(page);
-      await page.goto("/?ui=v2");
+      await page.goto("/?ui=v2&coding=0");
       await page.getByTestId("nav-today").click();
       const box = await page.locator(".command-entry").boundingBox();
       expect(box?.width ?? 0).toBeGreaterThanOrEqual(300);
@@ -209,7 +209,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
   test("Agent 页两区结构：左真实会话列表/右工作区；切换/草稿/模型与权限契约", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockW6r2Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-chat").click();
 
     // 左栏：真实会话（含标题与运行/选中态），右区：头部/逐轮/输入器
@@ -235,8 +235,8 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
     await expect(permission.locator("option").nth(2)).toContainText("不可用");
     // 推理强度控件已随 W6-R3 重排移除（不残留空占位）
     await expect(page.getByTestId("composer-reasoning")).toHaveCount(0);
-    // 上下文用量模块存在（真实事实或不可用态，不伪造百分比）
-    await expect(page.getByTestId("context-usage-meter")).toBeVisible();
+    // 上下文用量圆环存在（v0.9.0：真实 typed budget 或不可用态，不伪造百分比）
+    await expect(page.getByTestId("context-usage-ring")).toBeVisible();
 
     // 会话切换：选中态迁移，消息按会话加载（会话 2 有历史）
     await page.getByTestId("agent-conversation-2").click();
@@ -247,7 +247,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
   test("键盘可达：会话列表 → 切换会话 → 回到输入器", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockW6r2Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-chat").click();
     await expect(page.getByTestId("agent-conversations")).toBeVisible();
 
@@ -274,7 +274,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockW6r2Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-chat").click();
     await page.getByTestId("agent-conversation-2").click();
     await expect(page.getByText("帮我确认构建状态")).toBeVisible({ timeout: 10000 });
@@ -304,7 +304,7 @@ test.describe("v0.8.0 W6-R2 · 第二轮试用反馈修订", () => {
   test("窄窗口（<1280）会话栏折叠为抽屉，可打开并切换会话", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 800 });
     await mockW6r2Api(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-chat").click();
 
     await expect(page.getByTestId("agent-conversations-tab")).toBeVisible();

@@ -39,7 +39,10 @@ export async function codingFetchJson<T>(path: string, init?: RequestInit): Prom
   return (await response.json()) as T;
 }
 
-export function codingJsonInit(method: "POST" | "PATCH" | "DELETE", body: unknown): RequestInit {
+export function codingJsonInit(
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  body: unknown
+): RequestInit {
   return {
     method,
     headers: { "Content-Type": "application/json" },

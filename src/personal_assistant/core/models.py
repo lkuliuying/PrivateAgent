@@ -600,6 +600,9 @@ class ProjectWorkspace(Base):
             "dirty",
             "archived",
             "conflict",
+            # v0.9.0 H3（计划 §4.3）：worktree 生命周期状态（迁移 0032 扩展）
+            "creating",
+            "cleanup_pending",
             name="workspace_status_enum",
         ),
         nullable=False,
@@ -1504,6 +1507,8 @@ class CodingPatchSetFile(Base):
 class ModelProfile(Base):
     """v0.7.0 模型 profile：能力显式声明，不通过名称猜测（E0 契约 §5）。
 
+    v0.9.0 H1-D（计划 §5.8）：``model_name`` 是具体模型路由字段（实际传给
+    Provider 的 model 标识）；``is_default`` 标记默认 Coding profile。
     Provider secret 保持在原生凭据边界：本表不存任何 secret/token/API key。
     """
 
@@ -1512,6 +1517,14 @@ class ModelProfile(Base):
     id: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
     provider: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     display_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    # v0.9.0 H1-D：具体模型路由字段（运行时实际使用的 model 标识，
+    # 不再回落全局 llm_model/openai_model/claude_model）。历史 profile 为 NULL，
+    # 由升级 reconcile 从全局配置幂等回填或经设置页补全。
+    model_name: Mapped[str | None] = mapped_column(VARCHAR(200), nullable=True)
+    # v0.9.0 H1-D：默认 Coding profile（唯一；服务层排他维护）。
+    is_default: Mapped[bool] = mapped_column(
+        BOOLEAN, nullable=False, default=False, server_default="0"
+    )
     is_local: Mapped[bool] = mapped_column(
         BOOLEAN, nullable=False, default=False, server_default="0"
     )
@@ -3075,3 +3088,67 @@ class AgentRunArtifact(Base):
     run: Mapped[AgentRun] = relationship(back_populates="artifacts")
 
     __table_args__ = (Index("idx_run_artifact_run", "run_id", "created_at"),)
+
+
+class SessionProjectBinding(Base):
+    """v0.9.0 H0 §4.2：legacy/unbound 会话显式绑定项目的审计行（只追加事实）。
+
+    绑定本身写回 ``sessions.project_id/workspace_id/kind``；本表记录何时、
+    绑定到哪个项目/workspace。无批量猜测绑定（计划 §3.2）。
+    """
+
+    __tablename__ = "session_project_bindings"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    workspace_id: Mapped[int] = mapped_column(
+        BIGINT,
+        ForeignKey("project_workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    bound_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_session_binding_session", "session_id", "bound_at"),
+    )
+
+
+class FullAccessGrant(Base):
+    """v0.9.0 H0 §6.3：full_access 独立 capability 的会话级授予。
+
+    不是 ``workspace`` 别名：有效期（expires_at）+ 撤销（revoked_at/
+    revoke_reason）+ 到期/退出应用自动失效；每次授予需用户显式二次确认。
+    """
+
+    __tablename__ = "full_access_grants"
+
+    id: Mapped[str] = mapped_column(
+        CHAR(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    session_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("projects.id", ondelete="RESTRICT"), nullable=False
+    )
+    granted_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    # 低基数原因：user_revoke/expired/app_exit/project_switch
+    revoke_reason: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+
+    __table_args__ = (
+        Index("idx_full_access_grant_session", "session_id", "expires_at"),
+        Index("idx_full_access_grant_expiry", "expires_at", "revoked_at"),
+    )

@@ -78,6 +78,34 @@ describe("runProjector", () => {
     expect(projection.lastSequence).toBe(8);
   });
 
+  it("v0.9.0 H0 §8：decision.summary 投影为公开决策摘要；无 goal 不伪造", () => {
+    // sequence 递增重编号（插入决策摘要帧）
+    const raw = [
+      ...HAPPY.slice(0, 4),
+      frame(0, "decision.summary", {
+        goal: "修复测试失败",
+        method: "本轮决策：调用工具 read_code_file",
+        next_steps: ["read_code_file"],
+      }),
+    ];
+    const frames = raw.map((f, i) => frame(i + 1, f.type, f.payload));
+    const projection = project(frames);
+    const decision = projection.entries.find((e) => e.kind === "decision-summary");
+    expect(decision).toBeTruthy();
+    if (decision && decision.kind === "decision-summary") {
+      expect(decision.goal).toBe("修复测试失败");
+      expect(decision.method).toContain("read_code_file");
+      expect(decision.nextSteps).toEqual(["read_code_file"]);
+    }
+
+    // 无 goal 的 payload 不投影（不伪造摘要）
+    const empty = project([
+      frame(1, "run.started", {}),
+      frame(2, "decision.summary", { method: "无目标" }),
+    ]);
+    expect(empty.entries.some((e) => e.kind === "decision-summary")).toBe(false);
+  });
+
   it("审批等待：状态收敛 waiting_approval，批准后恢复 running", () => {
     const projection = project(HAPPY.slice(0, 11));
     expect(projection.status).toBe("waiting_approval");

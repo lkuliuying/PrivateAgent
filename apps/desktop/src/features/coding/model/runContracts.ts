@@ -62,6 +62,13 @@ export type RunStreamEventType =
   | "patch_set.rolled_back"
   | "patch_set.failed"
   | "patch_set.unknown"
+  // v0.9.0 H0 §7.2/§8（additive）：公开决策摘要、上下文压缩与权限降级；
+  // decision.summary 只含结构化公开事实，不含隐藏 chain-of-thought。
+  | "decision.summary"
+  | "context.compaction_started"
+  | "context.compaction_completed"
+  | "context.compaction_failed"
+  | "permission.downgraded"
   | "run.terminal";
 
 export interface RunStreamFrame {
@@ -244,11 +251,20 @@ export interface CodingFileHint {
   language: string | null;
 }
 
-/** 权限三模式呈现（v0.7.0 冻结 PERMISSION_MODES） */
+/** 权限模式呈现语义（v0.9.0 §5.3 三档真实契约词汇）。
+ * readonly 为附加的最小权限模式（服务端缺省语义）；产品默认是 confirm。
+ * workspace 与 full_access 是独立能力，不是别名。 */
 export const PERMISSION_MODE_META: Record<string, { label: string; hint: string }> = {
   readonly: { label: "只读", hint: "仅读取文件与查询，不执行写入" },
-  confirm: { label: "写入需确认", hint: "写工具逐次审批后执行" },
-  workspace: { label: "工作区自动", hint: "工作区内的写操作自动执行" },
+  confirm: { label: "总是询问", hint: "写入或命令前逐次进入审批流" },
+  workspace: {
+    label: "替我批准",
+    hint: "已授权工作区内命中安全命令档案的操作自动执行；越界/高风险仍会询问",
+  },
+  full_access: {
+    label: "完全访问",
+    hint: "当前系统用户可访问范围内免逐次审批；不获得管理员权限，凭据/远程外发仍有硬边界；需显式确认且可撤销",
+  },
 };
 
 /** run 状态呈现语义（权限/风险语义用警告色系，W0 §2.3） */

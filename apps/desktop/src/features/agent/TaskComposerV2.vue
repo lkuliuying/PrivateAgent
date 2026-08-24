@@ -23,19 +23,30 @@ const props = withDefaults(
     providerLabel?: string;
     stopRequested?: boolean;
     stopped?: boolean;
+    /**
+     * v0.9.0 H1-B（计划 §5.6）：模型/Provider 阻塞原因（如未配置）；
+     * 非空时执行按钮禁用并紧邻说明原因，配置完成后无需新建会话即可执行。
+     */
+    blockedReason?: string | null;
   }>(),
-  { providerLabel: "本地", stopRequested: false, stopped: false }
+  { providerLabel: "本地", stopRequested: false, stopped: false, blockedReason: null }
 );
 const emit = defineEmits<{
   send: [text: string];
   stop: [];
 }>();
 
-const canSend = computed(() => Boolean(model.value.trim()) && !props.streaming && !props.pendingTool);
+const canSend = computed(
+  () =>
+    Boolean(model.value.trim()) &&
+    !props.streaming &&
+    !props.pendingTool &&
+    !props.blockedReason
+);
 
 function submit() {
   const text = model.value.trim();
-  if (!text || props.streaming || props.pendingTool) return;
+  if (!text || props.streaming || props.pendingTool || props.blockedReason) return;
   emit("send", text);
   model.value = "";
 }
@@ -80,6 +91,8 @@ function submit() {
           :pulse="streaming"
           :label="streaming ? `PrivateAgent · 运行中` : `PrivateAgent · ${providerLabel}`"
         />
+        <!-- v0.9.0 H1-A：PrivateAgent 状态旁的紧凑上下文用量圆环（父层插槽） -->
+        <slot name="context-ring" />
 
         <button
           v-if="streaming || stopRequested"
@@ -102,6 +115,12 @@ function submit() {
           <PhPlay :size="16" weight="fill" />
           <span>执行</span>
         </button>
+        <!-- v0.9.0 H1-B（§5.6）：阻塞原因紧邻执行按钮（未配置等） -->
+        <span
+          v-if="blockedReason && !streaming && !stopRequested"
+          class="blocked-reason"
+          data-testid="task-composer-blocked"
+        >{{ blockedReason }}</span>
       </div>
     </div>
     <div class="composer-hint">
@@ -263,6 +282,14 @@ textarea:disabled {
 .execute-btn--stop.is-requesting {
   opacity: 0.75;
   cursor: progress;
+}
+.blocked-reason {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--color-warning-fg);
+  font-size: var(--pa-text-meta);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .composer-icon:focus-visible,
 .composer-chip:focus-visible,

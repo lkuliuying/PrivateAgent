@@ -9,7 +9,7 @@
  * （对齐 App.vue contextSeq 范式）；切换项目只改选择，不整页重置树。
  */
 import { computed, ref, type ComputedRef, type Ref } from "vue";
-import { getHealth } from "../../../api";
+import { getHealth, getRuntimeCapabilities } from "../../../api";
 import {
   ensureCodingRootWorkspace,
   fetchCodingProjects,
@@ -36,6 +36,8 @@ export interface CodingWorkspaceStore {
   workspacesByProject: Ref<Record<number, CodingWorkspaceSummary[]>>;
   threadsByProject: Ref<Record<number, CodingThreadSummary[]>>;
   modelProfiles: Ref<CodingModelProfilesResult | null>;
+  /** v0.9.0 H1-A：/capabilities 能力位（权限选项可用性事实源） */
+  capabilities: Ref<Record<string, unknown> | null>;
   loadPhase: Ref<CodingLoadPhase>;
   loadError: Ref<CodingApiError | null>;
   sidecarOk: Ref<boolean | null>;
@@ -69,6 +71,17 @@ const defaultFetchers: CodingWorkspaceFetchers = {
   },
   createThread: createCodingThread,
   ensureRootWorkspace: ensureCodingRootWorkspace,
+  // v0.9.0 H1-A：能力位获取失败按「未提供」处理（不在前端扩大授权）
+  capabilities: async () => {
+    try {
+      return (await getRuntimeCapabilities()) as unknown as Record<
+        string,
+        unknown
+      >;
+    } catch {
+      return null;
+    }
+  },
 };
 
 function sortByUpdatedAtDesc(a: CodingThreadSummary, b: CodingThreadSummary): number {
@@ -84,6 +97,7 @@ export function createCodingWorkspaceStore(
   const workspacesByProject = ref<Record<number, CodingWorkspaceSummary[]>>({});
   const threadsByProject = ref<Record<number, CodingThreadSummary[]>>({});
   const modelProfiles = ref<CodingModelProfilesResult | null>(null);
+  const capabilities = ref<Record<string, unknown> | null>(null);
   const loadPhase = ref<CodingLoadPhase>("idle");
   const loadError = ref<CodingApiError | null>(null);
   const sidecarOk = ref<boolean | null>(null);
@@ -203,6 +217,9 @@ export function createCodingWorkspaceStore(
       if (mine !== loadSeq) return;
       projects.value = projectList;
       modelProfiles.value = profiles;
+      // v0.9.0 H1-A：能力位不阻塞首页状态机（真实网络请求），单独尽力获取；
+      // 失败/未提供时保持 null，权限高级选项不可选（不在前端扩大授权）。
+      void loadCapabilities();
 
       const workspaceEntries = await Promise.all(
         projectList.map(async (project) => [project.id, await source.workspaces(project.id)] as const)
@@ -227,6 +244,15 @@ export function createCodingWorkspaceStore(
       if (mine !== loadSeq) return;
       loadPhase.value = "error";
       loadError.value = normalizeError(cause);
+    }
+  }
+
+  async function loadCapabilities(): Promise<void> {
+    if (!source.capabilities) return;
+    try {
+      capabilities.value = await source.capabilities();
+    } catch {
+      capabilities.value = null;
     }
   }
 
@@ -341,6 +367,7 @@ export function createCodingWorkspaceStore(
     workspacesByProject,
     threadsByProject,
     modelProfiles,
+    capabilities,
     loadPhase,
     loadError,
     sidecarOk,

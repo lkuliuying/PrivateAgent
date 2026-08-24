@@ -73,8 +73,12 @@ def test_permission_mode_capabilities_three_modes():
 
 
 def test_permission_mode_capabilities_rejects_legacy_and_unknown():
-    """read_only/full_access 与未知模式不再是合法值（替换 C0-D07 集合）。"""
-    for legacy in ("read_only", "full_access", "admin", None):
+    """read_only 与未知模式不再是合法值（替换 C0-D07 集合）。
+
+    v0.9.0 H0 §6.1：full_access 作为独立能力重新合法（见 §6 契约），
+    不再属于被拒绝词汇。
+    """
+    for legacy in ("read_only", "admin", None):
         with pytest.raises(ValueError):
             permission_mode_capabilities(legacy)
 
@@ -360,19 +364,18 @@ async def _post_coding_run(client, env: dict, **overrides) -> object:
 
 
 async def test_legacy_permission_modes_rejected(client, monkeypatch, tmp_path):
-    """read_only / full_access 创建 coding run → 422 permission_mode_invalid。
+    """read_only 创建 coding run → 422 permission_mode_invalid。
 
-    （E0 契约 §4.1：read_only/full_access 不再是合法值；E4 实现解除 xfail）
+    （E0 契约 §4.1：read_only 不再是合法值；E4 实现解除 xfail）
+    v0.9.0 H0 §6：full_access 重新合法，但无授予/能力位时失败关闭——
+    见 tests/test_v090_h1a 系列的 full_access 门禁用例。
     """
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
     env = await _create_coding_env(client, tmp_path)
-    for legacy in ("read_only", "full_access"):
-        resp = await _post_coding_run(
-            client, env, permission_mode=legacy
-        )
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["error_code"] == "permission_mode_invalid"
+    resp = await _post_coding_run(client, env, permission_mode="read_only")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error_code"] == "permission_mode_invalid"
 
 
 async def test_no_native_tool_calls_model_rejected_for_coding(
@@ -408,11 +411,13 @@ async def test_no_native_tool_calls_model_rejected_for_coding(
     assert resp.json()["error_code"] == "model_profile_unsupported"
 
     # 支持原生工具调用 → 通过（进入 coding 校验链）
+    # v0.9.0 H1-D：profile 携带具体模型路由字段（运行期路由事实）
     await client.put(
         "/agent-model-profiles/local-coder",
         json={
             "provider": "ollama",
             "display_name": "coder",
+            "model_name": "qwen3-coder",
             "native_tool_calls": True,
         },
     )

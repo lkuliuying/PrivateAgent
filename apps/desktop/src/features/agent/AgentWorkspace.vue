@@ -23,10 +23,6 @@ import {
   deriveAgentWorkspaceFacts,
   type AgentWorkspaceFacts,
 } from "./model/workspaceFacts";
-import {
-  contextUsageUnavailable,
-  type ContextUsageFacts,
-} from "./model/contextUsage";
 import ConversationList from "./ConversationList.vue";
 import SessionHeader from "./SessionHeader.vue";
 import TurnTranscript from "./TurnTranscript.vue";
@@ -143,6 +139,11 @@ interface SettingsFacts {
   providerLabel: string;
   providerWarning: string | null;
   contextLimit: number | null;
+  /**
+   * v0.9.0 H1-B（计划 §5.6）：执行阻断原因——仅「模型未配置」这一硬阻断项；
+   * 远程未开启/配置读取失败仍是警告态（不阻断发送，保持既有行为）。
+   */
+  blockedReason: string | null;
 }
 
 const settingsFacts = ref<SettingsFacts>({
@@ -150,6 +151,7 @@ const settingsFacts = ref<SettingsFacts>({
   providerLabel: "本地",
   providerWarning: null,
   contextLimit: null,
+  blockedReason: null,
 });
 
 async function refreshSettings(): Promise<void> {
@@ -178,6 +180,8 @@ async function refreshSettings(): Promise<void> {
         typeof settings.llm_context_length === "number" && settings.llm_context_length > 0
           ? settings.llm_context_length
           : null,
+      // §5.6：只有「模型未配置」阻断执行；配置完成后无需新建会话即可执行。
+      blockedReason: !trimmed ? "模型未配置：请先配置 PrivateAgent" : null,
     };
   } catch {
     settingsFacts.value = {
@@ -185,6 +189,7 @@ async function refreshSettings(): Promise<void> {
       providerLabel: "未配置",
       providerWarning: "配置读取失败：请检查后端连接",
       contextLimit: null,
+      blockedReason: null,
     };
   }
 }
@@ -194,11 +199,9 @@ function onWindowFocus(): void {
   void refreshSettings();
 }
 
-// ============ W6-R3 T8 / 第四轮决策：上下文用量诚实不可用 ============
-// 真实 token 窗口/输出预算/压缩状态为 v0.9.0 目标（计划 §12.1）；
-// v0.8.0 不用前端状态补齐用量，能力缺失时如实呈现「不可用」，
-// 不伪造百分比（零容忍）。typed contract 保留供 v0.9.0 接入。
-const usageFacts = ref<ContextUsageFacts>(contextUsageUnavailable());
+// ============ v0.9.0 H1-A：上下文用量圆环（真实 typed budget） ============
+// 矩形「上下文用量不可用」模块已移除；圆环按当前会话拉取后端真实计量，
+// 能力位未开启/不可用时如实呈现（不伪造百分比，零容忍）。
 
 // ============ W6-R3 T4：会话栏完全收起 / 窄窗口抽屉 ============
 const CONVERSATIONS_MEDIA = "(max-width: 1279px)";
@@ -441,7 +444,8 @@ onBeforeUnmount(() => {
         :model-name="settingsFacts.modelName"
         :provider-label="settingsFacts.providerLabel"
         :provider-warning="settingsFacts.providerWarning"
-        :usage-facts="usageFacts"
+        :blocked-reason="settingsFacts.blockedReason"
+        :session-id="currentSessionId"
         :capabilities="capabilities"
         @send="(text) => emit('send', text)"
         @stop="onStop"

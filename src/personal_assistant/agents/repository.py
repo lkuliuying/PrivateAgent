@@ -846,6 +846,12 @@ class AgentRunRepository:
             AgentEventType.PATCH_SET_ROLLED_BACK,
             AgentEventType.PATCH_SET_FAILED,
             AgentEventType.PATCH_SET_UNKNOWN,
+            # v0.9.0 H0 §7.2/§8：公开决策摘要、上下文压缩与权限降级（additive）
+            AgentEventType.DECISION_SUMMARY,
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            AgentEventType.CONTEXT_COMPACTION_FAILED,
+            AgentEventType.PERMISSION_DOWNGRADED,
         }:
             if run.status not in {"created", "running", "waiting_approval"}:
                 raise AgentRunProjectionError(
@@ -935,6 +941,85 @@ class AgentRunRepository:
             ):
                 raise AgentRunProjectionError(
                     "artifact.created requires a bounded step_id"
+                )
+            return
+        # v0.9.0 H0 §8：公开决策摘要——只含结构化公开键（不含隐藏推理），有界。
+        if event_type == AgentEventType.DECISION_SUMMARY:
+            from personal_assistant.core.execution_contracts import (
+                DECISION_SUMMARY_PAYLOAD_KEYS,
+            )
+
+            unknown = set(payload) - DECISION_SUMMARY_PAYLOAD_KEYS
+            if unknown:
+                raise AgentRunProjectionError(
+                    f"decision.summary carries unknown keys: {sorted(unknown)}"
+                )
+            goal = payload.get("goal")
+            if not isinstance(goal, str) or not 1 <= len(goal) <= 1000:
+                raise AgentRunProjectionError(
+                    "decision.summary requires a bounded goal"
+                )
+            for key in ("method", "rationale", "verification"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, str) or len(value) > 1000
+                ):
+                    raise AgentRunProjectionError(
+                        f"decision.summary requires a bounded {key}"
+                    )
+            for key in ("key_judgments", "next_steps", "risks"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, list)
+                    or len(value) > 12
+                    or any(
+                        not isinstance(item, str) or len(item) > 300
+                        for item in value
+                    )
+                ):
+                    raise AgentRunProjectionError(
+                        f"decision.summary requires bounded {key}"
+                    )
+            return
+        # v0.9.0 H0 §7.2：上下文压缩事件——低基数状态与有界错误信息。
+        if event_type in {
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            AgentEventType.CONTEXT_COMPACTION_FAILED,
+        }:
+            for key in ("before_tokens", "after_tokens", "threshold_percent"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, int) or value < 0
+                ):
+                    raise AgentRunProjectionError(
+                        f"{event_type.value} requires a non-negative {key}"
+                    )
+            if event_type == AgentEventType.CONTEXT_COMPACTION_FAILED:
+                error_code = payload.get("error_code")
+                error_reason = payload.get("error_reason")
+                if not isinstance(error_code, str) or not 1 <= len(error_code) <= 64:
+                    raise AgentRunProjectionError(
+                        "context.compaction_failed requires a bounded error_code"
+                    )
+                if error_reason is not None and (
+                    not isinstance(error_reason, str) or len(error_reason) > 500
+                ):
+                    raise AgentRunProjectionError(
+                        "context.compaction_failed requires a bounded error_reason"
+                    )
+            return
+        # v0.9.0 H0 §6.3：权限降级事件——低基数原因，不含正文。
+        if event_type == AgentEventType.PERMISSION_DOWNGRADED:
+            reason = payload.get("reason")
+            downgraded_to = payload.get("downgraded_to")
+            if not isinstance(reason, str) or not 1 <= len(reason) <= 64:
+                raise AgentRunProjectionError(
+                    "permission.downgraded requires a bounded reason"
+                )
+            if downgraded_to != "confirm":
+                raise AgentRunProjectionError(
+                    "permission.downgraded only targets confirm（失败关闭）"
                 )
             return
         # v0.7.0 E0 §1：patch_set.* 事件 payload 校验（键集由

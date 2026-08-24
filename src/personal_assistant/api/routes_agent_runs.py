@@ -7,7 +7,7 @@ import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -53,6 +53,10 @@ from ..core.coding_errors import PERMISSION_MODES, RUNNABLE_WORKSPACE_STATUSES
 from ..core.command_workflow import build_command_tool_registry
 from ..core.compatibility import compatibility_telemetry
 from ..core.db import async_session_factory, get_session
+from ..core.executable_intent import (
+    EXECUTABLE_INTENT_POLICY,
+    detect_executable_intent,
+)
 from ..core.git_snapshot import GitSnapshotError, read_git_snapshot
 from ..core.history import SessionRepository
 from ..core.http_workflow import build_http_tool_registry
@@ -69,8 +73,11 @@ from ..core.settings import SettingsService
 from ..core.sql_workflow import build_sql_tool_registry
 from ..core.tool_adapter import build_read_only_tool_registry
 from ..core.workspaces import ProjectWorkspaceService
+from ..logging_setup import get_logger
 from ..mcp.manager import build_mcp_tool_registry
 from ..mcp.repository import McpRepository
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/agent-runs", tags=["agent-runs"])
 agent_run_coordinator = AgentRunCoordinator()
@@ -116,6 +123,8 @@ class AgentRunCreateRequest(BaseModel):
             "must_pass_command_profiles",
             "no_pending_patchsets",
             "final_git_diff",
+            # v0.9.0 H1-B（计划 §5.6）：可执行意图最小执行证据数（additive）
+            "min_tool_executions",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -164,6 +173,14 @@ class AgentRunCreateRequest(BaseModel):
             "empty",
         }:
             raise ValueError("final_git_diff 必须是 any|nonempty|empty")
+        # v0.9.0 H1-B（计划 §5.6）：最小执行证据数 1..16（可执行意图门槛）
+        min_executions = value.get("min_tool_executions")
+        if min_executions is not None and (
+            not isinstance(min_executions, int)
+            or isinstance(min_executions, bool)
+            or not 1 <= min_executions <= 16
+        ):
+            raise ValueError("min_tool_executions 必须是 1..16 的整数")
         return value
 
 
@@ -455,6 +472,10 @@ def _build_output_verifier_factory(
                         completion_conditions.get("no_pending_patchsets", False)
                     ),
                     final_git_diff=completion_conditions.get("final_git_diff", "any"),
+                    # v0.9.0 H1-B（计划 §5.6）：可执行意图最小执行证据门槛。
+                    min_tool_executions=int(
+                        completion_conditions.get("min_tool_executions", 0) or 0
+                    ),
                 )
             )
         if not verifiers:
@@ -480,6 +501,9 @@ async def _model_gateway_for_run(
 
     - run 无 profile（legacy / v0.6.0 历史 coding run）→ 全局 ProviderRouter
       （v0.6.0 行为不变）。
+    - v0.9.0 H1-D（计划 §5.8）：具体 model 取 profile.model_name（真实路由事实），
+      **不得回落全局 ``llm_model/openai_model/claude_model``**；字段缺失时
+      失败关闭并返回精确原因（设置页可补全/验证）。
     - 本地 profile（provider=ollama / is_local=true）→ 强制 Ollama 本地路由，
       绝不因全局远程设置把工作区上下文发送到远程（快照
       remote_provider_data_policy=no_send 真实）。
@@ -501,6 +525,14 @@ async def _model_gateway_for_run(
         raise ModelProfileUnsupported(
             f"模型 profile {run.model_profile_id} 不可用"
             "（需 enabled 且 native_tool_calls=true）"
+        )
+    # v0.9.0 H1-D（§5.8）：具体模型路由字段是运行时事实；缺失时失败关闭，
+    # 禁止回落全局旧模型（显示一个模型、实际用另一个 = 零容忍）。
+    routed_model_name = (profile.model_name or "").strip()
+    if not routed_model_name:
+        raise ModelProfileUnsupported(
+            f"模型 profile {run.model_profile_id} 缺少具体模型路由字段"
+            "（model_name）；请在设置页补全并验证该 profile"
         )
     remote_enabled = (
         provider_settings.get("remote_provider_enabled", "false").lower() == "true"
@@ -528,7 +560,8 @@ async def _model_gateway_for_run(
         return ModelGateway(
             OllamaChatAdapter(
                 base_url=cfg.ollama_base_url,
-                model=provider_settings.get("llm_model") or cfg.llm_model,
+                # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
+                model=routed_model_name,
                 temperature=temperature,
                 context_length=int(
                     profile.context_tokens
@@ -555,7 +588,8 @@ async def _model_gateway_for_run(
                 base_url=provider_settings.get("openai_base_url")
                 or "https://api.openai.com/v1",
                 api_key=provider_settings.get("openai_api_key") or "",
-                model=provider_settings.get("openai_model") or "gpt-4o-mini",
+                # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
+                model=routed_model_name,
                 temperature=temperature,
             )
         )
@@ -570,8 +604,8 @@ async def _model_gateway_for_run(
         return ModelGateway(
             ClaudeMessagesAdapter(
                 api_key=provider_settings.get("claude_api_key") or "",
-                model=provider_settings.get("claude_model")
-                or "claude-3-5-sonnet-latest",
+                # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
+                model=routed_model_name,
                 temperature=temperature,
             )
         )
@@ -587,8 +621,8 @@ async def _workspace_command_risk(
 
     项目 enabled 命令 profile 全部 safe → SAFE（自动允许）；存在
     confirm/restricted → CONFIRM（整体审批把关，restricted 在执行时仍被
-    拦截，永不因模式切换自动获批）；无 profile → None（契约默认，仍按
-    ToolCapabilityPolicy 对 confirm 要求审批）。
+    拦截，永不因模式切换自动获批）；无项目 profile → 内置只读诊断
+    profile 集（v0.9.0 H1-B，全部 safe）→ SAFE。
     """
     run = await run_db.get(AgentRunRecord, run_id)
     if run is None or run.project_id is None:
@@ -599,7 +633,10 @@ async def _workspace_command_risk(
         run.project_id, enabled=True
     )
     if not profiles:
-        return None
+        # v0.9.0 H1-B（计划 §5.6）：无项目 profile 时，可执行命令面 = 内置只读
+        # 诊断集（固定 argv、safe、零网络），“替我批准”对其自动放行；
+        # 未命中内置诊断的命令仍在执行层拒绝。
+        return ToolRiskLevel.SAFE
     risks = {p.risk_level or "confirm" for p in profiles}
     # 第六轮（P0-1）：allow_network=False 的 profile 不参与自动执行——
     # workspace SAFE 仅当全部 profile 为 safe 且全部 allow_network=True；
@@ -610,6 +647,41 @@ async def _workspace_command_risk(
     ):
         return ToolRiskLevel.SAFE
     return ToolRiskLevel.CONFIRM
+
+
+async def _emit_permission_downgrade(
+    run_db: AsyncSession,
+    run_id: str,
+    event_type,
+    *,
+    reason: str,
+) -> None:
+    """v0.9.0 H1-A（H0 §6.3）：权限降级 durable 事件。
+
+    payload 只含低基数原因与降级目标，不含参数/路径正文；写入失败只记录
+    日志（遥测计数已是可观测性兑底，与 run_plan 事件写入口径一致）。
+    """
+    try:
+        from ..agents.contracts import AgentEvent
+
+        repo = AgentRunRepository(run_db)
+        run = await repo.get_run(run_id)
+        if run is None:
+            return
+        await repo.record_event(
+            AgentEvent(
+                run_id=run_id,
+                sequence=run.last_event_sequence + 1,
+                type=event_type,
+                payload={"reason": reason, "downgraded_to": "confirm"},
+            )
+        )
+    except Exception:  # noqa: BLE001 - 降级事件失败不阻断执行
+        logger.warning(
+            "permission downgrade event emit failed",
+            run_id=run_id,
+            reason=reason,
+        )
 
 
 async def get_agent_tool_bundle(
@@ -684,6 +756,10 @@ async def get_agent_tool_bundle(
             # 模式切换自动获批，execute 内还有执行时拦截）。
             command_risk = None
             if permission_mode == "workspace":
+                # workspace 自动批准语义冻结于 v0.7.0（全部 enabled profile
+                # 为 safe 且允许网络才自动放行）；v0.9.0 能力位与命令 profile
+                # 可用性由 /capabilities 声明（coding_workspace_auto_approve），
+                # 安装版默认经发布门禁开启，不改变既有执行层语义（H0 §6.2）。
                 command_risk = await _workspace_command_risk(run_db, run_id)
             # 第五轮（P0-1）：permission_mode 透传——workspace 模式命令工具
             # SAFE 只对匹配项目 profile 的命令生效，未匹配（全局白名单兜底）
@@ -821,6 +897,55 @@ async def get_agent_tool_bundle(
                 granted_capabilities = granted_capabilities | {
                     ToolCapability.FILESYSTEM_WRITE
                 }
+        # v0.9.0 H1-A（H0 §6）：full_access 自动批准——仅能力位开启且授予有效
+        # 时注入自动批准消费者；否则降级为 confirm 语义（失败关闭，低基数原因）。
+        # 与 workspace 互相独立：不共用开关、不共用语义、各自审计。
+        full_access_consumer = None
+        if (
+            permission_mode == "full_access"
+            and approval_id is None
+            and run_record is not None
+            and run_record.session_id is not None
+        ):
+            from ..agents.contracts import AgentEventType
+
+            if cfg.coding_full_access_enabled:
+                from ..agents.approvals import FullAccessAutoApproveConsumer
+                from ..core.full_access import FullAccessGrantService
+
+                grant = await FullAccessGrantService(run_db).get_active(
+                    run_record.session_id
+                )
+                if grant is not None:
+                    full_access_consumer = FullAccessAutoApproveConsumer(
+                        run_db,
+                        run_id=run_id,
+                        session_id=run_record.session_id,
+                    )
+                else:
+                    compatibility_telemetry.record(
+                        path="permission_downgrade",
+                        mode="full_access",
+                        outcome="grant_invalid",
+                    )
+                    await _emit_permission_downgrade(
+                        run_db,
+                        run_id,
+                        AgentEventType.PERMISSION_DOWNGRADED,
+                        reason="grant_invalid",
+                    )
+            else:
+                compatibility_telemetry.record(
+                    path="permission_downgrade",
+                    mode="full_access",
+                    outcome="capability_missing",
+                )
+                await _emit_permission_downgrade(
+                    run_db,
+                    run_id,
+                    AgentEventType.PERMISSION_DOWNGRADED,
+                    reason="capability_missing",
+                )
         return ValidatedToolDispatcher(
             registry,
             policy=ToolCapabilityPolicy(granted_capabilities=granted_capabilities),
@@ -832,7 +957,7 @@ async def get_agent_tool_bundle(
                     token=approval_token,
                 )
                 if approval_id is not None
-                else None
+                else full_access_consumer
             ),
             execution_store=ToolExecutionRepository(run_db, run_id=run_id),
             result_verifier=result_verifier,
@@ -881,7 +1006,10 @@ async def get_agent_tool_bundle(
 
 
 def _timestamp(value) -> str | None:
-    return value.isoformat() if value is not None else None
+    # v0.9.0 H0 §5：run/事件时间统一带 Z 的 RFC 3339 UTC（客户端按产品时区显示）
+    from ..core.timeutil import format_rfc3339_utc
+
+    return format_rfc3339_utc(value)
 
 
 def _coding_error(status: int, error_code: str, detail: str) -> JSONResponse:
@@ -1124,12 +1252,64 @@ async def create_agent_run(
                 "permission_mode_invalid",
                 f"permission_mode must be one of {sorted(PERMISSION_MODES)}",
             )
+        # v0.9.0 H0 §6：full_access 是独立能力位，不是 workspace 别名——
+        # flag 未开启或会话无有效授予时失败关闭（不静默降级创建）。
+        granted_full_access = False
+        if effective_permission_mode == "full_access":
+            if not cfg.coding_full_access_enabled:
+                compatibility_telemetry.record(
+                    path="agent_run_create",
+                    mode="project_bound",
+                    outcome="rejected",
+                )
+                compatibility_telemetry.record(
+                    path="full_access_grant", mode="session", outcome="denied"
+                )
+                return _coding_error(
+                    409,
+                    "full_access_unsupported",
+                    "full_access capability is not enabled",
+                )
+            from ..core.full_access import FullAccessError, FullAccessGrantService
+
+            try:
+                await FullAccessGrantService(db).require_active(
+                    session.id if session is not None else 0
+                )
+                granted_full_access = True
+            except FullAccessError as exc:
+                compatibility_telemetry.record(
+                    path="agent_run_create",
+                    mode="project_bound",
+                    outcome="rejected",
+                )
+                compatibility_telemetry.record(
+                    path="full_access_grant", mode="session", outcome="denied"
+                )
+                return _coding_error(
+                    409, exc.error_code, exc.detail
+                )
         # E4（E0 §5）：模型 profile 校验——不支持原生工具调用的模型只能
         # 用于只读问答，不进入 Coding 执行循环（run 创建时校验）。
         # P0-1 验收修复：远程 provider profile 需全局启用远程（否则 fail-fast
         # 422，不静默回退本地）；reasoning_effort 必须落在 profile 声明集合。
+        # v0.9.0 H1-D（§5.8）：未显式选择时绑定默认 Coding profile；无默认项时
+        # 保持旧兼容路由（不回落具体模型语义由运行层失败关闭兑底）并计数。
         coding_profile: ModelProfile | None = None
-        if request.model_profile_id is not None:
+        effective_profile_id = request.model_profile_id
+        if effective_profile_id is None:
+            from ..core.model_profiles import ModelProfileService as _ProfileSvc
+
+            _default_profile = await _ProfileSvc(db).get_default()
+            if _default_profile is not None:
+                effective_profile_id = _default_profile.id
+            else:
+                compatibility_telemetry.record(
+                    path="agent_run_create",
+                    mode="project_bound",
+                    outcome="profile_default_missing",
+                )
+        if effective_profile_id is not None:
             from ..core.model_profiles import (
                 ModelProfileNotFound,
                 ModelProfileService,
@@ -1139,7 +1319,7 @@ async def create_agent_run(
             try:
                 coding_profile = await ModelProfileService(
                     db
-                ).validate_for_coding(request.model_profile_id)
+                ).validate_for_coding(effective_profile_id)
             except ModelProfileNotFound as exc:
                 return _coding_error(404, "model_profile_not_found", str(exc))
             except ModelProfileUnsupported as exc:
@@ -1160,7 +1340,7 @@ async def create_agent_run(
                 return _coding_error(
                     422,
                     "model_profile_unsupported",
-                    f"模型 profile {request.model_profile_id} 是远程 Provider"
+                    f"模型 profile {effective_profile_id} 是远程 Provider"
                     f"（{profile_provider}），但全局远程 Provider 未启用；"
                     "请选择本地 profile 或启用远程 Provider",
                 )
@@ -1168,7 +1348,7 @@ async def create_agent_run(
                 return _coding_error(
                     422,
                     "model_profile_unsupported",
-                    f"模型 profile {request.model_profile_id} 的 provider"
+                    f"模型 profile {effective_profile_id} 的 provider"
                     f" 不受支持: {profile_provider}",
                 )
             if (
@@ -1181,7 +1361,7 @@ async def create_agent_run(
                     422,
                     "model_profile_unsupported",
                     f"reasoning_effort={request.reasoning_effort} 不在模型 profile"
-                    f" {request.model_profile_id} 的允许集合中: "
+                    f" {effective_profile_id} 的允许集合中: "
                     f"{sorted(coding_profile.reasoning_efforts_json)}",
                 )
         workspace_service = ProjectWorkspaceService(db)
@@ -1238,9 +1418,81 @@ async def create_agent_run(
         if snapshot is not None:
             git_snapshot = (snapshot.head_sha, snapshot.branch, snapshot.dirty)
 
+        # v0.9.0 H1-A（H0 §7.2）：上下文自动压缩——达到阈值时在新执行前压缩
+        # 旧上下文（保留最新请求与近期事实）；压缩后仍超限 → 停止新执行，
+        # 不静默截断（恢复路径：新开会话/清理上下文）。
+        if cfg.coding_context_budget_enabled and request.session_id is not None:
+            from ..core.context_budget_service import (
+                compact_session_if_needed,
+                evaluate_session_budget,
+            )
+
+            try:
+                compacted = await compact_session_if_needed(
+                    db, request.session_id
+                )
+            except Exception:  # noqa: BLE001 - 压缩异常失败关闭
+                logger.warning(
+                    "context compaction failed",
+                    session_id=request.session_id,
+                    exc_info=True,
+                )
+                compatibility_telemetry.record(
+                    path="context_budget_poll",
+                    mode="coding",
+                    outcome="error",
+                )
+                return _coding_error(
+                    409,
+                    "budget_exceeded",
+                    "Context compaction failed; start a new session to recover",
+                )
+            # 压缩成功即恢复路径（历史已收敛，下一轮重建上下文）；
+            # 无可压缩内容且仍超限 → 停止新执行，不静默截断。
+            if not compacted:
+                budget = await evaluate_session_budget(db, request.session_id)
+                if budget.error_code == "budget_exceeded":
+                    compatibility_telemetry.record(
+                        path="context_budget_poll",
+                        mode="coding",
+                        outcome="error",
+                    )
+                    return _coding_error(
+                        409,
+                        "budget_exceeded",
+                        "Context budget exceeded after compaction",
+                    )
+
     run_id = str(uuid4())
+    # ---- v0.9.0 H1-B（计划 §5.6）：可执行意图路由 ----
+    # coding run 能力校验链已通过（项目/workspace/权限/模型均就绪）；此时判定
+    # 可执行意图并注入最小执行证据完成条件——无工具/命令证据的“完成”宣称被
+    # 输出验证失败关闭，禁止能力就绪时静默退化为纯文字教程。信息问答与教程式
+    # 提问不注入（用户明确只要方法时允许教程式回答）。
+    executable_intent = coding_mode and detect_executable_intent(request.message)
+    effective_completion_conditions = request.completion_conditions
+    if executable_intent:
+        base_conditions = dict(request.completion_conditions or {})
+        base_conditions["min_tool_executions"] = max(
+            int(base_conditions.get("min_tool_executions") or 0), 1
+        )
+        # 诊断命令的失败本身是证据（PATH 未命中/退出码非 0 等结构化结果，
+        # §5.6），不得因默认 max_failed_tools=0 把证据化失败误判为 run 失败；
+        # 模型仍须按证据如实陈述（系统提示约束）。
+        base_conditions["max_failed_tools"] = max(
+            int(base_conditions.get("max_failed_tools") or 0), 16
+        )
+        effective_completion_conditions = base_conditions
+        compatibility_telemetry.record(
+            path="executable_intent", mode="coding", outcome="routed"
+        )
+    effective_system_policy = AGENT_SYSTEM_PROMPT
+    if executable_intent:
+        effective_system_policy = (
+            AGENT_SYSTEM_PROMPT + "\n\n" + EXECUTABLE_INTENT_POLICY
+        )
     messages = (
-        ModelMessage(role="system", content=AGENT_SYSTEM_PROMPT),
+        ModelMessage(role="system", content=effective_system_policy),
         ModelMessage(role="user", content=request.message),
     )
     context_metadata = None
@@ -1248,7 +1500,7 @@ async def create_agent_run(
         try:
             prepared = await prepare_agent_context(
                 db,
-                system_policy=AGENT_SYSTEM_PROMPT,
+                system_policy=effective_system_policy,
                 current_request=request.message,
                 session_id=request.session_id,
                 knowledge_base=request.knowledge_base,
@@ -1306,6 +1558,8 @@ async def create_agent_run(
             max_patchset_files=MAX_PATCHSET_FILES,
             max_patchset_total_bytes=MAX_TOTAL_INPUT_BYTES,
             remote_provider_data_policy=snapshot_data_policy,
+            # v0.9.0 H0 §6.3：授予事实入快照，执行器再次校验（失败关闭）
+            granted_full_access=granted_full_access,
         )
     try:
         run = await repository.create_run(
@@ -1313,14 +1567,20 @@ async def create_agent_run(
             limits=request.limits,
             session_id=request.session_id,
             knowledge_base=request.knowledge_base,
-            completion_conditions=request.completion_conditions,
+            # v0.9.0 H1-B：持久化的是合并后的有效条件（含可执行意图证据门槛），
+            # 审批恢复/重启后续跑从 run 记录重读同一组条件。
+            completion_conditions=effective_completion_conditions,
             # v0.6.0 Coding Agent
             project_id=request.project_id if coding_mode else None,
             workspace_id=request.workspace_id if coding_mode else None,
             base_head_sha=git_snapshot[0] if git_snapshot else None,
             base_branch_name=git_snapshot[1] if git_snapshot else None,
             base_git_dirty=git_snapshot[2] if git_snapshot else None,
-            model_profile_id=request.model_profile_id,
+            # v0.9.0 H1-D：持久化的是有效 profile（显式选择或默认绑定），
+            # 既有 run 保留创建时快照，后续默认切换不改写历史。
+            model_profile_id=(
+                effective_profile_id if coding_mode else request.model_profile_id
+            ),
             reasoning_effort=request.reasoning_effort,
             permission_mode=effective_permission_mode if coding_mode else None,
             permission_snapshot_json=permission_snapshot,
@@ -1394,7 +1654,7 @@ async def create_agent_run(
             run_id=effective_run_id,
             knowledge_base=request.knowledge_base,
             tool_bundle=tool_bundle,
-            completion_conditions=request.completion_conditions,
+            completion_conditions=effective_completion_conditions,
         ),
         context_metadata=context_metadata,
         reasoning_effort=request.reasoning_effort,
@@ -1448,6 +1708,173 @@ async def list_agent_run_events(
         ],
         last_sequence=events[-1].sequence if events else after_sequence,
     )
+
+
+def _redact_arguments(arguments: Any) -> Any:
+    """v0.9.0 H0 §8：执行详情命令/参数脱敏（与后端 _redact_line 同语义）。
+
+    只保留结构与低基数事实；敏感键（token/密钥/绝对路径值）替换为占位。
+    """
+    import copy
+    import re
+
+    sensitive_key = re.compile(
+        r"(token|secret|password|api[_-]?key|credential|authorization)", re.I
+    )
+    # 绝对路径：Windows 盘符（\ 或 / 分隔）/ UNC / POSIX 根 / 家目录
+    path_like = re.compile(r"^[A-Za-z]:[\\/]|^\\\\|^/~|^/")
+
+    def walk(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: ("[REDACTED]" if sensitive_key.search(str(key)) else walk(item))
+                for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, str):
+            if path_like.match(value):
+                return "[PATH]"
+            return value
+        return value
+
+    try:
+        return walk(copy.deepcopy(arguments))
+    except Exception:  # noqa: BLE001 - 脱敏失败时不泄露原文，返回占位
+        return "[REDACTED]"
+
+
+@router.get(
+    "/{run_id}/execution-detail",
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def get_execution_detail(
+    run_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """v0.9.0 H0 §8：execution 视图聚合（公开执行链）。
+
+    按 turn 组织：用户目标 → 公开决策摘要 → 计划/当前步骤 → 工具与命令 →
+    审批 → 输出/验证 → 最终回答。只含结构化公开事实，不含隐藏推理；
+    命令/参数已脱敏。flag ``coding_execution_detail_enabled`` 关闭 → 409。
+    """
+    if not cfg.coding_execution_detail_enabled:
+        return _coding_error(
+            409, "coding_mode_disabled", "Execution detail is disabled"
+        )
+    repository = AgentRunRepository(db)
+    run = await repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+
+    events = await repository.list_events(run_id, after_sequence=0, limit=10_000)
+    approvals = await ToolApprovalRepository(db).list_for_run(run_id)
+    executions = await ToolExecutionRepository(db, run_id=run_id).list_for_run()
+
+    approval_by_id = {a.id: a for a in approvals}
+    # 命令执行事实（脱敏）：无命令的 turn 由前端呈现「本轮未执行命令」
+    execution_items = []
+    for record in executions:
+        output = (
+            record.output_json if isinstance(record.output_json, dict) else None
+        )
+        execution_items.append(
+            {
+                "execution_id": record.id,
+                "tool_call_id": record.tool_call_id,
+                "tool_name": record.tool_name,
+                "risk_level": record.risk_level,
+                "status": record.status,
+                "attempt_count": record.attempt_count,
+                "arguments": _redact_arguments(record.arguments_json),
+                "exit_code": (output or {}).get("returncode"),
+                "verified": (output or {}).get("verified"),
+                "approval_id": record.approval_id,
+            }
+        )
+
+    # 按 model.started 切分 turn，逐轮归集公开事件（决策/工具/审批/验证）
+    turns: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    plan_state: dict[str, Any] | None = None
+    for event in events:
+        event_type = event.event_type
+        payload = event.payload_json or {}
+        if event_type == "model.started":
+            current = {
+                "ordinal": payload.get("ordinal"),
+                "decision": None,
+                "tools": [],
+                "approvals": [],
+                "verifications": [],
+                "executions": [],
+            }
+            turns.append(current)
+            continue
+        if current is None:
+            continue
+        if event_type == "decision.summary":
+            current["decision"] = {
+                "goal": payload.get("goal"),
+                "method": payload.get("method"),
+                "next_steps": payload.get("next_steps") or [],
+            }
+        elif event_type in {"tool.requested", "tool.completed", "tool.failed"}:
+            current["tools"].append(
+                {
+                    "event": event_type,
+                    "tool_call_id": payload.get("tool_call_id"),
+                    "name": payload.get("name"),
+                }
+            )
+        elif event_type == "tool.approval_required":
+            approval = approval_by_id.get(payload.get("approval_id"))
+            current["approvals"].append(
+                {
+                    "approval_id": payload.get("approval_id"),
+                    "tool_name": payload.get("name"),
+                    "risk_level": getattr(approval, "risk_level", None),
+                    "status": getattr(approval, "status", None),
+                }
+            )
+        elif event_type.startswith("output.validation"):
+            current["verifications"].append(
+                {
+                    "event": event_type,
+                    "verifier": payload.get("verifier"),
+                    "message": payload.get("message"),
+                }
+            )
+        elif event_type in {"plan.created", "plan.updated"}:
+            plan_state = {
+                "version": payload.get("plan_version"),
+                "item_count": len(payload.get("items") or []),
+            }
+
+    # 将命令执行事实按 tool_call_id 归入对应 turn（无匹配则归最后一轮）
+    for item in execution_items:
+        placed = False
+        for turn in reversed(turns):
+            if any(
+                tool.get("tool_call_id") == item["tool_call_id"]
+                for tool in turn["tools"]
+            ):
+                turn["executions"].append(item)
+                placed = True
+                break
+        if not placed and turns:
+            turns[-1]["executions"].append(item)
+
+    return {
+        "run_id": run.id,
+        "status": run.status,
+        "permission_mode": run.permission_mode,
+        "user_goal": None,  # 由前端以首条用户消息呈现（不在此重复存储）
+        "plan": plan_state,
+        "turns": turns,
+        "final_answer": run.output,
+        "error_code": run.error_code,
+    }
 
 
 @router.get(
@@ -1594,9 +2021,13 @@ async def list_agent_run_executions(
 
 
 class AgentExecutionResolveRequest(BaseModel):
-    """v0.5.0 B5：unknown execution 的人工处置（不自动猜测成功或重跑）。"""
+    """v0.5.0 B5：unknown execution 的人工处置（不自动猜测成功或重跑）。
 
-    decision: Literal["succeeded", "failed"]
+    v0.9.0 H2（计划 §6.2）：新增 ``not_executed``——用户确认未执行；
+    重试仍由用户显式发起，系统不自动重跑。
+    """
+
+    decision: Literal["succeeded", "failed", "not_executed"]
     output: dict | None = None
     note: str = Field(default="", max_length=200)
 
@@ -1629,6 +2060,9 @@ async def resolve_agent_run_execution(
             note=request.note,
         )
     except ToolExecutionConflictError as exc:
+        compatibility_telemetry.record(
+            path="manual_execution_resolution", mode="unknown", outcome="rejected"
+        )
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return AgentToolExecutionResponse(
         id=record.id,
@@ -1641,6 +2075,70 @@ async def resolve_agent_run_execution(
         created_at=_timestamp(record.created_at) or "",
         completed_at=_timestamp(record.completed_at),
     )
+
+
+@router.post(
+    "/{run_id}/executions/{execution_id}/revalidate",
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def revalidate_agent_run_execution(
+    run_id: str,
+    execution_id: str,
+    db: AsyncSession = Depends(get_session),
+):
+    """v0.9.0 H2（计划 §6.2）：重新验证文件/Git 状态（只读事实）。
+
+    对 unknown/部分状态执行，用户可要求重新读取工作区当前 Git 事实
+    （分支/HEAD/dirty/仓库根）与路径存在性，辅助判断副作用；本端点只读，
+    不改变任何执行状态，不自动重试（模型不能替用户处理 unknown 副作用）。
+    """
+    from ..core.timeutil import utcnow
+
+    repository = AgentRunRepository(db)
+    run = await repository.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Agent run not found")
+    execution = await db.get(ToolExecutionRecord, execution_id)
+    if execution is None or execution.run_id != run_id:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    checks: list[dict[str, Any]] = []
+    git_facts: dict[str, Any] | None = None
+    workspace_status: str | None = None
+    if run.workspace_id is not None:
+        workspace_service = ProjectWorkspaceService(db)
+        workspace = await workspace_service.get(run.workspace_id)
+        if workspace is not None:
+            workspace_status = workspace.status
+            path_exists = await workspace_service.check_path(workspace)
+            checks.append({"check": "workspace_path", "ok": path_exists})
+            if path_exists:
+                try:
+                    snapshot = await read_git_snapshot(workspace.root_path)
+                except GitSnapshotError:
+                    snapshot = None
+                if snapshot is not None:
+                    git_facts = {
+                        "branch": snapshot.branch,
+                        "head_sha": snapshot.head_sha,
+                        "dirty": snapshot.dirty,
+                    }
+                    checks.append({"check": "git_facts", "ok": True})
+                else:
+                    checks.append(
+                        {"check": "git_facts", "ok": False, "note": "非 Git 目录"}
+                    )
+    compatibility_telemetry.record(
+        path="manual_execution_resolution", mode="unknown", outcome="revalidated"
+    )
+    return {
+        "execution_id": execution.id,
+        "execution_status": execution.status,
+        "workspace_status": workspace_status,
+        "git": git_facts,
+        "checks": checks,
+        "revalidated_at": _timestamp(utcnow()) or "",
+    }
 
 
 @router.get(

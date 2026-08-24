@@ -368,7 +368,12 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await openCoding(page);
     await page.getByTestId("coding-toggle-collapse").click();
     const newTask = page.getByTestId("coding-new-task");
-    await expect(newTask).toHaveAttribute("aria-label", "新建任务");
+    // v0.9.0 H1：新建任务更名为新建对话（任务由对话中的 run 表达）
+    await expect(newTask).toHaveAttribute("aria-label", "新建对话");
+    await expect(page.getByTestId("coding-new-project")).toHaveAttribute(
+      "aria-label",
+      "新建项目"
+    );
     await expect(page.getByTestId("coding-tree")).toBeHidden();
   });
 

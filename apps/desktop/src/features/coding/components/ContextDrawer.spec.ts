@@ -46,7 +46,8 @@ describe("ContextDrawer", () => {
     await wrapper.find('[data-testid="context-tab-context"]').trigger("click");
     const pane = wrapper.find('[data-testid="context-pane-context"]');
     expect(pane.text()).toContain("已完成");
-    expect(pane.text()).toContain("写入需确认");
+    // v0.9.0 §5.3：confirm 档呈现词汇为「总是询问」
+    expect(pane.text()).toContain("总是询问");
     expect(pane.text()).toContain("1,000");
   });
 

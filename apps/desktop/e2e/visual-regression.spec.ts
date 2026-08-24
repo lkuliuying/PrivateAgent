@@ -93,7 +93,7 @@ async function openV2(page: Page, width: number, height = 900) {
   await page.clock.install({ time: FIXED_NOW });
   await page.clock.setFixedTime(FIXED_NOW);
   await mockApi(page);
-  await page.goto("/?ui=v2");
+  await page.goto("/?ui=v2&coding=0");
   await expect(page.getByTestId("nav-chat")).toBeVisible();
   await expect(page.getByRole("heading", { name: "视觉基线会话" })).toBeVisible();
   await page.waitForLoadState("networkidle");

@@ -12,6 +12,26 @@ export interface RuntimeCapabilities {
   command_workflow_enabled: boolean;
   http_workflow_enabled: boolean;
   sql_readonly_workflow_enabled: boolean;
+  /**
+   * v0.9.0 H0 additive extension（旧后端不提供时一律按「未提供」处理）：
+   * coding 默认切换、三档权限能力位、上下文预算、执行详情与 worktree。
+   * workspace 与 full_access 独立声明，不是别名。
+   */
+  coding_agent_ui_enabled?: boolean;
+  project_bound_runs_enabled?: boolean;
+  coding_workspace_auto_approve?: boolean;
+  coding_full_access_supported?: boolean;
+  coding_context_budget_enabled?: boolean;
+  coding_execution_detail_enabled?: boolean;
+  coding_worktree_enabled?: boolean;
+  product_timezone?: string;
+  /**
+   * v0.9.0 H1-C additive（计划 §5.3/§5.7）：full_access 的审计与撤销独立声明；
+   * 显式为 false 时前端必须失败关闭。内置只读诊断命令面（H1-B 动手主链）。
+   */
+  coding_full_access_audit?: boolean;
+  coding_full_access_revoke?: boolean;
+  coding_diagnostic_commands_enabled?: boolean;
 }
 
 /**

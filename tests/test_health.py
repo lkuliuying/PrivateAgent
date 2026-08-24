@@ -56,6 +56,19 @@ async def test_capabilities_expose_exclusive_chat_execution_mode(client, monkeyp
         "command_workflow_enabled": False,
         "http_workflow_enabled": False,
         "sql_readonly_workflow_enabled": False,
+        # v0.9.0 H0 §3 additive（默认 False；时区为常量声明）
+        "coding_agent_ui_enabled": False,
+        "project_bound_runs_enabled": False,
+        "coding_workspace_auto_approve": False,
+        "coding_full_access_supported": False,
+        "coding_context_budget_enabled": False,
+        "coding_execution_detail_enabled": False,
+        "coding_worktree_enabled": False,
+        "product_timezone": "Asia/Shanghai",
+        # v0.9.0 H1-C additive（§5.3/§5.7）
+        "coding_full_access_audit": False,
+        "coding_full_access_revoke": False,
+        "coding_diagnostic_commands_enabled": False,
     }
 
     monkeypatch.setattr(routes_health.settings, "chat_agent_runtime_enabled", False)
@@ -149,6 +162,19 @@ async def test_capabilities_four_key_combinations(
             "command_workflow_enabled": False,
             "http_workflow_enabled": False,
             "sql_readonly_workflow_enabled": False,
+            # v0.9.0 H0 §3 additive
+            "coding_agent_ui_enabled": False,
+            "project_bound_runs_enabled": False,
+            "coding_workspace_auto_approve": False,
+            "coding_full_access_supported": False,
+            "coding_context_budget_enabled": False,
+            "coding_execution_detail_enabled": False,
+            "coding_worktree_enabled": False,
+            "product_timezone": "Asia/Shanghai",
+            # v0.9.0 H1-C additive（§5.3/§5.7）
+            "coding_full_access_audit": False,
+            "coding_full_access_revoke": False,
+            "coding_diagnostic_commands_enabled": False,
         }
     )
     assert body == expected_body
@@ -183,6 +209,19 @@ async def test_capabilities_expose_four_independent_workflow_flags(client, monke
         "command_workflow_enabled": False,
         "http_workflow_enabled": False,
         "sql_readonly_workflow_enabled": False,
+        # v0.9.0 H0 §3 additive
+        "coding_agent_ui_enabled": False,
+        "project_bound_runs_enabled": False,
+        "coding_workspace_auto_approve": False,
+        "coding_full_access_supported": False,
+        "coding_context_budget_enabled": False,
+        "coding_execution_detail_enabled": False,
+        "coding_worktree_enabled": False,
+        "product_timezone": "Asia/Shanghai",
+        # v0.9.0 H1-C additive（§5.3/§5.7）
+        "coding_full_access_audit": False,
+        "coding_full_access_revoke": False,
+        "coding_diagnostic_commands_enabled": False,
     }
 
     monkeypatch.setattr(routes_health.settings, "agent_command_workflow_enabled", True)

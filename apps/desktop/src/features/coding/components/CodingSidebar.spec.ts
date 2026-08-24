@@ -109,8 +109,12 @@ describe("CodingSidebar", () => {
 
   it("折叠态隐藏文字标签，icon-only 按钮保留可访问名称", async () => {
     const { wrapper } = await mountSidebar({ collapsed: true });
+    // v0.9.0 H1：新建任务更名为新建对话；新建项目为独立动作（拆分）
     const newTask = wrapper.find('[data-testid="coding-new-task"]');
-    expect(newTask.attributes("aria-label")).toBe("新建任务");
+    expect(newTask.attributes("aria-label")).toBe("新建对话");
+    expect(wrapper.find('[data-testid="coding-new-project"]').attributes("aria-label")).toBe(
+      "新建项目"
+    );
     expect(wrapper.find('[data-testid="coding-open-search"]').attributes("aria-label")).toBe(
       "搜索"
     );

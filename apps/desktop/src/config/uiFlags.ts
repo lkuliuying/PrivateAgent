@@ -24,16 +24,40 @@ export function isUiV2(): boolean {
 }
 
 /**
- * v0.8.0 CodingWorkbench 内部启用开关（W0 冻结 §5）
+ * v0.9.0 CodingWorkbench 默认切换（计划 §3.1 / H1 任务 1）
  *
- * 不是 ui_v3 版本开关：新代码只落在 features/coding/；开关只切换 renderer
- * 的侧栏与主区（AppShell rail 换 CodingSidebar），不改变后端执行与数据。
- * 内部启用（默认关闭）：?coding=1 或 localStorage pa_coding_workbench=1；
- * 旧壳回退入口（?ui=v1 / pa_ui_v2=0）不受影响。
+ * - 新安装/升级默认显示 Coding Home（DEFAULT_CODING_WORKBENCH=true）；
+ * - 显式回退键常驻：?coding=0 或 localStorage pa_coding_workbench=0；
+ * - 后端能力位回退：/capabilities.coding_agent_ui_enabled === false
+ *   （PA_CODING_AGENT_UI_ENABLED=false 短期回退）→ 非显式开启时回落旧 UI；
+ * - 开关只切 renderer 的侧栏与主区，不改变后端数据与执行路径；
+ * - 旧壳回退入口（?ui=v1 / pa_ui_v2=0）不受影响。
  */
+const DEFAULT_CODING_WORKBENCH = true;
+
+/** 后端能力位（启动后注入；null=尚未获取，按默认值呈现）。 */
+let codingUiCapability: boolean | null = null;
+
+export function setCodingUiCapability(enabled: boolean): void {
+  codingUiCapability = enabled;
+}
+
+/** 用户是否显式选择了 coding 开/关（显式选择不被能力位覆盖）。 */
+export function hasExplicitCodingChoice(): boolean {
+  const param = new URLSearchParams(window.location.search).get("coding");
+  if (param === "1" || param === "0") return true;
+  const stored = window.localStorage.getItem("pa_coding_workbench");
+  return stored === "1" || stored === "0";
+}
+
 export function isCodingWorkbench(): boolean {
   const param = new URLSearchParams(window.location.search).get("coding");
   if (param === "1") return true;
   if (param === "0") return false;
-  return window.localStorage.getItem("pa_coding_workbench") === "1";
+  const stored = window.localStorage.getItem("pa_coding_workbench");
+  if (stored === "1") return true;
+  if (stored === "0") return false;
+  // 非显式选择：后端显式声明关闭 → 回退旧 UI（计划 §3.3 短期回退）
+  if (codingUiCapability === false) return false;
+  return DEFAULT_CODING_WORKBENCH;
 }

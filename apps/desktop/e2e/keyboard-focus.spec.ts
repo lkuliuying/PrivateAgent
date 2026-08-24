@@ -106,6 +106,18 @@ function mockApi(page: Page, sseMode: "pending" | "approved" = "pending") {
       });
       return;
     }
+    if (path === "/settings") {
+      // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+      await route.fulfill({
+        json: {
+          provider_type: "ollama",
+          llm_model: "qwen2.5:14b-instruct-q4_K_M",
+          remote_provider_enabled: false,
+          llm_context_length: 32768,
+        },
+      });
+      return;
+    }
     if (path === "/chat/stream") {
       await route.fulfill({
         status: 200,
@@ -160,7 +172,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
         },
       });
     });
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.getByRole("button", { name: "键盘检查会话" }).first().click();
     await page.getByTestId("task-composer-input").fill("请修改文件");
@@ -176,7 +188,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
 
   test("SQL 查询结果经真实 executions 渲染为表格且可键盘访问", async ({ page }) => {
     await mockApi(page, "approved");
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.getByRole("button", { name: "键盘检查会话" }).first().click();
     await page.getByTestId("task-composer-input").fill("查询数据库");
@@ -194,7 +206,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
   test("对话框 Esc 关闭后焦点回到触发按钮（W6-R3：上下文栏入口已移除，载体改为设置页对话框）", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await mockApi(page, "approved");
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     // W6-R3：Agent 页上下文栏/顶部控件已移除，PaDialog 焦点恢复契约改用仍活跃的载体验证（不允许跳过）
     await expect(page.getByTestId("session-context-toggle")).toHaveCount(0);
@@ -252,7 +264,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
         ],
       });
     });
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.getByRole("button", { name: "键盘检查会话" }).first().click();
     await page.getByTestId("task-composer-input").fill("运行长命令");
@@ -275,7 +287,7 @@ test.describe("v0.5.0 rc.2 键盘深度焦点", () => {
     await page.route("**://127.0.0.1:8000/http-profiles*", async (route) => {
       await route.fulfill({ json: [] });
     });
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
     // 打开设置页（v2 壳导航）

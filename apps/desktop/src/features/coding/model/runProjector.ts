@@ -111,6 +111,15 @@ export type TranscriptEntry =
       reason: string | null;
     }
   | {
+      kind: "decision-summary";
+      key: string;
+      sequence: number;
+      /** 公开决策摘要（只含结构化公开事实，不含隐藏推理，H0 §8） */
+      goal: string;
+      method: string | null;
+      nextSteps: string[];
+    }
+  | {
       kind: "terminal";
       key: string;
       sequence: number;
@@ -322,6 +331,25 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       projection.usage.inputTokens += num(payload, "input_tokens");
       projection.usage.outputTokens += num(payload, "output_tokens");
       projection.usage.costUsd = nullableNum(payload, "cost_usd") ?? projection.usage.costUsd;
+      break;
+    }
+    case "decision.summary": {
+      // v0.9.0 H0 §8：逐轮公开决策摘要（目标/方法/后续步骤）；
+      // payload 键集后端冻结，缺失/无 goal 时不投影（不伪造）。
+      const goal = str(payload, "goal");
+      if (!goal) break;
+      const nextStepsRaw = payload.next_steps;
+      const nextSteps = Array.isArray(nextStepsRaw)
+        ? nextStepsRaw.filter((item): item is string => typeof item === "string").slice(0, 12)
+        : [];
+      upsertEntry(projection, {
+        kind: "decision-summary",
+        key: `decision:${frame.sequence}`,
+        sequence: frame.sequence,
+        goal,
+        method: str(payload, "method") || null,
+        nextSteps,
+      });
       break;
     }
     case "output.validation_started":

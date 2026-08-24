@@ -1,19 +1,19 @@
 <script setup lang="ts">
 /**
- * AgentComposer · v0.8.0 W6-R2（v0.8.0 W6-R3 重排）
+ * AgentComposer · v0.8.0 W6-R2（v0.9.0 H1-A 输入器收敛）
  *
- * 底部主控制区（计划 §4.5/§6.8）：
- * - 原「知识检索」位 = 三档命令权限下拉（§6.7 权限表真实语义）；
- * - 移除「知识检索」「生成记忆」手动按钮（能力自动化，见 model/autoContext.ts）；
- * - 底部操作行：模型/Provider 配置入口（当前模型 + 本地/远程）+ 上下文用量
- *   模块 + 执行/停止；
+ * 底部主控制区（计划 §4.5/§5.5/§6.8）：
+ * - 输入器保留附件、权限下拉、PrivateAgent 入口、上下文圆环与执行/停止；
+ * - 独立矩形「上下文用量」模块移除 → PrivateAgent 状态旁紧凑圆环
+ *   （数值来自后端 typed budget，不可用如实呈现，不伪造百分比）；
+ * - 模型/本地远程属性收敛到唯一可点击的 PrivateAgent 入口（未配置时
+ *   点击进入 Provider 配置，执行按钮保持禁用并说明原因）；
  * - 权限/模型选择绑定真实契约：不支持的能力禁用并说明，不伪造请求。
  */
 import { computed, ref } from "vue";
 import { PhGearSix, PhWarningCircle } from "@phosphor-icons/vue";
 import TaskComposerV2 from "./TaskComposerV2.vue";
-import ContextUsageMeter from "./ContextUsageMeter.vue";
-import type { ContextUsageFacts } from "./model/contextUsage";
+import ContextUsageRing from "./ContextUsageRing.vue";
 import {
   agentPermissionOptions,
   currentAgentCapabilityFacts,
@@ -27,14 +27,19 @@ const props = withDefaults(
     pendingTool: boolean;
     stopRequested?: boolean;
     stopped?: boolean;
-    /** 当前模型（公开配置事实） */
+    /** 当前模型（公开配置事实，呈现于 PrivateAgent 入口） */
     modelName?: string | null;
     /** Provider 运行位置：本地/远程/未配置 */
     providerLabel?: string;
     /** Provider/模型异常态（配置未完成、模型不可用、远程关闭等） */
     providerWarning?: string | null;
-    /** 上下文用量事实（公开 usage，见 model/contextUsage.ts） */
-    usageFacts?: ContextUsageFacts | null;
+    /**
+     * v0.9.0 H1-B（计划 §5.6）：执行硬阻断原因（仅“模型未配置”）；
+     * 非空时执行按钮禁用并紧邻说明，配置完成后无需新建会话即可执行。
+     */
+    blockedReason?: string | null;
+    /** 当前会话（上下文圆环按会话拉取真实用量；切换即重读） */
+    sessionId?: number | null;
     /** /capabilities 公开字段（原样传入，不猜测） */
     capabilities?: Record<string, unknown> | null;
   }>(),
@@ -44,7 +49,8 @@ const props = withDefaults(
     modelName: null,
     providerLabel: "本地",
     providerWarning: null,
-    usageFacts: null,
+    blockedReason: null,
+    sessionId: null,
     capabilities: null,
   }
 );
@@ -59,6 +65,10 @@ const facts = computed(() => currentAgentCapabilityFacts(props.capabilities));
 const permissions = computed(() => agentPermissionOptions(facts.value));
 /** 对话路径真实语义 = 审批流（总是询问）；其余档位按契约禁用 */
 const permissionMode = ref<"confirm" | "workspace" | "full_access">("confirm");
+/** v0.9.0 H1-A：上下文圆环能力位（/capabilities 显式声明才启用） */
+const budgetEnabled = computed(
+  () => props.capabilities?.coding_context_budget_enabled === true
+);
 </script>
 
 <template>
@@ -70,6 +80,7 @@ const permissionMode = ref<"confirm" | "workspace" | "full_access">("confirm");
       :provider-label="providerLabel"
       :stop-requested="stopRequested"
       :stopped="stopped"
+      :blocked-reason="blockedReason"
       @send="(text) => emit('send', text)"
       @stop="emit('stop')"
     >
@@ -95,24 +106,28 @@ const permissionMode = ref<"confirm" | "workspace" | "full_access">("confirm");
         </label>
       </template>
 
-      <!-- 底部模型/Provider 配置入口 + 上下文用量 -->
+      <!-- 底部唯一模型/Provider 入口（PrivateAgent 收敛，计划 §5.5） -->
       <template #toolbar-right>
         <button
           class="model-entry"
           type="button"
           data-testid="composer-model-entry"
-          :title="providerWarning ?? '模型/Provider 配置'"
+          :title="providerWarning ?? 'PrivateAgent 模型/Provider 配置'"
           :class="{ 'has-warning': Boolean(providerWarning) }"
           @click="emit('configure-model')"
         >
           <PhWarningCircle v-if="providerWarning" :size="13" class="model-warning" aria-hidden="true" />
-          <span class="model-name">{{ modelName || "系统默认模型" }}</span>
-          <span class="model-provider">· {{ providerLabel }}</span>
+          <span class="model-brand">PrivateAgent</span>
+          <span class="model-provider">· {{ modelName || "系统默认模型" }} · {{ providerLabel }}</span>
           <PhGearSix :size="12" aria-hidden="true" />
         </button>
-        <ContextUsageMeter
-          v-if="usageFacts"
-          :facts="usageFacts"
+      </template>
+
+      <!-- v0.9.0 H1-A：PrivateAgent 状态旁紧凑上下文圆环（替换矩形模块） -->
+      <template #context-ring>
+        <ContextUsageRing
+          :session-id="sessionId"
+          :enabled="budgetEnabled"
         />
       </template>
     </TaskComposerV2>
@@ -166,13 +181,15 @@ const permissionMode = ref<"confirm" | "workspace" | "full_access">("confirm");
 .model-warning {
   color: var(--color-warning-fg);
 }
-.model-name {
+.model-brand {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.model-provider {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.model-provider {
-  flex-shrink: 0;
   color: var(--color-fg-subtle);
 }
 .visually-hidden {

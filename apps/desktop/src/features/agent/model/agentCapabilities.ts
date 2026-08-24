@@ -24,12 +24,18 @@ export interface AgentCapabilityFacts {
   chatWorkspaceApprovalSupported: boolean;
 }
 
-/** 当前后端公开契约下的能力事实（不在前端扩大授权）。 */
+/** 当前后端公开契约下的能力事实（不在前端扩大授权）。
+ *
+ * v0.9.0 H0 §3：full_access 独立能力位为 `coding_full_access_supported`
+ * （旧字段名 `full_access_enabled` 从未由后端提供，不再读取）；
+ * workspace 自动批准能力位 `coding_workspace_auto_approve` 与它互相独立，
+ * 不是别名；对话路径（ChatRequest 冻结）仍不承载权限模式入参。
+ */
 export function currentAgentCapabilityFacts(
   capabilities: Record<string, unknown> | null
 ): AgentCapabilityFacts {
   return {
-    fullAccessSupported: capabilities?.full_access_enabled === true,
+    fullAccessSupported: capabilities?.coding_full_access_supported === true,
     chatModelSelectionSupported: false,
     chatWorkspaceApprovalSupported: false,
   };

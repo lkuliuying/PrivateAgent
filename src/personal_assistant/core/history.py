@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .models import ChatSession, Message
@@ -41,15 +41,89 @@ class SessionRepository:
         *,
         project_id: int | None = None,
         kind: str | None = None,
+        include_archived: bool = False,
     ) -> list[ChatSession]:
-        """按最近更新时间倒序返回会话。可选按 project/kind 过滤。"""
+        """按最近更新时间倒序返回会话。可选按 project/kind 过滤。
+
+        v0.9.0 H4：默认不含已归档会话（显式 include_archived 才返回）。
+        """
         stmt = select(ChatSession).order_by(ChatSession.updated_at.desc())
         if project_id is not None:
             stmt = stmt.where(ChatSession.project_id == project_id)
         if kind is not None:
             stmt = stmt.where(ChatSession.kind == kind)
+        if not include_archived:
+            stmt = stmt.where(ChatSession.archived_at.is_(None))
         result = await self.db.execute(stmt)
         return list(result.scalars().all())
+
+    async def list_recent(
+        self,
+        *,
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> list[ChatSession]:
+        """v0.9.0 H4：最近任务——置顶优先，其后按更新时间倒序；不含已归档。"""
+        from sqlalchemy import case
+
+        stmt = (
+            select(ChatSession)
+            .where(ChatSession.archived_at.is_(None))
+            .order_by(
+                case((ChatSession.pinned_at.is_(None), 1), else_=0),
+                ChatSession.updated_at.desc(),
+            )
+            .limit(limit)
+        )
+        if kind is not None:
+            stmt = stmt.where(ChatSession.kind == kind)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def search(
+        self,
+        keyword: str,
+        *,
+        kind: str | None = None,
+        limit: int = 50,
+    ) -> list[ChatSession]:
+        """v0.9.0 H4：按标题模糊搜索会话（含有界，不返回已归档）。"""
+        pattern = f"%{keyword.strip()}%"
+        stmt = (
+            select(ChatSession)
+            .where(
+                ChatSession.title.like(pattern),
+                ChatSession.archived_at.is_(None),
+            )
+            .order_by(ChatSession.updated_at.desc())
+            .limit(limit)
+        )
+        if kind is not None:
+            stmt = stmt.where(ChatSession.kind == kind)
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def set_archived(self, session_id: int, archived: bool) -> None:
+        """归档/恢复（软删除；不物理删除消息与审计）。"""
+        from .timeutil import utcnow
+
+        await self.db.execute(
+            update(ChatSession)
+            .where(ChatSession.id == session_id)
+            .values(archived_at=utcnow() if archived else None)
+        )
+        await self.db.commit()
+
+    async def set_pinned(self, session_id: int, pinned: bool) -> None:
+        """置顶/取消置顶。"""
+        from .timeutil import utcnow
+
+        await self.db.execute(
+            update(ChatSession)
+            .where(ChatSession.id == session_id)
+            .values(pinned_at=utcnow() if pinned else None)
+        )
+        await self.db.commit()
 
     async def get(self, session_id: int) -> Optional[ChatSession]:
         return await self.db.get(ChatSession, session_id)
@@ -69,13 +143,19 @@ class MessageRepository:
         self.db = db
 
     async def add(self, session_id: int, role: str, content: str) -> Message:
-        """追加一条消息，并 touch 会话的 updated_at（用于会话列表排序）。"""
+        """追加一条消息，并 touch 会话的 updated_at（用于会话列表排序）。
+
+        v0.9.0 H0 §5：统一经 timeutil.utcnow() 写入 naive UTC，不用
+        ``func.now()``（随会话时区，防止时区漂移产生混排）。
+        """
+        from .timeutil import utcnow
+
         msg = Message(session_id=session_id, role=role, content=content)
         self.db.add(msg)
         await self.db.execute(
             update(ChatSession)
             .where(ChatSession.id == session_id)
-            .values(updated_at=func.now())
+            .values(updated_at=utcnow())
         )
         await self.db.commit()
         await self.db.refresh(msg)

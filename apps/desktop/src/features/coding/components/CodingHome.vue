@@ -7,9 +7,10 @@
  * 派生，本组件只呈现与发起动作；W1 的输入提交创建 coding 线程，
  * 首轮消息与 run 流在 W2 接入（CodingComposer 在 W3 交付）。
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   PhArrowRight,
+  PhDownloadSimple,
   PhFolderPlus,
   PhFolderSimple,
   PhGitBranch,
@@ -24,10 +25,17 @@ import PaSelect from "../../../design/PaSelect.vue";
 import PaSkeleton from "../../../design/PaSkeleton.vue";
 import type {
   CodingApiError,
+  CodingProfileImportStatus,
   CodingThreadSummary,
 } from "../model/contracts";
 import { WORKSPACE_STATUS_META } from "../model/contracts";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
+import {
+  fetchCodingProfileImportStatus,
+  importCodingModelProfile,
+} from "../api/modelProfiles";
+// v0.9.0 H1：新建项目对话框（选目录+授权；空态与侧栏共用）
+import NewProjectDialog from "./NewProjectDialog.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -41,9 +49,86 @@ const props = withDefaults(
 const emit = defineEmits<{
   navigate: [view: View];
   "thread-created": [thread: CodingThreadSummary];
+  /**
+   * v0.9.0 H1-D（§5.8）：进入同一模型管理区（带 returnTo，由 App 接线；
+   * 往返保留项目/会话/草稿，保存后原位解除阻塞）。
+   */
+  "configure-provider": [];
 }>();
 
 const homeState = computed(() => props.store.homeState.value);
+
+// v0.9.0 H1-D（§5.8）：拆分笼统的「模型 Provider 未配置」：
+// feature_disabled = 能力位关闭；profile_missing = 有配置但无 Coding profile。
+const profileBlocker = computed<"feature_disabled" | "profile_missing" | null>(() => {
+  if (homeState.value !== "provider-unconfigured") return null;
+  const result = props.store.modelProfiles.value;
+  return result?.status === "disabled" ? "feature_disabled" : "profile_missing";
+});
+
+// 一次性导入向导：旧全局配置 → 默认 Coding profile（幂等；失败显示精确原因）
+const importState = ref<CodingProfileImportStatus | null>(null);
+const importing = ref(false);
+const importError = ref("");
+
+watch(
+  profileBlocker,
+  async (blocker) => {
+    importError.value = "";
+    if (blocker !== "profile_missing") {
+      importState.value = null;
+      return;
+    }
+    try {
+      importState.value = await fetchCodingProfileImportStatus();
+    } catch {
+      importState.value = null;
+    }
+  },
+  { immediate: true }
+);
+
+const importPossible = computed(() => {
+  const state = importState.value;
+  if (!state) return false;
+  return state.importState === "pending" || state.importState === "wizard";
+});
+
+function importErrorText(error: unknown): string {
+  if (error && typeof error === "object") {
+    const coded = error as { code?: unknown; message?: unknown };
+    const message = typeof coded.message === "string" ? coded.message : "";
+    switch (coded.code) {
+      case "provider_unreachable":
+        return "Provider 不可达：请确认 Ollama 已启动后重试。";
+      case "model_missing":
+        return "Provider 可达，但配置的模型不存在：请先拉取模型或修改配置。";
+      case "credentials_missing":
+        return "远程凭据缺失：请先在设置中配置系统凭据。";
+      case "feature_disabled":
+        return "远程 Provider 未启用：请先在设置中开启。";
+      case "no_global_provider":
+        return "全局 Provider 尚未配置模型：请先在设置中配置。";
+      default:
+        return message || "导入失败，请重试";
+    }
+  }
+  return "导入失败，请重试";
+}
+
+async function onImportProfile(): Promise<void> {
+  if (importing.value) return;
+  importing.value = true;
+  importError.value = "";
+  try {
+    await importCodingModelProfile();
+    await props.store.refresh();
+  } catch (error) {
+    importError.value = importErrorText(error);
+  } finally {
+    importing.value = false;
+  }
+}
 const projects = computed(() => props.store.projects.value);
 const selectedProjectId = computed(() => props.store.selectedProjectId.value);
 const selectedWorkspaceId = computed(() => props.store.selectedWorkspaceId.value);
@@ -79,6 +164,15 @@ function onWorkspaceChange(value: string | number): void {
 const taskInput = ref("");
 const creating = ref(false);
 const createError = ref<CodingApiError | null>(null);
+
+// v0.9.0 H1：空态新建项目对话框；创建成功后刷新并选中新项目。
+const newProjectOpen = ref(false);
+
+async function onProjectCreated(projectId: number): Promise<void> {
+  newProjectOpen.value = false;
+  await props.store.refresh();
+  if (projectId > 0) props.store.selectProject(projectId);
+}
 
 async function submitTask(): Promise<void> {
   if (creating.value || !taskInput.value.trim()) return;
@@ -165,9 +259,10 @@ function asCodingApiError(cause: unknown): CodingApiError {
         v-else-if="homeState === 'no-projects'"
         :icon="PhFolderPlus"
         title="还没有项目"
-        description="先在项目页添加一个本地项目文件夹并授权，之后就可以在这里直接发起 Coding 任务。"
+        description="新建项目需要选择并授权一个工作目录；也可以选择内置的「当前用户目录」候选快速开始（不会自动扩大授权）。项目就绪后就可以在这里发起对话。"
       >
-        <PaButton variant="primary" @click="emit('navigate', 'projects')">打开项目页</PaButton>
+        <PaButton variant="primary" data-testid="home-new-project" @click="newProjectOpen = true">新建项目</PaButton>
+        <PaButton variant="ghost" @click="emit('navigate', 'projects')">打开项目页</PaButton>
       </PaEmptyState>
 
       <template v-else-if="homeState === 'no-workspace'">
@@ -191,13 +286,48 @@ function asCodingApiError(cause: unknown): CodingApiError {
       </template>
 
       <template v-else-if="homeState === 'provider-unconfigured'">
+        <!-- v0.9.0 H1-D（§5.8）：能力位关闭与 profile 缺失分别呈现 -->
         <PaEmptyState
+          v-if="profileBlocker === 'feature_disabled'"
           :icon="PhLightning"
-          title="模型 Provider 未配置"
-          description="Coding 任务需要可用的模型 profile。请先在设置中配置本地或远程 Provider。"
+          title="模型能力未开启"
+          description="Runtime 未启用 Coding 模型能力位（或版本过旧）。请更新 Runtime 或在配置中启用后重试。"
         >
-          <PaButton variant="primary" @click="emit('navigate', 'settings')">前往设置</PaButton>
+          <PaButton variant="primary" data-testid="home-provider-retry" @click="props.store.refresh()">重试</PaButton>
+          <PaButton variant="ghost" @click="emit('configure-provider')">前往设置</PaButton>
         </PaEmptyState>
+        <PaEmptyState
+          v-else
+          :icon="PhLightning"
+          title="尚无 Coding 模型"
+          description="Coding 任务需要一个模型 profile（具体模型标识与能力声明）。可一键导入当前全局配置，或在设置中创建并验证。"
+        >
+          <PaButton
+            v-if="importPossible"
+            variant="primary"
+            data-testid="home-provider-import"
+            :loading="importing"
+            @click="void onImportProfile()"
+          >
+            <PhDownloadSimple :size="14" aria-hidden="true" />
+            验证并导入当前模型配置
+          </PaButton>
+          <PaButton
+            :variant="importPossible ? 'ghost' : 'primary'"
+            data-testid="home-provider-create"
+            @click="emit('configure-provider')"
+          >创建 Coding 模型</PaButton>
+          <PaButton variant="ghost" @click="emit('configure-provider')">前往设置</PaButton>
+        </PaEmptyState>
+        <PaInlineNotice
+          v-if="importError"
+          tone="danger"
+          title="导入未完成"
+          class="home-notice"
+          data-testid="home-provider-import-error"
+        >
+          {{ importError }}
+        </PaInlineNotice>
       </template>
 
       <template v-else-if="homeState === 'workspace-invalid'">
@@ -215,7 +345,8 @@ function asCodingApiError(cause: unknown): CodingApiError {
       <template v-else>
         <header class="home-header">
           <p class="home-kicker">CODING WORKBENCH</p>
-          <h1>开始一个新任务</h1>
+          <!-- v0.9.0 H1：任务不再作为与项目平级的容器，具体任务由对话中的 run 表达 -->
+          <h1>开始一个新对话</h1>
           <p class="home-sub">选择项目与分支，描述要完成的事情；执行计划与审批都会逐步展示。</p>
         </header>
 
@@ -290,6 +421,13 @@ function asCodingApiError(cause: unknown): CodingApiError {
         </section>
       </template>
     </div>
+
+    <!-- v0.9.0 H1：新建项目对话框（选择并授权工作目录 / 用户目录候选） -->
+    <NewProjectDialog
+      v-if="newProjectOpen"
+      @close="newProjectOpen = false"
+      @created="(id) => void onProjectCreated(id)"
+    />
   </section>
 </template>
 

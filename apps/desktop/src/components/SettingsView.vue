@@ -23,10 +23,28 @@ import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import HttpProfilesPanel from "./HttpProfilesPanel.vue";
 import SqlProfilesPanel from "./SqlProfilesPanel.vue";
+import ModelProfilesPanel from "./ModelProfilesPanel.vue";
 import { useHealth } from "../stores/health";
 import { useNotifications } from "../stores/notifications";
 
-const emit = defineEmits<{ (e: "reconfigure"): void }>();
+/**
+ * v0.9.0 H1-D（计划 §5.8）：配置闭环往返——PrivateAgent 入口与 Coding 首页
+ * 阻塞操作都定位到同一模型管理区（focusSection），保存后自动返回
+ * returnTo 视图（项目/会话/草稿由调用方保留）。
+ */
+const props = withDefaults(
+  defineProps<{
+    focusSection?: string | null;
+    returnTo?: string | null;
+  }>(),
+  { focusSection: null, returnTo: null }
+);
+const emit = defineEmits<{ (e: "reconfigure"): void; (e: "return"): void }>();
+const modelProfilesCard = ref<HTMLElement | null>(null);
+
+function onModelProfilesSaved(): void {
+  if (props.returnTo) emit("return");
+}
 const notify = useNotifications();
 const desktopRuntime = isDesktopRuntime();
 
@@ -81,6 +99,10 @@ onMounted(() => {
   load();
   // 只轮询健康状态；重复加载整张设置表单会覆盖用户尚未保存的输入。
   timer = setInterval(() => void refreshHealth(), 5000);
+  // H1-D：定位到模型管理区（同一配置区闭环）
+  if (props.focusSection === "model-profiles") {
+    setTimeout(() => modelProfilesCard.value?.scrollIntoView({ block: "start" }), 60);
+  }
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
@@ -253,6 +275,12 @@ const statusItems = computed(() => {
       <span class="privacy-badge">数据默认留在本机</span>
     </header>
 
+    <!-- v0.9.0 H1-D：配置往返返回栏（从 Coding/Agent 入口进入时可见） -->
+    <div v-if="returnTo" class="settings-return-bar" data-testid="settings-return-bar">
+      <span>正在配置 Agent / Coding 模型；保存后将自动返回原页面（项目与会话保留）。</span>
+      <button class="return-btn" data-testid="settings-return" @click="emit('return')">返回</button>
+    </div>
+
     <div class="settings-grid">
 
     <!-- 状态 -->
@@ -424,27 +452,33 @@ const statusItems = computed(() => {
       </div>
     </section>
 
+    <!-- v0.9.0 H1-D（§5.8）：Agent / Coding 模型管理（全局 Provider 与 profile 闭环） -->
+    <section id="model-profiles" ref="modelProfilesCard" class="setting-card wide" data-testid="settings-model-profiles">
+      <div class="card-heading"><span>05</span><div><h2>Agent / Coding 模型</h2><p>创建、验证与选择 Coding 执行使用的具体模型（不含任何密钥）</p></div></div>
+      <ModelProfilesPanel @saved="onModelProfilesSaved" />
+    </section>
+
     <!-- MCP -->
     <section class="setting-card wide">
-      <div class="card-heading"><span>05</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
+      <div class="card-heading"><span>06</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
       <McpServersPanel />
     </section>
 
     <!-- v0.5.0 B3：HTTP 端点 -->
     <section class="setting-card wide">
-      <div class="card-heading"><span>06</span><div><h2>HTTP 端点</h2><p>固定目标与方法的可信 API 调用配置</p></div></div>
+      <div class="card-heading"><span>07</span><div><h2>HTTP 端点</h2><p>固定目标与方法的可信 API 调用配置</p></div></div>
       <HttpProfilesPanel />
     </section>
 
     <!-- v0.5.0 B4：只读数据库 -->
     <section class="setting-card wide">
-      <div class="card-heading"><span>07</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
+      <div class="card-heading"><span>08</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
       <SqlProfilesPanel />
     </section>
 
     <!-- 备份 -->
     <section class="setting-card">
-      <div class="card-heading"><span>08</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+      <div class="card-heading"><span>09</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
       <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
@@ -474,14 +508,14 @@ const statusItems = computed(() => {
 
     <!-- 连接配置 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>09</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
+      <div class="card-heading"><span>10</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
       <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
       <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
     </section>
 
     <!-- 关于 / 更新 -->
     <section class="setting-card compact-card">
-      <div class="card-heading"><span>10</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <div class="card-heading"><span>11</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>
@@ -535,6 +569,29 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+.settings-return-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  max-width: 1120px;
+  margin: 0 auto 12px;
+  padding: 8px 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-fg);
+  font-size: 13px;
+}
+.return-btn {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  cursor: pointer;
 }
 .setting-card {
   padding: 20px;

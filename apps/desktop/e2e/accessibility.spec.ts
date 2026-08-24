@@ -57,7 +57,7 @@ function mockApi(page: Page) {
 test.describe("0.4.0 可访问性", () => {
   test("v2 壳 + Agent 工作区无严重 WCAG AA 违规", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
     const results = await new AxeBuilder({ page })
@@ -76,7 +76,7 @@ test.describe("0.4.0 可访问性", () => {
 
   test("键盘焦点可见：Tab 导航出现 focus-visible 环", async ({ page }) => {
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
     await page.keyboard.press("Tab");

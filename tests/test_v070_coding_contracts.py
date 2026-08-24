@@ -44,11 +44,20 @@ from personal_assistant.core.coding_errors import (
 
 
 def test_permission_modes_replaced():
-    """v0.7.0 三模式替换 C0-D07 集合；read_only/full_access 不再是合法值。"""
-    assert PERMISSION_MODES == {"readonly", "confirm", "workspace"}
+    """v0.7.0 三模式替换 C0-D07 集合；read_only 不再是合法值。
+
+    v0.9.0 H0 §6.1 additive：full_access 作为独立能力（授予/撤销/到期/
+    审计）重新引入，不是 workspace 别名；见
+    tests/test_v090_h0_contracts.py。
+    """
+    assert PERMISSION_MODES == {
+        "readonly",
+        "confirm",
+        "workspace",
+        "full_access",  # v0.9.0 additive
+    }
     assert "read_only" not in PERMISSION_MODES
-    assert "full_access" not in PERMISSION_MODES
-    # confirm 是两版集合交集，保留
+    # confirm 是历版集合交集，保留
     assert "confirm" in PERMISSION_MODES
 
 
@@ -346,8 +355,10 @@ def test_patchset_error_codes_frozen():
 
 
 def test_v070_flags_default_off():
-    from personal_assistant.config import settings
+    """代码默认关闭；用 _env_file=None 隔离本地开发 .env 的显式开启。"""
+    from personal_assistant.config import Settings
 
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.coding_patchset_enabled is False
     assert settings.coding_command_profiles_enabled is False
     assert settings.coding_artifacts_enabled is False
@@ -419,7 +430,11 @@ async def test_no_native_tool_calls_model_rejected_for_coding(
 
 
 async def test_legacy_permission_modes_rejected(client, monkeypatch, tmp_path):
-    """read_only / full_access 创建 coding run → 422 permission_mode_invalid。"""
+    """read_only 创建 coding run → 422 permission_mode_invalid。
+
+    v0.9.0 H0 §6：full_access 重新合法（独立能力位），未启用/无授予时
+    由 409 full_access_unsupported 失败关闭，不再属于 422 非法词汇。
+    """
     from test_v070_permissions import _create_coding_env, _post_coding_run
 
     from personal_assistant.api import routes_agent_runs
@@ -427,7 +442,10 @@ async def test_legacy_permission_modes_rejected(client, monkeypatch, tmp_path):
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
     env = await _create_coding_env(client, tmp_path)
-    for legacy in ("read_only", "full_access"):
-        resp = await _post_coding_run(client, env, permission_mode=legacy)
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["error_code"] == "permission_mode_invalid"
+    resp = await _post_coding_run(client, env, permission_mode="read_only")
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error_code"] == "permission_mode_invalid"
+    # full_access 能力位未启用 → 409 失败关闭（不是 422 非法词汇）
+    resp = await _post_coding_run(client, env, permission_mode="full_access")
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error_code"] == "full_access_unsupported"

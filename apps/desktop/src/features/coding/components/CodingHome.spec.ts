@@ -1,12 +1,33 @@
 import { describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import CodingHome from "./CodingHome.vue";
+import NewProjectDialog from "./NewProjectDialog.vue";
 import { createCodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import type {
   CodingThreadSummary,
   CodingWorkspaceFetchers,
 } from "../model/contracts";
 import { createCodingWorkspacePreviewStore } from "../dev/codingHomePreview";
+
+// v0.9.0 H1-D：导入状态/导入动作的确定性 mock（部分 mock，其余导出保留）
+vi.mock("../api/modelProfiles", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/modelProfiles")>();
+  return {
+    ...actual,
+    fetchCodingProfileImportStatus: vi.fn(async () => ({
+      importState: "pending",
+      reasonCode: null,
+      provider: "ollama",
+      modelAvailable: true,
+    })),
+    importCodingModelProfile: vi.fn(async () => ({
+      imported: true,
+      alreadyExists: false,
+      profileId: "ollama-default",
+    })),
+  };
+});
+import { importCodingModelProfile } from "../api/modelProfiles";
 
 const OK_PROFILES: CodingWorkspaceFetchers["modelProfiles"] = async () => ({
   status: "ok",
@@ -137,10 +158,20 @@ describe("CodingHome", () => {
     );
   });
 
-  it("无项目：空态 + 打开项目页导航", async () => {
+  it("无项目：空态提供新建项目与项目页两个动作（v0.9.0 H1 拆分）", async () => {
     const { wrapper } = await mountPreview("no-projects");
     expect(wrapper.text()).toContain("还没有项目");
-    await wrapper.find("button.pa-button").trigger("click");
+    // 主动作：新建项目（打开选目录+授权对话框）
+    await wrapper.find('[data-testid="home-new-project"]').trigger("click");
+    expect(wrapper.find('[data-testid="new-project-dialog"]').exists()).toBe(true);
+    const dialog = wrapper.findComponent(NewProjectDialog);
+    dialog.vm.$emit("close");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="new-project-dialog"]').exists()).toBe(false);
+    // 次动作：打开项目页（旧入口保留）
+    const buttons = wrapper.findAll("button.pa-button");
+    const projectsBtn = buttons.find((btn) => btn.text().includes("打开项目页"));
+    await projectsBtn?.trigger("click");
     expect(wrapper.emitted("navigate")?.[0]).toEqual(["projects"]);
   });
 
@@ -155,14 +186,36 @@ describe("CodingHome", () => {
     await wrapper.find("button.pa-button").trigger("click");
     await flushPromises();
     expect(ensureRootWorkspace).toHaveBeenCalledWith(1);
-    expect(wrapper.text()).toContain("开始一个新任务");
+    expect(wrapper.text()).toContain("开始一个新对话");
   });
 
-  it("Provider 未配置：引导前往设置", async () => {
+  it("能力位关闭（feature_disabled）：呈现更新/重试语义（H1-D 拆分）", async () => {
     const { wrapper } = await mountPreview("provider-unconfigured");
-    expect(wrapper.text()).toContain("模型 Provider 未配置");
-    await wrapper.find("button.pa-button").trigger("click");
-    expect(wrapper.emitted("navigate")?.[0]).toEqual(["settings"]);
+    expect(wrapper.text()).toContain("模型能力未开启");
+    expect(wrapper.find('[data-testid="home-provider-retry"]').exists()).toBe(true);
+    // 前往设置入口进入同一模型管理区（configure-provider）
+    const buttons = wrapper.findAll("button.pa-button");
+    const settingsBtn = buttons.find((btn) => btn.text().includes("前往设置"));
+    await settingsBtn?.trigger("click");
+    expect(wrapper.emitted("configure-provider")).toBeTruthy();
+  });
+
+  it("profile 缺失（profile_missing）：一键导入与创建入口（H1-D）", async () => {
+    const { wrapper } = await mountHome(
+      readyFetchers({
+        modelProfiles: async () => ({ status: "ok", profiles: [] }),
+      })
+    );
+    expect(wrapper.text()).toContain("尚无 Coding 模型");
+    // 全局配置可导入 → 一键验证并导入按钮可见并调用 typed API
+    const importBtn = wrapper.find('[data-testid="home-provider-import"]');
+    expect(importBtn.exists()).toBe(true);
+    await importBtn.trigger("click");
+    await flushPromises();
+    expect(importCodingModelProfile).toHaveBeenCalled();
+    // 创建入口进入同一模型管理区（不丢失项目/草稿）
+    await wrapper.find('[data-testid="home-provider-create"]').trigger("click");
+    expect(wrapper.emitted("configure-provider")).toBeTruthy();
   });
 
   it("sidecar 不可达：错误态与重试入口", async () => {
