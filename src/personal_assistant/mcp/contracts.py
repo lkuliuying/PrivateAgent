@@ -12,6 +12,20 @@ class McpTransport(StrEnum):
     STREAMABLE_HTTP = "streamable_http"
 
 
+class McpApprovalMode(StrEnum):
+    """逐 server/逐工具审批模式（专项计划 §12.2）。
+
+    auto 仅对只读、无副作用且**显式配置**的工具生效；MCP 自报只读不能单独
+    成为授权依据。deny 不暴露、不调用。
+    """
+
+    AUTO = "auto"
+    PROMPT = "prompt"
+    WRITES = "writes"
+    ALWAYS = "always"
+    DENY = "deny"
+
+
 @dataclass(frozen=True, slots=True)
 class McpServerConfig:
     id: str
@@ -28,6 +42,9 @@ class McpServerConfig:
     trusted: bool = False
     enabled: bool = False
     allowed_tools: frozenset[str] = frozenset()
+    # §12.2：server 默认审批模式与逐工具覆盖（工具名 → 模式）。
+    approval_default: McpApprovalMode = McpApprovalMode.PROMPT
+    approval_overrides: dict[str, McpApprovalMode] | None = None
     timeout_ms: int = 30_000
     max_output_bytes: int = 256 * 1024
 

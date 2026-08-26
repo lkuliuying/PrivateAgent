@@ -2883,6 +2883,8 @@ class McpServer(Base):
         BOOLEAN, nullable=False, default=False, server_default="0"
     )
     allowed_tools_json: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # CT-7 §12.2：server 默认审批模式 + 逐工具覆盖（{"default","tools"}）。
+    approval_policy_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     timeout_ms: Mapped[int] = mapped_column(
         INTEGER, nullable=False, default=30_000, server_default="30000"
     )
@@ -2897,6 +2899,8 @@ class McpServer(Base):
     discovery_resources_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     discovery_prompts_json: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
     discovery_sha256: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
+    # CT-7 §12.1：discovery 保存时的连接身份哈希；不一致/超 TTL 即过期。
+    discovery_config_hash: Mapped[str | None] = mapped_column(CHAR(64), nullable=True)
     last_checked_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
     discovered_at: Mapped[datetime | None] = mapped_column(DATETIME(fsp=3), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

@@ -471,7 +471,10 @@ WORKFLOW_TOOL_CONTRACTS: tuple[WorkflowToolContract, ...] = (
         version="1.0.0",
         kind=WorkflowKind.PATCH,
         flag_env=_READ_ONLY_TOOLS_FLAG_ENV,
-        description="为已授权项目中的单个文件生成替换式 unified diff 预览；只读，不写入文件。",
+        description=(
+            "为已授权项目中的单个文件生成替换式 unified diff 预览；只读，不写入"
+            "文件。需要落盘时，预览成功后必须继续调用 apply_patch_to_workspace。"
+        ),
         input_schema=_PROPOSE_PATCH_INPUT,
         output_schema=_PROPOSE_PATCH_OUTPUT,
         risk_level=ToolRiskLevel.SAFE,
@@ -509,7 +512,11 @@ WORKFLOW_TOOL_CONTRACTS: tuple[WorkflowToolContract, ...] = (
         version="1.0.0",
         kind=WorkflowKind.COMMAND,
         flag_env=COMMAND_WORKFLOW_FLAG_ENV,
-        description="审批后在已授权项目根目录运行固定白名单命令（参数数组，不经 shell），支持超时、取消与进程树清理。",
+        description=(
+            "审批后在已授权项目根目录运行固定白名单的测试、构建或只读诊断命令"
+            "（参数数组，不经 shell），支持超时、取消与进程树清理；不得用于"
+            "创建、修改、删除文件，文件变更必须改用 Patch 工具。"
+        ),
         input_schema=_RUN_COMMAND_INPUT,
         output_schema=_RUN_COMMAND_OUTPUT,
         risk_level=ToolRiskLevel.CONFIRM,

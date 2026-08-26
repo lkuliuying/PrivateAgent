@@ -32,6 +32,7 @@ from typing import Any, Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
+from .code_tools import normalize_patch_content
 from .coding_errors import RUNNABLE_WORKSPACE_STATUSES
 from .git_snapshot import GitSnapshotError, read_git_snapshot
 from .patch_workflow import _reject_link_target
@@ -297,18 +298,18 @@ def _build_preview_files(root: str, operations: Sequence[dict]) -> list[dict]:
         params = item[op_type]
         if op_type == "create":
             path = params["path"]
-            _check_new_content(params["new_content"])
+            new_content = normalize_patch_content(path, params["new_content"])
+            _check_new_content(new_content)
             full = _resolve(root, path)
             if full.exists():
                 raise PatchSetError("patchset_conflict", f"目标文件已存在: {path}")
             old_content = ""
-            new_content = params["new_content"]
         elif op_type == "update":
             path = params["path"]
-            _check_new_content(params["new_content"])
+            new_content = normalize_patch_content(path, params["new_content"])
+            _check_new_content(new_content)
             full = _resolve(root, path)
             old_content = _read_disk_utf8(full, missing_ok=False)
-            new_content = params["new_content"]
         elif op_type == "delete":
             path = params["path"]
             full = _resolve(root, path)
@@ -318,10 +319,11 @@ def _build_preview_files(root: str, operations: Sequence[dict]) -> list[dict]:
             old_path = params["old_path"]
             new_path = params["new_path"]
             if "new_content" in params:
-                _check_new_content(params["new_content"])
+                new_content = normalize_patch_content(new_path, params["new_content"])
+                _check_new_content(new_content)
             full = _resolve(root, old_path)
             old_content = _read_disk_utf8(full, missing_ok=False)
-            new_content = params.get("new_content", old_content)
+            new_content = new_content if "new_content" in params else old_content
             new_full = _resolve(root, new_path)
             if new_full.exists():
                 raise PatchSetError("patchset_conflict", f"rename 目标已存在: {new_path}")

@@ -29,7 +29,12 @@ from personal_assistant.core.diagnostic_profiles import (
     BUILTIN_DIAGNOSTIC_PROFILES,
     diagnostic_profiles_description,
 )
-from personal_assistant.core.executable_intent import detect_executable_intent
+from personal_assistant.core.executable_intent import (
+    FILE_MUTATION_INTENT_POLICY,
+    detect_direct_single_file_write_intent,
+    detect_executable_intent,
+    detect_file_mutation_intent,
+)
 from personal_assistant.core.models import AgentRun as AgentRunRecord
 from personal_assistant.core.models import Project
 from personal_assistant.core.permissions import PermissionError_
@@ -64,6 +69,46 @@ from personal_assistant.core.result_parsers import parse_command_result
 )
 def test_executable_intent_matrix(message: str, expected: bool):
     assert detect_executable_intent(message) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("在根目录下创建一个txt文档，文件名为hello.txt", True),
+        ("帮我修改 README 的标题", True),
+        ("删除 src/legacy.py 文件", True),
+        ("如何创建 hello.txt 文件", False),
+        ("创建一个数据库", False),
+        ("运行项目测试", False),
+    ],
+)
+def test_file_mutation_intent_matrix(message: str, expected: bool):
+    assert detect_file_mutation_intent(message) is expected
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("创建一个 hello.c 文件，写入打印 hello world 的代码", True),
+        ("修改 src/main.ts 文件", True),
+        ("修改 src/a.ts 和 src/b.ts 文件", False),
+        ("批量修改多个文件", False),
+        ("只预览 hello.txt 的修改，不要写入", False),
+    ],
+)
+def test_direct_single_file_write_intent_matrix(message: str, expected: bool):
+    assert detect_direct_single_file_write_intent(message) is expected
+
+
+def test_file_mutation_policy_routes_writes_away_from_command_tool():
+    assert "apply_patch_to_workspace" in FILE_MUTATION_INTENT_POLICY
+    assert "apply_patch_set" in FILE_MUTATION_INTENT_POLICY
+    assert "run_whitelisted_command" in FILE_MUTATION_INTENT_POLICY
+    assert "不得重复" in FILE_MUTATION_INTENT_POLICY
+    assert "相对路径" in FILE_MUTATION_INTENT_POLICY
+    assert "/hello.txt" in FILE_MUTATION_INTENT_POLICY
+    assert "预览成功后必须继续" in FILE_MUTATION_INTENT_POLICY
+    assert "直接调用 apply_patch_to_workspace" in FILE_MUTATION_INTENT_POLICY
 
 
 # ===========================================================================
@@ -227,14 +272,22 @@ def test_windows_service_probe_without_state_facts():
 # ===========================================================================
 
 
-def _verifier(executions: list[dict], *, minimum: int):
+def _verifier(
+    executions: list[dict],
+    *,
+    minimum: int,
+    require_successful_file_write: bool = False,
+):
     async def loader() -> WorkflowCompletionFacts:
         return WorkflowCompletionFacts(executions=executions)
 
     # max_failed_tools 放宽：隔离验证最小证据门槛（诊断命令失败也是证据，
     # 与 run 创建链注入口径一致）。
     return WorkflowCompletionOutputVerifier(
-        loader, min_tool_executions=minimum, max_failed_tools=16
+        loader,
+        min_tool_executions=minimum,
+        max_failed_tools=16,
+        require_successful_file_write=require_successful_file_write,
     )
 
 
@@ -266,6 +319,48 @@ async def test_min_tool_executions_default_off():
     assert verification.passed is True
 
 
+async def test_file_mutation_rejects_failed_command_only_evidence():
+    """复现试用反馈：非白名单命令即使执行过，也不能让文件任务 completed。"""
+    verification = await _verifier(
+        [
+            {"tool_name": "run_whitelisted_command", "status": "failed"},
+            {"tool_name": "run_whitelisted_command", "status": "failed"},
+            {"tool_name": "run_whitelisted_command", "status": "failed"},
+        ],
+        minimum=1,
+        require_successful_file_write=True,
+    ).verify("无法创建文件", attempt=1)
+    assert verification.passed is False
+    assert verification.code == "completion_not_met"
+    assert "Patch 写入" in verification.message
+    assert "run_whitelisted_command 不能用于创建或编辑文件" in (
+        verification.correction or ""
+    )
+
+
+async def test_file_mutation_preview_feedback_requires_immediate_apply():
+    verification = await _verifier(
+        [{"tool_name": "propose_patch", "status": "succeeded"}],
+        minimum=1,
+        require_successful_file_write=True,
+    ).verify("预览已生成", attempt=1)
+    assert verification.passed is False
+    assert "预览 propose_patch 已成功" in (verification.correction or "")
+    assert "立即" in (verification.correction or "")
+    assert "apply_patch_to_workspace" in (verification.correction or "")
+    assert "不要重复预览" in (verification.correction or "")
+
+
+@pytest.mark.parametrize("tool_name", ["apply_patch_to_workspace", "apply_patch_set"])
+async def test_file_mutation_accepts_successful_patch_write(tool_name: str):
+    verification = await _verifier(
+        [{"tool_name": tool_name, "status": "succeeded"}],
+        minimum=1,
+        require_successful_file_write=True,
+    ).verify("文件已创建", attempt=1)
+    assert verification.passed is True
+
+
 # ===========================================================================
 # F. run 创建链：可执行意图注入证据门槛并持久化
 # ===========================================================================
@@ -292,6 +387,67 @@ async def test_executable_intent_run_persists_evidence_gate(
         assert record is not None
         conditions = record.completion_conditions_json or {}
         assert conditions.get("min_tool_executions") == 1
+
+
+async def test_file_mutation_run_persists_successful_write_gate(
+    client, monkeypatch, tmp_path
+):
+    """明确文件写入请求必须持久化成功写入门槛，供审批恢复和终态复核。
+
+    v1.0 CT1-04 起（专项计划 F-002）：文件写入意图在没有任何可用写工具时
+    创建即被预检阻断；本用例开启单文件 Patch 工作流后验证门槛持久化。
+    """
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
+    env = await _create_coding_env(client, tmp_path)
+    resp = await _post_coding_run(
+        client,
+        env,
+        message="在根目录创建 hello.txt 文件，内容为 hello world",
+    )
+    assert resp.status_code == 202, resp.text
+    run_id = resp.json()["id"]
+
+    from personal_assistant.core.db import async_session_factory
+
+    async with async_session_factory() as db:
+        record = await db.get(AgentRunRecord, run_id)
+        assert record is not None
+        conditions = record.completion_conditions_json or {}
+        assert conditions.get("min_tool_executions") == 1
+        assert conditions.get("require_successful_file_write") is True
+
+
+async def test_direct_single_file_run_only_exposes_direct_apply_tool(
+    client, monkeypatch, tmp_path
+):
+    """明确单文件写入缩小模型工具面；apply 仍由原审批执行器把关。"""
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    monkeypatch.setattr(
+        routes_agent_runs.cfg, "agent_run_read_only_tools_enabled", True
+    )
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "coding_patchset_enabled", True)
+    captured: dict = {}
+    monkeypatch.setattr(
+        routes_agent_runs.agent_run_coordinator,
+        "start",
+        lambda **kwargs: captured.update(kwargs),
+    )
+    env = await _create_coding_env(client, tmp_path)
+    resp = await _post_coding_run(
+        client,
+        env,
+        message="创建一个 hello.c 文件，写入打印 hello world 的代码",
+    )
+    assert resp.status_code == 202, resp.text
+    names = {definition.name for definition in captured["tool_definitions"]}
+    assert "apply_patch_to_workspace" in names
+    assert "propose_patch" not in names
+    assert "propose_patch_set" not in names
+    assert "apply_patch_set" not in names
 
 
 async def test_informational_run_has_no_evidence_gate(
@@ -328,3 +484,49 @@ async def test_min_tool_executions_request_validation(client):
         assert resp.status_code == 422
     finally:
         monkey.undo()
+
+
+async def test_coding_run_create_persists_user_message_and_last_run_once(
+    client, monkeypatch, tmp_path, db
+):
+    """Coding API 创建成功即 durable 保存用户请求与 session.last_run_id；
+    client_request_id 重放不能重复消息。
+    """
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    monkeypatch.setattr(
+        routes_agent_runs.agent_run_coordinator,
+        "start",
+        lambda **_: None,
+    )
+    async def no_git_snapshot(_root: str):
+        return None
+
+    monkeypatch.setattr(routes_agent_runs, "read_git_snapshot", no_git_snapshot)
+    env = await _create_coding_env(client, tmp_path)
+    request_id = str(uuid4())
+    payload = {
+        "message": "保留这条任务对话",
+        "client_request_id": request_id,
+    }
+    first = await _post_coding_run(client, env, **payload)
+    assert first.status_code == 202, first.text
+    replay = await _post_coding_run(client, env, **payload)
+    assert replay.status_code == 202, replay.text
+    assert replay.json()["id"] == first.json()["id"]
+
+    messages = await client.get(f"/sessions/{env['session_id']}/messages")
+    assert messages.status_code == 200
+    matching = [
+        item
+        for item in messages.json()
+        if item["role"] == "user" and item["content"] == payload["message"]
+    ]
+    assert len(matching) == 1
+    detail = await client.get(f"/sessions/{env['session_id']}")
+    assert detail.json()["last_run_id"] == first.json()["id"]
+
+    await db.execute(
+        delete(AgentRunRecord).where(AgentRunRecord.id == first.json()["id"])
+    )
+    await db.commit()

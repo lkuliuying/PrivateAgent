@@ -3,7 +3,7 @@
 覆盖：
 - 授权项目（建 project + 同步 trusted_paths + 去重）。
 - 扫描忽略 .git/node_modules 等目录。
-- 文件名搜索 / 内容 grep / 读取片段。
+- 目录枚举 / 文件名搜索 / 内容 grep / 读取片段。
 - 越界 rel_path 读取被拒（403）。
 - 代码工具注册与风险等级。
 - git status/diff 只读（本机有 git 时）。
@@ -18,24 +18,39 @@ import subprocess
 
 import pytest
 
+from personal_assistant.agents.contracts import ToolCall
+from personal_assistant.agents.runtime import CancellationToken
+from personal_assistant.core.code_tools import list_directory
+from personal_assistant.core.permissions import PermissionError_
+from personal_assistant.core.tool_adapter import build_read_only_tool_dispatcher
 from personal_assistant.core.tools import default_registry
 
 # ============ 工具注册 ============
 
+
 def test_code_tools_registered():
-    """M1 五个代码工具注册，风险等级正确。"""
+    """M1 代码工具注册，风险等级正确。"""
+    ld = default_registry.get("list_directory")
     s = default_registry.get("search_files")
     g = default_registry.get("grep_code")
     r = default_registry.get("read_code_file")
     gs = default_registry.get("get_git_status")
     gd = default_registry.get("get_git_diff")
+    assert ld and ld.risk_level == "safe"
     assert s and s.risk_level == "safe"
     assert g and g.risk_level == "safe"
     assert r and r.risk_level == "confirm"
     assert gs and gs.risk_level == "safe"
     assert gd and gd.risk_level == "safe"
     names = {t["name"] for t in default_registry.for_planning()}
-    assert {"search_files", "grep_code", "read_code_file", "get_git_status", "get_git_diff"}.issubset(names)
+    assert {
+        "list_directory",
+        "search_files",
+        "grep_code",
+        "read_code_file",
+        "get_git_status",
+        "get_git_diff",
+    }.issubset(names)
 
 
 # ============ 项目授权 ============
@@ -134,6 +149,116 @@ def _flatten_tree(node: dict) -> list[str]:
 
 # ============ 搜索 / grep / 读取 ============
 
+@pytest.mark.asyncio
+async def test_list_directory_live_non_git_project(client, db, tmp_path):
+    """无需 Git 或预扫描即可列根目录/子目录，并保持越界与输出上限。"""
+
+    root = tmp_path / "plain-directory"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
+    (root / "README.md").write_text("# plain\n", encoding="utf-8")
+    (root / ".git").mkdir()
+    (root / ".git" / "config").write_text("ignored\n", encoding="utf-8")
+    (root / "node_modules").mkdir()
+    (root / "node_modules" / "pkg.js").write_text("ignored\n", encoding="utf-8")
+
+    created = await client.post(
+        "/projects", json={"name": "plain", "root_path": str(root)}
+    )
+    assert created.status_code == 201
+    project_id = created.json()["id"]
+
+    root_result = await list_directory(db, project_id)
+    assert root_result["rel_path"] == "."
+    assert [(item["name"], item["kind"]) for item in root_result["entries"]] == [
+        ("src", "directory"),
+        ("README.md", "file"),
+    ]
+    assert root_result["truncated"] is False
+
+    src_result = await list_directory(db, project_id, "src")
+    assert src_result["entries"] == [
+        {
+            "rel_path": "src/app.py",
+            "name": "app.py",
+            "kind": "file",
+            "language": "Python",
+            "size_bytes": (root / "src" / "app.py").stat().st_size,
+        }
+    ]
+
+    bounded = await list_directory(db, project_id, limit=1)
+    assert bounded["count"] == 1
+    assert bounded["truncated"] is True
+
+    dispatcher = build_read_only_tool_dispatcher(db)
+    dispatched = await dispatcher.execute(
+        ToolCall(
+            id="list-root",
+            name="list_directory",
+            arguments={"project_id": project_id},
+        ),
+        cancellation=CancellationToken(),
+    )
+    assert dispatched.success is True
+    assert dispatched.output == root_result
+
+    missing_query = await dispatcher.execute(
+        ToolCall(
+            id="search-without-query",
+            name="search_files",
+            arguments={"project_id": project_id},
+        ),
+        cancellation=CancellationToken(),
+    )
+    assert missing_query.success is True
+    assert missing_query.output == {
+        "mode": "directory",
+        "rel_path": ".",
+        "results": [
+            {
+                "rel_path": item["rel_path"],
+                "name": item["name"],
+                "kind": item["kind"],
+                "language": item["language"],
+                "size_bytes": item["size_bytes"],
+            }
+            for item in root_result["entries"]
+        ],
+        "count": root_result["count"],
+        "truncated": False,
+    }
+
+    blank_query = await dispatcher.execute(
+        ToolCall(
+            id="search-with-blank-query",
+            name="search_files",
+            arguments={"project_id": project_id, "query": "   "},
+        ),
+        cancellation=CancellationToken(),
+    )
+    assert blank_query.success is True
+    assert blank_query.output == missing_query.output
+
+    invalid = await dispatcher.execute(
+        ToolCall(
+            id="list-empty-path",
+            name="list_directory",
+            arguments={"project_id": project_id, "rel_path": ""},
+        ),
+        cancellation=CancellationToken(),
+    )
+    assert invalid.success is False
+    assert invalid.error_code == "input_schema_invalid"
+
+    with pytest.raises(PermissionError_):
+        await list_directory(db, project_id, "../outside")
+    with pytest.raises(FileNotFoundError, match="目录不存在"):
+        await list_directory(db, project_id, "missing")
+    with pytest.raises(NotADirectoryError, match="不是目录"):
+        await list_directory(db, project_id, "README.md")
+
+
 async def _make_scanned_project(client, tmp_path) -> int:
     root = tmp_path / "proj3"
     (root / "src").mkdir(parents=True)
@@ -151,12 +276,30 @@ async def _make_scanned_project(client, tmp_path) -> int:
 
 
 @pytest.mark.asyncio
-async def test_search_files_by_name(client, tmp_path):
+async def test_search_files_by_name(client, db, tmp_path):
     pid = await _make_scanned_project(client, tmp_path)
     res = await client.get(f"/projects/{pid}/search", params={"query": "app", "kind": "name"})
     assert res.status_code == 200
     paths = [r["rel_path"] for r in res.json()["results"]]
     assert any("app.py" in p for p in paths)
+
+    dispatcher = build_read_only_tool_dispatcher(db)
+    tool_result = await dispatcher.execute(
+        ToolCall(
+            id="search-app",
+            name="search_files",
+            arguments={"project_id": pid, "query": " app "},
+        ),
+        cancellation=CancellationToken(),
+    )
+    assert tool_result.success is True
+    assert tool_result.output["mode"] == "search"
+    assert tool_result.output["count"] >= 1
+    assert all(item["kind"] == "file" for item in tool_result.output["results"])
+    assert any(
+        item["rel_path"].endswith("src/app.py")
+        for item in tool_result.output["results"]
+    )
 
 
 @pytest.mark.asyncio

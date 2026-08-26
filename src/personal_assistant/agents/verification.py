@@ -9,6 +9,8 @@ from typing import Any, ClassVar, Protocol
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..agent_v2.domain.completion import CompletionContract, evaluate_completion
+from ..agent_v2.domain.effects import EffectClass, EffectRecord
 from .contracts import ModelOutputFormat
 
 
@@ -380,6 +382,8 @@ class WorkflowCompletionOutputVerifier:
     - ``min_tool_executions``（v0.9.0 H1-B/计划 §5.6）：可执行意图 run 的
       最小工具/命令执行证据数——基于 durable executions 事实计数，
       禁止无执行证据的“完成”宣称（不得退化为纯问答）。
+    - ``require_successful_file_write``：明确的文件变更请求至少存在一个
+      succeeded 的受审计 Patch 写入执行；失败命令和只读预览不能冒充完成。
 
     条件未满足 → run 以 output_validation_failed 失败关闭，不进入 completed。
     """
@@ -398,6 +402,7 @@ class WorkflowCompletionOutputVerifier:
         no_pending_patchsets: bool = False,
         final_git_diff: str = "any",
         min_tool_executions: int = 0,
+        require_successful_file_write: bool = False,
     ) -> None:
         if not callable(fact_loader):
             raise TypeError("workflow completion fact loader must be callable")
@@ -415,6 +420,7 @@ class WorkflowCompletionOutputVerifier:
         self._no_pending_patchsets = bool(no_pending_patchsets)
         self._final_git_diff = final_git_diff
         self._min_tool_executions = int(min_tool_executions)
+        self._require_successful_file_write = bool(require_successful_file_write)
 
     async def verify(self, output: str, *, attempt: int) -> OutputVerification:
         del output, attempt
@@ -443,6 +449,35 @@ class WorkflowCompletionOutputVerifier:
                     f"工具/命令执行证据 {evidence} 条，少于要求的"
                     f" {self._min_tool_executions} 条；可执行请求必须调用"
                     "工具收集证据，不得只回复文字教程"
+                )
+        file_write_unmet = False
+        successful_single_file_preview = False
+        successful_patchset_preview = False
+        if self._require_successful_file_write:
+            successful_write_tools = {
+                "apply_patch_to_workspace",
+                "apply_patch_set",
+            }
+            has_successful_file_write = any(
+                execution.get("status") == "succeeded"
+                and execution.get("tool_name") in successful_write_tools
+                for execution in facts.executions
+            )
+            if not has_successful_file_write:
+                file_write_unmet = True
+                successful_single_file_preview = any(
+                    execution.get("status") == "succeeded"
+                    and execution.get("tool_name") == "propose_patch"
+                    for execution in facts.executions
+                )
+                successful_patchset_preview = any(
+                    execution.get("status") == "succeeded"
+                    and execution.get("tool_name") == "propose_patch_set"
+                    for execution in facts.executions
+                )
+                unmet.append(
+                    "文件变更任务没有 succeeded 的 Patch 写入执行；"
+                    "失败命令和只读预览不算完成"
                 )
         for tool_name in self._must_succeed:
             records = by_tool.get(tool_name, [])
@@ -499,10 +534,124 @@ class WorkflowCompletionOutputVerifier:
                 passed=False,
                 code="completion_not_met",
                 message="工作流完成条件未满足：" + "；".join(unmet)[:2_000],
-                correction="继续执行未完成步骤或修正失败工具后重试。",
+                correction=(
+                    (
+                        "只读预览 propose_patch 已成功，但文件尚未写入。现在必须"
+                        "立即复用相同 project_id、rel_path、new_content 调用 "
+                        "apply_patch_to_workspace；不要重复预览或给出最终回答。"
+                        if successful_single_file_preview
+                        else "PatchSet 预览已成功，但文件尚未写入。现在必须立即"
+                        "使用该预览返回的 patch_set_id、preview_version 和 "
+                        "arguments_sha256 调用 apply_patch_set；不要重复预览或给出"
+                        "最终回答。"
+                        if successful_patchset_preview
+                        else "单文件请直接调用 apply_patch_to_workspace；多文件先调用 "
+                        "propose_patch_set，再调用 apply_patch_set。"
+                    )
+                    + " run_whitelisted_command 不能用于创建或编辑文件。"
+                    if file_write_unmet
+                    else "继续执行未完成步骤或修正失败工具后重试。"
+                ),
             )
         return OutputVerification(
             passed=True,
             code="ok",
             message="工作流完成条件已满足（工具执行事实核对通过）。",
         )
+
+
+class CompletionContractOutputVerifier:
+    """v1.0 CT1-05（专项计划 §7.5/ADR-007）：CompletionContract 完成收口。
+
+    把 durable executions 事实投影为 v2 ``EffectRecord`` 证据后，委托
+    ``agent_v2.domain.completion.evaluate_completion`` 求值——这是文件写入/
+    最小执行证据门槛的**唯一判断实现**；v0.9 ``WorkflowCompletionOutputVerifier``
+    中对应条件族在路由装配时让位于本验证器（不再双判）。
+    """
+
+    name = "completion_contract"
+    output_schema: ClassVar[dict[str, Any] | None] = None
+
+    def __init__(
+        self,
+        fact_loader: WorkflowCompletionFactLoader,
+        contract: CompletionContract,
+    ) -> None:
+        if not callable(fact_loader):
+            raise TypeError("completion contract fact loader must be callable")
+        self._loader = fact_loader
+        self._contract = contract
+
+    async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        del output, attempt
+        try:
+            facts = await self._loader()
+        except Exception:  # noqa: BLE001
+            return OutputVerification(
+                passed=False,
+                code="completion_evidence_unavailable",
+                message="多步骤工作流完成条件证据不可用。",
+                correction="确认执行事实持久化后重试，不要宣称已完成。",
+            )
+        from ..agent_v2.application.effect_mapping import effects_for_tool
+
+        records: list[EffectRecord] = []
+        for execution in facts.executions:
+            tool_name = str(execution.get("tool_name") or "")[:128]
+            verified_value = execution.get("verified")
+            records.append(
+                EffectRecord(
+                    tool_name=tool_name or "unknown",
+                    status=str(execution.get("status") or "unknown")[:32],
+                    effects=effects_for_tool(tool_name),
+                    verified=None if verified_value is None else bool(verified_value),
+                )
+            )
+        evaluation = evaluate_completion(self._contract, records)
+        if evaluation.satisfied:
+            return OutputVerification(
+                passed=True,
+                code="ok",
+                message="工作流完成条件已满足（完成契约核对通过）。",
+            )
+        return OutputVerification(
+            passed=False,
+            code=str(evaluation.failure_code or "completion_not_met"),
+            message=(
+                "工作流完成条件未满足：" + "；".join(evaluation.unmet_reasons)[:2_000]
+            ),
+            correction=_contract_correction(
+                records,
+                write_missing=EffectClass.FILESYSTEM_WRITE
+                in evaluation.missing_effects,
+            ),
+        )
+
+
+def _contract_correction(records: list[EffectRecord], *, write_missing: bool) -> str:
+    """与 v0.9 H1-B 相同的公开纠偏话术（UI 无感迁移，ADR-007 §2）。"""
+    suffix = " run_whitelisted_command 不能用于创建或编辑文件。"
+    if write_missing:
+        if any(
+            record.status == "succeeded" and record.tool_name == "propose_patch"
+            for record in records
+        ):
+            return (
+                "只读预览 propose_patch 已成功，但文件尚未写入。现在必须"
+                "立即复用相同 project_id、rel_path、new_content 调用 "
+                "apply_patch_to_workspace；不要重复预览或给出最终回答。" + suffix
+            )
+        if any(
+            record.status == "succeeded" and record.tool_name == "propose_patch_set"
+            for record in records
+        ):
+            return (
+                "PatchSet 预览已成功，但文件尚未写入。现在必须立即"
+                "使用该预览返回的 patch_set_id、preview_version 和 "
+                "arguments_sha256 调用 apply_patch_set；不要重复预览或给出"
+                f"最终回答。{suffix}"
+            )
+    return (
+        "单文件请直接调用 apply_patch_to_workspace；多文件先调用 "
+        f"propose_patch_set，再调用 apply_patch_set。{suffix}"
+    )

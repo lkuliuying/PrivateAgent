@@ -44,6 +44,9 @@ _PATH_SCHEMA = {
     "maxLength": MAX_REL_PATH_LEN,
     "description": "workspace 内规范化相对路径；拒绝绝对路径、..、设备路径与链接逃逸",
 }
+_RAW_FILE_CONTENT_DESCRIPTION = (
+    "原始完整文件内容；不要使用 Markdown 代码围栏或二次 JSON 转义"
+)
 
 # === 操作项（create/update/delete/rename 共用基础字段） ===
 _OPERATION_BASE = {
@@ -56,7 +59,7 @@ _OPERATION_BASE = {
         "new_content": {
             "type": "string",
             "maxLength": MAX_SINGLE_FILE_BYTES,
-            "description": "完整新文件内容（update/create/rename 可选）",
+            "description": _RAW_FILE_CONTENT_DESCRIPTION,
         },
     },
     "additionalProperties": False,
@@ -70,6 +73,7 @@ _CREATE_OP = {
         "new_content": {
             "type": "string",
             "maxLength": MAX_SINGLE_FILE_BYTES,
+            "description": _RAW_FILE_CONTENT_DESCRIPTION,
         },
     },
 }
@@ -82,6 +86,7 @@ _UPDATE_OP = {
         "new_content": {
             "type": "string",
             "maxLength": MAX_SINGLE_FILE_BYTES,
+            "description": _RAW_FILE_CONTENT_DESCRIPTION,
         },
     },
 }
@@ -103,7 +108,7 @@ _RENAME_OP = {
         "new_content": {
             "type": "string",
             "maxLength": MAX_SINGLE_FILE_BYTES,
-            "description": "可选：rename 同时改写内容",
+            "description": f"可选：rename 同时改写内容；{_RAW_FILE_CONTENT_DESCRIPTION}",
         },
     },
 }
@@ -268,7 +273,8 @@ PATCHSET_TOOL_CONTRACTS: tuple[PatchSetToolContract, ...] = (
         flag_env=PATCHSET_FLAG_ENV,
         description=(
             "为当前 coding run 的 workspace 生成多文件 PatchSet 预览；"
-            "只读零写入，返回参数哈希与预览版本供 apply 时强校验。"
+            "只读零写入，返回参数哈希与预览版本供 apply 时强校验；需要落盘时，"
+            "预览成功后必须继续调用 apply_patch_set。"
         ),
         input_schema=PROPOSE_PATCH_SET_INPUT,
         output_schema=PROPOSE_PATCH_SET_OUTPUT,

@@ -10,11 +10,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings as cfg
 from ..core.db import get_session
 from ..core.history import MessageRepository, SessionRepository
+from ..core.models import AgentRun
 from ..core.timeutil import format_rfc3339_utc
 from ..logging_setup import get_logger
 
@@ -81,6 +83,10 @@ class MessageOut(BaseModel):
     @field_serializer("created_at")
     def _serialize_time(self, value: datetime | None) -> str | None:
         return format_rfc3339_utc(value)
+
+
+class LatestSessionRunOut(BaseModel):
+    run_id: str | None
 
 
 class SessionBindRequest(BaseModel):
@@ -202,6 +208,33 @@ async def list_messages(session_id: int, db: AsyncSession = Depends(get_session)
     msgs = await MessageRepository(db).list_by_session(session_id)
     logger.info("messages listed", session_id=session_id, count=len(msgs))
     return msgs
+
+
+@router.get(
+    "/sessions/{session_id}/latest-agent-run",
+    response_model=LatestSessionRunOut,
+)
+async def get_latest_session_agent_run(
+    session_id: int,
+    db: AsyncSession = Depends(get_session),
+) -> LatestSessionRunOut:
+    """返回会话最新 durable run。
+
+    ``sessions.last_run_id`` 在旧安装版从未写入；这里以 ``agent_runs`` 事实表
+    只读兜底，使升级后已有任务也能恢复活动流，而不是要求用户重建任务。
+    """
+    sess = await SessionRepository(db).get(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    run_id = (
+        await db.execute(
+            select(AgentRun.id)
+            .where(AgentRun.session_id == session_id)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return LatestSessionRunOut(run_id=run_id)
 
 
 # ============ v0.9.0 H4：会话管理（重命名/归档/置顶） ============

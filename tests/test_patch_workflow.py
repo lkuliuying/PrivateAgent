@@ -38,6 +38,7 @@ from personal_assistant.agents import (
 )
 from personal_assistant.agents.result_verification import FileDiffResultVerifier
 from personal_assistant.api import routes_agent_runs
+from personal_assistant.core.code_tools import normalize_patch_content
 from personal_assistant.core.models import AgentRun as AgentRunRecord
 from personal_assistant.core.models import Project
 from personal_assistant.core.patch_workflow import build_patch_tool_registry
@@ -105,6 +106,62 @@ def _old_sha256_of(target: Path) -> str:
     return hashlib.sha256(
         target.read_text(encoding="utf-8").encode("utf-8")
     ).hexdigest()
+
+
+def test_normalize_patch_content_decodes_only_extra_serialization_layer():
+    escaped = (
+        r"#include \u003cstdio.h\u003e\n\nint main() {\n"
+        r"    printf(\"Hello World!\\n\");\n    return 0;\n}\n"
+    )
+    expected = (
+        "#include <stdio.h>\n\nint main() {\n"
+        '    printf("Hello World!\\n");\n    return 0;\n}\n'
+    )
+    assert normalize_patch_content("hello.c", escaped) == expected
+    assert normalize_patch_content("hello.c", expected) == expected
+    assert normalize_patch_content("hello.c", f"```c\n{expected}```\n") == expected
+    assert normalize_patch_content("README.md", f"```c\n{expected}```\n").startswith("```c")
+
+
+@pytest.mark.asyncio
+async def test_double_escaped_source_is_previewed_written_and_verified_as_raw_text(
+    db, tmp_path
+):
+    escaped = (
+        r"#include \u003cstdio.h\u003e\n\nint main() {\n"
+        r"    printf(\"Hello World!\\n\");\n    return 0;\n}\n"
+    )
+    expected = (
+        "#include <stdio.h>\n\nint main() {\n"
+        '    printf("Hello World!\\n");\n    return 0;\n}\n'
+    )
+    project_id = await _make_project(db, tmp_path)
+    run_id = await _create_run(db)
+    try:
+        call = ToolCall(
+            id="call-patch-1",
+            name="apply_patch_to_workspace",
+            arguments=_patch_arguments(
+                project_id,
+                rel_path="hello.c",
+                new_content=escaped,
+                create=True,
+            ),
+        )
+        approved = await _request_approval_and_approve(db, run_id, call)
+        result = await _dispatcher(
+            db,
+            run_id,
+            approval_id=approved.approval_id,
+            approval_token=approved.token,
+        ).execute(call, cancellation=CancellationToken())
+        assert result.success is True
+        assert (tmp_path / "hello.c").read_text(encoding="utf-8") == expected
+        assert result.output["new_sha256"] == hashlib.sha256(
+            expected.encode("utf-8")
+        ).hexdigest()
+    finally:
+        await _cleanup(db, run_id, project_id)
 
 
 def _dispatcher(
@@ -528,6 +585,21 @@ async def test_patch_flag_on_registers_tool_and_grants_write(db, monkeypatch):
         granted_capabilities=frozenset({ToolCapability.FILESYSTEM_READ})
     )
     assert denied.evaluate(spec) == ToolPolicyDecision.DENY
+
+
+@pytest.mark.asyncio
+async def test_installed_coding_defaults_register_single_file_patch_pair(
+    db, monkeypatch
+):
+    """安装版同时开启只读与 Patch flags 时，单文件预览/应用工具成对可见。"""
+    monkeypatch.setattr(
+        routes_agent_runs.cfg, "agent_run_read_only_tools_enabled", True
+    )
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
+    bundle = await routes_agent_runs.get_agent_tool_bundle(db)
+    assert bundle is not None
+    names = {definition.name for definition in bundle.definitions}
+    assert {"propose_patch", "apply_patch_to_workspace"} <= names
 
 
 @pytest.mark.asyncio

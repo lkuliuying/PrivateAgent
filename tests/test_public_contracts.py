@@ -273,6 +273,8 @@ def test_compatibility_telemetry_labels_frozen():
         "manual_execution_resolution",
         # v0.9.0 H1-B（§5.6）：可执行意图路由计数（低基数，无消息正文）
         "executable_intent",
+        # v1.0 CT1-04（专项计划 F-002）：写入预检门禁计数（低基数，无消息正文）
+        "tool_preflight",
     }
     assert _LABELS["/chat/stream"]["modes"] == {
         "agent_runtime",
@@ -307,6 +309,11 @@ def test_compatibility_telemetry_labels_frozen():
         "missing",
         "mismatch",
         "untrusted",
+    }
+    # v1.0 CT1-04（专项计划 F-002）：预检门禁只计数，不记录消息/路径正文。
+    assert _LABELS["tool_preflight"] == {
+        "modes": {"coding"},
+        "outcomes": {"blocked", "allowed"},
     }
 
 

@@ -4,7 +4,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 
 from personal_assistant.agents import (
     AgentEvent,
@@ -24,6 +24,12 @@ from personal_assistant.agents import (
     ToolResult,
 )
 from personal_assistant.core.models import AgentRun as AgentRunRecord
+from personal_assistant.core.models import (
+    ChatSession,
+    Message,
+    Project,
+    ProjectWorkspace,
+)
 
 
 class ScriptedModel:
@@ -74,6 +80,117 @@ def _tool_definition() -> ModelToolDefinition:
 async def _delete_run(db, run_id: str) -> None:
     await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
     await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_coding_run_persists_conversation_and_latest_run_atomically(
+    db, client
+):
+    """Coding run 创建/完成分别持久化 user/assistant，并维护 last_run_id。
+
+    同一终态事件重放必须幂等，不能重复插入 assistant 消息。
+    """
+    suffix = uuid4().hex
+    project = Project(name=f"conversation-{suffix}", root_path=f"/tmp/{suffix}")
+    db.add(project)
+    await db.flush()
+    workspace = ProjectWorkspace(
+        project_id=project.id,
+        root_path=project.root_path,
+        root_path_sha256=suffix.ljust(64, "0")[:64],
+        kind="root",
+        status="active",
+    )
+    db.add(workspace)
+    await db.flush()
+    session = ChatSession(
+        title="持久化对话",
+        project_id=project.id,
+        workspace_id=workspace.id,
+        kind="coding",
+    )
+    db.add(session)
+    await db.commit()
+    await db.refresh(session)
+
+    run_id = str(uuid4())
+    repository = AgentRunRepository(db)
+    try:
+        await repository.create_run(
+            run_id=run_id,
+            limits=AgentRunLimits(),
+            session_id=session.id,
+            project_id=project.id,
+            workspace_id=workspace.id,
+            request_message="创建 hello.txt",
+        )
+        await db.refresh(session)
+        first_messages = list(
+            (
+                await db.execute(
+                    select(Message)
+                    .where(Message.session_id == session.id)
+                    .order_by(Message.id)
+                )
+            ).scalars()
+        )
+        assert [(item.role, item.content) for item in first_messages] == [
+            ("user", "创建 hello.txt")
+        ]
+        assert session.last_run_id == run_id
+
+        await repository.record_event(
+            AgentEvent(
+                run_id=run_id,
+                sequence=1,
+                type=AgentEventType.RUN_STARTED,
+            )
+        )
+        completed = AgentEvent(
+            run_id=run_id,
+            sequence=2,
+            type=AgentEventType.RUN_COMPLETED,
+            payload={
+                "output": "已创建 hello.txt",
+                "tool_call_count": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cached_tokens": 0,
+                "cost_usd": None,
+            },
+        )
+        await repository.record_event(completed)
+        await repository.record_event(completed)
+
+        messages = list(
+            (
+                await db.execute(
+                    select(Message)
+                    .where(Message.session_id == session.id)
+                    .order_by(Message.id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars()
+        )
+        assert [(item.role, item.content) for item in messages] == [
+            ("user", "创建 hello.txt"),
+            ("assistant", "已创建 hello.txt"),
+        ]
+
+        latest = await client.get(
+            f"/sessions/{session.id}/latest-agent-run"
+        )
+        assert latest.status_code == 200
+        assert latest.json() == {"run_id": run_id}
+    finally:
+        await db.execute(delete(AgentRunRecord).where(AgentRunRecord.id == run_id))
+        await db.execute(delete(Message).where(Message.session_id == session.id))
+        await db.execute(delete(ChatSession).where(ChatSession.id == session.id))
+        await db.execute(
+            delete(ProjectWorkspace).where(ProjectWorkspace.id == workspace.id)
+        )
+        await db.execute(delete(Project).where(Project.id == project.id))
+        await db.commit()
 
 
 @pytest.mark.asyncio

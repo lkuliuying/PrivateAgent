@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
@@ -16,6 +17,22 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..agent_v2.application.catalog import ToolCatalog, ToolCatalogError
+from ..agent_v2.application.contract_factory import (
+    build_completion_contract_from_conditions,
+)
+from ..agent_v2.application.intent_rules import classify_message
+from ..agent_v2.application.planner import (
+    ModelCapabilitySnapshot,
+    PolicySnapshot,
+    build_tool_plan,
+    build_tool_snapshot,
+)
+from ..agent_v2.application.preflight import assess_workspace_file_write
+from ..agent_v2.application.workspace_catalog import (
+    build_workspace_catalog,
+    workspace_enabled_flags,
+)
 from ..agents import (
     AgentRunCoordinator,
     AgentRunLimits,
@@ -55,7 +72,10 @@ from ..core.compatibility import compatibility_telemetry
 from ..core.db import async_session_factory, get_session
 from ..core.executable_intent import (
     EXECUTABLE_INTENT_POLICY,
+    FILE_MUTATION_INTENT_POLICY,
+    detect_direct_single_file_write_intent,
     detect_executable_intent,
+    detect_file_mutation_intent,
 )
 from ..core.git_snapshot import GitSnapshotError, read_git_snapshot
 from ..core.history import SessionRepository
@@ -125,6 +145,7 @@ class AgentRunCreateRequest(BaseModel):
             "final_git_diff",
             # v0.9.0 H1-B（计划 §5.6）：可执行意图最小执行证据数（additive）
             "min_tool_executions",
+            "require_successful_file_write",
         }
         unknown = set(value) - allowed
         if unknown:
@@ -181,6 +202,10 @@ class AgentRunCreateRequest(BaseModel):
             or not 1 <= min_executions <= 16
         ):
             raise ValueError("min_tool_executions 必须是 1..16 的整数")
+        if "require_successful_file_write" in value and not isinstance(
+            value["require_successful_file_write"], bool
+        ):
+            raise ValueError("require_successful_file_write 必须是布尔值")
         return value
 
 
@@ -386,6 +411,25 @@ def _build_output_verifier_factory(
         if completion_conditions:
             from ..agents.executions import ToolExecutionRepository
 
+            # ---- v1.0 CT1-05（专项计划 ADR-007 §2）：完成门禁收口 ----
+            # min_tool_executions / require_successful_file_write 两个条件族
+            # 由 v2 CompletionContract 求值（唯一判断实现）；契约从持久化
+            # 条件确定性重建，create 与 resume 得到同一 contract_id。旧
+            # WorkflowCompletionOutputVerifier 不再重复评估这两个条件。
+            # §20/§24：PA_AGENT_V2_COMPLETION_EVIDENCE_ENABLED 关闭时按
+            # Thread/source 回退 v0.9 条件族求值（同样非 fail-open）；
+            # 同一 Turn 不切换求值器。
+            if cfg.agent_v2_completion_evidence_enabled:
+                completion_contract = build_completion_contract_from_conditions(
+                    completion_conditions
+                )
+            else:
+                completion_contract = None
+            legacy_conditions = dict(completion_conditions)
+            if completion_contract is not None:
+                legacy_conditions["min_tool_executions"] = 0
+                legacy_conditions["require_successful_file_write"] = False
+
             async def load_facts() -> WorkflowCompletionFacts:
                 records = await ToolExecutionRepository(
                     run_db, run_id=target_run_id
@@ -453,28 +497,40 @@ def _build_output_verifier_factory(
                     git_diff_empty=git_diff_empty,
                 )
 
+            if completion_contract is not None:
+                from ..agents.verification import CompletionContractOutputVerifier
+
+                verifiers.append(
+                    CompletionContractOutputVerifier(load_facts, completion_contract)
+                )
             verifiers.append(
                 WorkflowCompletionOutputVerifier(
                     load_facts,
                     must_succeed_tools=tuple(
-                        completion_conditions.get("must_succeed_tools") or ()
+                        legacy_conditions.get("must_succeed_tools") or ()
                     ),
                     max_failed_tools=int(
-                        completion_conditions.get("max_failed_tools", 0) or 0
+                        legacy_conditions.get("max_failed_tools", 0) or 0
                     ),
                     require_verified=bool(
-                        completion_conditions.get("require_verified", False)
+                        legacy_conditions.get("require_verified", False)
                     ),
                     must_pass_command_profiles=tuple(
-                        completion_conditions.get("must_pass_command_profiles") or ()
+                        legacy_conditions.get("must_pass_command_profiles") or ()
                     ),
                     no_pending_patchsets=bool(
-                        completion_conditions.get("no_pending_patchsets", False)
+                        legacy_conditions.get("no_pending_patchsets", False)
                     ),
-                    final_git_diff=completion_conditions.get("final_git_diff", "any"),
-                    # v0.9.0 H1-B（计划 §5.6）：可执行意图最小执行证据门槛。
+                    final_git_diff=legacy_conditions.get("final_git_diff", "any"),
+                    # v0.9.0 H1-B 条件族已收口到 CompletionContract（上方）；
+                    # 此处恒为 0/False，仅保留其余旧条件的兼容求值。
                     min_tool_executions=int(
-                        completion_conditions.get("min_tool_executions", 0) or 0
+                        legacy_conditions.get("min_tool_executions", 0) or 0
+                    ),
+                    require_successful_file_write=bool(
+                        legacy_conditions.get(
+                            "require_successful_file_write", False
+                        )
                     ),
                 )
             )
@@ -1470,6 +1526,55 @@ async def create_agent_run(
     # 输出验证失败关闭，禁止能力就绪时静默退化为纯文字教程。信息问答与教程式
     # 提问不注入（用户明确只要方法时允许教程式回答）。
     executable_intent = coding_mode and detect_executable_intent(request.message)
+    file_mutation_intent = executable_intent and detect_file_mutation_intent(
+        request.message
+    )
+    direct_single_file_write = file_mutation_intent and (
+        detect_direct_single_file_write_intent(request.message)
+    )
+    # ---- v1.0 CT1-02（专项计划 §7.4/ADR-007）：v2 规则层意图分类 ----
+    # 单一规则源仍是 core.executable_intent 启发式；此处只投影为
+    # ExecutionIntent tag。显式"仅预览"清除 filesystem.write 副作用要求
+    # （F-008），预检与完成门禁都以此为准。
+    execution_intent = (
+        classify_message(request.message) if coding_mode else None
+    )
+    requires_file_write = bool(
+        execution_intent is not None and execution_intent.requires_file_write
+    )
+    # ---- v1.0 CT1-04（专项计划 F-002/§14.3/ADR-007 §4）：写入预检门禁 ----
+    # 明确 file.mutate 意图但本轮没有任何可真正落盘的工具入口时，run 创建
+    # 即结构化失败：不调用模型、不持久化 run、磁盘零变更。
+    # §20：PA_AGENT_V2_TOOL_PREFLIGHT_ENABLED 关闭时回落 v0.9 无预检形态。
+    if (
+        coding_mode
+        and requires_file_write
+        and cfg.agent_v2_tool_preflight_enabled
+    ):
+        preflight = assess_workspace_file_write(
+            patch_workflow_enabled=cfg.agent_patch_workflow_enabled,
+            patchset_enabled=cfg.coding_patchset_enabled,
+            permission_mode=effective_permission_mode,
+            model_supports_tools=(
+                coding_profile is None or bool(coding_profile.native_tool_calls)
+            ),
+        )
+        if preflight.blocked:
+            compatibility_telemetry.record(
+                path="tool_preflight",
+                mode="coding",
+                outcome="blocked",
+            )
+            return _coding_error(
+                409,
+                preflight.error_code or "tool_capability_unavailable",
+                preflight.public_message or "任务未执行：本轮没有可用的文件写入工具。",
+            )
+        compatibility_telemetry.record(
+            path="tool_preflight",
+            mode="coding",
+            outcome="allowed",
+        )
     effective_completion_conditions = request.completion_conditions
     if executable_intent:
         base_conditions = dict(request.completion_conditions or {})
@@ -1482,6 +1587,13 @@ async def create_agent_run(
         base_conditions["max_failed_tools"] = max(
             int(base_conditions.get("max_failed_tools") or 0), 16
         )
+        if file_mutation_intent and not (
+            execution_intent is not None and execution_intent.preview_only
+        ):
+            # 文件变更任务必须由 durable succeeded Patch 写入事实收口；
+            # 失败命令仍可作为诊断证据，但不能让任务进入 completed。
+            # 显式"仅预览"请求除外（F-008：proposal 即可完成）。
+            base_conditions["require_successful_file_write"] = True
         effective_completion_conditions = base_conditions
         compatibility_telemetry.record(
             path="executable_intent", mode="coding", outcome="routed"
@@ -1491,6 +1603,8 @@ async def create_agent_run(
         effective_system_policy = (
             AGENT_SYSTEM_PROMPT + "\n\n" + EXECUTABLE_INTENT_POLICY
         )
+        if file_mutation_intent:
+            effective_system_policy += "\n\n" + FILE_MUTATION_INTENT_POLICY
     messages = (
         ModelMessage(role="system", content=effective_system_policy),
         ModelMessage(role="user", content=request.message),
@@ -1591,6 +1705,7 @@ async def create_agent_run(
                 workspace_id=request.workspace_id if coding_mode else None,
                 message=request.message,
             ),
+            request_message=request.message if coding_mode else None,
         )
     except ClientRequestConflictError:
         # C0 §5.2.4：相同幂等键对应不同请求 payload，不复用也不新建
@@ -1629,6 +1744,20 @@ async def create_agent_run(
             tool_definitions = run_dispatcher.model_definitions()
         else:
             tool_definitions = tool_bundle.definitions
+    if direct_single_file_write:
+        # 明确单文件落盘请求使用 apply_patch_to_workspace 即可：执行前仍由
+        # approval requester 生成 Diff 并等待用户确认。隐藏只读预览与多文件
+        # PatchSet，避免小模型停在 propose 后误报完成；不扩大任何执行权限。
+        excluded_patch_tools = {
+            "propose_patch",
+            "propose_patch_set",
+            "apply_patch_set",
+        }
+        tool_definitions = tuple(
+            definition
+            for definition in tool_definitions
+            if definition.name not in excluded_patch_tools
+        )
     # P0-1 验收修复：coding run 按 model_profile_id 解析实际 ModelClient
     # （本地 profile 强制本地路由；远程 profile 需全局启用且已在创建校验）；
     # 解析失败（profile 被删除/禁用/设置变化）→ 422 失败关闭，不静默回退全局。
@@ -1661,6 +1790,113 @@ async def create_agent_run(
     )
     return await _run_response(
         repository, effective_run_id, idempotent_replay=idempotent_replay
+    )
+
+
+@router.get(
+    "/tool-diagnostics",
+    dependencies=[Depends(require_agent_runs_api)],
+)
+async def get_tool_diagnostics(
+    intent_tags: str = Query(default=""),
+    db: AsyncSession = Depends(get_session),
+) -> JSONResponse:
+    """v1.0 CT-9（专项计划 §14.2/§7.3/ADR-008）：脱敏工具快照诊断。
+
+    回答"本轮模型究竟会看到什么工具、为什么"：每个工具的 direct/
+    deferred/hidden:<稳定原因> 与 catalog/visible/model/policy 四组 hash。
+    observe-only——不改变任何执行语义；默认关闭
+    （PA_AGENT_V2_TOOL_SNAPSHOT_ENABLED）。视图不含 secret、完整敏感参数
+    或用户文件内容。内建目录由冻结元数据表投影；MCP 目录由受信/
+    启用/已发现记录投影（§12.1/§12.2，含逐工具审批与新鲜度门禁）。
+    """
+    if not cfg.agent_v2_tool_snapshot_enabled or not cfg.agent_runs_api_enabled:
+        raise HTTPException(status_code=404, detail="Not Found")
+    from ..core.timeutil import format_rfc3339_utc
+
+    tags: frozenset = frozenset()
+    if intent_tags.strip():
+        from ..agent_v2.domain.intents import IntentTag
+
+        parsed: list[IntentTag] = []
+        for raw in intent_tags.split(","):
+            candidate = raw.strip()
+            if not candidate:
+                continue
+            try:
+                parsed.append(IntentTag(candidate))
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"unknown intent tag: {candidate}",
+                ) from exc
+        tags = frozenset(parsed)
+    if not tags:
+        from ..agent_v2.domain.intents import IntentTag as _IT
+
+        tags = frozenset({_IT.ANSWER_ONLY})
+
+    flags = workspace_enabled_flags(cfg)
+    specs = list(build_workspace_catalog(enabled_flags=flags).specs)
+    mcp_health_failed: frozenset[str] = frozenset()
+    if cfg.mcp_enabled:
+        # §12.1/§12.2：受信/启用/已发现的 MCP 工具投影；过期目录经
+        # health_failed 集合失败关闭，deny 工具经哨兵能力 policy_denied。
+        from ..agent_v2.application.mcp_catalog import build_mcp_catalog_specs
+        from ..core.models import McpServer as _McpServer
+
+        records = list(
+            (await db.execute(select(_McpServer))).scalars().all()
+        )
+        mcp_specs, mcp_health_failed = build_mcp_catalog_specs(records)
+        specs.extend(mcp_specs)
+    try:
+        catalog = ToolCatalog.build(specs)
+    except ToolCatalogError:
+        # 诊断端点不因目录冲突 500；回落内建目录（冲突本身可诊断）。
+        catalog = build_workspace_catalog(enabled_flags=flags)
+        mcp_health_failed = frozenset()
+    granted = frozenset(
+        {
+            "filesystem.read",
+            "filesystem.write",
+            "process.execute",
+            "database.query",
+            "network.fetch",
+            "external.mcp",
+        }
+    )
+    model_profile = ModelCapabilitySnapshot(
+        profile_hash=f"settings:{int(cfg.agent_v2_tool_snapshot_enabled)}",
+        function_calling=True,
+    )
+    policy_payload = json.dumps(
+        sorted(granted) + sorted(flags) + sorted(mcp_health_failed),
+        separators=(",", ":"),
+    ).encode("utf-8")
+    policy = PolicySnapshot(
+        policy_hash=hashlib.sha256(policy_payload).hexdigest()[:32],
+        granted_capabilities=granted,
+        enabled_features=flags,
+        health_failed=mcp_health_failed,
+    )
+    plan = build_tool_plan(catalog, tags, model=model_profile, policy=policy)
+    snapshot = build_tool_snapshot(plan, catalog)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "generated_at": format_rfc3339_utc(datetime.now(timezone.utc)),
+            "tool_plan_id": snapshot.tool_plan_id,
+            "intent_tags": sorted(tag.value for tag in tags),
+            "direct_total": snapshot.direct_total,
+            "deferred_total": snapshot.deferred_total,
+            "hidden_total": snapshot.hidden_total,
+            "catalog_hash": snapshot.catalog_hash,
+            "visible_hash": snapshot.visible_hash,
+            "model_profile_hash": snapshot.model_profile_hash,
+            "policy_hash": snapshot.policy_hash,
+            "tools": [entry.model_dump(mode="json") for entry in snapshot.entries],
+        },
     )
 
 

@@ -36,7 +36,7 @@ from ..agents.tools import (
     VersionedToolRegistry,
 )
 from ..agents.workflow_contracts import WORKFLOW_CONTRACT_BY_NAME
-from .code_tools import propose_patch
+from .code_tools import normalize_patch_content, propose_patch
 from .permissions import PermissionError_
 from .projects import ProjectService, resolve_within
 
@@ -153,6 +153,7 @@ async def apply_patch_to_workspace_trusted(
     create: bool = False,
 ) -> dict[str, Any]:
     """审批后把已预览内容原子写入授权项目文件，写入后回读核对 new SHA。"""
+    new_content = normalize_patch_content(rel_path, new_content)
     preview = await propose_patch(db, project_id, rel_path, new_content, create=create)
     if preview["truncated"]:
         raise RuntimeError("预览被截断，不允许直接应用；请重新生成可完整审查的分块 Diff")

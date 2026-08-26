@@ -316,6 +316,7 @@ async def test_agent_tool_bundle_is_default_off_and_contains_only_read_only_tool
     assert bundle is not None
     assert {definition.name for definition in bundle.definitions} == {
         "read_file",
+        "list_directory",
         "search_files",
         "grep_code",
         "read_code_file",

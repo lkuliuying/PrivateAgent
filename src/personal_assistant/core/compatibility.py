@@ -119,6 +119,11 @@ _LABELS = {
         "modes": frozenset({"coding"}),
         "outcomes": frozenset({"routed"}),
     },
+    # v1.0 CT1-04（专项计划 F-002）：写入预检门禁计数（低基数，无消息正文）。
+    "tool_preflight": {
+        "modes": frozenset({"coding"}),
+        "outcomes": frozenset({"blocked", "allowed"}),
+    },
     "context_budget_poll": {
         "modes": frozenset({"coding"}),
         "outcomes": frozenset({"available", "unavailable", "error"}),

@@ -49,6 +49,14 @@ _READ_ONLY_TOOL_DEFAULTS: Mapping[str, _ReadOnlyToolDefaults] = {
         ),
         ToolRiskLevel.CONFIRM,
     ),
+    "list_directory": _ReadOnlyToolDefaults(
+        10_000,
+        256 * 1024,
+        False,
+        frozenset(
+            {ToolCapability.FILESYSTEM_READ, ToolCapability.DATABASE_QUERY}
+        ),
+    ),
     "search_files": _ReadOnlyToolDefaults(
         10_000,
         256 * 1024,

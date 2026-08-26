@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from datetime import datetime
 from time import perf_counter
 from typing import Any
 
@@ -24,13 +25,17 @@ from personal_assistant.agents.tools import (
     VersionedToolRegistry,
 )
 from personal_assistant.core.models import McpServer
+from personal_assistant.core.timeutil import utcnow
 
 from .client import McpClient, McpClientError, OfficialMcpClient
-from .contracts import McpDiscovery, McpServerConfig, McpTransport
-from .repository import McpRepository, server_config
+from .contracts import McpApprovalMode, McpDiscovery, McpServerConfig, McpTransport
+from .repository import McpRepository, config_identity_hash, server_config
 from .validation import validate_mcp_config
 
 _SLUG = re.compile(r"[^A-Za-z0-9_-]+")
+
+#: discovery 缓存 TTL（§12.1）；超期或连接身份变化 → 工具面失败关闭。
+DISCOVERY_CACHE_TTL_SECONDS = 3_600
 
 
 def _canonical_hash(value: Any) -> str:
@@ -59,6 +64,34 @@ def _tool_version(tool: dict[str, Any]) -> str:
         }
     )
     return ".".join(str(int(digest[index : index + 4], 16)) for index in (0, 4, 8))
+
+
+def resolve_tool_approval_mode(
+    config: McpServerConfig, tool_name: str
+) -> McpApprovalMode:
+    """§12.2：逐工具覆盖优先，其次 server 默认；决策只来自受信配置，
+    MCP 自报元数据（含"只读"声明）不参与。"""
+    overrides = config.approval_overrides or {}
+    return overrides.get(tool_name, config.approval_default)
+
+
+def discovery_is_fresh(
+    record: McpServer,
+    *,
+    ttl_seconds: int = DISCOVERY_CACHE_TTL_SECONDS,
+    now: datetime | None = None,
+) -> bool:
+    """§12.1：同时满足 已发现 + 未超 TTL + 连接身份未变化 才可用。
+
+    任一不满足 → 工具面失败关闭（不静默使用过期目录）。
+    """
+    if not record.discovery_tools_json or record.discovered_at is None:
+        return False
+    if record.discovery_config_hash != config_identity_hash(server_config(record)):
+        return False
+    moment = now or utcnow()
+    age = (moment - record.discovered_at).total_seconds()
+    return age <= max(0, ttl_seconds)
 
 
 class McpManager:
@@ -90,6 +123,7 @@ def _mcp_spec(
     tool: dict[str, Any],
     run_id: str | None,
     client: McpClient,
+    approval_mode: McpApprovalMode = McpApprovalMode.PROMPT,
 ) -> ToolSpec:
     original_name = str(tool.get("name") or "")
     input_schema = tool.get("input_schema")
@@ -143,6 +177,14 @@ def _mcp_spec(
         return output
 
     server_description = str(tool.get("description") or "")[:4_000]
+    # §12.2 映射：auto → SAFE（免审批，仅限显式配置）；
+    # prompt/writes/always → CONFIRM（逐次审批）。writes 的"检测/声明写入"
+    # 对不透明 MCP 调用不可判定 → 保守按逐次审批等价处理。
+    risk_level = (
+        ToolRiskLevel.SAFE
+        if approval_mode == McpApprovalMode.AUTO
+        else ToolRiskLevel.CONFIRM
+    )
     return ToolSpec(
         name=_provider_tool_name(config, original_name),
         version=_tool_version(tool),
@@ -153,7 +195,7 @@ def _mcp_spec(
         ),
         input_schema=input_schema,
         output_schema=output_schema,
-        risk_level=ToolRiskLevel.CONFIRM,
+        risk_level=risk_level,
         required_capabilities=frozenset(
             {ToolCapability.EXTERNAL_MCP, request_capability}
         ),
@@ -172,8 +214,10 @@ def build_mcp_tool_registry(
     *,
     run_id: str | None = None,
     client: McpClient | None = None,
+    discovery_ttl_seconds: int = DISCOVERY_CACHE_TTL_SECONDS,
 ) -> VersionedToolRegistry:
-    """Convert only trusted, enabled, discovered, explicitly allowlisted tools."""
+    """Convert only trusted, enabled, freshly-discovered, explicitly allowlisted
+    tools whose §12.2 approval mode is not ``deny``."""
 
     registry = VersionedToolRegistry()
     mcp_client = client or OfficialMcpClient()
@@ -182,6 +226,13 @@ def build_mcp_tool_registry(
         try:
             validate_mcp_config(config, require_active=True)
         except ValueError:
+            continue
+        # 健康失败（§7.7 tool_health_failed）：最近一次发现/健康检查失败的
+        # server 不进入工具面，失败关闭，不静默使用失效目录。
+        if record.status == "error":
+            continue
+        # §12.1：过期/身份变化的目录失败关闭，不静默替换、不静默使用。
+        if not discovery_is_fresh(record, ttl_seconds=discovery_ttl_seconds):
             continue
         discovered = {
             str(tool.get("name")): tool
@@ -192,6 +243,10 @@ def build_mcp_tool_registry(
             tool = discovered.get(original_name)
             if tool is None:
                 continue
+            approval_mode = resolve_tool_approval_mode(config, original_name)
+            if approval_mode == McpApprovalMode.DENY:
+                # deny：不暴露、不调用（§12.2）。
+                continue
             try:
                 registry.register(
                     _mcp_spec(
@@ -200,6 +255,7 @@ def build_mcp_tool_registry(
                         tool=tool,
                         run_id=run_id,
                         client=mcp_client,
+                        approval_mode=approval_mode,
                     )
                 )
             except ValueError:

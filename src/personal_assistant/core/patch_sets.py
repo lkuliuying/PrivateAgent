@@ -17,7 +17,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..logging_setup import get_logger
-from .code_tools import _sha256_text, parse_command
+from .code_tools import _sha256_text, normalize_patch_content, parse_command
 from .learning import parse_json_object
 from .models import PatchSet, ProjectCommandProfile
 from .projects import ProjectNotFound, ProjectService, resolve_within
@@ -189,6 +189,7 @@ class PatchSetService:
             new_content = f["new_content"]
             if not isinstance(new_content, str):
                 raise ValueError("new_content 必须为字符串")
+            new_content = normalize_patch_content(rel_path, new_content)
             if len(new_content) > PATCH_MAX_CHARS:
                 raise ValueError(f"{rel_path}: new_content 过大（上限 {PATCH_MAX_CHARS} 字符）")
             create = f.get("create", False)

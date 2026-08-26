@@ -11,14 +11,19 @@ from __future__ import annotations
 import asyncio
 import difflib
 import hashlib
+import heapq
+import json
+import os
+import re
 import shlex
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .permissions import PermissionError_
 from .projects import (
+    IGNORED_DIRS,
     ProjectService,
     language_for_ext,
     resolve_within,
@@ -27,12 +32,128 @@ from .projects import (
 # 读取单文件大小上限
 MAX_READ_FILE_BYTES = 5 * 1024 * 1024  # 5MB
 DEFAULT_READ_LINES = 2000
+DEFAULT_LIST_DIRECTORY_ENTRIES = 200
+MAX_LIST_DIRECTORY_ENTRIES = 500
 GIT_TIMEOUT = 15.0
 GIT_DIFF_MAX_CHARS = 20000  # diff 输出截断上限
 PATCH_MAX_CHARS = 500000
 PATCH_DIFF_MAX_CHARS = 200000
 COMMAND_TIMEOUT = 120.0
 COMMAND_OUTPUT_MAX_CHARS = 30000
+
+_ESCAPED_LINE_BREAK_RE = re.compile(r"\\(?:r\\n|n|r)")
+_ESCAPED_UNICODE_RE = re.compile(r"\\u[0-9a-fA-F]{4}")
+_SOURCE_FILE_SUFFIXES = frozenset(
+    {
+        ".c",
+        ".cc",
+        ".cpp",
+        ".cs",
+        ".css",
+        ".go",
+        ".h",
+        ".hpp",
+        ".html",
+        ".java",
+        ".js",
+        ".jsx",
+        ".json",
+        ".kt",
+        ".php",
+        ".py",
+        ".rb",
+        ".rs",
+        ".sh",
+        ".sql",
+        ".swift",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".vue",
+        ".xml",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+async def list_directory(
+    db: AsyncSession,
+    project_id: int,
+    rel_path: str = ".",
+    *,
+    limit: int = DEFAULT_LIST_DIRECTORY_ENTRIES,
+) -> dict:
+    """列出授权项目内一个目录的直接子项，不依赖 Git 或项目文件索引。
+
+    路径仍经 ``resolve_within`` 约束在项目根目录内；符号链接和项目扫描的
+    默认忽略目录不返回。结果限制在一页内，避免模型用目录枚举制造无界输出。
+    """
+
+    project = await ProjectService(db).get(project_id)
+    requested = (rel_path or ".").strip() or "."
+    full = resolve_within(project.root_path, requested)
+    if not full.exists():
+        raise FileNotFoundError(f"目录不存在: {requested}")
+    if not full.is_dir():
+        raise NotADirectoryError(f"不是目录: {requested}")
+    bounded_limit = max(1, min(int(limit), MAX_LIST_DIRECTORY_ENTRIES))
+    root = Path(project.root_path).resolve()
+
+    def _list() -> tuple[list[dict], bool]:
+        # nsmallest 只保留 limit + 1 个候选项；即使单层目录很大，也不会把
+        # 全部 DirEntry 留在内存中。多取一个用于生成可信 truncated 标记。
+        def _candidates():
+            with os.scandir(full) as iterator:
+                for entry in iterator:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                        is_file = entry.is_file(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    if not is_dir and not is_file:
+                        continue
+                    if is_dir and entry.name in IGNORED_DIRS:
+                        continue
+                    yield (
+                        0 if is_dir else 1,
+                        entry.name.casefold(),
+                        entry.name,
+                        is_dir,
+                        entry.path,
+                    )
+
+        selected = heapq.nsmallest(bounded_limit + 1, _candidates())
+        truncated = len(selected) > bounded_limit
+        entries: list[dict] = []
+        for _, _, name, is_dir, entry_path in selected[:bounded_limit]:
+            path = Path(entry_path)
+            try:
+                rel = path.relative_to(root).as_posix()
+                size_bytes = None if is_dir else path.stat().st_size
+            except (OSError, ValueError):
+                continue
+            entries.append(
+                {
+                    "rel_path": rel,
+                    "name": name,
+                    "kind": "directory" if is_dir else "file",
+                    "language": None if is_dir else language_for_ext(path.suffix),
+                    "size_bytes": size_bytes,
+                }
+            )
+        return entries, truncated
+
+    entries, truncated = await asyncio.to_thread(_list)
+    normalized = PurePosixPath(requested.replace("\\", "/")).as_posix()
+    return {
+        "rel_path": "." if normalized in {"", "."} else normalized,
+        "entries": entries,
+        "count": len(entries),
+        "truncated": truncated,
+    }
 
 WHITELISTED_COMMAND_PREFIXES: tuple[tuple[str, ...], ...] = (
     ("pytest",),
@@ -45,6 +166,59 @@ WHITELISTED_COMMAND_PREFIXES: tuple[tuple[str, ...], ...] = (
     ("cargo", "check"),
     ("cargo", "test"),
 )
+
+NON_WHITELISTED_COMMAND_ERROR = (
+    "非白名单命令，已拒绝执行；run_whitelisted_command 仅用于测试、构建和"
+    "只读诊断，创建或编辑文件请改用 propose_patch / "
+    "apply_patch_to_workspace（多文件使用 PatchSet 工具）"
+)
+
+
+def normalize_patch_content(rel_path: str, content: str) -> str:
+    """去掉模型偶发添加的一层 JSON 转义或源码 Markdown 围栏。
+
+    Provider 已经解析过工具参数 JSON，但部分本地模型会再次序列化
+    ``new_content``，形成 ``#include \\u003cstdio.h\\u003e\\n...``。只有同时
+    出现转义换行和转义引号/Unicode 这类强证据时才尝试解码，避免破坏源码中
+    合法的反斜杠（例如 C 字符串里的 ``\\n``）。预览、写入与结果校验共用本
+    函数，确保审批 Diff、SHA 和实际落盘字节完全一致。
+    """
+    if not isinstance(content, str):
+        raise ValueError("new_content 必须为字符串")
+
+    normalized = content
+    stripped = content.strip()
+    candidates = [stripped] if stripped.startswith('"') and stripped.endswith('"') else []
+    if _ESCAPED_LINE_BREAK_RE.search(content) and (
+        '\\"' in content or _ESCAPED_UNICODE_RE.search(content)
+    ):
+        candidates.append(f'"{content}"')
+
+    for candidate in candidates:
+        try:
+            decoded = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if (
+            isinstance(decoded, str)
+            and decoded != content
+            and ("\n" in decoded or "\r" in decoded)
+        ):
+            normalized = decoded
+            break
+
+    suffix = Path(rel_path).suffix.lower()
+    if suffix in _SOURCE_FILE_SUFFIXES:
+        lines = normalized.strip().splitlines()
+        if (
+            len(lines) >= 2
+            and lines[0].lstrip().startswith("```")
+            and lines[-1].strip() == "```"
+        ):
+            normalized = "\n".join(lines[1:-1])
+            if content.endswith(("\n", "\\n")):
+                normalized += "\n"
+    return normalized
 
 
 async def _run_git(
@@ -279,8 +453,7 @@ async def propose_patch(
     create: bool = False,
 ) -> dict:
     """Generate a unified diff preview for replacing one project file."""
-    if not isinstance(new_content, str):
-        raise ValueError("new_content 必须为字符串")
+    new_content = normalize_patch_content(rel_path, new_content)
     if len(new_content) > PATCH_MAX_CHARS:
         raise ValueError(f"new_content 过大（上限 {PATCH_MAX_CHARS} 字符）")
     project = await ProjectService(db).get(project_id)
@@ -328,6 +501,7 @@ async def apply_patch_to_workspace(
     create: bool = False,
 ) -> dict:
     """Replace one authorized project file after approval."""
+    new_content = normalize_patch_content(rel_path, new_content)
     preview = await propose_patch(
         db, project_id, rel_path, new_content, create=create
     )
@@ -443,7 +617,7 @@ async def run_whitelisted_command(
     project = await ProjectService(db).get(project_id)
     args = parse_command(command)
     if not is_whitelisted_command(args):
-        raise PermissionError_("非白名单命令，已拒绝执行")
+        raise PermissionError_(NON_WHITELISTED_COMMAND_ERROR)
     result = await _execute_command(args, project.root_path, timeout=timeout)
     result["project_id"] = project_id
     return result

@@ -178,6 +178,36 @@ class Settings(BaseSettings):
     coding_context_keep_recent_messages: int = Field(default=8, ge=2, le=200)
     # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
     coding_execution_detail_enabled: bool = False
+    # v1.0 CT-9（专项计划 §14.2/§20）：工具快照诊断 API（observe-only，
+    # 脱敏视图；不改变任何执行语义）。默认关闭，灰度按专项计划 §20 顺序。
+    agent_v2_tool_snapshot_enabled: bool = False
+    # ---- v1.0 专项计划 §20 Feature Flags（owner：Agent 架构；退出/删除：
+    # RC 冻结默认值，v1.1 评估移除；灰度顺序见 §20）----
+    # v2 Tool Engine 主链接入（CT-4 交付物在应用层，接入主链的灰度开关）；
+    # 关闭时执行面维持 v0.9 dispatcher（§24 回退：同一 Turn 不切换执行器）。
+    agent_v2_tool_engine_enabled: bool = False
+    # 写入预检门禁（CT1-04/F-002）。当前阶段=enforce（默认开）；关闭回落
+    # v0.9 无预检形态（§24 按 Thread/source 回退），不得用于绕过完成门禁。
+    agent_v2_tool_preflight_enabled: bool = True
+    # 副作用完成证据门禁（CT1-05/ADR-007）。当前阶段=enforce（默认开）；
+    # 关闭时回落 v0.9 条件族求值（同样非 fail-open）；一旦进入 enforce，
+    # 不得对副作用任务 fail-open（§20 规则）。
+    agent_v2_completion_evidence_enabled: bool = True
+    # Rust Exec Host 接入（CT-6）。默认关闭；开启仅意味着允许 Python Core
+    # 拉起 exec-host，通用命令能力仍受沙箱门禁（ADR-004）失败关闭约束。
+    agent_v2_exec_host_enabled: bool = False
+    # Deferred Tool Search 接入模型面（CT-7，P1）；应用层实现已就绪，
+    # 接入 Runtime 前保持关闭（§20：不阻断 P0）。
+    agent_v2_deferred_tool_search_enabled: bool = False
+    # 只读工具安全并发（AD-T07）；默认关闭（恒串行），开启需 §19.3 延迟/
+    # replay 一致性基准通过。
+    agent_v2_safe_parallel_tools_enabled: bool = False
+    # native apply-patch 自由格式适配器（§20 明确默认关闭，不进普通用户设置）；
+    # 仅当模型 probe 证明稳定后由 ADR 重新决策（adoption manifest §3.1.1 Defer）。
+    agent_v2_native_apply_patch_enabled: bool = False
+    # Codex App Server 隔离 Spike（CT-8，dev-only；§20 明确默认关闭，
+    # 不进普通用户设置；当前结论 Defer，见 adr/evidence/ct8-*）。
+    codex_app_server_spike_enabled: bool = False
     # 可选 Git worktree（H3）：显式创建/清理，模型无 Git 管理权限。
     coding_worktree_enabled: bool = False
 

@@ -139,6 +139,9 @@ class AgentRunRepository:
         permission_snapshot_json: dict | None = None,
         client_request_id: str | None = None,
         request_payload_sha256: str | None = None,
+        # Coding 会话的用户原始请求。与 run 在同一事务持久化，保证任务列表、
+        # last_run_id 与对话事实不会出现“有任务、无消息”的分裂状态。
+        request_message: str | None = None,
     ) -> AgentRunRecord:
         if not run_id or len(run_id) > 36:
             raise ValueError("run_id must contain 1-36 characters")
@@ -184,6 +187,32 @@ class AgentRunRepository:
         )
         self.db.add(record)
         try:
+            if request_message is not None:
+                if session_id is None:
+                    raise ValueError(
+                        "request_message requires a session-bound run"
+                    )
+                session = (
+                    await self.db.execute(
+                        select(ChatSession)
+                        .where(ChatSession.id == session_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if session is None:
+                    raise AgentRunProjectionError(
+                        f"Chat session not found: {session_id}"
+                    )
+                occurred_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                self.db.add(
+                    Message(
+                        session_id=session_id,
+                        role="user",
+                        content=request_message,
+                    )
+                )
+                session.last_run_id = run_id
+                session.updated_at = occurred_at
             await self.db.commit()
             await self.db.refresh(record)
         except Exception:
@@ -831,6 +860,25 @@ class AgentRunRepository:
                     AgentRunCheckpointRecord.run_id == run.id
                 )
             )
+            # Coding run 与对话共用 Session：终态投影与 assistant 消息在同一
+            # 事务提交。失败/取消仍 touch 会话排序，但不伪造 assistant 回复。
+            if (
+                run.session_id is not None
+                and run.project_id is not None
+                and run.workspace_id is not None
+            ):
+                session = await self.db.get(ChatSession, run.session_id)
+                if session is not None:
+                    session.last_run_id = run.id
+                    session.updated_at = occurred_at
+                if event.type == AgentEventType.RUN_COMPLETED and run.output:
+                    self.db.add(
+                        Message(
+                            session_id=run.session_id,
+                            role="assistant",
+                            content=run.output,
+                        )
+                    )
             return
 
         # v0.6.0 C0 §4.5：plan/artifact 稳定事件只推进 sequence，不改变 run 状态。

@@ -150,9 +150,12 @@ async def test_compaction_keeps_recent_and_emits_events(
                 .order_by(Message.id.asc())
             )
         ).scalars().all()
-        # 12 条压缩到保留 4 条，且保留的是最新（最旧被删）
-        assert len(rows) == 4
+        # 压缩阶段保留最近 4 条；随后 run 创建按 durable 对话口径追加本轮
+        # 用户请求，因此最终为 5 条。既验证旧消息被裁剪，也验证新请求不丢失。
+        assert len(rows) == 5
         assert rows[0].content == "历史消息 8"
+        assert rows[-1].role == "user"
+        assert rows[-1].content == "e4-permission-test"
 
         events = (
             await db.execute(

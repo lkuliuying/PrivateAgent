@@ -298,6 +298,7 @@ async def test_non_whitelisted_command_rejected(db, tmp_path):
             result = await _reject_via_approved_path(db, project_id, call)
             assert result.success is False, command
             assert "非白名单命令" in (result.error or ""), command
+            assert "apply_patch_to_workspace" in (result.error or ""), command
     finally:
         await _cleanup(db, None, project_id)
 

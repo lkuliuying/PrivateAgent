@@ -44,6 +44,7 @@ from ..agents.tools import (
 from ..agents.workflow_contracts import WORKFLOW_CONTRACT_BY_NAME
 from .code_tools import (
     COMMAND_TIMEOUT,
+    NON_WHITELISTED_COMMAND_ERROR,
     is_whitelisted_command,
     parse_command,
     whitelisted_prefix_length,
@@ -620,7 +621,7 @@ async def _resolve_command(
             matched_prefix_len = best_len
             best_rank = _RISK_RANK.get(best.risk_level or "confirm", 2)
     if matched_profile is None and not is_whitelisted_command(args):
-        raise PermissionError_("非白名单命令，已拒绝执行")
+        raise PermissionError_(NON_WHITELISTED_COMMAND_ERROR)
     # 第五轮（P0-1）：workspace 模式只允许「匹配项目 profile」的命令自动
     # 执行——SAFE 是工具注册级 risk，未匹配 profile 的全局白名单命令不得
     # 因此免确认（E0 §4.1：workspace 自动允许「匹配项目命令 profile」）。
