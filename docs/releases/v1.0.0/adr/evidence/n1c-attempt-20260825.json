@@ -1,0 +1,14 @@
+{
+  "evidence": "N1c-attempt",
+  "attempted_at": "2026-08-25T08:58:30.826531+00:00",
+  "probe": {
+    "host_child_spawn_ok": false,
+    "method": "tests/_ct6_probe.py ExecHostClient 真实握手+start_execution 探针"
+  },
+  "remediation_this_round": [
+    "清理实验遗留 ACL：F:/Program/Agent 根、.venv/Scripts、C:/ProgramSoftware/Environment/python 的 S-1-15-2-* GRANT ACE 已全部移除（icacls 复核计数=0）",
+    "直接 shell 派生 venv python 正常（rc=0）——阻断仅作用于 exec-host 进程的子进程创建路径"
+  ],
+  "conclusion": "会话安全策略对 exec-host 派生子进程的阻断持续存在（环境级，非产品代码回归：同二进制早前曾 6/6 通过）；N1c 维持待健康会话状态",
+  "next": "健康会话中重跑 tests/test_v100_ct6_rust_host_e2e.py / test_v100_ct6_sandbox_enforcement.py / test_v100_ct6_appcontainer.py 三套件，取得 NET_DENIED(10013)+对照组 NET_OK 判别式证据对并归档"
+}

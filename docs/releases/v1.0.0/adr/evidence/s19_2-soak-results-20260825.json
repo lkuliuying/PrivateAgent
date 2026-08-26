@@ -1,0 +1,55 @@
+{
+  "gate": "§19.2 soak",
+  "started_at": "2026-08-26T06:16:19.597889+00:00",
+  "config": {
+    "turns": 1000,
+    "replays": 10000,
+    "db": "mysql(test; 凭据脱敏)",
+    "patterns": [
+      "answer_only",
+      "single_tool",
+      "multi_tool",
+      "approval_flow",
+      "fail_then_recover"
+    ],
+    "runtime": "real AgentRuntime + ValidatedToolDispatcher + SqlAgentRunEventSink + ToolExecutionRepository + ToolApprovalRepository"
+  },
+  "n1c_probe": {
+    "host_child_spawn_ok": false
+  },
+  "turns": {
+    "total": 1000,
+    "by_pattern": {
+      "answer_only": 200,
+      "single_tool": 200,
+      "multi_tool": 200,
+      "approval_flow": 200,
+      "fail_then_recover": 200
+    },
+    "by_final_status": {
+      "completed": 1000
+    },
+    "approvals_granted": 200,
+    "events_persisted_total": 10800
+  },
+  "recovery": {
+    "approval_checkpoints_resumed": 200
+  },
+  "chaos": {
+    "attempts": 10000,
+    "duplicates_absorbed_idempotently": 10000,
+    "note": "对终态 run 的精确重复投递全部被幂等吸收（不产生新行）"
+  },
+  "integrity": {
+    "runs_checked": 1000,
+    "loss_runs": 0,
+    "dup_runs": 0,
+    "payload_mismatch_events": 0,
+    "pagination_ok": true
+  },
+  "cleanup": {
+    "remaining_soak_run_rows": 0
+  },
+  "verdict": "pass",
+  "finished_at": "2026-08-26T06:19:09.428783+00:00"
+}

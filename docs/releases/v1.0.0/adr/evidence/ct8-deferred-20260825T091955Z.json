@@ -1,0 +1,17 @@
+{
+  "evidence": "CT-8-spike-trigger-gate",
+  "at": "2026-08-25T09:19:55.021183+00:00",
+  "checks": {
+    "app_server_present": false,
+    "sample_workspace_present": false,
+    "n1c_closed": false,
+    "ollama_reachable_warn_only": true
+  },
+  "missing": [
+    "App Server 产物缺失：(未指定 --app-server / PA_CT8_APP_SERVER)",
+    "独立样例 workspace 缺失：(未指定 --workspace)",
+    "N1c 未关闭（无 n1c-discriminant-results-*.json 归档）——双执行器风险面未收敛"
+  ],
+  "status": "DEFER",
+  "reason": "触发条件未满足（评估文档 §2）；满足后重跑本脚本进入 READY"
+}

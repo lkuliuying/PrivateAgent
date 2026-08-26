@@ -1,0 +1,32 @@
+{
+  "evidence": "N1c-discriminant",
+  "at": "2026-08-25T14:29:35.527705+00:00",
+  "probe": {
+    "host_child_spawn_ok": true
+  },
+  "suites": {
+    "tests/test_v100_ct6_rust_host_e2e.py": {
+      "rc": 0,
+      "tail": "6 passed in 1.75s"
+    },
+    "tests/test_v100_ct6_sandbox_enforcement.py": {
+      "rc": 0,
+      "tail": "2 passed, 2 skipped in 3.53s"
+    },
+    "tests/test_v100_ct6_appcontainer.py": {
+      "rc": 0,
+      "tail": "3 passed, 1 skipped in 6.30s"
+    }
+  },
+  "discriminant": {
+    "ac": "fail_closed(请求失败：ac:create_process: 操作系统找不到已输入的环境选项。 (os error 203))",
+    "control": "NET_OK",
+    "pair_confirmed": true,
+    "note": "fail_closed 形态 = AC 创建阶段失败关闭（本机加载链限制）；kernel_deny(10013) 为强形态，需无该限制的环境",
+    "rc_per_suite": {
+      "tests/test_v100_ct6_rust_host_e2e.py": 0,
+      "tests/test_v100_ct6_sandbox_enforcement.py": 0,
+      "tests/test_v100_ct6_appcontainer.py": 0
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "date": "2026-08-25",
+  "build": "1.0.0-rc.1",
+  "gates": {
+    "fake_completion": null,
+    "duplicate_side_effects": null,
+    "sandbox_escape_attempts": null,
+    "secret_leak_hits": null,
+    "unknown_execution_auto_retry": null
+  },
+  "gates_source": "unavailable",
+  "soak_smoke": {
+    "turns": 60,
+    "replays": 600,
+    "verdict": "pass evidence=F:\\Program\\Agent\\docs\\releases\\v1.0.0\\adr\\evidence\\s19_2-soak-results-20260825.json",
+    "evidence": "F:\\Program\\Agent\\docs\\releases\\v1.0.0\\adr\\evidence\\s19_2-soak-results-20260825.json"
+  },
+  "incidents": []
+}
