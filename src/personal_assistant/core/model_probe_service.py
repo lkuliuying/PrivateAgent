@@ -262,7 +262,10 @@ async def run_probe_for_profile(
         repeats=repeats,
     )
     repository = ModelProbeSnapshotRepository(db)
-    if snapshot.passed:
+    # 门禁语义：status=ok 当且仅当最小工具协议已证（function_calling）；
+    # parallel/correction 等附加能力经 results/requirements 如实留痕，
+    # 不作为基础工具面的门槛（AD-T04：已证能力才开启，未证不猜测）。
+    if snapshot.requirements.function_calling:
         return await repository.save(profile.id, snapshot)
     return await repository.save(
         profile.id,
@@ -337,7 +340,8 @@ async def _probe_background(profile_id: str, cfg: Any) -> None:
                     ),
                     timeout=AUTO_PROBE_TIMEOUT_S,
                 )
-                if snapshot.passed:
+                # 门禁语义同 run_probe_for_profile：最小工具协议已证即 ok。
+                if snapshot.requirements.function_calling:
                     await repository.save(profile.id, snapshot)
                 else:
                     await repository.save(
