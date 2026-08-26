@@ -115,6 +115,7 @@ async def db():
     # 避免测试中写入全局（生产）数据库。
     from personal_assistant.api import routes_agent_runs as runs_mod
     from personal_assistant.core import db as dbmod
+    from personal_assistant.core import model_probe_service as probe_mod
     from personal_assistant.core import run_artifact as run_artifact_mod
     from personal_assistant.core import run_plan as run_plan_mod
     from personal_assistant.workers import conversation_summarizer as summarizer_mod
@@ -124,11 +125,13 @@ async def db():
     orig_artifact_factory = run_artifact_mod.async_session_factory
     orig_runs_factory = runs_mod.async_session_factory
     orig_summarizer_factory = summarizer_mod.async_session_factory
+    orig_probe_factory = probe_mod.async_session_factory
     dbmod.async_session_factory = factory
     run_plan_mod.async_session_factory = factory
     run_artifact_mod.async_session_factory = factory
     runs_mod.async_session_factory = factory
     summarizer_mod.async_session_factory = factory
+    probe_mod.async_session_factory = factory
     try:
         async with factory() as session:
             yield session
@@ -138,6 +141,7 @@ async def db():
         run_artifact_mod.async_session_factory = orig_artifact_factory
         runs_mod.async_session_factory = orig_runs_factory
         summarizer_mod.async_session_factory = orig_summarizer_factory
+        probe_mod.async_session_factory = orig_probe_factory
         await engine.dispose()
 
 
@@ -176,6 +180,7 @@ async def client():
     ocr_mod.async_session_factory = test_factory
     # v0.6.0：RunPlan/RunArtifact 服务同样直接导入 async_session_factory 名字。
     from personal_assistant.api import routes_agent_runs as runs_mod
+    from personal_assistant.core import model_probe_service as probe_mod
     from personal_assistant.core import run_artifact as run_artifact_mod
     from personal_assistant.core import run_plan as run_plan_mod
     from personal_assistant.workers import conversation_summarizer as summarizer_mod
@@ -184,10 +189,12 @@ async def client():
     orig_artifact_factory = run_artifact_mod.async_session_factory
     orig_runs_factory = runs_mod.async_session_factory
     orig_summarizer_factory = summarizer_mod.async_session_factory
+    orig_probe_factory = probe_mod.async_session_factory
     run_plan_mod.async_session_factory = test_factory
     run_artifact_mod.async_session_factory = test_factory
     runs_mod.async_session_factory = test_factory
     summarizer_mod.async_session_factory = test_factory
+    probe_mod.async_session_factory = test_factory
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -220,6 +227,7 @@ async def client():
         run_artifact_mod.async_session_factory = orig_artifact_factory
         runs_mod.async_session_factory = orig_runs_factory
         summarizer_mod.async_session_factory = orig_summarizer_factory
+        probe_mod.async_session_factory = orig_probe_factory
         await test_engine.dispose()
 
 

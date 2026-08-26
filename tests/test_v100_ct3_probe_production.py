@@ -26,6 +26,7 @@ from personal_assistant.agent_v2.application.model_probe import (
 from personal_assistant.core.model_probe_service import (
     PROBE_STATUS_FAILED,
     ModelProbeSnapshotRepository,
+    probe_gate_for_run,
     profile_tool_protocol_valid,
     run_probe_for_profile,
 )
@@ -202,3 +203,134 @@ async def test_route_gate_blocks_file_write_without_valid_probe(
         assert allowed.status_code in (200, 202), allowed.text
     finally:
         await ModelProfileService(db).delete(profile_id)
+
+
+@pytest.mark.asyncio
+async def test_probe_gate_for_run_fail_closed(db) -> None:
+    """三次验收 P1：绑定 profile 缺失/无快照 → 失败关闭；仅无绑定保持旧行为。"""
+    assert await probe_gate_for_run(db, None) is True
+    assert await probe_gate_for_run(db, "missing-profile-id") is False
+
+    profile = ModelProfile(
+        id=f"ct3-gatefc-{uuid4().hex[:8]}",
+        provider="ollama",
+        display_name="CT3 gate fc",
+        model_name="qwen-local",
+        is_local=True,
+        native_tool_calls=True,
+        enabled=True,
+    )
+    db.add(profile)
+    await db.commit()
+    try:
+        assert await probe_gate_for_run(db, profile.id) is False
+        await seed_valid_probe_snapshot(
+            db, profile.id, provider="ollama", model_name="qwen-local"
+        )
+        assert await probe_gate_for_run(db, profile.id) is True
+        # profile 删除后（门禁再查）仍失败关闭。
+        await ModelProfileService(db).delete(profile.id)
+        assert await probe_gate_for_run(db, profile.id) is False
+    finally:
+        if await ModelProfileService(db).get(profile.id) is not None:
+            await ModelProfileService(db).delete(profile.id)
+
+
+class _FakeGateway:
+    """模拟生产 ModelGateway：complete 强制要求 cancellation 关键字。
+
+    若探测链路未补齐 cancellation（P0 缺陷），这里会招致 TypeError →
+    全部用例失败；并记录是否真的收到了取消令牌。
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.saw_cancellation = False
+
+    async def complete(self, request, *, cancellation):
+        self.calls += 1
+        self.saw_cancellation = cancellation is not None
+
+        class _Response:
+            tool_calls = ()
+            content = "好的。"
+
+        return _Response()
+
+
+@pytest.mark.asyncio
+async def test_background_probe_supplies_cancellation_and_persists(
+    db, monkeypatch
+) -> None:
+    """P0：后台探测经适配层补齐 cancellation；结果落库（未证 → failed）。"""
+    import asyncio
+
+    from personal_assistant.config import settings as cfg
+    from personal_assistant.core import model_probe_service as svc
+
+    gateway = _FakeGateway()
+    monkeypatch.setattr(cfg, "agent_v2_model_probe_enabled", True)
+    monkeypatch.setattr(
+        svc, "build_gateway_for_profile", lambda *a, **kw: gateway
+    )
+
+    profile = ModelProfile(
+        id=f"ct3-bg-{uuid4().hex[:8]}",
+        provider="ollama",
+        display_name="CT3 bg",
+        model_name="qwen-local",
+        is_local=True,
+        native_tool_calls=True,
+        enabled=True,
+    )
+    db.add(profile)
+    await db.commit()
+    try:
+        assert svc.start_probe_for_profile(db, profile, cfg=cfg) is True
+        repository = ModelProbeSnapshotRepository(db)
+        record = None
+        for _ in range(100):
+            await asyncio.sleep(0.1)
+            record = await repository.latest(profile.id)
+            if record is not None and record.status != "running":
+                break
+        assert record is not None, "后台探测未落库"
+        assert record.status == PROBE_STATUS_FAILED
+        assert record.error_code == "capability_unproven"
+        assert gateway.calls > 0, "探测未实际调用模型"
+        assert gateway.saw_cancellation is True, "cancellation 未补齐（P0 回归）"
+    finally:
+        await ModelProfileService(db).delete(profile.id)
+
+
+@pytest.mark.asyncio
+async def test_probe_endpoints_status_and_ineligible(client, monkeypatch) -> None:
+    """探测状态/重试端点：无快照 → none；不合格 → 409 probe_ineligible。"""
+    from personal_assistant.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "coding_permission_models_enabled", True)
+    monkeypatch.setattr(cfg, "agent_v2_model_probe_enabled", True)
+
+    profile_id = f"ct3-ep-{uuid4().hex[:8]}"
+    put = await client.put(
+        f"/agent-model-profiles/{profile_id}",
+        json={
+            "provider": "ollama",
+            "display_name": "CT3 endpoint",
+            "model_name": "qwen-local",
+            "native_tool_calls": False,
+        },
+    )
+    assert put.status_code == 200, put.text
+    try:
+        status = await client.get(f"/agent-model-profiles/{profile_id}/tool-probe")
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "none"
+
+        retry = await client.post(
+            f"/agent-model-profiles/{profile_id}/tool-probe"
+        )
+        assert retry.status_code == 409, retry.text
+        assert retry.json()["error_code"] == "probe_ineligible"
+    finally:
+        await client.delete(f"/agent-model-profiles/{profile_id}")

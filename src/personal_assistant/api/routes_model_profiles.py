@@ -186,18 +186,86 @@ async def upsert_model_profile(
         )
     except ModelProfileError as exc:
         return _error(422, "model_profile_invalid", str(exc))
-    # v1.0 CT-3（专项计划 §8.2）：配置保存后自动执行工具能力探测并持久化
-    # 快照（尽力而为：探测失败落失败快照，不阻断配置保存；门禁在 run 创建
-    # 预检与工具注册层失败关闭）。
+    # v1.0 CT-3（专项计划 §8.2；三次验收修复）：配置保存后调度**后台**探测，
+    # 保存请求不再同步等待模型（本地大模型可达分钟级）；进度/结果经
+    # GET /{id}/tool-probe 查询，重试入口 POST /{id}/tool-probe。
     if profile.enabled and profile.native_tool_calls and (profile.model_name or "").strip():
         from ..core.model_probe_service import auto_probe_profile
-        from ..core.settings import SettingsService
 
-        provider_settings = await SettingsService(db).get_all()
-        await auto_probe_profile(
-            db, profile, cfg=cfg, provider_settings=provider_settings
-        )
+        await auto_probe_profile(db, profile, cfg=cfg)
     return _profile_out(profile)
+
+
+class ModelToolProbeOut(BaseModel):
+    """工具能力探测最新快照（§8.2：进度/结果可查）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str  # none | running | ok | failed
+    error_code: str | None = None
+    pass_count: int = 0
+    sample_count: int = 0
+    results: dict[str, bool] | None = None
+    requirements: dict[str, bool] | None = None
+    probed_at: str | None = None
+
+
+@router.get("/{profile_id}/tool-probe", response_model=ModelToolProbeOut)
+async def get_model_tool_probe(
+    profile_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> ModelToolProbeOut | JSONResponse:
+    blocked = _require_flag()
+    if blocked is not None:
+        return blocked
+    profile = await ModelProfileService(db).get(profile_id)
+    if profile is None:
+        return _error(404, "model_profile_not_found", "Model profile not found")
+    from ..core.model_probe_service import ModelProbeSnapshotRepository
+    from ..core.timeutil import format_rfc3339_utc
+
+    latest = await ModelProbeSnapshotRepository(db).latest(profile_id)
+    if latest is None:
+        return ModelToolProbeOut(status="none")
+    return ModelToolProbeOut(
+        status=latest.status,
+        error_code=latest.error_code,
+        pass_count=latest.pass_count,
+        sample_count=latest.sample_count,
+        results=latest.results_json,
+        requirements=latest.requirements_json,
+        probed_at=format_rfc3339_utc(latest.probed_at),
+    )
+
+
+@router.post("/{profile_id}/tool-probe", status_code=202, response_model=None)
+async def retry_model_tool_probe(
+    profile_id: str,
+    db: AsyncSession = Depends(get_session),
+) -> JSONResponse | None:
+    """重试入口：调度后台探测（立即返回，不等待模型）。"""
+    blocked = _require_flag()
+    if blocked is not None:
+        return blocked
+    profile = await ModelProfileService(db).get(profile_id)
+    if profile is None:
+        return _error(404, "model_profile_not_found", "Model profile not found")
+    from ..core.model_probe_service import (
+        ModelProbeSnapshotRepository,
+        start_probe_for_profile,
+    )
+
+    latest = await ModelProbeSnapshotRepository(db).latest(profile_id)
+    if latest is not None and latest.status == "running":
+        return _error(409, "probe_running", "Tool probe is already running")
+    if not start_probe_for_profile(db, profile, cfg=cfg):
+        return _error(
+            409,
+            "probe_ineligible",
+            "Profile is not eligible for probing (disabled, no native tools, "
+            "missing model_name, or probe feature disabled)",
+        )
+    return None
 
 
 @router.delete("/{profile_id}", status_code=204, response_model=None)

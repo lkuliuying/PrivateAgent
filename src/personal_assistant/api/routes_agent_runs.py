@@ -786,21 +786,16 @@ async def get_agent_tool_bundle(
         run_record = await run_db.get(AgentRunRecord, run_id)
         if run_record is not None:
             permission_mode = run_record.permission_mode
-        # v1.0 CT-3（专项计划 §8.2）：模型工具协议有效性门禁——run 绑定的
-        # profile 无有效探测快照时只注册最小工具面（只读），副作用工具
-        # 不注册（未知能力失败关闭，AD-T04）。无 profile 的 run（历史/
-        # 非 coding）保持既有行为。
+        # v1.0 CT-3（专项计划 §8.2；三次验收修复）：工具面门禁失败关闭——
+        # 绑定 profile 已删除/查不到、或无有效探测快照时，副作用工具不注册；
+        # 仅未绑定 profile 的历史/非 coding run 保持既有行为。未知能力不猜测（AD-T04）。
         probe_ok = True
         if run_record is not None and run_record.model_profile_id:
-            from ..core.model_probe_service import profile_tool_protocol_valid
+            from ..core.model_probe_service import probe_gate_for_run
 
-            profile_record = await run_db.get(
-                ModelProfile, run_record.model_profile_id
+            probe_ok = await probe_gate_for_run(
+                run_db, run_record.model_profile_id
             )
-            if profile_record is not None:
-                probe_ok = await profile_tool_protocol_valid(
-                    run_db, profile_record
-                )
         registry = VersionedToolRegistry()
         result_verifier: ToolResultVerifier | None = None
         if cfg.agent_run_read_only_tools_enabled:

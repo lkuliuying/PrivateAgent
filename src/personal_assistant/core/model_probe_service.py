@@ -29,12 +29,17 @@ from ..agent_v2.application.model_probe import (
     ModelToolProfileSnapshot,
     run_probe,
 )
+from ..core.db import async_session_factory
 
 #: 自动探测整体超时（本地 14B 6 用例约 30~120s；超时按失败快照落库）。
 AUTO_PROBE_TIMEOUT_S = 240.0
 
 PROBE_STATUS_OK = "ok"
 PROBE_STATUS_FAILED = "failed"
+PROBE_STATUS_RUNNING = "running"
+
+#: 生产探测默认重复轮数——单次六题探测存在模型波动，多轮聚合降低误判。
+PROBE_REPEATS = 2
 
 
 def build_gateway_for_profile(
@@ -133,6 +138,27 @@ class ModelProbeSnapshotRepository:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def mark_running(
+        self, profile: ModelProfile
+    ) -> ModelToolProfileSnapshotRecord:
+        """探测开始：先落 running 行（进度可见；异常中断时留下一条可辨识记录）。"""
+        record = ModelToolProfileSnapshotRecord(
+            profile_id=profile.id,
+            provider=(profile.provider or "").strip().lower(),
+            model_name=(profile.model_name or "").strip(),
+            model_digest="",
+            status=PROBE_STATUS_RUNNING,
+            error_code=None,
+            sample_count=0,
+            pass_count=0,
+            results_json=None,
+            requirements_json=None,
+        )
+        self.db.add(record)
+        await self.db.commit()
+        await self.db.refresh(record)
+        return record
+
     async def save(
         self,
         profile_id: str,
@@ -226,12 +252,14 @@ async def run_probe_for_profile(
     profile: ModelProfile,
     *,
     client: Any,
+    repeats: int = PROBE_REPEATS,
 ) -> ModelToolProfileSnapshotRecord:
     """执行固定用例集并落库（全过=ok；任一能力未证=failed，结果仍留痕）。"""
     snapshot = await run_probe(
         client,
         provider=(profile.provider or "").strip().lower(),
         model_name=(profile.model_name or "").strip(),
+        repeats=repeats,
     )
     repository = ModelProbeSnapshotRepository(db)
     if snapshot.passed:
@@ -244,61 +272,135 @@ async def run_probe_for_profile(
     )
 
 
+async def probe_gate_for_run(db: AsyncSession, model_profile_id: str | None) -> bool:
+    """工具面门禁裁决（失败关闭，§8.2/AD-T04）。
+
+    - 未绑定 profile 的 run（历史/非 coding）：保持既有行为（True）；
+    - 绑定的 profile 已删除/查不到：False（不得放行副作用工具）；
+    - profile 存在：仅当有效快照（§8.2 口径）时放行。
+    """
+    if model_profile_id is None:
+        return True
+    profile = await db.get(ModelProfile, model_profile_id)
+    if profile is None:
+        return False
+    return await profile_tool_protocol_valid(db, profile)
+
+
+class _GatewayProbeClient:
+    """生产 ModelGateway → 探测客户端适配：补齐强制的 cancellation 参数。"""
+
+    def __init__(self, gateway: Any) -> None:
+        from personal_assistant.agents.runtime import CancellationToken
+
+        self._gateway = gateway
+        self._token = CancellationToken()
+
+    async def complete(self, request: Any) -> Any:
+        return await self._gateway.complete(request, cancellation=self._token)
+
+
+def _probe_eligible(profile: ModelProfile) -> bool:
+    return bool(
+        profile.enabled
+        and profile.native_tool_calls
+        and (profile.model_name or "").strip()
+    )
+
+
+async def _probe_background(profile_id: str, cfg: Any) -> None:
+    """后台探测任务：独立会话，全程不阻断调用方；任何异常落失败快照。"""
+    from ..core.settings import SettingsService
+
+    try:
+        async with async_session_factory() as db:
+            profile = await db.get(ModelProfile, profile_id)
+            if profile is None or not _probe_eligible(profile):
+                return
+            repository = ModelProbeSnapshotRepository(db)
+            await repository.mark_running(profile)
+            provider_settings = await SettingsService(db).get_all()
+            try:
+                gateway = build_gateway_for_profile(
+                    profile,
+                    provider_settings,
+                    default_temperature=cfg.llm_temperature,
+                    default_context_length=cfg.llm_context_length,
+                    ollama_base_url=cfg.ollama_base_url,
+                )
+                snapshot = await asyncio.wait_for(
+                    run_probe(
+                        _GatewayProbeClient(gateway),
+                        provider=(profile.provider or "").strip().lower(),
+                        model_name=(profile.model_name or "").strip(),
+                        repeats=PROBE_REPEATS,
+                    ),
+                    timeout=AUTO_PROBE_TIMEOUT_S,
+                )
+                if snapshot.passed:
+                    await repository.save(profile.id, snapshot)
+                else:
+                    await repository.save(
+                        profile.id,
+                        snapshot,
+                        status=PROBE_STATUS_FAILED,
+                        error_code="capability_unproven",
+                    )
+            except asyncio.TimeoutError:
+                await repository.save_failed(
+                    profile.id,
+                    provider=(profile.provider or "").strip().lower(),
+                    model_name=(profile.model_name or "").strip(),
+                    error_code="probe_timeout",
+                )
+            except Exception:  # noqa: BLE001 - 探测失败落失败快照，不抛出
+                await repository.save_failed(
+                    profile.id,
+                    provider=(profile.provider or "").strip().lower(),
+                    model_name=(profile.model_name or "").strip(),
+                    error_code="probe_failed",
+                )
+    except Exception:  # noqa: BLE001 - 后台任务不得向事件循环抛异常
+        return
+
+
+def start_probe_for_profile(
+    db: AsyncSession,
+    profile: ModelProfile,
+    *,
+    cfg: Any,
+) -> bool:
+    """调度后台探测（立即返回，不等待模型）。
+
+    已有探测进行中（最新快照 running）时不重复调度；前提不满足或门控
+    关闭时返回 False。进度/结果经最新快照行可查，重试入口再次调用本函数。
+    """
+    if not getattr(cfg, "agent_v2_model_probe_enabled", True):
+        return False
+    if not _probe_eligible(profile):
+        return False
+    asyncio.get_running_loop().create_task(_probe_background(profile.id, cfg))
+    return True
+
+
 async def auto_probe_profile(
     db: AsyncSession,
     profile: ModelProfile,
     *,
     cfg: Any,
-    provider_settings: Mapping[str, str],
+    provider_settings: Mapping[str, str] | None = None,
     timeout_s: float = AUTO_PROBE_TIMEOUT_S,
 ) -> ModelToolProfileSnapshotRecord | None:
-    """模型配置保存后的自动探测（§8.2：随配置执行、结果持久化）。
+    """模型配置保存后的自动探测入口（§8.2：随配置执行、结果持久化）。
 
-    尽力而为：任何异常落失败快照，不抛出（配置保存不被探测阻断）；
-    ``PA_AGENT_V2_MODEL_PROBE_ENABLED`` 关闭或 profile 不满足探测前提时跳过。
+    v1.0 三次验收修复：探测改为**后台任务**，保存请求不再同步等待模型
+    （本地 14B 可达分钟级）；进度/结果经最新快照行呈现，重试入口再次调用。
+    已有探测进行中时不重复调度；返回 None 表示未新启动。
     """
-    if not getattr(cfg, "agent_v2_model_probe_enabled", True):
-        return None
-    if not profile.enabled or not profile.native_tool_calls:
-        return None
-    if not (profile.model_name or "").strip():
-        return None
+    del provider_settings, timeout_s  # 兼容旧签名；后台任务自行取配置。
     repository = ModelProbeSnapshotRepository(db)
-    try:
-        gateway = build_gateway_for_profile(
-            profile,
-            provider_settings,
-            default_temperature=cfg.llm_temperature,
-            default_context_length=cfg.llm_context_length,
-            ollama_base_url=cfg.ollama_base_url,
-        )
-        snapshot = await asyncio.wait_for(
-            run_probe(
-                gateway,
-                provider=(profile.provider or "").strip().lower(),
-                model_name=(profile.model_name or "").strip(),
-            ),
-            timeout=timeout_s,
-        )
-        if snapshot.passed:
-            return await repository.save(profile.id, snapshot)
-        return await repository.save(
-            profile.id,
-            snapshot,
-            status=PROBE_STATUS_FAILED,
-            error_code="capability_unproven",
-        )
-    except asyncio.TimeoutError:
-        return await repository.save_failed(
-            profile.id,
-            provider=(profile.provider or "").strip().lower(),
-            model_name=(profile.model_name or "").strip(),
-            error_code="probe_timeout",
-        )
-    except Exception:  # noqa: BLE001 - 探测失败不阻断配置保存
-        return await repository.save_failed(
-            profile.id,
-            provider=(profile.provider or "").strip().lower(),
-            model_name=(profile.model_name or "").strip(),
-            error_code="probe_failed",
-        )
+    latest = await repository.latest(profile.id)
+    if latest is not None and latest.status == PROBE_STATUS_RUNNING:
+        return None
+    start_probe_for_profile(db, profile, cfg=cfg)
+    return None
