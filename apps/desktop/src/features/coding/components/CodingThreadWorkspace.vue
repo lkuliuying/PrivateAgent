@@ -11,6 +11,7 @@
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { PhChatsCircle, PhWarningCircle } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
+import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
 import PaButton from "../../../design/PaButton.vue";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
@@ -32,11 +33,18 @@ import {
   fetchRunExecutions,
   rejectRunApproval,
 } from "../api/runs";
-import { searchCodingProjectFiles } from "../api/projects";
+import {
+  fetchCodingWorkspacePath,
+  searchCodingProjectFiles,
+} from "../api/projects";
 import {
   createFullAccessGrant,
   fetchFullAccessGrant,
 } from "../api/fullAccess";
+import {
+  fetchCodingThreadMessages,
+  fetchLatestCodingThreadRunId,
+} from "../api/threads";
 import ThreadHeader from "./ThreadHeader.vue";
 import RunTranscript from "./RunTranscript.vue";
 import RunPlanPopover from "./RunPlanPopover.vue";
@@ -61,6 +69,11 @@ const emit = defineEmits<{
 const thread = computed(() => props.store.selectedThread.value);
 const project = computed(() => props.store.selectedProject.value);
 const workspace = computed(() => props.store.selectedWorkspace.value);
+const workspacePath = ref<string | null>(null);
+const workspacePathLoading = ref(false);
+const workspacePathRequested = ref(false);
+let workspacePathSeq = 0;
+let workspacePathForId: number | null = null;
 
 const branchLabel = computed(() => {
   const current = workspace.value;
@@ -68,8 +81,42 @@ const branchLabel = computed(() => {
   return current.branchName ?? (current.kind === "root" ? "根工作区" : "工作区");
 });
 
+watch(
+  () => workspace.value?.id ?? null,
+  () => {
+    workspacePathSeq += 1;
+    workspacePath.value = null;
+    workspacePathLoading.value = false;
+    workspacePathRequested.value = false;
+    workspacePathForId = null;
+  }
+);
+
+async function requestWorkspacePath(): Promise<void> {
+  const currentProject = project.value;
+  const currentWorkspace = workspace.value;
+  workspacePathRequested.value = true;
+  if (!currentProject || !currentWorkspace || workspacePathLoading.value) return;
+  if (workspacePathForId === currentWorkspace.id && workspacePath.value) return;
+  const mine = ++workspacePathSeq;
+  workspacePathLoading.value = true;
+  try {
+    const path = await fetchCodingWorkspacePath(currentProject.id, currentWorkspace.id);
+    if (mine !== workspacePathSeq || workspace.value?.id !== currentWorkspace.id) return;
+    workspacePath.value = path;
+    workspacePathForId = currentWorkspace.id;
+  } catch {
+    if (mine !== workspacePathSeq) return;
+    workspacePath.value = null;
+  } finally {
+    if (mine === workspacePathSeq) workspacePathLoading.value = false;
+  }
+}
+
 // ============ run 流（真实计划/工具/审批/终态均来自 durable 事件） ============
 const stream = useRunStream();
+const durableHistory = shallowRef<Message[]>([]);
+let hydrationSeq = 0;
 const planOpen = ref(false);
 const contextOpen = ref(false);
 const cancelling = ref(false);
@@ -101,6 +148,66 @@ if (previewKey) {
 const projection = computed(() => previewProjection.value ?? stream.projection.value);
 const phase = computed(() => (previewMode.value ? "idle" : stream.phase.value));
 const connectionError = computed(() => (previewMode.value ? null : stream.connectionError.value));
+const composerInputHistory = computed(() => {
+  const messages = durableHistory.value
+    .filter((message) => message.role === "user" && message.content.trim().length > 0)
+    .map((message) => message.content);
+  const current = projection.value?.userMessage;
+  // 当前 run 创建后消息可能尚未重新拉入 durableHistory；按值只补尾项，
+  // 重开任务时则避免把同一轮输入重复放进 ↑/↓ 历史。
+  if (current && messages[messages.length - 1] !== current) messages.push(current);
+  return messages;
+});
+
+/**
+ * 消息表拉取的安全包装：后端/模拟层返回非数组时回落空数组，
+ * 不得把非法载荷写进 durableHistory（否则击穿 RunTranscript 渲染）。
+ */
+async function fetchThreadMessagesSafe(threadId: number): Promise<Message[]> {
+  const messages = await fetchCodingThreadMessages(threadId);
+  return Array.isArray(messages) ? messages : [];
+}
+
+/**
+ * 任务重开：消息表恢复更早对话，last_run_id（或旧版事实表兜底）恢复最近
+ * run 的详细活动。世代令牌防止切换任务后的迟到请求污染新页面。
+ */
+async function hydrateSelectedThread(): Promise<void> {
+  const current = thread.value;
+  if (!current || previewMode.value) return;
+  const mine = ++hydrationSeq;
+  const messagesPromise = fetchCodingThreadMessages(current.id);
+  const runIdPromise = current.lastRunId
+    ? Promise.resolve(current.lastRunId)
+    : fetchLatestCodingThreadRunId(current.id);
+  const [messagesResult, runIdResult] = await Promise.allSettled([
+    messagesPromise,
+    runIdPromise,
+  ]);
+  if (mine !== hydrationSeq || thread.value?.id !== current.id) return;
+  const rawMessages =
+    messagesResult.status === "fulfilled" ? messagesResult.value : [];
+  durableHistory.value = Array.isArray(rawMessages) ? rawMessages : [];
+  const runId = runIdResult.status === "fulfilled" ? runIdResult.value : null;
+  if (!runId) return;
+  // 旧版任务没有 messages 行时，任务标题就是首轮输入的可靠 UI 事实源。
+  const lastUserMessage = [...durableHistory.value]
+    .reverse()
+    .find((message) => message.role === "user")?.content;
+  props.store.recordThreadRun(current.id, runId);
+  await stream.attachRun(runId, lastUserMessage ?? current.title);
+}
+
+watch(
+  () => thread.value?.id ?? null,
+  (threadId) => {
+    hydrationSeq += 1;
+    durableHistory.value = [];
+    stream.detach();
+    if (threadId !== null) void hydrateSelectedThread();
+  },
+  { immediate: true }
+);
 
 // ============ v0.9.0 H1-B（计划 §5.6）：创建失败关闭与恢复入口 ============
 // 阻塞项不得静默隐藏：创建失败时原位展示具体阻塞项 + 可操作恢复入口；
@@ -314,6 +421,8 @@ function scheduleOutputPoll(): void {
 }
 
 onBeforeUnmount(() => {
+  hydrationSeq += 1;
+  workspacePathSeq += 1;
   if (outputPollTimer !== null) {
     window.clearTimeout(outputPollTimer);
     outputPollTimer = null;
@@ -355,14 +464,24 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
 }
 
 async function send(payload: CodingComposerSendPayload): Promise<void> {
-  if (!thread.value) return;
-  const projectId = props.store.selectedProjectId.value ?? thread.value.projectId;
-  const workspaceId = props.store.selectedWorkspaceId.value ?? thread.value.workspaceId;
+  const currentThread = thread.value;
+  if (!currentThread) return;
+  const projectId = props.store.selectedProjectId.value ?? currentThread.projectId;
+  const workspaceId = props.store.selectedWorkspaceId.value ?? currentThread.workspaceId;
   if (projectId === null || workspaceId === null) return;
   lastPermissionMode.value = payload.permissionMode;
   lastSentPayload.value = payload;
+  // 新一轮会替换当前 run 投影；先收进已完成的上一轮对话，保证同一任务内
+  // 连续发送时旧问答仍留在 transcript。读取失败不阻断本轮执行。
+  if (stream.projection.value) {
+    try {
+      durableHistory.value = await fetchThreadMessagesSafe(currentThread.id);
+    } catch {
+      // 保留现有历史；运行创建仍按后端事实收敛。
+    }
+  }
   await stream.startRun({
-    session_id: thread.value.id,
+    session_id: currentThread.id,
     message: payload.message,
     project_id: projectId,
     workspace_id: workspaceId,
@@ -370,6 +489,22 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
     model_profile_id: payload.modelProfileId ?? undefined,
     reasoning_effort: payload.reasoningEffort ?? undefined,
   });
+  const createdRunId = stream.projection.value?.runId;
+  if (createdRunId && thread.value?.id === currentThread.id) {
+    props.store.recordThreadRun(
+      currentThread.id,
+      createdRunId,
+      new Date().toISOString()
+    );
+    // run 创建会持久化本轮 user 消息。创建成功后立即重新同步消息表，让
+    // transcript 能明确区分“更早对话”和当前活动流；RunTranscript 只裁掉
+    // 当前 run 的最后一份持久化副本，不再依赖发送前的旧快照。
+    try {
+      durableHistory.value = await fetchThreadMessagesSafe(currentThread.id);
+    } catch {
+      // 事件流仍是当前 run 的事实源；消息同步失败留待下次重开恢复。
+    }
+  }
 }
 
 function searchFiles(query: string) {
@@ -424,6 +559,9 @@ function toggleContext(): void {
         :title="thread.title"
         :project-name="project?.name ?? ''"
         :branch-label="branchLabel"
+        :workspace-path="workspacePath"
+        :workspace-path-loading="workspacePathLoading"
+        :workspace-path-requested="workspacePathRequested"
         :head-sha="workspace?.headSha ?? null"
         :git-dirty="workspace ? workspace.status === 'dirty' : null"
         :run-status="runStatus"
@@ -436,12 +574,14 @@ function toggleContext(): void {
         @cancel="cancelRun"
         @toggle-plan="togglePlan"
         @toggle-context="toggleContext"
+        @request-workspace-path="void requestWorkspacePath()"
       />
 
       <div class="thread-body">
         <div class="thread-main">
           <RunTranscript
             :projection="projection"
+            :history="durableHistory"
             :phase="phase"
             :connection-error="connectionError"
             :approvals="approvalRecords"
@@ -499,6 +639,7 @@ function toggleContext(): void {
               :preview-mode="previewMode"
               :search-files="searchFiles"
               :before-send="guardFullAccess"
+              :input-history="composerInputHistory"
               :restore-request="restoreRequest"
               @send="send"
               @stop="cancelRun"
@@ -545,17 +686,17 @@ function toggleContext(): void {
 }
 .thread-composer {
   flex-shrink: 0;
-  padding: var(--space-3) var(--space-5) var(--space-4);
-  border-top: 1px solid var(--color-border);
-  background: var(--color-surface);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  border-top: 0;
+  background: var(--color-bg);
 }
 .create-blocker {
   display: flex;
-  gap: var(--space-3);
-  align-items: flex-start;
+  gap: var(--space-2);
+  align-items: center;
   flex-shrink: 0;
-  margin: 0 var(--space-5);
-  padding: var(--space-3) var(--space-4);
+  margin: 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-warning);
   border-radius: var(--radius-md);
   background: var(--color-surface-muted);
@@ -570,15 +711,19 @@ function toggleContext(): void {
   display: flex;
   flex: 1;
   min-width: 0;
-  flex-direction: column;
-  gap: 2px;
+  flex-direction: row;
+  align-items: baseline;
+  gap: var(--space-2);
 }
 .blocker-hint {
+  overflow: hidden;
   color: var(--color-fg-muted);
   font-size: var(--pa-text-meta, 12px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .blocker-detail {
-  overflow: hidden;
+  display: none;
   color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta, 12px);
   text-overflow: ellipsis;
@@ -599,6 +744,11 @@ function toggleContext(): void {
     bottom: 0;
     z-index: var(--z-raised);
     box-shadow: var(--shadow-lg);
+  }
+  .blocker-copy {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
   }
 }
 </style>

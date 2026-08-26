@@ -39,7 +39,17 @@ async function mockWorkspace(page: Page) {
     const url = new URL(request.url());
     const path = url.pathname;
     if (path === "/capabilities") {
-      await route.fulfill({ json: { chat_execution_mode: "legacy", legacy_tool_planner_enabled: true, agent_read_only_tools_enabled: true, rag_chat_runtime_enabled: false } });
+      await route.fulfill({
+        json: {
+          chat_execution_mode: "legacy",
+          legacy_tool_planner_enabled: true,
+          agent_read_only_tools_enabled: true,
+          rag_chat_runtime_enabled: false,
+          agent_runs_api_enabled: true,
+          coding_agent_ui_enabled: true,
+          project_bound_runs_enabled: true,
+        },
+      });
       return;
     }
     if (path === "/health") {
@@ -54,8 +64,20 @@ async function mockWorkspace(page: Page) {
       await route.fulfill({ json: WORKSPACES });
       return;
     }
+    if (path === "/projects/1/workspaces/101") {
+      await route.fulfill({ json: WORKSPACES[0] });
+      return;
+    }
     if (path === "/sessions" && url.searchParams.get("kind") === "coding") {
       await route.fulfill({ json: THREADS });
+      return;
+    }
+    if (/^\/sessions\/\d+\/messages$/.test(path)) {
+      await route.fulfill({ json: [] });
+      return;
+    }
+    if (/^\/sessions\/\d+\/latest-agent-run$/.test(path)) {
+      await route.fulfill({ json: { run_id: null } });
       return;
     }
     if (path === "/sessions") {
@@ -177,6 +199,7 @@ test.describe("v0.8.0 W5 Coding 质量门禁", () => {
     await expect(page.getByTestId("coding-composer-input")).toBeVisible();
     // 富内容：diff、命令输出、抽屉同时在场
     await expect(page.getByTestId("diff-artifact-toggle")).toBeVisible();
+    await page.getByTestId("command-output-toggle").click();
     await expect(page.getByTestId("command-parsed")).toBeVisible();
     await page.getByTestId("thread-context-toggle").click();
     await expect(page.getByTestId("context-drawer")).toBeVisible();
@@ -236,6 +259,16 @@ test.describe("v0.8.0 W5 Coding 质量门禁", () => {
     await expect(page.getByTestId("coding-composer-input")).toBeVisible();
   });
 
+  test("任务标题区域悬停显示当前工作目录", async ({ page }) => {
+    await openCoding(page);
+    await page.getByTestId("coding-thread-11").click();
+    await page.getByTestId("thread-workspace-hover").hover();
+    const tooltip = page.getByTestId("workspace-path-tooltip");
+    await expect(tooltip).toBeVisible();
+    await expect(tooltip).toContainText("当前工作目录");
+    await expect(tooltip).toContainText("C:\\s");
+  });
+
   test("重复 thread 切换：监听器与定时器无增长（挂载/卸载清理）", async ({ page }) => {
     await installProbe(page);
     await openCoding(page, "&coding-run-preview=command-output");
@@ -281,12 +314,14 @@ test.describe("v0.8.0 W5 Coding 质量门禁", () => {
 
     await page.getByTestId("coding-thread-11").click();
     await expect(page.getByTestId("coding-thread-workspace")).toBeVisible();
-    const metrics = await page.evaluate(() => ({
-      horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
-      bodyVertical: document.body.scrollHeight - document.documentElement.clientHeight,
-    }));
-    expect(metrics.horizontal).toBeLessThanOrEqual(1);
-    expect(metrics.bodyVertical).toBeLessThanOrEqual(2);
+      const metrics = await page.evaluate(() => ({
+        horizontal: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+        bodyVertical: document.body.scrollHeight - document.documentElement.clientHeight,
+      }));
+      expect(metrics.horizontal).toBeLessThanOrEqual(1);
+      expect(metrics.bodyVertical).toBeLessThanOrEqual(2);
+      const composer = await page.getByTestId("coding-composer").boundingBox();
+      expect(composer?.height ?? Number.POSITIVE_INFINITY).toBeLessThanOrEqual(150);
     });
   }
 });

@@ -557,6 +557,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       applyTerminal(projection, status, frame.sequence, {
         output: typeof payload.output === "string" ? payload.output : null,
         errorCode: str(payload, "error_code") || null,
+        errorMessage: str(payload, "error") || null,
       });
       applyTerminalUsage(projection, payload);
       break;
@@ -565,7 +566,11 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       // 流层合成帧（不落库）：流将关闭；状态若未收敛以帧内状态补齐
       const status = str(payload, "status") as AgentRunStatus;
       if (isTerminalRunStatus(status) && !isTerminalRunStatus(projection.status)) {
-        applyTerminal(projection, status, frame.sequence, { output: null, errorCode: null });
+        applyTerminal(projection, status, frame.sequence, {
+          output: null,
+          errorCode: null,
+          errorMessage: null,
+        });
       }
       break;
     }
@@ -587,20 +592,28 @@ function applyTerminal(
   projection: RunProjection,
   status: AgentRunStatus,
   sequence: number,
-  facts: { output: string | null; errorCode: string | null }
+  facts: {
+    output: string | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+  }
 ): void {
   projection.status = status;
   projection.completedAt = null; // 时间戳以快照为准
   if (facts.output !== null) projection.output = facts.output;
-  if (facts.errorCode) {
-    projection.error = { code: facts.errorCode, message: projection.error?.message ?? null };
+  if (facts.errorCode || facts.errorMessage) {
+    projection.error = {
+      code: facts.errorCode ?? projection.error?.code ?? "run_failed",
+      message: facts.errorMessage ?? projection.error?.message ?? null,
+    };
   }
   upsertEntry(projection, {
     kind: "terminal",
     key: "terminal",
     sequence,
     status,
-    errorCode: facts.errorCode,
+    // 流层合成的 run.terminal 帧不带错误事实：不得把已落库的错误码洗成空。
+    errorCode: facts.errorCode ?? projection.error?.code ?? null,
     output: facts.output,
   });
 }
@@ -670,7 +683,8 @@ export function reconcileRunWithSnapshot(
       key: "terminal",
       sequence: Math.max(projection.lastSequence, snapshot.last_event_sequence),
       status: snapshot.status,
-      errorCode: snapshot.error_code,
+      // 快照未携带错误码时不得把已投影的错误事实洗成空（终态结算/纠偏同理）。
+      errorCode: snapshot.error_code ?? projection.error?.code ?? null,
       output: snapshot.output,
     });
   }

@@ -25,6 +25,23 @@ describe("ThreadHeader", () => {
     expect(wrapper.text()).toContain("有未提交更改");
   });
 
+  it("悬停任务名按需请求并显示当前工作目录", async () => {
+    const wrapper = mountHeader({
+      workspacePath: "F:\\Program\\test",
+      workspacePathRequested: true,
+    });
+    const title = wrapper.find("h1");
+    await wrapper.find(".header-copy").trigger("mouseenter");
+    expect(wrapper.emitted("request-workspace-path")).toBeTruthy();
+    expect(wrapper.find(".header-copy").attributes("title")).toContain(
+      "F:\\Program\\test"
+    );
+    expect(title.attributes("title")).toContain("F:\\Program\\test");
+    expect(wrapper.find('[data-testid="workspace-path-tooltip"]').text()).toContain(
+      "F:\\Program\\test"
+    );
+  });
+
   it.each([
     ["running", "执行中"],
     ["waiting_approval", "等待审批"],

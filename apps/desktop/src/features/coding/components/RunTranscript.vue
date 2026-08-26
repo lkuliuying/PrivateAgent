@@ -3,8 +3,7 @@
  * RunTranscript · v0.8.0 W2
  *
  * 文档式活动流：用户请求 → 运行/上下文 → 模型轮次 → 计划摘要 → 工具卡 →
- * 审批卡 → 验证 → 变更集/产出 → 终态摘要（含最终输出，pre-wrap 纯文本，
- * 与现行消息渲染一致；Markdown 渲染不在 W2 范围）。
+ * 审批卡 → 验证 → 变更集/产出 → 终态摘要（最终输出按安全 Markdown 渲染）。
  * 工具活动默认摘要折叠；新活动自动跟随（离开底部时出现「查看新活动」）。
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -24,6 +23,7 @@ import {
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { TranscriptEntry, RunProjection } from "../model/runProjector";
+import type { Message } from "../../../types";
 import type {
   RunApprovalPreviewRecord,
   RunApprovalRecord,
@@ -35,10 +35,12 @@ import { RUN_STATUS_META } from "../model/runContracts";
 import { redactCommandArgs, redactSecretText } from "../model/redaction";
 import DiffArtifact from "./DiffArtifact.vue";
 import CommandOutput from "./CommandOutput.vue";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const props = withDefaults(
   defineProps<{
     projection: RunProjection | null;
+    history?: Message[];
     phase?: RunConnectionPhase;
     connectionError?: string | null;
     approvals?: RunApprovalRecord[];
@@ -56,6 +58,7 @@ const props = withDefaults(
   }>(),
   {
     phase: "idle" as RunConnectionPhase,
+    history: () => [],
     connectionError: null,
     approvals: () => [],
     approvalPreviews: () => ({}),
@@ -93,6 +96,46 @@ const PATCH_STATE_LABEL: Record<string, { label: string; tone: string }> = {
 };
 
 const entries = computed(() => props.projection?.entries ?? []);
+const commandExecutionByTool = computed<Record<string, RunExecutionRecord>>(() => {
+  const result: Record<string, RunExecutionRecord> = {};
+  for (const [toolCallId, execution] of Object.entries(props.executionByTool)) {
+    const output = execution.output as Record<string, unknown> | null;
+    const hasCommandFacts =
+      Array.isArray(output?.args) ||
+      typeof output?.returncode === "number" ||
+      typeof output?.exit_code === "number";
+    if (execution.tool_name === "run_whitelisted_command" || hasCommandFacts) {
+      result[toolCallId] = execution;
+    }
+  }
+  return result;
+});
+const historyEntries = computed(() => {
+  const items = [...props.history];
+  const current = props.projection;
+  if (!current) return items;
+  // 消息表与 run 事件分别持久化，完成时序不保证 assistant/user 恰好位于数组
+  // 最尾端。按角色从后向前只裁掉最后一个当前 run 副本，并规范 CRLF/尾部空白；
+  // 更早轮次即使问题文本相同也会保留。
+  const normalized = (value: string) => value.replace(/\r\n?/g, "\n").trimEnd();
+  const findLastMatch = (role: Message["role"], content: string, after = -1) => {
+    const expected = normalized(content);
+    for (let index = items.length - 1; index > after; index -= 1) {
+      const message = items[index];
+      if (message.role === role && normalized(message.content) === expected) return index;
+    }
+    return -1;
+  };
+  const userIndex = current.userMessage
+    ? findLastMatch("user", current.userMessage)
+    : -1;
+  const assistantIndex = current.output
+    ? findLastMatch("assistant", current.output, userIndex)
+    : -1;
+  if (assistantIndex >= 0) items.splice(assistantIndex, 1);
+  if (userIndex >= 0) items.splice(userIndex, 1);
+  return items;
+});
 const entryCount = computed(() => entries.value.length);
 const pendingApprovals = computed(() => props.approvals.filter((item) => item.status === "pending"));
 
@@ -100,6 +143,7 @@ const pendingApprovals = computed(() => props.approvals.filter((item) => item.st
 // 默认仅渲染最近 RENDER_BATCH 条，「显示更早」按批次扩展；切换 run 重置。
 const RENDER_BATCH = 200;
 const visibleCount = ref(RENDER_BATCH);
+const auditOpen = ref(false);
 const visibleEntries = computed(() =>
   entries.value.slice(Math.max(0, entries.value.length - visibleCount.value))
 );
@@ -113,6 +157,7 @@ watch(
   () => props.projection?.runId,
   () => {
     visibleCount.value = RENDER_BATCH;
+    auditOpen.value = false;
   }
 );
 
@@ -191,7 +236,11 @@ function formatDuration(startIso: string | null, endIso: string | null): string 
   const start = new Date(startIso).getTime();
   const end = new Date(endIso).getTime();
   if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
-  const ms = end - start;
+  return formatDurationMs(end - start);
+}
+
+function formatDurationMs(ms: number): string | null {
+  if (!Number.isFinite(ms) || ms < 0) return null;
   if (ms < 1000) return `${ms}ms`;
   const seconds = ms / 1000;
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
@@ -262,19 +311,170 @@ function terminalMeta(): { label: string; tone: string } | null {
   const meta = RUN_STATUS_META[status];
   return { label: meta.label, tone: meta.tone };
 }
+
+type RunAuditRow = {
+  key: string;
+  title: string;
+  detail: string;
+  duration: string | null;
+};
+
+const runDurationLabel = computed(() => {
+  const current = props.projection;
+  return current ? formatDuration(current.startedAt, current.completedAt) : null;
+});
+
+const runTimeRange = computed(() => {
+  const current = props.projection;
+  if (!current) return null;
+  const started = formatClock(current.startedAt);
+  const completed = formatClock(current.completedAt);
+  if (!started && !completed) return null;
+  return `${started ?? "--"} → ${completed ?? "--"}`;
+});
+
+function auditRow(entry: TranscriptEntry): RunAuditRow {
+  switch (entry.kind) {
+    case "run-start":
+      return {
+        key: entry.key,
+        title: "任务开始",
+        detail: `上限 ${entry.maxSteps} 步、${entry.maxToolCalls} 次工具${entry.maxWallTimeSeconds !== null ? `、${Math.round(entry.maxWallTimeSeconds)} 秒` : ""}`,
+        duration: null,
+      };
+    case "context":
+      return {
+        key: entry.key,
+        title: "上下文准备",
+        detail: `约 ${entry.estimatedTokens.toLocaleString()} tokens${entry.truncated ? "，已截断" : ""}`,
+        duration: null,
+      };
+    case "model-turn":
+      return {
+        key: entry.key,
+        title: `模型第 ${entry.ordinal} 轮`,
+        detail:
+          entry.state === "completed"
+            ? `${entry.inputTokens.toLocaleString()} 输入 / ${entry.outputTokens.toLocaleString()} 输出 tokens${entry.finishReason ? `，结束原因：${entry.finishReason}` : ""}`
+            : "生成中",
+        duration: entry.latencyMs === null ? null : formatDurationMs(entry.latencyMs),
+      };
+    case "decision-summary":
+      return {
+        key: entry.key,
+        title: "公开决策摘要",
+        detail: [
+          `目标：${entry.goal}`,
+          entry.method ? `方法：${entry.method}` : null,
+          entry.nextSteps.length ? `后续：${entry.nextSteps.join("、")}` : null,
+        ].filter(Boolean).join("；"),
+        duration: null,
+      };
+    case "plan":
+      return {
+        key: entry.key,
+        title: entry.note === "created" ? "建立执行计划" : "更新执行计划",
+        detail: `v${entry.version}，${entry.itemCount} 项`,
+        duration: null,
+      };
+    case "tool": {
+      const detail = toolDetail(entry);
+      const facts = [
+        `状态：${TOOL_STATE_LABEL[entry.state]?.label ?? entry.state}`,
+        detail.attempt !== null ? `第 ${detail.attempt}/${detail.attemptCount} 次执行` : null,
+        detail.commandText ? `命令：${detail.commandText}` : null,
+        detail.resultSummary ? `结果：${detail.resultSummary}` : null,
+        entry.errorMessage ? `错误：${entry.errorType ?? "tool_error"} · ${entry.errorMessage}` : null,
+      ];
+      return {
+        key: entry.key,
+        title: `工具 · ${entry.name || "未命名工具"}`,
+        detail: redactSecretText(facts.filter(Boolean).join("；")),
+        duration: detail.durationLabel,
+      };
+    }
+    case "approval": {
+      const approval = approvalById(entry.approvalId);
+      return {
+        key: entry.key,
+        title: `授权 · ${approval?.tool_name ?? entry.toolName}`,
+        detail:
+          entry.resolved || (approval !== undefined && approval.status !== "pending")
+            ? `已处理（${approval?.status ?? "resolved"}）`
+            : "等待用户确认",
+        duration: null,
+      };
+    }
+    case "verification":
+      return {
+        key: entry.key,
+        title: `输出校验 · ${entry.verifier}`,
+        detail: `第 ${entry.attempt} 次，${entry.state === "passed" ? "通过" : entry.state === "started" ? "进行中" : entry.willRetry ? "未通过，将重试" : "未通过"}${entry.message ? `；${entry.message}` : ""}`,
+        duration: null,
+      };
+    case "patch-set":
+      return {
+        key: entry.key,
+        title: "变更集",
+        detail: `${PATCH_STATE_LABEL[entry.state]?.label ?? entry.state}${entry.fileCount !== null ? `，${entry.fileCount} 个文件` : ""}${entry.verified === true ? "，已验证" : ""}${entry.reason ? `；${entry.reason}` : ""}`,
+        duration: null,
+      };
+    case "artifact":
+      return {
+        key: entry.key,
+        title: `产出 · ${entry.artifactKind}`,
+        detail: entry.title,
+        duration: null,
+      };
+    case "terminal":
+      return {
+        key: entry.key,
+        title: "任务结束",
+        detail: `${RUN_STATUS_META[entry.status].label}${entry.errorCode ? `，错误码：${entry.errorCode}` : ""}`,
+        duration: runDurationLabel.value,
+      };
+  }
+}
+
+const auditRows = computed(() => entries.value.map(auditRow));
+const modelRoundCount = computed(
+  () => entries.value.filter((entry) => entry.kind === "model-turn").length
+);
 </script>
 
 <template>
   <div class="run-transcript" data-testid="run-transcript">
     <div ref="scrollEl" class="transcript-scroll" @scroll.passive="onScroll">
       <!-- 未开始任务 -->
-      <div v-if="!projection" class="transcript-empty" data-testid="transcript-empty">
+      <div v-if="!projection && historyEntries.length === 0" class="transcript-empty" data-testid="transcript-empty">
         <PhLightning :size="26" weight="duotone" />
         <p>还没有开始任务</p>
         <p class="hint">在下方输入要执行的内容；执行计划、工具与审批都会在这里展示。</p>
       </div>
 
       <template v-else>
+        <!-- 已持久化的更早对话；当前 run 继续使用下方详细活动流呈现。 -->
+        <section v-if="historyEntries.length" class="history-section" data-testid="transcript-history-section">
+          <div class="transcript-divider"><span>更早对话</span></div>
+          <div
+            v-for="message in historyEntries"
+            :key="`history:${message.id}`"
+            class="history-message"
+            :class="`history-${message.role}`"
+            :data-testid="`transcript-history-${message.role}`"
+          >
+            <div v-if="message.role === 'user'" class="user-avatar">
+              <PhUser :size="14" weight="fill" aria-hidden="true" />
+            </div>
+            <div class="history-copy">
+              <MarkdownContent v-if="message.role === 'assistant'" :content="message.content" />
+              <template v-else>{{ message.content }}</template>
+            </div>
+          </div>
+        </section>
+
+        <template v-if="projection">
+        <div v-if="historyEntries.length" class="transcript-divider current"><span>当前执行</span></div>
         <!-- 用户请求 -->
         <div v-if="projection.userMessage" class="user-bubble" data-testid="transcript-user-message">
           <div class="user-avatar"><PhUser :size="14" weight="fill" aria-hidden="true" /></div>
@@ -385,12 +585,12 @@ function terminalMeta(): { label: string; tone: string } | null {
               {{ entry.errorType || "错误" }}：{{ entry.errorMessage }}
             </span>
             <CommandOutput
-              v-if="executionByTool[entry.toolCallId]"
-              :execution="executionByTool[entry.toolCallId]"
-              :page="outputPages[executionByTool[entry.toolCallId].id] ?? null"
-              :loading="outputLoading.includes(executionByTool[entry.toolCallId].id)"
+              v-if="commandExecutionByTool[entry.toolCallId]"
+              :execution="commandExecutionByTool[entry.toolCallId]"
+              :page="outputPages[commandExecutionByTool[entry.toolCallId].id] ?? null"
+              :loading="outputLoading.includes(commandExecutionByTool[entry.toolCallId].id)"
               class="entry-execution"
-              @load="emit('load-output', executionByTool[entry.toolCallId].id)"
+              @load="emit('load-output', commandExecutionByTool[entry.toolCallId].id)"
             />
           </template>
 
@@ -466,11 +666,25 @@ function terminalMeta(): { label: string; tone: string } | null {
               <PhCheckCircle v-if="entry.status === 'completed'" :size="16" weight="fill" aria-hidden="true" />
               <PhWarningCircle v-else-if="entry.status === 'failed' || entry.status === 'timed_out'" :size="16" aria-hidden="true" />
               <PhProhibit v-else :size="16" aria-hidden="true" />
-              <strong>{{ terminalMeta()?.label }}</strong>
+              <strong>输出总结</strong>
+              <span class="terminal-status" :class="`tone-${terminalMeta()?.tone}`">{{ terminalMeta()?.label }}</span>
               <span v-if="entry.errorCode" class="mono terminal-code">{{ entry.errorCode }}</span>
               <span class="terminal-usage">
                 {{ projection.usage.toolCallCount }} 次工具 · {{ projection.usage.outputTokens.toLocaleString() }} 输出 tokens
               </span>
+              <button
+                type="button"
+                class="terminal-duration"
+                data-testid="run-duration-toggle"
+                :aria-expanded="auditOpen"
+                aria-controls="run-audit-panel"
+                title="查看执行过程与结果"
+                @click="auditOpen = !auditOpen"
+              >
+                <PhClock :size="13" aria-hidden="true" />
+                {{ runDurationLabel ? `耗时 ${runDurationLabel}` : "耗时待同步" }}
+                <span class="duration-caret" :class="{ open: auditOpen }" aria-hidden="true">⌄</span>
+              </button>
             </div>
             <!-- v0.9.0 H1-B（§5.5/§5.6）：无工具/命令事件的完成态如实标注，
                  不把无执行证据的回答呈现为“已完成的可执行任务”。 -->
@@ -481,11 +695,58 @@ function terminalMeta(): { label: string; tone: string } | null {
             >
               本轮未执行工具/命令；以上为文字回答，不含执行证据。
             </p>
-            <pre
+            <p
+              v-if="entry.status === 'failed' && projection.error?.message"
+              class="terminal-failure-reason"
+              data-testid="terminal-failure-reason"
+            >
+              <strong>失败原因：</strong>{{ projection.error.message }}
+            </p>
+            <div
               v-if="entry.output || projection.output"
               class="terminal-output"
               data-testid="terminal-output"
-            >{{ entry.output ?? projection.output }}</pre>
+            ><MarkdownContent :content="entry.output ?? projection.output ?? ''" /></div>
+
+            <div
+              v-if="auditOpen"
+              id="run-audit-panel"
+              class="run-audit-panel"
+              data-testid="run-audit-panel"
+            >
+              <div class="audit-head">
+                <div>
+                  <strong>执行过程与结果</strong>
+                  <p>按持久化事件展示公开决策、模型轮次、工具调用与验证；不包含模型隐藏推理。</p>
+                </div>
+                <span v-if="runTimeRange" class="audit-time mono">{{ runTimeRange }}</span>
+              </div>
+
+              <div class="audit-stats" aria-label="运行统计">
+                <span>{{ modelRoundCount }} 轮模型</span>
+                <span>{{ projection.usage.toolCallCount }} 次工具</span>
+                <span>{{ projection.usage.inputTokens.toLocaleString() }} 输入 tokens</span>
+                <span>{{ projection.usage.outputTokens.toLocaleString() }} 输出 tokens</span>
+              </div>
+
+              <ol class="audit-list">
+                <li v-for="row in auditRows" :key="`audit:${row.key}`" class="audit-row">
+                  <span class="audit-marker" aria-hidden="true"></span>
+                  <div class="audit-copy">
+                    <div class="audit-row-head">
+                      <strong>{{ row.title }}</strong>
+                      <span v-if="row.duration" class="mono">{{ row.duration }}</span>
+                    </div>
+                    <p>{{ row.detail }}</p>
+                  </div>
+                </li>
+              </ol>
+
+              <div v-if="entry.output || projection.output" class="audit-result">
+                <strong>最终结果</strong>
+                <MarkdownContent :content="entry.output ?? projection.output ?? ''" />
+              </div>
+            </div>
           </div>
         </div>
 
@@ -503,6 +764,7 @@ function terminalMeta(): { label: string; tone: string } | null {
 
         <!-- 静态预览标记 -->
         <div v-if="previewMode" class="preview-tag">RUN PREVIEW</div>
+        </template>
       </template>
     </div>
 
@@ -538,10 +800,10 @@ function terminalMeta(): { label: string; tone: string } | null {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-3) var(--space-4);
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 2px;
 }
 .transcript-empty {
   display: flex;
@@ -595,6 +857,63 @@ function terminalMeta(): { label: string; tone: string } | null {
   word-break: break-word;
 }
 
+.history-message {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.history-section {
+  display: flex;
+  flex-direction: column;
+}
+.transcript-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.transcript-divider::before,
+.transcript-divider::after {
+  height: 1px;
+  flex: 1;
+  background: var(--color-border);
+  content: "";
+}
+.transcript-divider.current {
+  margin-top: var(--space-1);
+}
+.history-user {
+  justify-content: flex-end;
+}
+.history-user .user-avatar {
+  order: 2;
+}
+.history-copy {
+  max-width: 76%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.history-assistant .history-copy {
+  width: min(760px, 76%);
+  border-color: transparent;
+  background: var(--color-surface-muted);
+  white-space: normal;
+}
+.history-system .history-copy {
+  max-width: 100%;
+  color: var(--color-fg-muted);
+  font-size: var(--text-xs);
+}
+
 .load-earlier {
   align-self: center;
   padding: var(--space-1) var(--space-3);
@@ -610,12 +929,16 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 
 .entry {
+  position: relative;
   display: flex;
+  width: 100%;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 28px;
-  padding: var(--space-1) var(--space-2);
+  gap: var(--space-1) var(--space-2);
+  min-height: 23px;
+  padding: 2px var(--space-1);
   border-left: 2px solid transparent;
   color: var(--color-fg-muted);
   font-size: var(--text-xs);
@@ -692,6 +1015,8 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 .entry-execution {
   flex-basis: 100%;
+  width: min(760px, calc(100% - 22px));
+  margin-left: 22px;
 }
 .plan-entry {
   border: none;
@@ -709,12 +1034,19 @@ function terminalMeta(): { label: string; tone: string } | null {
 .approval-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-2) 0;
-  padding: var(--space-3);
+  width: min(680px, 100%);
+  box-sizing: border-box;
+  gap: var(--space-1);
+  margin: 2px 0;
+  padding: var(--space-2);
   border: 1px solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
   border-radius: var(--radius-lg);
   background: var(--color-warning-soft);
+}
+.entry-approval {
+  display: block;
+  min-height: 0;
+  padding: 0 var(--space-1);
 }
 .approval-head {
   display: flex;
@@ -759,9 +1091,9 @@ function terminalMeta(): { label: string; tone: string } | null {
 .terminal-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
-  padding: var(--space-3);
+  gap: var(--space-1);
+  margin-top: var(--space-1);
+  padding: var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
@@ -777,6 +1109,25 @@ function terminalMeta(): { label: string; tone: string } | null {
 .terminal-card.tone-success .terminal-head svg { color: var(--color-success); }
 .terminal-card.tone-danger .terminal-head svg { color: var(--color-danger); }
 .terminal-card.tone-warning .terminal-head svg { color: var(--color-warning); }
+.terminal-status {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+}
+.terminal-status.tone-success {
+  border-color: color-mix(in srgb, var(--color-success) 38%, var(--color-border));
+  color: var(--color-success-fg);
+}
+.terminal-status.tone-warning {
+  border-color: color-mix(in srgb, var(--color-warning) 42%, var(--color-border));
+  color: var(--color-warning-fg);
+}
+.terminal-status.tone-danger {
+  border-color: color-mix(in srgb, var(--color-danger) 38%, var(--color-border));
+  color: var(--color-danger-fg);
+}
 .terminal-code {
   color: var(--color-danger-fg);
   font-size: var(--pa-text-meta);
@@ -786,6 +1137,34 @@ function terminalMeta(): { label: string; tone: string } | null {
   color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
+.terminal-duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-muted);
+  font: inherit;
+  font-size: var(--pa-text-meta);
+  cursor: pointer;
+}
+.terminal-duration:hover {
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  color: var(--color-accent-soft-fg);
+}
+.terminal-duration:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+.duration-caret {
+  display: inline-block;
+  transition: transform var(--duration-fast, 120ms) ease;
+}
+.duration-caret.open {
+  transform: rotate(180deg);
+}
 .terminal-no-evidence {
   margin: var(--space-2) 0 0;
   padding: var(--space-2) var(--space-3);
@@ -794,6 +1173,17 @@ function terminalMeta(): { label: string; tone: string } | null {
   background: var(--color-warning-soft);
   color: var(--color-warning-fg);
   font-size: var(--pa-text-meta);
+}
+.terminal-failure-reason {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  background: var(--color-danger-soft);
+  color: var(--color-danger-fg);
+  font-size: var(--pa-text-meta);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
 }
 .terminal-output {
   max-height: 420px;
@@ -805,9 +1195,130 @@ function terminalMeta(): { label: string; tone: string } | null {
   background: var(--color-bg);
   color: var(--color-fg);
   font-size: var(--text-sm);
-  font-family: inherit;
+  line-height: var(--leading-normal);
+  word-break: break-word;
+}
+
+.run-audit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.audit-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.audit-head strong,
+.audit-result > strong {
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+}
+.audit-head p {
+  max-width: 660px;
+  margin: var(--space-1) 0 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+  line-height: var(--leading-normal);
+}
+.audit-time {
+  flex-shrink: 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.audit-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.audit-stats span {
+  padding: 2px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+}
+.audit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-height: 440px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.audit-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: var(--space-2);
+  padding: 0 0 var(--space-3);
+}
+.audit-row:not(:last-child)::before {
+  position: absolute;
+  top: 10px;
+  bottom: -2px;
+  left: 4px;
+  width: 1px;
+  background: var(--color-border);
+  content: "";
+}
+.audit-marker {
+  position: relative;
+  z-index: 1;
+  width: 9px;
+  height: 9px;
+  margin-top: 5px;
+  border: 2px solid var(--color-surface);
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-border);
+}
+.audit-copy {
+  min-width: 0;
+}
+.audit-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--color-fg);
+  font-size: var(--pa-text-meta);
+}
+.audit-row-head span {
+  flex-shrink: 0;
+  color: var(--color-fg-subtle);
+}
+.audit-copy p {
+  margin: 2px 0 0;
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
   line-height: var(--leading-normal);
   white-space: pre-wrap;
+  word-break: break-word;
+}
+.audit-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.audit-result > :last-child {
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
   word-break: break-word;
 }
 
@@ -883,5 +1394,14 @@ function terminalMeta(): { label: string; tone: string } | null {
 }
 @media (prefers-reduced-motion: reduce) {
   .spin { animation: none; }
+  .duration-caret { transition: none; }
+}
+@media (max-width: 760px) {
+  .terminal-usage {
+    margin-left: 0;
+  }
+  .audit-head {
+    flex-direction: column;
+  }
 }
 </style>

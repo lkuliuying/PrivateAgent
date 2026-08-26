@@ -189,7 +189,7 @@ const popoverLines = computed(() => {
 
     <!-- hover / 键盘 focus 弹层：真实数值与压缩事实 -->
     <div class="ring-popover" role="tooltip" data-testid="context-ring-popover">
-      <p v-for="(line, index) in popoverLines" :key="index" class="popover-line">
+      <p v-for="line in popoverLines" :key="line" class="popover-line">
         {{ line }}
       </p>
     </div>

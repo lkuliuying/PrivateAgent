@@ -36,17 +36,20 @@ function execution(overrides: Partial<RunExecutionRecord> = {}): RunExecutionRec
 }
 
 describe("CommandOutput", () => {
-  it("parsed 测试摘要：通过/失败/跳过统计与说明", () => {
+  it("紧凑头呈现 parsed 摘要；展开后显示通过/失败/跳过统计", async () => {
     const wrapper = mount(CommandOutput, {
       props: { execution: execution(), page: null },
     });
+    expect(wrapper.find('[data-testid="command-parsed-summary"]').text()).toContain("12 passed");
+    expect(wrapper.find('[data-testid="command-parsed"]').exists()).toBe(false);
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     const parsed = wrapper.find('[data-testid="command-parsed"]');
     expect(parsed.text()).toContain("pytest");
     expect(parsed.text()).toContain("12 passed in 3.42s");
     expect(parsed.text()).toContain("12 通过");
   });
 
-  it("失败摘要含 failure 明细与失败语义色", () => {
+  it("失败摘要展开后含 failure 明细与失败语义色", async () => {
     const wrapper = mount(CommandOutput, {
       props: {
         execution: execution({
@@ -68,13 +71,14 @@ describe("CommandOutput", () => {
         page: null,
       },
     });
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="command-parsed"]').classes()).toContain("has-failures");
     expect(wrapper.text()).toContain("tests/test_x.py::test_y");
   });
 
-  it("未加载时提供「查看输出」入口并发出 load；已加载渲染行", async () => {
+  it("详情入口在未加载时发出 load；已加载后原位渲染行", async () => {
     const wrapper = mount(CommandOutput, { props: { execution: execution(), page: null } });
-    await wrapper.find('[data-testid="command-output-load"]').trigger("click");
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     expect(wrapper.emitted("load")).toBeTruthy();
 
     await wrapper.setProps({
@@ -87,12 +91,11 @@ describe("CommandOutput", () => {
         finished: true,
       },
     });
-    // W6-R：输出体默认折叠，展开后渲染行（长输出不拖垮页面）
-    expect(wrapper.find('[data-testid="command-output-body"]').exists()).toBe(false);
-    expect(wrapper.text()).toContain("2 行");
-    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
+    // 用户已经打开详情；加载完成后原位展示，收起后回到单行紧凑卡。
     expect(wrapper.find('[data-testid="command-output-body"]').text()).toContain("collected 12 items");
     expect(wrapper.find('[data-testid="command-output-body"]').text()).toContain("warning: something");
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
+    expect(wrapper.find('[data-testid="command-output-body"]').exists()).toBe(false);
   });
 
   it("输出未结束（finished=false）呈现进行中与刷新入口", async () => {
@@ -103,21 +106,25 @@ describe("CommandOutput", () => {
       },
     });
     expect(wrapper.text()).toContain("输出进行中");
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     await wrapper.find('[data-testid="command-output-poll"]').trigger("click");
     expect(wrapper.emitted("load")).toBeTruthy();
   });
 
   // ============ v0.8.0 W6-R：命令卡可追溯事实（计划 §4.3/§6.6） ============
-  it("默认呈现脱敏命令文本、工作目录范围、退出码与耗时", () => {
+  it("默认只呈现紧凑事实；命令与工作目录按需展开", async () => {
     const wrapper = mount(CommandOutput, { props: { execution: execution(), page: null } });
+    expect(wrapper.find('[data-testid="command-line"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="command-cwd"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="command-exit-code"]').text()).toContain("退出码 0");
+    expect(wrapper.find('[data-testid="command-duration"]').text()).toContain("耗时");
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     const command = wrapper.find('[data-testid="command-line"]');
     expect(command.text()).toContain("pytest tests -q");
     expect(wrapper.find('[data-testid="command-cwd"]').text()).toContain("F:/workspace/demo");
-    expect(wrapper.find('[data-testid="command-exit-code"]').text()).toContain("退出码 0");
-    expect(wrapper.find('[data-testid="command-duration"]').text()).toContain("耗时");
   });
 
-  it("命令参数中的凭据呈现为 [REDACTED]（零容忍：不泄露敏感信息）", () => {
+  it("命令参数中的凭据展开后呈现为 [REDACTED]（零容忍：不泄露敏感信息）", async () => {
     const wrapper = mount(CommandOutput, {
       props: {
         execution: execution({
@@ -135,6 +142,7 @@ describe("CommandOutput", () => {
         page: null,
       },
     });
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     const text = wrapper.find('[data-testid="command-line"]').text();
     expect(text).not.toContain("hunter2");
     expect(text).not.toContain("sk-live-abcdef");
@@ -153,13 +161,14 @@ describe("CommandOutput", () => {
     expect(exit.classes()).toContain("bad");
   });
 
-  it("无公开命令事实时不虚构命令/目录（只显示状态与错误）", () => {
+  it("无公开命令事实时不虚构命令/目录（展开后只显示错误）", async () => {
     const wrapper = mount(CommandOutput, {
       props: {
         execution: execution({ output: null, error_message: "工具执行超时" }),
         page: null,
       },
     });
+    await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");
     expect(wrapper.find('[data-testid="command-line"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="command-cwd"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("工具执行超时");

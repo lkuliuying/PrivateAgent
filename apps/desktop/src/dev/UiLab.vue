@@ -8,6 +8,7 @@
  *  - 文本场景（短/长/中英/路径/日志）。
  */
 import { computed, ref } from "vue";
+import ToolDiagnosticsPanel from "../features/coding/components/ToolDiagnosticsPanel.vue";
 import {
   PhChatCircle,
   PhDownloadSimple,
@@ -22,6 +23,7 @@ import {
   PhTextT,
   PhTrash,
   PhUserCircle,
+  PhWrench,
 } from "@phosphor-icons/vue";
 import {
   PaBadge,
@@ -50,6 +52,7 @@ import {
   type PaMenuItem,
 } from "../design";
 import AgentActivityFeed from "../components/AgentActivityFeed.vue";
+import CodingComposer from "../features/coding/components/CodingComposer.vue";
 import { workspaceFixtures } from "./uiStateFixtures";
 
 type LabSection =
@@ -60,10 +63,13 @@ type LabSection =
   | "navigation"
   | "feedback"
   | "agent"
+  | "composer"
   | "text"
-  | "a11y";
+  | "a11y"
+  | "tools";
 
-const section = ref<LabSection>("overview");
+const requestedSection = window.location.hash.slice(1);
+const section = ref<LabSection>(requestedSection === "composer" ? "composer" : "overview");
 const toggleValue = ref(true);
 const checkboxValue = ref(true);
 const inputValue = ref("本地路径 F:\\Program\\Agent\\apps\\desktop");
@@ -90,8 +96,10 @@ const SECTIONS: { key: LabSection; label: string; icon: typeof PhPalette }[] = [
   { key: "navigation", label: "导航与浮层", icon: PhSidebar },
   { key: "feedback", label: "反馈与空态", icon: PhChatCircle },
   { key: "agent", label: "Agent 状态", icon: PhPuzzlePiece },
+  { key: "composer", label: "任务输入器", icon: PhChatCircle },
   { key: "text", label: "文本场景", icon: PhTextT },
   { key: "a11y", label: "无障碍检查", icon: PhUserCircle },
+  { key: "tools", label: "工具诊断", icon: PhWrench },
 ];
 
 const agentFixtures = computed(() =>
@@ -390,6 +398,15 @@ const logText = "14:02:31.482 [info] sidecar spawned pid=2841 port=51731\n14:02:
         </div>
       </section>
 
+      <!-- ============ 任务输入器 ============ -->
+      <section v-else-if="section === 'composer'" class="uilab-section composer-lab">
+        <h2>任务输入器 · 空闲态</h2>
+        <p class="lab-muted">真实 CodingComposer，用于对照视觉稿与验证输入、权限、模型和发送交互。</p>
+        <div class="composer-stage">
+          <CodingComposer :thread-id="909" :search-files="async () => []" />
+        </div>
+      </section>
+
       <!-- ============ 文本场景 ============ -->
       <section v-else-if="section === 'text'" class="uilab-section">
         <h2>长文本 / 路径 / 日志</h2>
@@ -450,6 +467,15 @@ const logText = "14:02:31.482 [info] sidecar spawned pid=2841 port=51731\n14:02:
           <PaButton variant="ghost">Focus 顺序：左→右</PaButton>
           <PaInput v-model="inputValue" style="width: 280px" placeholder="输入框焦点环" />
         </div>
+      </section>
+
+      <section v-else-if="section === 'tools'" class="uilab-section">
+        <h2>工具诊断（CT-9 · ToolSnapshot 投影）</h2>
+        <p class="uilab-note">
+          消费 GET /agent-runs/tool-diagnostics；脱敏视图。端点需
+          PA_AGENT_V2_TOOL_SNAPSHOT_ENABLED=1。
+        </p>
+        <ToolDiagnosticsPanel initial-tags="" />
       </section>
     </main>
   </div>
@@ -620,5 +646,12 @@ const logText = "14:02:31.482 [info] sidecar spawned pid=2841 port=51731\n14:02:
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-bg);
+}
+.composer-lab {
+  min-width: 0;
+}
+.composer-stage {
+  width: min(922px, 100%);
+  margin-top: var(--space-6);
 }
 </style>

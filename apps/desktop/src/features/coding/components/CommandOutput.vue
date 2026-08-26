@@ -145,68 +145,65 @@ function redactLine(text: string): string {
         data-testid="command-exit-code"
       >退出码 {{ exitCode }}</span>
       <span v-if="durationLabel" class="output-fact" data-testid="command-duration">耗时 {{ durationLabel }}</span>
+      <span
+        v-if="parsed?.summary"
+        class="output-summary"
+        data-testid="command-parsed-summary"
+        :title="parsed.summary"
+      >{{ parsed.summary }}</span>
+      <span v-if="page && !page.finished" class="output-hint">输出进行中…</span>
       <button
-        v-if="!page && !loading"
         class="load-btn"
-        data-testid="command-output-load"
-        @click="emit('load')"
+        data-testid="command-output-toggle"
+        :aria-expanded="detailOpen"
+        @click="toggleDetail"
       >
-        查看输出
+        {{ detailOpen ? "收起" : "详情" }}
       </button>
-      <span v-else-if="loading" class="output-hint">加载中…</span>
     </div>
 
-    <!-- W6-R：脱敏后的实际命令文本 + 工作目录范围（默认呈现，可展开详情） -->
-    <code v-if="commandText" class="command-line mono" data-testid="command-line">$ {{ commandText }}</code>
-    <div v-if="cwdLabel" class="command-cwd" data-testid="command-cwd" :title="cwdLabel">
-      工作目录：{{ cwdLabel }}
-    </div>
-
-    <p v-if="execution.error_message" class="output-error">{{ execution.error_message }}</p>
-
-    <template v-if="parsed">
-      <div class="parsed-summary" :class="{ 'has-failures': hasFailures }" data-testid="command-parsed">
-        <span class="parsed-parser mono">{{ parsed.parser }}</span>
-        <span v-if="parsed.summary">{{ parsed.summary }}</span>
-        <span v-if="parsed.passed !== null" class="stat pass">{{ parsed.passed }} 通过</span>
-        <span v-if="parsed.failed !== null" class="stat fail">{{ parsed.failed }} 失败</span>
-        <span v-if="parsed.skipped !== null" class="stat skip">{{ parsed.skipped }} 跳过</span>
-        <span v-if="parsed.errors !== null" class="stat fail">{{ parsed.errors }} 错误</span>
+    <div v-if="detailOpen" class="output-detail" data-testid="command-output-detail">
+      <!-- W6-R：命令、目录、测试统计和 stdout/stderr 只在用户展开时呈现，
+           避免每次工具调用都把活动流撑成大卡片。 -->
+      <code v-if="commandText" class="command-line mono" data-testid="command-line">$ {{ commandText }}</code>
+      <div v-if="cwdLabel" class="command-cwd" data-testid="command-cwd" :title="cwdLabel">
+        工作目录：{{ cwdLabel }}
       </div>
-      <ul v-if="parsed.failures.length" class="parsed-failures">
-        <li v-for="failure in parsed.failures" :key="failure" class="mono">{{ failure }}</li>
-      </ul>
-    </template>
 
-    <button
-      v-if="page"
-      class="detail-toggle"
-      data-testid="command-output-toggle"
-      :aria-expanded="detailOpen"
-      @click="toggleDetail"
-    >
-      {{ detailOpen ? "收起输出" : "展开输出" }}
-    </button>
+      <p v-if="execution.error_message" class="output-error">{{ execution.error_message }}</p>
 
-    <pre v-if="page && detailOpen && lines.length" class="output-body" data-testid="command-output-body"><code
-      ><span
-        v-for="line in lines"
-        :key="line.seq"
-        class="output-line"
-        :class="lineClass(line.kind)"
-      >{{ redactLine(line.text) }}
+      <template v-if="parsed">
+        <div class="parsed-summary" :class="{ 'has-failures': hasFailures }" data-testid="command-parsed">
+          <span class="parsed-parser mono">{{ parsed.parser }}</span>
+          <span v-if="parsed.summary">{{ parsed.summary }}</span>
+          <span v-if="parsed.passed !== null" class="stat pass">{{ parsed.passed }} 通过</span>
+          <span v-if="parsed.failed !== null" class="stat fail">{{ parsed.failed }} 失败</span>
+          <span v-if="parsed.skipped !== null" class="stat skip">{{ parsed.skipped }} 跳过</span>
+          <span v-if="parsed.errors !== null" class="stat fail">{{ parsed.errors }} 错误</span>
+        </div>
+        <ul v-if="parsed.failures.length" class="parsed-failures">
+          <li v-for="failure in parsed.failures" :key="failure" class="mono">{{ failure }}</li>
+        </ul>
+      </template>
+
+      <span v-if="loading" class="output-hint">加载中…</span>
+      <pre v-else-if="page && lines.length" class="output-body" data-testid="command-output-body"><code
+        ><span
+          v-for="line in lines"
+          :key="line.seq"
+          class="output-line"
+          :class="lineClass(line.kind)"
+        >{{ redactLine(line.text) }}
 </span></code></pre>
-    <div v-else-if="page && detailOpen && !lines.length" class="output-empty">（无输出行）</div>
-    <div v-else-if="page && !detailOpen" class="output-collapsed">
-      stdout/stderr 共 {{ page.lines.length.toLocaleString() }} 行，点击展开查看。
-    </div>
+      <div v-else-if="page && !lines.length" class="output-empty">（无输出行）</div>
 
-    <div v-if="page && !page.finished" class="output-hint">
-      输出进行中…
-      <button class="load-btn" data-testid="command-output-poll" @click="emit('load')">刷新</button>
-    </div>
-    <div v-if="page && page.lines.length > MAX_RENDER_LINES" class="output-truncated">
-      输出过长，仅渲染前 {{ MAX_RENDER_LINES }} 行
+      <div v-if="page && !page.finished" class="output-hint">
+        输出进行中…
+        <button class="refresh-btn" data-testid="command-output-poll" @click="emit('load')">刷新</button>
+      </div>
+      <div v-if="page && page.lines.length > MAX_RENDER_LINES" class="output-truncated">
+        输出过长，仅渲染前 {{ MAX_RENDER_LINES }} 行
+      </div>
     </div>
   </div>
 </template>
@@ -215,22 +212,25 @@ function redactLine(text: string): string {
 .command-output {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 2px;
+  margin-top: 2px;
+  padding: 3px var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-surface);
 }
 .output-head {
   display: flex;
+  min-width: 0;
+  min-height: 24px;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   color: var(--color-fg);
   font-size: var(--pa-text-meta);
 }
 .output-fact {
-  padding: 1px var(--space-2);
+  flex-shrink: 0;
+  padding: 0 var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-full);
   color: var(--color-fg-subtle);
@@ -250,6 +250,13 @@ function redactLine(text: string): string {
   white-space: pre-wrap;
   word-break: break-all;
 }
+.output-detail {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) 0;
+}
 .command-cwd {
   overflow: hidden;
   color: var(--color-fg-subtle);
@@ -257,27 +264,18 @@ function redactLine(text: string): string {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.detail-toggle {
-  align-self: flex-start;
-  padding: 2px var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-fg-muted);
-  font-size: var(--pa-text-meta);
-  cursor: pointer;
-}
-.detail-toggle:hover {
-  background: var(--color-surface-muted);
-  color: var(--color-fg);
-}
-.output-collapsed {
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-text-meta);
-}
 .output-tool {
   min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.output-summary {
+  overflow: hidden;
+  min-width: 0;
+  max-width: 360px;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -292,12 +290,22 @@ function redactLine(text: string): string {
 }
 .load-btn {
   margin-left: auto;
-  padding: 2px var(--space-2);
+  flex-shrink: 0;
+  padding: 1px var(--space-2);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--color-fg-muted);
   font-size: var(--pa-text-meta);
+  cursor: pointer;
+}
+.refresh-btn {
+  padding: 1px var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
   cursor: pointer;
 }
 .load-btn:hover {

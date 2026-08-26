@@ -54,6 +54,7 @@ export interface CodingWorkspaceStore {
   selectProject: (projectId: number) => void;
   selectWorkspace: (workspaceId: number) => void;
   selectThread: (threadId: number) => void;
+  recordThreadRun: (threadId: number, runId: string, updatedAt?: string) => void;
   startNewTask: () => void;
   createThreadFromInput: (title: string) => Promise<CodingThreadSummary>;
   ensureWorkspaceForProject: (projectId: number) => Promise<void>;
@@ -308,6 +309,30 @@ export function createCodingWorkspaceStore(
     }
   }
 
+  /** run 创建成功后立即更新内存线程摘要，切走再返回无需等待整棵树刷新。 */
+  function recordThreadRun(
+    threadId: number,
+    runId: string,
+    updatedAt?: string
+  ): void {
+    for (const [projectId, threads] of Object.entries(threadsByProject.value)) {
+      if (!threads.some((thread) => thread.id === threadId)) continue;
+      threadsByProject.value = {
+        ...threadsByProject.value,
+        [Number(projectId)]: threads.map((thread) =>
+          thread.id === threadId
+            ? {
+                ...thread,
+                lastRunId: runId,
+                updatedAt: updatedAt ?? thread.updatedAt,
+              }
+            : thread
+        ),
+      };
+      return;
+    }
+  }
+
   /** 侧栏「新建任务」：回到首页输入器，保留项目/工作区偏好 */
   function startNewTask(): void {
     selectedThreadId.value = null;
@@ -384,6 +409,7 @@ export function createCodingWorkspaceStore(
     selectProject,
     selectWorkspace,
     selectThread,
+    recordThreadRun,
     startNewTask,
     createThreadFromInput,
     ensureWorkspaceForProject,

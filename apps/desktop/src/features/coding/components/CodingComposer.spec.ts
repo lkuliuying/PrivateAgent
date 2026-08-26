@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { mount } from "@vue/test-utils";
+import { nextTick } from "vue";
 import CodingComposer from "./CodingComposer.vue";
 import { createCodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import type { CodingFileHint } from "../model/runContracts";
@@ -122,11 +123,67 @@ describe("CodingComposer", () => {
     expect(wrapper.find('[data-testid="coding-composer-send"]').attributes("disabled")).toBeDefined();
   });
 
+  it("底部工具栏使用紧凑上下文用量圆环", () => {
+    const { wrapper } = mountComposer({ threadId: 11 });
+    expect(wrapper.find('[data-testid="coding-composer-input"]').attributes("rows")).toBe("2");
+    expect(wrapper.find('[data-testid="coding-composer-send"]').classes()).toContain("pa-btn--sm");
+    const ring = wrapper.find('[data-testid="context-usage-ring"]');
+    expect(ring.exists()).toBe(true);
+    expect(ring.attributes("aria-label")).toContain("上下文用量");
+  });
+
+  it("加号按钮打开项目文件引用入口", async () => {
+    const searchFiles = vi.fn().mockResolvedValue(HINTS);
+    const { wrapper } = mountComposer({ searchFiles });
+    await wrapper.find('[data-testid="coding-composer-input"]').setValue("");
+    await wrapper.find('[data-testid="composer-add-context"]').trigger("click");
+    await nextTick();
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
+    expect((input.element as HTMLTextAreaElement).value).toBe("@");
+    expect(wrapper.find('[data-testid="composer-at-pop"]').exists()).toBe(true);
+    expect(searchFiles).toHaveBeenCalledWith("");
+  });
+
   it("running 时显示停止按钮并发出 stop", async () => {
     const { wrapper } = mountComposer({ running: true });
     const stop = wrapper.find('[data-testid="coding-composer-stop"]');
     expect(stop.exists()).toBe(true);
     await stop.trigger("click");
     expect(wrapper.emitted("stop")).toBeTruthy();
+  });
+
+  it("↑/↓ 按时间浏览已提交输入，并在越过最新项后恢复当前草稿", async () => {
+    const { wrapper } = mountComposer({
+      inputHistory: ["第一次输入", "第二次输入"],
+    });
+    await setInputValue(wrapper, "尚未发送的草稿");
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
+
+    await input.trigger("keydown", { key: "ArrowUp" });
+    expect((input.element as HTMLTextAreaElement).value).toBe("第二次输入");
+    await input.trigger("keydown", { key: "ArrowUp" });
+    expect((input.element as HTMLTextAreaElement).value).toBe("第一次输入");
+    await input.trigger("keydown", { key: "ArrowDown" });
+    expect((input.element as HTMLTextAreaElement).value).toBe("第二次输入");
+    await input.trigger("keydown", { key: "ArrowDown" });
+    expect((input.element as HTMLTextAreaElement).value).toBe("尚未发送的草稿");
+  });
+
+  it("多行输入只在首行 ↑ 触发历史，历史里的 @ 行恢复为上下文 chip", async () => {
+    const { wrapper } = mountComposer({
+      inputHistory: ["检查文件\n@src/main.ts"],
+    });
+    await setInputValue(wrapper, "第一行\n第二行");
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
+    const element = input.element as HTMLTextAreaElement;
+
+    element.setSelectionRange(element.value.length, element.value.length);
+    await input.trigger("keydown", { key: "ArrowUp" });
+    expect(element.value).toBe("第一行\n第二行");
+
+    element.setSelectionRange(2, 2);
+    await input.trigger("keydown", { key: "ArrowUp" });
+    expect(element.value).toBe("检查文件");
+    expect(wrapper.find('[data-testid="composer-chips"]').text()).toContain("src/main.ts");
   });
 });

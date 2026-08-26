@@ -92,6 +92,60 @@ describe("RunTranscript", () => {
     expect(wrapper.emitted("retry-stream")).toBeTruthy();
   });
 
+  it("输出总结展示总耗时，点击后展开公开执行过程与最终结果", async () => {
+    const current = projection([
+      [1, "run.started", { max_steps: 12, max_tool_calls: 8 }],
+      [2, "context.prepared", { estimated_tokens: 1572, truncated: false }],
+      [3, "model.started", { ordinal: 1 }],
+      [4, "model.completed", { input_tokens: 120, output_tokens: 47, latency_ms: 1996, finish_reason: "tool_calls" }],
+      [5, "decision.summary", { goal: "创建 hello.txt", method: "调用工作区补丁工具", next_steps: ["验证文件内容"] }],
+      [6, "tool.started", { tool_call_id: "tc-1", name: "apply_patch_to_workspace" }],
+      [7, "tool.completed", { tool_call_id: "tc-1", name: "apply_patch_to_workspace", ordinal: 1 }],
+      [8, "run.completed", { output: "已创建 hello.txt。", tool_call_count: 1, input_tokens: 120, output_tokens: 47 }],
+    ], "创建 hello.txt");
+    current.startedAt = "2026-08-24T01:00:00.000Z";
+    current.completedAt = "2026-08-24T01:00:05.400Z";
+
+    const wrapper = mount(RunTranscript, {
+      props: { projection: current, approvals: [] },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-testid="terminal-summary"]').text()).toContain("输出总结");
+    const duration = wrapper.find('[data-testid="run-duration-toggle"]');
+    expect(duration.text()).toContain("耗时 5.4s");
+    expect(duration.attributes("aria-expanded")).toBe("false");
+
+    await duration.trigger("click");
+    const panel = wrapper.find('[data-testid="run-audit-panel"]');
+    expect(duration.attributes("aria-expanded")).toBe("true");
+    expect(panel.text()).toContain("公开决策摘要");
+    expect(panel.text()).toContain("目标：创建 hello.txt");
+    expect(panel.text()).toContain("工具 · apply_patch_to_workspace");
+    expect(panel.text()).toContain("最终结果");
+    expect(panel.text()).toContain("已创建 hello.txt。");
+    expect(panel.text()).toContain("不包含模型隐藏推理");
+  });
+
+  it("失败终态在输出总结中直接显示可信失败原因", () => {
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "run.started", {}],
+          [2, "run.failed", {
+            error: "文件变更任务没有 succeeded 的 Patch 写入执行",
+            error_code: "output_validation_failed",
+            tool_call_count: 1,
+          }],
+        ]),
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    const reason = wrapper.find('[data-testid="terminal-failure-reason"]');
+    expect(reason.text()).toContain("失败原因");
+    expect(reason.text()).toContain("没有 succeeded 的 Patch 写入执行");
+  });
+
   it("计划摘要可点击打开计划浮层", async () => {
     const wrapper = mount(RunTranscript, {
       props: {
@@ -109,6 +163,76 @@ describe("RunTranscript", () => {
   it("无投影时呈现空态引导", () => {
     const wrapper = mount(RunTranscript, { props: { projection: null } });
     expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(true);
+  });
+
+  it("重开任务呈现 durable 历史，并裁掉与当前 run 重复的尾部一轮", () => {
+    const current = projection([
+      [1, "run.started", {}],
+      [2, "run.completed", { output: "当前回答", error_code: null }],
+    ], "当前问题");
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: current,
+        history: [
+          { id: 1, session_id: 1, role: "user", content: "更早问题", created_at: "2026-08-24T00:00:00Z" },
+          { id: 2, session_id: 1, role: "assistant", content: "更早回答", created_at: "2026-08-24T00:00:01Z" },
+          { id: 3, session_id: 1, role: "user", content: "当前问题", created_at: "2026-08-24T00:01:00Z" },
+          { id: 4, session_id: 1, role: "assistant", content: "当前回答", created_at: "2026-08-24T00:01:01Z" },
+        ],
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.findAll('[data-testid="transcript-history-user"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="transcript-history-assistant"]')).toHaveLength(1);
+    expect(wrapper.find('[data-testid="transcript-history-user"]').text()).toContain("更早问题");
+    expect(wrapper.find('[data-testid="transcript-user-message"]').text()).toContain("当前问题");
+    expect(wrapper.find('[data-testid="terminal-output"]').text()).toContain("当前回答");
+  });
+
+  it("重复提问只裁掉当前 run 副本，并将历史与当前执行分区", () => {
+    const current = projection([
+      [1, "run.started", {}],
+      [2, "run.completed", { output: "当前回答", error_code: null }],
+    ], "相同问题");
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: current,
+        history: [
+          { id: 1, session_id: 1, role: "user", content: "相同问题", created_at: "2026-08-24T00:00:00Z" },
+          { id: 2, session_id: 1, role: "assistant", content: "更早回答", created_at: "2026-08-24T00:00:01Z" },
+          { id: 3, session_id: 1, role: "user", content: "相同问题\r\n", created_at: "2026-08-24T00:01:00Z" },
+          { id: 4, session_id: 1, role: "assistant", content: "当前回答\n", created_at: "2026-08-24T00:01:01Z" },
+          { id: 5, session_id: 1, role: "system", content: "同步完成", created_at: "2026-08-24T00:01:02Z" },
+        ],
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.findAll('[data-testid="transcript-history-user"]')).toHaveLength(1);
+    expect(wrapper.findAll('[data-testid="transcript-history-assistant"]')).toHaveLength(1);
+    expect(wrapper.find('[data-testid="transcript-history-assistant"]').text()).toContain("更早回答");
+    expect(wrapper.find('[data-testid="transcript-history-section"]').text()).toContain("更早对话");
+    expect(wrapper.text()).toContain("当前执行");
+  });
+
+  it("当前与历史助手输出按 Markdown 渲染", () => {
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "run.completed", { output: "**完成**\n\n```c\nint main() {}\n```" }],
+        ], "创建 C 文件"),
+        history: [
+          { id: 1, session_id: 1, role: "assistant", content: "- 历史条目", created_at: "2026-08-24T00:00:00Z" },
+        ],
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-testid="terminal-output"] strong').text()).toBe("完成");
+    expect(wrapper.find('[data-testid="terminal-output"] pre code').text()).toContain("int main()");
+    expect(wrapper.find('[data-testid="transcript-history-assistant"] li').text()).toBe("历史条目");
+    expect(wrapper.text()).not.toContain("```");
   });
 
   // ============ v0.8.0 W6-R：工具卡可追溯详情（计划 §4.3/§6.6） ============
@@ -194,5 +318,28 @@ describe("RunTranscript", () => {
     expect(wrapper.find('[data-testid="tool-command"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tool-time"]').exists()).toBe(false);
     expect(wrapper.find('[data-testid="tool-result"]').exists()).toBe(false);
+  });
+
+  it("非命令工具不渲染横跨整行的命令输出卡", () => {
+    const readExecution = {
+      ...CMD_EXECUTION,
+      id: "exec-read",
+      tool_name: "read_file",
+      output: { path: "hello.txt", found: true },
+    };
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "tool.started", { tool_call_id: "tc-read", name: "read_file" }],
+          [2, "tool.completed", { tool_call_id: "tc-read", name: "read_file", ordinal: 1 }],
+        ]),
+        approvals: [],
+        executionByTool: { "tc-read": readExecution },
+        executions: [readExecution],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-testid="command-output-exec-read"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="transcript-tool"]').text()).toContain("read_file");
   });
 });

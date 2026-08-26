@@ -125,7 +125,17 @@ function mockW3(page: Page, scenario: W3Scenario) {
       const path = url.pathname;
 
       if (path === "/capabilities") {
-        await route.fulfill({ json: { chat_execution_mode: "legacy", legacy_tool_planner_enabled: true, agent_read_only_tools_enabled: true, rag_chat_runtime_enabled: false } });
+        await route.fulfill({
+          json: {
+            chat_execution_mode: "legacy",
+            legacy_tool_planner_enabled: true,
+            agent_read_only_tools_enabled: true,
+            rag_chat_runtime_enabled: false,
+            coding_agent_ui_enabled: true,
+            agent_runs_api_enabled: true,
+            project_bound_runs_enabled: true,
+          },
+        });
         return;
       }
       if (path === "/health") {
@@ -308,6 +318,14 @@ function mockW3(page: Page, scenario: W3Scenario) {
         await route.fulfill({ json: { model: "qwen3-coder" } });
         return;
       }
+      if (/^\/sessions\/\d+\/messages$/.test(path)) {
+        await route.fulfill({ json: [] });
+        return;
+      }
+      if (/^\/sessions\/\d+\/latest-agent-run$/.test(path)) {
+        await route.fulfill({ json: { run_id: null } });
+        return;
+      }
       await route.fulfill({ json: {} });
     }),
   };
@@ -346,21 +364,20 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await page.getByTestId("coding-composer-input").fill("运行测试");
     await page.getByTestId("coding-composer-send").click();
 
-    // W6-R：命令卡默认呈现脱敏命令、工作目录范围、退出码与耗时（不阻塞主区）
-    await expect(page.getByTestId("command-line")).toBeVisible({ timeout: 15000 });
+    // W6-R：命令卡头部事实（退出码/耗时/摘要）默认呈现；命令文本、工作目录
+    // 与输出在详情折叠区，展开后可见（长输出不拖垮页面）
+    await expect(page.getByTestId("command-exit-code")).toContainText("退出码 0", { timeout: 15000 });
+    await expect(page.getByTestId("command-duration")).toBeVisible();
+    await expect(page.getByTestId("command-parsed-summary")).toContainText("12 passed in 3.42s");
+
+    // 展开详情：脱敏命令、工作目录范围、parsed 统计与输出行；
+    // 用 DOM 事件展开（避免跟随滚动的命中遮挡）
+    await page.getByTestId("command-output-toggle").scrollIntoViewIfNeeded();
+    await page.getByTestId("command-output-toggle").dispatchEvent("click");
     await expect(page.getByTestId("command-line")).toContainText("pytest tests -q --token=[REDACTED]");
     await expect(page.getByTestId("command-line")).not.toContainText("sk-e2e-secret");
     await expect(page.getByTestId("command-cwd")).toContainText("工作目录");
-    await expect(page.getByTestId("command-exit-code")).toContainText("退出码 0");
-    await expect(page.getByTestId("command-duration")).toBeVisible();
-
-    // parsed 摘要随执行结果出现；输出默认折叠，按需展开（长输出不拖垮页面）
-    await expect(page.getByTestId("command-parsed")).toBeVisible({ timeout: 15000 });
     await expect(page.getByTestId("command-parsed")).toContainText("12 passed in 3.42s");
-    await page.getByTestId("command-output-load").click();
-    // 终态卡随后出现并自动跟随到底部；展开输出用 DOM 事件（避免跟随滚动的命中遮挡）
-    await page.getByTestId("command-output-toggle").scrollIntoViewIfNeeded();
-    await page.getByTestId("command-output-toggle").dispatchEvent("click");
     await expect(page.getByTestId("command-output-body")).toContainText("12 passed in 3.42s");
     await expect(page.getByTestId("terminal-output")).toContainText("命令已执行", { timeout: 15000 });
   });
@@ -399,7 +416,8 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     expect(String((mock.createdBodies[0] as { message: string }).message)).toContain(
       "@src/features/coding/components/CodingSidebar.vue"
     );
-    await expect(page.getByTestId("command-parsed")).toBeVisible({ timeout: 15000 });
+    // 执行推进到命令结果摘要（头部事实，不阻塞主区）
+    await expect(page.getByTestId("command-parsed-summary")).toBeVisible({ timeout: 15000 });
   });
 
   test("预览夹具五态：验证中/冲突/partial_unknown/补丁预览/命令输出（矩阵 13/17/19/11/12 L2）", async ({ page }) => {
@@ -410,7 +428,17 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
         return;
       }
       if (path === "/capabilities") {
-        await route.fulfill({ json: {} });
+        await route.fulfill({
+          json: {
+            chat_execution_mode: "legacy",
+            legacy_tool_planner_enabled: true,
+            agent_read_only_tools_enabled: true,
+            rag_chat_runtime_enabled: false,
+            coding_agent_ui_enabled: true,
+            agent_runs_api_enabled: true,
+            project_bound_runs_enabled: true,
+          },
+        });
         return;
       }
       if (path === "/projects") {
@@ -455,6 +483,7 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
 
     await page.goto("/?coding=1&coding-run-preview=command-output");
     await page.getByTestId("coding-thread-11").click();
+    await page.getByTestId("command-output-toggle").click();
     await expect(page.getByTestId("command-parsed")).toContainText("12 passed");
   });
 

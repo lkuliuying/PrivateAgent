@@ -58,7 +58,7 @@ export interface RunStreamController {
    */
   createErrorCode: Ref<string | null>;
   startRun: (input: CodingRunCreateInput) => Promise<void>;
-  attachRun: (runId: string) => Promise<void>;
+  attachRun: (runId: string, userMessage?: string | null) => Promise<void>;
   cancelActive: () => Promise<void>;
   retryConnection: () => Promise<void>;
   detach: () => void;
@@ -196,6 +196,32 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     }
   }
 
+  /**
+   * 合成 run.terminal 只负责关流，不携带 completed_at。终态后补拉一次快照，
+   * 让总耗时、最终用量与输出都收敛到后端 durable 事实；失败不推翻已收到的
+   * 终态，用户仍可在下次重开任务时由 attachRun 恢复。
+   */
+  async function settleTerminalSnapshot(runId: string, mine: number): Promise<void> {
+    try {
+      const snapshot = await source.fetchSnapshot(runId);
+      if (mine !== generation || !isTerminalRunStatus(snapshot.status)) return;
+      const current = projection.value;
+      if (!current || current.runId !== runId) return;
+      const next = cloneRunProjection(current);
+      if (snapshot.last_event_sequence >= next.lastSequence) {
+        reconcileRunWithSnapshot(next, snapshot);
+      } else {
+        // 测试/兼容传输可能给合成帧分配额外序号；终态快照的时间字段仍是
+        // 独立 durable 事实，可安全用于计时而不回退事件游标。
+        next.startedAt = snapshot.started_at ?? next.startedAt;
+        next.completedAt = snapshot.completed_at ?? next.completedAt;
+      }
+      publish(next);
+    } catch {
+      // 终态与最终输出已经由 durable 事件收敛；这里只缺少精确计时事实。
+    }
+  }
+
   function openStream(runId: string, mine: number): void {
     abortStream();
     phase.value = "streaming";
@@ -208,8 +234,9 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
           applyRunFrame(target, frame);
         });
         if (frame.type === "run.terminal") {
-          abortStream();
           phase.value = "terminal";
+          abortStream();
+          void settleTerminalSnapshot(runId, mine);
         }
       },
       onError: (message) => {
@@ -255,14 +282,17 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     }
   }
 
-  async function attachRun(runId: string): Promise<void> {
+  async function attachRun(
+    runId: string,
+    userMessage: string | null = null
+  ): Promise<void> {
     const mine = ++generation;
     abortStream();
     clearReconnectTimer();
     reconnectAttempts = 0;
     phase.value = "starting";
     connectionError.value = null;
-    publish(createRunProjection(runId));
+    publish(createRunProjection(runId, userMessage));
     await recover(runId, mine);
   }
 

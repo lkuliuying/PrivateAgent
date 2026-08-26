@@ -124,6 +124,9 @@ function mockCodingApi(page: Page, overrides: CodingStateOverrides = {}) {
           legacy_tool_planner_enabled: true,
           agent_read_only_tools_enabled: true,
           rag_chat_runtime_enabled: false,
+          coding_agent_ui_enabled: true,
+          agent_runs_api_enabled: true,
+          project_bound_runs_enabled: true,
         },
       });
       return;

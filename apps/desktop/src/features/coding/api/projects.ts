@@ -43,6 +43,20 @@ export async function fetchCodingWorkspaces(projectId: number): Promise<CodingWo
     .map((dto) => toWorkspaceSummary(dto, projectId));
 }
 
+/**
+ * 用户在任务标题上主动悬停时读取当前工作目录。绝对路径只返回给任务页的
+ * 临时 tooltip，不写入项目树/store、通知或日志。
+ */
+export async function fetchCodingWorkspacePath(
+  projectId: number,
+  workspaceId: number
+): Promise<string> {
+  const dto = await codingFetchJson<ProjectWorkspace>(
+    `/projects/${projectId}/workspaces/${workspaceId}`
+  );
+  return dto.root_path;
+}
+
 /** 幂等补建根工作区（POST /projects/{id}/workspaces/root/ensure，201） */
 export async function ensureCodingRootWorkspace(projectId: number): Promise<CodingWorkspaceSummary> {
   const dto = await codingFetchJson<ProjectWorkspace>(

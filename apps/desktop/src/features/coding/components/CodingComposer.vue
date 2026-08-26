@@ -7,15 +7,20 @@
  * 推理强度选择（v0.7.0 冻结契约）；上下文 chip；草稿按 thread 本地保存
  * （不跨项目串线）；发送/停止/等待审批禁用态。
  */
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   PhAt,
   PhCommand,
+  PhMicrophone,
   PhPaperPlaneRight,
+  PhPlus,
   PhProhibit,
+  PhShieldCheck,
+  PhWaveform,
   PhX,
 } from "@phosphor-icons/vue";
 import PaSelect from "../../../design/PaSelect.vue";
+import ContextUsageRing from "../../agent/ContextUsageRing.vue";
 import type { CodingFileHint } from "../model/runContracts";
 import { PERMISSION_MODE_META } from "../model/runContracts";
 import type { CodingWorkspaceStore } from "../model/codingWorkspaceStore";
@@ -44,6 +49,8 @@ const props = withDefaults(
      * 不发送、不清空输入（不丢失用户草稿），由调用方呈现原因。
      */
     beforeSend?: (payload: CodingComposerSendPayload) => Promise<boolean>;
+    /** 当前任务内已提交的用户输入，按时间正序；用于 ↑/↓ 历史导航。 */
+    inputHistory?: string[];
     /**
      * v0.9.0 H1-B（计划 §5.5/§5.6）：创建失败留在草稿态——父层把未成功的
      * 输入回填（不丢失输入）；引用变化即应用。
@@ -59,6 +66,7 @@ const props = withDefaults(
     previewMode: false,
     searchFiles: undefined,
     beforeSend: undefined,
+    inputHistory: () => [],
     restoreRequest: null,
   }
 );
@@ -73,6 +81,22 @@ const text = ref("");
 const chips = ref<CodingFileHint[]>([]);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 let caret = 0;
+
+type ComposerDraft = {
+  text: string;
+  chips: CodingFileHint[];
+};
+
+const historyIndex = ref<number | null>(null);
+const historyDraft = ref<ComposerDraft | null>(null);
+const availableHistory = computed(() =>
+  props.inputHistory.filter((item) => typeof item === "string" && item.trim().length > 0)
+);
+
+function resetHistoryNavigation(): void {
+  historyIndex.value = null;
+  historyDraft.value = null;
+}
 
 function draftKey(threadId: number | null): string {
   return `pa_coding_draft_${threadId ?? "none"}`;
@@ -93,6 +117,7 @@ function saveDraft(): void {
 }
 
 function loadDraft(): void {
+  resetHistoryNavigation();
   restoringDraft = true;
   chips.value = [];
   try {
@@ -150,6 +175,7 @@ function detectAtMention(value: string, position: number): string | null {
 
 function onInput(event: Event): void {
   const target = event.target as HTMLTextAreaElement;
+  resetHistoryNavigation();
   caret = target.selectionStart ?? target.value.length;
   const mention = detectAtMention(target.value, caret);
   atQuery.value = mention;
@@ -174,6 +200,24 @@ function applyAtHint(hint: CodingFileHint): void {
   }
   atQuery.value = null;
   inputEl.value?.focus();
+}
+
+async function openContextPicker(): Promise<void> {
+  if (props.busy || props.previewMode) return;
+  const input = inputEl.value;
+  const position = input?.selectionStart ?? text.value.length;
+  const before = text.value.slice(0, position);
+  const after = text.value.slice(position);
+  const prefix = before && !/\s$/.test(before) ? " @" : "@";
+  text.value = `${before}${prefix}${after}`;
+  caret = position + prefix.length;
+  atQuery.value = "";
+  atHints.value = [];
+  slashQuery.value = null;
+  await nextTick();
+  inputEl.value?.focus();
+  inputEl.value?.setSelectionRange(caret, caret);
+  if (props.searchFiles) void runAtSearch("");
 }
 
 function removeChip(relPath: string): void {
@@ -252,6 +296,9 @@ const fullAccessSupported = computed(() => {
     caps?.coding_full_access_revoke !== false
   );
 });
+const contextBudgetEnabled = computed(
+  () => props.store?.capabilities.value?.coding_context_budget_enabled === true
+);
 
 const permissionOptions = computed(() => [
   { value: "readonly", label: PERMISSION_MODE_META.readonly.label },
@@ -380,36 +427,131 @@ async function send(): Promise<void> {
     if (!proceed) return;
   }
   emit("send", payload);
+  resetHistoryNavigation();
   text.value = "";
   chips.value = [];
   atQuery.value = null;
   slashQuery.value = null;
 }
 
-// v0.9.0 H1-B（§5.5）：创建失败留在草稿态——父层回填未成功的输入。
+function onPrimaryAction(): void {
+  if (!buildMessage().trim()) {
+    inputEl.value?.focus();
+    return;
+  }
+  void send();
+}
+
 // message 末尾的 @relPath 行还原为 chip（与 buildMessage 序列化互逆）。
+// 历史浏览不覆盖用户已经持久化的草稿；创建失败回填则正常落盘。
+function applySerializedMessage(message: string, persistAsDraft: boolean): void {
+  const lines = message.split("\n");
+  const restoredChips: CodingFileHint[] = [];
+  const textLines: string[] = [];
+  for (const line of lines) {
+    const chipMatch = /^@([\w./\\-]+)$/.exec(line.trim());
+    if (chipMatch) {
+      const relPath = chipMatch[1];
+      const name = relPath.split(/[\\/]/).pop() ?? relPath;
+      restoredChips.push({ relPath, name, language: null });
+    } else if (line.trim()) {
+      textLines.push(line);
+    }
+  }
+  if (!persistAsDraft) restoringDraft = true;
+  text.value = textLines.join("\n");
+  chips.value = restoredChips;
+  if (!persistAsDraft) restoringDraft = false;
+  atQuery.value = null;
+  slashQuery.value = null;
+  void nextTick(() => {
+    const input = inputEl.value;
+    if (!input) return;
+    input.focus();
+    const end = input.value.length;
+    input.setSelectionRange(end, end);
+    caret = end;
+  });
+}
+
+// v0.9.0 H1-B（§5.5）：创建失败留在草稿态——父层回填未成功的输入。
 watch(
   () => props.restoreRequest,
   (request) => {
     if (!request) return;
-    const lines = request.message.split("\n");
-    const restoredChips: CodingFileHint[] = [];
-    const textLines: string[] = [];
-    for (const line of lines) {
-      const chipMatch = /^@([\w./\\-]+)$/.exec(line.trim());
-      if (chipMatch) {
-        const relPath = chipMatch[1];
-        const name = relPath.split(/[\\/]/).pop() ?? relPath;
-        restoredChips.push({ relPath, name, language: null });
-      } else if (line.trim()) {
-        textLines.push(line);
-      }
-    }
-    text.value = textLines.join("\n");
-    chips.value = restoredChips;
-    inputEl.value?.focus();
+    resetHistoryNavigation();
+    applySerializedMessage(request.message, true);
   }
 );
+
+function isOnFirstLine(input: HTMLTextAreaElement): boolean {
+  if (input.selectionStart !== input.selectionEnd) return false;
+  return !input.value.slice(0, input.selectionStart).includes("\n");
+}
+
+function isOnLastLine(input: HTMLTextAreaElement): boolean {
+  if (input.selectionStart !== input.selectionEnd) return false;
+  return !input.value.slice(input.selectionEnd).includes("\n");
+}
+
+/**
+ * 采用终端式历史导航：单行输入任意光标位置均可切换；多行输入仅在首行 ↑、
+ * 末行 ↓ 时切换，避免抢占正常的纵向光标移动。浏览到最新一项后恢复原草稿。
+ */
+function navigateInputHistory(event: KeyboardEvent): boolean {
+  if (
+    (event.key !== "ArrowUp" && event.key !== "ArrowDown") ||
+    event.altKey ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.shiftKey ||
+    atQuery.value !== null ||
+    slashQuery.value !== null
+  ) {
+    return false;
+  }
+  const input = inputEl.value;
+  const history = availableHistory.value;
+  if (!input || history.length === 0) return false;
+
+  if (event.key === "ArrowUp") {
+    if (!isOnFirstLine(input)) return false;
+    if (historyIndex.value === null) {
+      historyDraft.value = { text: text.value, chips: [...chips.value] };
+      historyIndex.value = history.length - 1;
+    } else if (historyIndex.value > 0) {
+      historyIndex.value -= 1;
+    }
+    event.preventDefault();
+    applySerializedMessage(history[historyIndex.value], false);
+    return true;
+  }
+
+  if (historyIndex.value === null || !isOnLastLine(input)) return false;
+  event.preventDefault();
+  if (historyIndex.value < history.length - 1) {
+    historyIndex.value += 1;
+    applySerializedMessage(history[historyIndex.value], false);
+  } else {
+    const draft = historyDraft.value ?? { text: "", chips: [] };
+    restoringDraft = true;
+    text.value = draft.text;
+    chips.value = [...draft.chips];
+    restoringDraft = false;
+    resetHistoryNavigation();
+    atQuery.value = null;
+    slashQuery.value = null;
+    void nextTick(() => {
+      const current = inputEl.value;
+      if (!current) return;
+      current.focus();
+      const end = current.value.length;
+      current.setSelectionRange(end, end);
+      caret = end;
+    });
+  }
+  return true;
+}
 
 function onKeydown(event: KeyboardEvent): void {
   if (atQuery.value !== null && atHints.value.length) {
@@ -433,6 +575,7 @@ function onKeydown(event: KeyboardEvent): void {
       return;
     }
   }
+  if (navigateInputHistory(event)) return;
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
     void send();
@@ -456,42 +599,18 @@ onBeforeUnmount(() => {
       </span>
     </div>
 
-    <div class="composer-row">
-      <textarea
-        ref="inputEl"
-        v-model="text"
-        class="composer-input"
-        data-testid="coding-composer-input"
-        rows="3"
-        :disabled="busy || previewMode"
-        aria-label="任务输入"
-        :placeholder="
-          previewMode ? '预览模式' : busy ? '任务执行中…' : '描述任务（@ 引用文件 · / 命令模板 · Enter 发送）'
-        "
-        @input="onInput"
-        @keydown="onKeydown"
-      />
-      <button
-        v-if="!running"
-        class="pa-btn pa-btn--primary composer-send"
-        data-testid="coding-composer-send"
-        :disabled="disabled"
-        @click="void send()"
-      >
-        <PhPaperPlaneRight :size="15" />
-        发送
-      </button>
-      <button
-        v-else
-        class="pa-btn pa-btn--ghost composer-stop"
-        data-testid="coding-composer-stop"
-        :disabled="stopping"
-        @click="emit('stop')"
-      >
-        <PhProhibit :size="15" />
-        {{ stopping ? "停止中…" : "停止" }}
-      </button>
-    </div>
+    <textarea
+      ref="inputEl"
+      v-model="text"
+      class="composer-input"
+      data-testid="coding-composer-input"
+      rows="2"
+      :disabled="busy || previewMode"
+      aria-label="任务输入"
+      :placeholder="previewMode ? '预览模式' : busy ? '任务执行中…' : '随心输入'"
+      @input="onInput"
+      @keydown="onKeydown"
+    />
 
     <!-- @ 文件发现列表框 -->
     <div
@@ -542,53 +661,114 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <div class="composer-options">
-      <label class="option">
-        <span>权限</span>
-        <PaSelect
-          :model-value="permissionMode"
-          :options="permissionOptions"
-          size="sm"
-          data-testid="composer-permission"
-          :title="PERMISSION_MODE_META[permissionMode]?.hint"
-          @update:model-value="permissionMode = String($event)"
+    <div class="composer-toolbar">
+      <div class="toolbar-group toolbar-left">
+        <button
+          type="button"
+          class="composer-icon-btn add-context"
+          data-testid="composer-add-context"
+          :disabled="busy || previewMode"
+          title="引用项目文件"
+          aria-label="引用项目文件"
+          @click="void openContextPicker()"
+        >
+          <PhPlus :size="20" aria-hidden="true" />
+        </button>
+
+        <label class="toolbar-select permission-select">
+          <span class="visually-hidden">权限</span>
+          <PhShieldCheck :size="17" aria-hidden="true" />
+          <PaSelect
+            :model-value="permissionMode"
+            :options="permissionOptions"
+            size="sm"
+            data-testid="composer-permission"
+            aria-label="权限模式"
+            :title="PERMISSION_MODE_META[permissionMode]?.hint"
+            @update:model-value="permissionMode = String($event)"
+          />
+        </label>
+
+        <!-- v0.9.0 §5.3：full_access 授予状态与即时撤销（显示有效期，可一键撤销） -->
+        <button
+          v-if="activeGrant"
+          type="button"
+          class="grant-revoke"
+          data-testid="composer-grant-revoke"
+          :disabled="revoking"
+          :title="activeGrant.expiresAt ? `有效期至 ${formatDateTime(activeGrant.expiresAt)}；点击撤销` : '点击撤销完全访问'"
+          @click="void onRevokeFullAccess()"
+        >
+          完全访问 · 撤销
+        </button>
+      </div>
+
+      <div class="toolbar-group toolbar-right">
+        <label class="toolbar-select model-select">
+          <span class="visually-hidden">模型</span>
+          <PaSelect
+            :model-value="modelProfileId"
+            :options="profileOptions"
+            :disabled="!profiles.length"
+            size="sm"
+            data-testid="composer-model"
+            aria-label="模型"
+            @update:model-value="modelProfileId = String($event)"
+          />
+        </label>
+        <label class="toolbar-select effort-select">
+          <span class="visually-hidden">推理强度</span>
+          <PaSelect
+            :model-value="reasoningEffort"
+            :options="effortOptions"
+            :disabled="!selectedProfile?.reasoningEfforts?.length"
+            size="sm"
+            data-testid="composer-effort"
+            aria-label="推理强度"
+            @update:model-value="reasoningEffort = String($event)"
+          />
+        </label>
+        <ContextUsageRing
+          class="composer-context-ring"
+          :session-id="threadId"
+          :enabled="contextBudgetEnabled"
         />
-      </label>
-      <!-- v0.9.0 §5.3：full_access 授予状态与即时撤销（显示有效期，可一键撤销） -->
-      <button
-        v-if="activeGrant"
-        type="button"
-        class="grant-revoke"
-        data-testid="composer-grant-revoke"
-        :disabled="revoking"
-        :title="activeGrant.expiresAt ? `有效期至 ${formatDateTime(activeGrant.expiresAt)}；点击撤销` : '点击撤销完全访问'"
-        @click="void onRevokeFullAccess()"
-      >
-        完全访问生效中<template v-if="activeGrant.expiresAt"> · {{ formatDateTime(activeGrant.expiresAt) }}</template> · 撤销
-      </button>
-      <label class="option">
-        <span>模型</span>
-        <PaSelect
-          :model-value="modelProfileId"
-          :options="profileOptions"
-          :disabled="!profiles.length"
-          size="sm"
-          data-testid="composer-model"
-          @update:model-value="modelProfileId = String($event)"
-        />
-      </label>
-      <label class="option">
-        <span>推理</span>
-        <PaSelect
-          :model-value="reasoningEffort"
-          :options="effortOptions"
-          :disabled="!selectedProfile?.reasoningEfforts?.length"
-          size="sm"
-          data-testid="composer-effort"
-          @update:model-value="reasoningEffort = String($event)"
-        />
-      </label>
-      <span class="option-hint">Enter 发送 · Shift+Enter 换行</span>
+        <button
+          type="button"
+          class="composer-icon-btn voice-input"
+          disabled
+          title="语音输入将在后续版本开放"
+          aria-label="语音输入暂不可用"
+        >
+          <PhMicrophone :size="20" aria-hidden="true" />
+        </button>
+        <button
+          v-if="!running"
+          type="button"
+          class="pa-btn pa-btn--primary pa-btn--sm composer-send"
+          data-testid="coding-composer-send"
+          :disabled="busy || previewMode"
+          :title="buildMessage().trim() ? '发送任务' : '输入内容后发送'"
+          :aria-label="buildMessage().trim() ? '发送任务' : '输入内容后发送'"
+          @click="onPrimaryAction"
+        >
+          <PhPaperPlaneRight v-if="buildMessage().trim()" :size="18" weight="fill" aria-hidden="true" />
+          <PhWaveform v-else :size="20" weight="bold" aria-hidden="true" />
+        </button>
+        <button
+          v-else
+          type="button"
+          class="pa-btn pa-btn--ghost pa-btn--sm composer-stop"
+          data-testid="coding-composer-stop"
+          :disabled="stopping"
+          :title="stopping ? '正在停止任务' : '停止任务'"
+          :aria-label="stopping ? '正在停止任务' : '停止任务'"
+          @click="emit('stop')"
+        >
+          <PhProhibit :size="19" weight="bold" aria-hidden="true" />
+        </button>
+      </div>
+      <span class="visually-hidden">Enter 发送，Shift+Enter 换行，上下键浏览历史输入</span>
     </div>
   </div>
 </template>
@@ -597,8 +777,21 @@ onBeforeUnmount(() => {
 .coding-composer {
   position: relative;
   display: flex;
+  min-height: 124px;
+  box-sizing: border-box;
   flex-direction: column;
   gap: var(--space-2);
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  border-radius: calc(var(--radius-lg) + var(--space-2));
+  background: var(--color-surface);
+  box-shadow: var(--shadow);
+  transition: border-color var(--pa-motion-fast) var(--ease),
+    box-shadow var(--pa-motion-fast) var(--ease);
+}
+.coding-composer:focus-within {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow), var(--pa-input-ring);
 }
 .chip-row {
   display: flex;
@@ -631,46 +824,147 @@ onBeforeUnmount(() => {
   cursor: pointer;
   padding: 0;
 }
-.composer-row {
-  display: flex;
-  align-items: flex-end;
-  gap: var(--space-2);
-}
 .composer-input {
   flex: 1;
-  min-height: 60px;
-  max-height: 200px;
+  width: 100%;
+  min-width: 0;
+  min-height: 52px;
+  max-height: 144px;
+  box-sizing: border-box;
   resize: none;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
+  padding: 2px 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
   color: var(--color-fg);
-  font-size: var(--text-sm);
+  font-size: var(--pa-text-body);
   font-family: inherit;
   line-height: var(--leading-normal);
 }
 .composer-input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 0;
+  outline: none;
 }
 .composer-input:disabled {
   color: var(--color-fg-subtle);
 }
+.composer-input::placeholder {
+  color: var(--color-fg-faint);
+  font-size: var(--text-lg);
+}
+.composer-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.toolbar-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-1);
+}
+.toolbar-right {
+  justify-content: flex-end;
+  margin-left: auto;
+}
+.composer-icon-btn {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-fg-muted);
+  cursor: pointer;
+}
+.composer-icon-btn:not(:disabled):hover {
+  background: var(--color-surface-hover);
+  color: var(--color-fg);
+}
+.composer-icon-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 1px;
+}
+.composer-icon-btn:disabled {
+  color: var(--color-fg-faint);
+  cursor: not-allowed;
+}
+.voice-input:disabled {
+  color: var(--color-fg);
+  opacity: 1;
+}
+.toolbar-select {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-fg-muted);
+}
+.toolbar-select :deep(.pa-select) {
+  height: 30px;
+  padding: 0 22px 0 var(--space-1);
+  border: 0;
+  background-color: transparent;
+  color: var(--color-fg);
+  font-size: var(--pa-text-body);
+  box-shadow: none;
+}
+.toolbar-select :deep(.pa-select:hover:not(:disabled)) {
+  background-color: var(--color-surface-hover);
+}
+.toolbar-select :deep(.pa-select:focus) {
+  box-shadow: var(--focus-ring);
+}
+.permission-select :deep(.pa-select) {
+  width: 118px;
+}
+.model-select :deep(.pa-select) {
+  width: 148px;
+}
+.effort-select :deep(.pa-select) {
+  width: 94px;
+}
 .composer-send,
 .composer-stop {
   display: inline-flex;
+  width: 36px;
+  height: 36px;
   align-items: center;
+  justify-content: center;
   gap: var(--space-1);
   flex-shrink: 0;
+  min-height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-fg);
+  color: var(--color-surface);
+  box-shadow: none;
+}
+.composer-send:hover:not(:disabled),
+.composer-stop:hover:not(:disabled) {
+  background: var(--color-fg-muted);
+  color: var(--color-surface);
+}
+.composer-send:disabled,
+.composer-stop:disabled {
+  background: var(--color-fg);
+  color: var(--color-surface);
+  opacity: 0.42;
 }
 .composer-stop {
-  color: var(--color-danger-fg);
+  background: var(--color-danger-strong);
+  color: var(--color-surface);
 }
 .mention-pop {
   position: absolute;
-  bottom: calc(100% + var(--space-1) + 44px);
-  left: 0;
+  bottom: calc(100% + var(--space-2));
+  left: var(--space-3);
   z-index: var(--z-raised);
   display: flex;
   width: min(440px, 100%);
@@ -720,11 +1014,8 @@ onBeforeUnmount(() => {
 .pop-item small {
   color: var(--color-fg-subtle);
 }
-.composer-options {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
+.composer-context-ring {
+  margin: 0 var(--space-1);
 }
 /* v0.9.0 §5.3：full_access 授予状态与撤销入口 */
 .grant-revoke {
@@ -746,16 +1037,34 @@ onBeforeUnmount(() => {
   opacity: 0.6;
   cursor: not-allowed;
 }
-.option {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--color-fg-muted);
-  font-size: var(--pa-text-meta);
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
-.option-hint {
-  margin-left: auto;
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-t-11);
+@media (max-width: 1080px) {
+  .model-select :deep(.pa-select) {
+    width: 126px;
+  }
+  .permission-select :deep(.pa-select) {
+    width: 104px;
+  }
+  .effort-select :deep(.pa-select) {
+    width: 82px;
+  }
+}
+@media (max-width: 920px) {
+  .coding-composer {
+    padding-inline: var(--space-3);
+  }
+  .composer-toolbar {
+    gap: var(--space-1);
+  }
+  .toolbar-group {
+    gap: 0;
+  }
 }
 </style>

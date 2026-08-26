@@ -89,6 +89,7 @@ test.describe("E2E smoke", () => {
           agent_read_only_tools_enabled: false,
           rag_chat_runtime_enabled: false,
           coding_agent_ui_enabled: true,
+          agent_runs_api_enabled: true,
           project_bound_runs_enabled: true,
           product_timezone: "Asia/Shanghai",
         };

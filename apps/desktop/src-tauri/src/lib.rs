@@ -90,6 +90,17 @@ struct ConfigData {
     agent_run_plan_enabled: bool,
     #[serde(default = "default_true")]
     agent_run_event_stream_enabled: bool,
+    // Coding Agent 的基础读取、单文件 Patch、上下文续接与可信完成校验。
+    // 这些开关此前未由安装版注入，导致 UI 提示模型调用未注册工具，且任务
+    // 重开后模型拿不到历史对话。
+    #[serde(default = "default_true")]
+    agent_run_read_only_tools_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_patch_workflow_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_context_builder_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_output_verification_enabled: bool,
     #[serde(default = "default_true")]
     agent_command_workflow_enabled: bool,
     #[serde(default = "default_true")]
@@ -139,6 +150,10 @@ impl Default for ConfigData {
             project_bound_runs_enabled: true,
             agent_run_plan_enabled: true,
             agent_run_event_stream_enabled: true,
+            agent_run_read_only_tools_enabled: true,
+            agent_patch_workflow_enabled: true,
+            agent_context_builder_enabled: true,
+            agent_output_verification_enabled: true,
             agent_command_workflow_enabled: true,
             coding_patchset_enabled: true,
             coding_command_profiles_enabled: true,
@@ -794,6 +809,14 @@ fn parse_config_content(content: &str) -> LoadedConfig {
             cfg.agent_run_plan_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_EVENT_STREAM_ENABLED=") {
             cfg.agent_run_event_stream_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=") {
+            cfg.agent_run_read_only_tools_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_PATCH_WORKFLOW_ENABLED=") {
+            cfg.agent_patch_workflow_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_CONTEXT_BUILDER_ENABLED=") {
+            cfg.agent_context_builder_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=") {
+            cfg.agent_output_verification_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_AGENT_COMMAND_WORKFLOW_ENABLED=") {
             cfg.agent_command_workflow_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_CODING_PATCHSET_ENABLED=") {
@@ -891,7 +914,7 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         ""
     };
     Ok(format!(
-        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\nPA_AGENT_HTTP_WORKFLOW_ENABLED={}\nPA_AGENT_SQL_READONLY_WORKFLOW_ENABLED={}\nPA_AGENT_RUNS_API_ENABLED={}\nPA_PROJECT_BOUND_RUNS_ENABLED={}\nPA_AGENT_RUN_PLAN_ENABLED={}\nPA_AGENT_RUN_EVENT_STREAM_ENABLED={}\nPA_AGENT_COMMAND_WORKFLOW_ENABLED={}\nPA_CODING_PATCHSET_ENABLED={}\nPA_CODING_COMMAND_PROFILES_ENABLED={}\nPA_CODING_ARTIFACTS_ENABLED={}\nPA_CODING_PERMISSION_MODELS_ENABLED={}\nPA_CODING_AGENT_UI_ENABLED={}\nPA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED={}\nPA_CODING_FULL_ACCESS_ENABLED={}\nPA_CODING_CONTEXT_BUDGET_ENABLED={}\nPA_CODING_EXECUTION_DETAIL_ENABLED={}\nPA_CODING_WORKTREE_ENABLED={}\n",
+        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\nPA_AGENT_HTTP_WORKFLOW_ENABLED={}\nPA_AGENT_SQL_READONLY_WORKFLOW_ENABLED={}\nPA_AGENT_RUNS_API_ENABLED={}\nPA_PROJECT_BOUND_RUNS_ENABLED={}\nPA_AGENT_RUN_PLAN_ENABLED={}\nPA_AGENT_RUN_EVENT_STREAM_ENABLED={}\nPA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED={}\nPA_AGENT_PATCH_WORKFLOW_ENABLED={}\nPA_AGENT_CONTEXT_BUILDER_ENABLED={}\nPA_AGENT_OUTPUT_VERIFICATION_ENABLED={}\nPA_AGENT_COMMAND_WORKFLOW_ENABLED={}\nPA_CODING_PATCHSET_ENABLED={}\nPA_CODING_COMMAND_PROFILES_ENABLED={}\nPA_CODING_ARTIFACTS_ENABLED={}\nPA_CODING_PERMISSION_MODELS_ENABLED={}\nPA_CODING_AGENT_UI_ENABLED={}\nPA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED={}\nPA_CODING_FULL_ACCESS_ENABLED={}\nPA_CODING_CONTEXT_BUDGET_ENABLED={}\nPA_CODING_EXECUTION_DETAIL_ENABLED={}\nPA_CODING_WORKTREE_ENABLED={}\n",
         cfg.db_host,
         cfg.db_port,
         cfg.db_user,
@@ -911,6 +934,10 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         cfg.project_bound_runs_enabled,
         cfg.agent_run_plan_enabled,
         cfg.agent_run_event_stream_enabled,
+        cfg.agent_run_read_only_tools_enabled,
+        cfg.agent_patch_workflow_enabled,
+        cfg.agent_context_builder_enabled,
+        cfg.agent_output_verification_enabled,
         cfg.agent_command_workflow_enabled,
         cfg.coding_patchset_enabled,
         cfg.coding_command_profiles_enabled,
@@ -1515,6 +1542,22 @@ async fn start_sidecar(
                 loaded.public.agent_run_event_stream_enabled.to_string(),
             )
             .env(
+                "PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED",
+                loaded.public.agent_run_read_only_tools_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_PATCH_WORKFLOW_ENABLED",
+                loaded.public.agent_patch_workflow_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_CONTEXT_BUILDER_ENABLED",
+                loaded.public.agent_context_builder_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_OUTPUT_VERIFICATION_ENABLED",
+                loaded.public.agent_output_verification_enabled.to_string(),
+            )
+            .env(
                 "PA_AGENT_COMMAND_WORKFLOW_ENABLED",
                 loaded.public.agent_command_workflow_enabled.to_string(),
             )
@@ -1825,28 +1868,40 @@ mod tests {
         assert!(loaded.public.coding_workspace_auto_approve_enabled);
         assert!(loaded.public.coding_full_access_enabled);
         assert!(loaded.public.coding_context_budget_enabled);
+        assert!(loaded.public.agent_run_read_only_tools_enabled);
+        assert!(loaded.public.agent_patch_workflow_enabled);
+        assert!(loaded.public.agent_context_builder_enabled);
+        assert!(loaded.public.agent_output_verification_enabled);
         assert!(loaded.public.agent_command_workflow_enabled);
         let rendered = render_config(&loaded.public).unwrap();
         assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=true"));
         assert!(rendered.contains("PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED=true"));
         assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=true"));
         assert!(rendered.contains("PA_CODING_CONTEXT_BUDGET_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=true"));
     }
 
     #[test]
     fn v090_capability_flags_support_explicit_false_rollback() {
         // 精确回退（计划 §3.3）：显式置 false 必须被尊重并落盘。
         let loaded = parse_config_content(
-            "PA_AGENT_RUNS_API_ENABLED=false\nPA_CODING_FULL_ACCESS_ENABLED=false\nPA_AGENT_COMMAND_WORKFLOW_ENABLED=false\n",
+            "PA_AGENT_RUNS_API_ENABLED=false\nPA_CODING_FULL_ACCESS_ENABLED=false\nPA_AGENT_COMMAND_WORKFLOW_ENABLED=false\nPA_AGENT_PATCH_WORKFLOW_ENABLED=false\nPA_AGENT_CONTEXT_BUILDER_ENABLED=false\n",
         );
         assert!(!loaded.public.agent_runs_api_enabled);
         assert!(!loaded.public.coding_full_access_enabled);
         assert!(!loaded.public.agent_command_workflow_enabled);
+        assert!(!loaded.public.agent_patch_workflow_enabled);
+        assert!(!loaded.public.agent_context_builder_enabled);
         assert!(loaded.public.coding_workspace_auto_approve_enabled);
         let rendered = render_config(&loaded.public).unwrap();
         assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=false"));
         assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=false"));
         assert!(rendered.contains("PA_AGENT_COMMAND_WORKFLOW_ENABLED=false"));
+        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=false"));
+        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=false"));
     }
 
     #[test]

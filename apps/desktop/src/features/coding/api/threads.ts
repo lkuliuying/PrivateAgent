@@ -5,7 +5,7 @@
  * 409 / workspace_not_found 404 / workspace_outside_trust 403），前端只把
  * CodingApiError 透传给 store/组件呈现。
  */
-import type { Session } from "../../../types";
+import type { Message, Session } from "../../../types";
 import type { CodingThreadCreateInput, CodingThreadSummary } from "../model/contracts";
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
 
@@ -46,6 +46,24 @@ export async function createCodingThread(input: CodingThreadCreateInput): Promis
     })
   );
   return toThreadSummary(dto, input.projectId);
+}
+
+/** durable 会话消息；用于任务重开与跨 run 对话续接。 */
+export async function fetchCodingThreadMessages(sessionId: number): Promise<Message[]> {
+  return codingFetchJson<Message[]>(`/sessions/${sessionId}/messages`);
+}
+
+/**
+ * 旧安装版没有写 sessions.last_run_id；从 agent_runs 事实表读取最新 run，
+ * 让升级后的既有任务仍可水合活动流。
+ */
+export async function fetchLatestCodingThreadRunId(
+  sessionId: number
+): Promise<string | null> {
+  const result = await codingFetchJson<{ run_id: string | null }>(
+    `/sessions/${sessionId}/latest-agent-run`
+  );
+  return result.run_id;
 }
 
 /**

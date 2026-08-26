@@ -180,6 +180,7 @@ function mockH1DChain(page: Page) {
             agent_read_only_tools_enabled: true,
             rag_chat_runtime_enabled: false,
             coding_agent_ui_enabled: true,
+            agent_runs_api_enabled: true,
             project_bound_runs_enabled: true,
             coding_workspace_auto_approve: true,
             coding_full_access_supported: true,
@@ -255,7 +256,13 @@ function mockH1DChain(page: Page) {
         return;
       }
       if (path === `/agent-runs/${RUN_ID}` && request.method() === "GET") {
-        await route.fulfill({ json: snapshot({ status: "completed", last_event_sequence: 9 }) });
+        await route.fulfill({
+          json: snapshot({
+            status: "completed",
+            last_event_sequence: 9,
+            tool_call_count: 1, // 与 diagnosticFrames 的 run.completed 事实一致
+          }),
+        });
         return;
       }
       if (path.startsWith(`/agent-runs/${RUN_ID}/events/stream`)) {

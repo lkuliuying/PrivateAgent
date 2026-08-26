@@ -154,6 +154,20 @@ describe("codingWorkspaceStore", () => {
     expect(store.selectedWorkspaceId.value).toBe(102);
   });
 
+  it("recordThreadRun 立即记录最近 run，切走再返回可直接恢复", async () => {
+    const store = createCodingWorkspaceStore(baseFetchers());
+    await store.bootstrap();
+    const previousUpdatedAt = store.threadsByProject.value[1][0].updatedAt;
+    store.recordThreadRun(11, "run-durable");
+    expect(store.threadsByProject.value[1][0].lastRunId).toBe("run-durable");
+    expect(store.threadsByProject.value[1][0].updatedAt).toBe(previousUpdatedAt);
+    store.recordThreadRun(11, "run-new", "2026-08-24T03:00:00Z");
+    expect(store.threadsByProject.value[1][0]).toMatchObject({
+      lastRunId: "run-new",
+      updatedAt: "2026-08-24T03:00:00Z",
+    });
+  });
+
   it("createThreadFromInput 追加线程并选中；空输入/无工作区抛契约错误", async () => {
     const createThread = vi.fn(baseFetchers().createThread);
     const store = createCodingWorkspaceStore(baseFetchers({ createThread }));

@@ -90,6 +90,14 @@ const INPUT = {
 describe("useRunStream", () => {
   it("startRun：创建→快照→续流，帧按序投影，run.terminal 收敛", async () => {
     const { deps, streams } = makeDeps();
+    (deps.fetchSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({
+        status: "completed",
+        last_event_sequence: 2,
+        output: "完成",
+        completed_at: "2026-08-22T00:00:05Z",
+      })
+    );
     const { scope, controller } = scopedSetup(deps);
     await controller.startRun(INPUT);
     expect(deps.createRun).toHaveBeenCalledWith(INPUT);
@@ -104,7 +112,10 @@ describe("useRunStream", () => {
     expect(controller.projection.value?.status).toBe("completed");
     expect(controller.projection.value?.output).toBe("完成");
     streams[0].callbacks.onFrame({ sequence: 3, type: "run.terminal", payload: { status: "completed" } });
+    await flushPromises();
     expect(controller.phase.value).toBe("terminal");
+    expect(deps.fetchSnapshot).toHaveBeenCalledWith("run-1");
+    expect(controller.projection.value?.completedAt).toBe("2026-08-22T00:00:05Z");
     scope.stop();
   });
 
@@ -175,6 +186,19 @@ describe("useRunStream", () => {
     await controller.cancelActive();
     expect(deps.cancelRun).toHaveBeenCalledWith("run-1");
     expect(controller.projection.value?.status).toBe("running");
+    scope.stop();
+  });
+
+  it("attachRun：重开任务时保留 durable 历史恢复出的用户请求", async () => {
+    const { deps } = makeDeps();
+    (deps.fetchSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(
+      snapshot({ status: "completed", output: "已完成", last_event_sequence: 0 })
+    );
+    const { scope, controller } = scopedSetup(deps);
+    await controller.attachRun("run-1", "创建 hello.txt");
+    expect(controller.projection.value?.userMessage).toBe("创建 hello.txt");
+    expect(controller.projection.value?.output).toBe("已完成");
+    expect(controller.phase.value).toBe("terminal");
     scope.stop();
   });
 });

@@ -27,6 +27,9 @@ const props = withDefaults(
     title: string;
     projectName?: string;
     branchLabel?: string;
+    workspacePath?: string | null;
+    workspacePathLoading?: boolean;
+    workspacePathRequested?: boolean;
     headSha?: string | null;
     gitDirty?: boolean | null;
     runStatus?: AgentRunStatus | null;
@@ -39,6 +42,9 @@ const props = withDefaults(
   {
     projectName: "",
     branchLabel: "",
+    workspacePath: null,
+    workspacePathLoading: false,
+    workspacePathRequested: false,
     headSha: null,
     gitDirty: null,
     runStatus: null,
@@ -55,6 +61,7 @@ const emit = defineEmits<{
   cancel: [];
   "toggle-plan": [];
   "toggle-context": [];
+  "request-workspace-path": [];
 }>();
 
 const STATUS_ICONS: Record<AgentRunStatus, Component> = {
@@ -74,6 +81,9 @@ const shortHead = computed(() => {
 });
 
 const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runStatus] : null));
+const titleTooltip = computed(() =>
+  props.workspacePath ? `工作目录：${props.workspacePath}` : props.title
+);
 </script>
 
 <template>
@@ -83,8 +93,20 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
         <PhArrowLeft :size="16" />
       </button>
     </div>
-    <div class="header-copy">
-      <h1 :title="title">{{ title }}</h1>
+    <div
+      class="header-copy"
+      data-testid="thread-workspace-hover"
+      :title="titleTooltip"
+      @mouseenter="emit('request-workspace-path')"
+      @focusin="emit('request-workspace-path')"
+    >
+      <div class="header-title-wrap">
+        <h1
+          tabindex="0"
+          :title="titleTooltip"
+          :aria-describedby="workspacePathRequested ? 'workspace-path-tooltip' : undefined"
+        >{{ title }}</h1>
+      </div>
       <p class="header-meta">
         <span v-if="projectName">{{ projectName }}</span>
         <template v-if="branchLabel">
@@ -100,6 +122,16 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
           <span class="meta-dirty">有未提交更改</span>
         </template>
       </p>
+      <div
+        v-if="workspacePathRequested"
+        id="workspace-path-tooltip"
+        class="workspace-path-tooltip"
+        role="tooltip"
+        data-testid="workspace-path-tooltip"
+      >
+        <span>当前工作目录</span>
+        <code>{{ workspacePathLoading ? "正在读取…" : workspacePath ?? "暂不可用" }}</code>
+      </div>
     </div>
     <div class="header-trailing">
       <span
@@ -167,12 +199,20 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
   align-items: center;
 }
 .header-copy {
+  position: relative;
   display: flex;
   min-width: 0;
   flex: 1;
   flex-direction: column;
+  cursor: help;
 }
-.header-copy h1 {
+.header-title-wrap {
+  position: relative;
+  align-self: flex-start;
+  max-width: 100%;
+  min-width: 0;
+}
+.header-title-wrap h1 {
   overflow: hidden;
   margin: 0;
   color: var(--color-fg);
@@ -181,6 +221,42 @@ const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runSt
   line-height: var(--leading-tight);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.header-title-wrap h1:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+.workspace-path-tooltip {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: var(--z-raised);
+  display: none;
+  width: max-content;
+  max-width: min(560px, 72vw);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+  pointer-events: none;
+}
+.workspace-path-tooltip span,
+.workspace-path-tooltip code {
+  display: block;
+}
+.workspace-path-tooltip code {
+  margin-top: 2px;
+  color: var(--color-fg);
+  font-family: var(--font-mono, monospace);
+  overflow-wrap: anywhere;
+}
+.header-copy:hover .workspace-path-tooltip,
+.header-copy:focus-within .workspace-path-tooltip {
+  display: block;
 }
 .header-meta {
   display: flex;

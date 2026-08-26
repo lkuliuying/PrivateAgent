@@ -125,6 +125,9 @@ function mockW6rApi(page: Page) {
           legacy_tool_planner_enabled: true,
           agent_read_only_tools_enabled: true,
           rag_chat_runtime_enabled: false,
+          coding_agent_ui_enabled: true,
+          agent_runs_api_enabled: true,
+          project_bound_runs_enabled: true,
         },
       });
       return;
@@ -261,12 +264,14 @@ test.describe("v0.8.0 W6-R · 试用反馈修订", () => {
     await expect(page.getByTestId("tool-time")).toBeVisible();
     await expect(page.getByTestId("tool-result")).toContainText("12 passed in 3.42s");
 
-    // 命令卡：退出码/耗时/工作目录范围 + 输出默认折叠（长输出不拖垮页面）
+    // 命令卡：头部事实（退出码/耗时）默认呈现；命令文本、工作目录与
+    // 输出在详情折叠区（W6-R：避免每次工具调用撑大卡片），展开后可见。
     await expect(page.getByTestId("command-exit-code")).toContainText("退出码 0");
     await expect(page.getByTestId("command-duration")).toBeVisible();
-    await expect(page.getByTestId("command-cwd")).toContainText("工作目录");
     await expect(page.getByTestId("command-output-body")).toHaveCount(0);
     await page.getByTestId("command-output-toggle").click();
+    await expect(page.getByTestId("command-line")).toContainText("[REDACTED]");
+    await expect(page.getByTestId("command-cwd")).toContainText("工作目录");
     await expect(page.getByTestId("command-output-body")).toContainText("test session starts");
 
     // 零容忍：演示凭据不出现在任何可见文本中

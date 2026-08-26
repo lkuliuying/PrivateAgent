@@ -206,7 +206,8 @@ function frames(key: CodingRunPreviewKey): RunStreamFrame[] {
         VALIDATION_STARTED,
         { sequence: 5, type: "output.validation_failed", payload: { verifier: "default", attempt: 1, retry_count: 0, max_retries: 1, code: "empty_output", message: "输出为空", correction: null, will_retry: false } },
         { sequence: 6, type: "run.failed", payload: { output: null, error: "输出校验未通过", error_code: "output_validation_failed", tool_call_count: 0, input_tokens: 1200, output_tokens: 0, cached_tokens: 0, cost_usd: null } },
-      ];
+        // 投影器对乱序帧幂等跳过：重编序号保证演示帧序严格递增。
+      ].map((frame, index) => ({ ...frame, sequence: index + 1 }));
     case "cancelled":
       return [
         RUN_STARTED,
@@ -215,7 +216,8 @@ function frames(key: CodingRunPreviewKey): RunStreamFrame[] {
         MODEL_COMPLETED,
         TOOL_WRITE_APPROVAL,
         { sequence: 6, type: "run.cancelled", payload: { output: null, error: "tool approval rejected", error_code: "approval_rejected", tool_call_count: 1, input_tokens: 2100, output_tokens: 120, cached_tokens: 0, cost_usd: null } },
-      ];
+        // 同上：重编序号（TOOL_WRITE_APPROVAL 原序号 10 会吃掉后续帧）。
+      ].map((frame, index) => ({ ...frame, sequence: index + 1 }));
     case "limit-exceeded":
       return [
         RUN_STARTED,

@@ -178,10 +178,15 @@ function mockH1BApi(page: Page, options: H1BOptions = {}) {
   let createCall = 0;
   let deliveredMax = 0;
   let terminalStatus: string | null = null;
+  let terminalToolCalls = 0;
   const frames = options.frames ?? diagnosticFrames();
   for (const frame of frames) {
     deliveredMax = Math.max(deliveredMax, frame.sequence);
     if (frame.type === "run.terminal") terminalStatus = String(frame.payload.status ?? "");
+    // 终态 durable 事实：快照必须与帧内用量一致（否则前端结算会洗掉证据计数）。
+    if (typeof frame.payload.tool_call_count === "number") {
+      terminalToolCalls = Math.max(terminalToolCalls, frame.payload.tool_call_count);
+    }
   }
 
   return {
@@ -199,6 +204,7 @@ function mockH1BApi(page: Page, options: H1BOptions = {}) {
             agent_read_only_tools_enabled: true,
             rag_chat_runtime_enabled: false,
             coding_agent_ui_enabled: true,
+            agent_runs_api_enabled: true,
             project_bound_runs_enabled: true,
             coding_workspace_auto_approve: true,
             coding_full_access_supported: true,
@@ -248,6 +254,7 @@ function mockH1BApi(page: Page, options: H1BOptions = {}) {
           json: snapshot({
             status: terminalStatus ?? "running",
             last_event_sequence: deliveredMax,
+            ...(terminalStatus ? { tool_call_count: terminalToolCalls } : {}),
           }),
         });
         return;
