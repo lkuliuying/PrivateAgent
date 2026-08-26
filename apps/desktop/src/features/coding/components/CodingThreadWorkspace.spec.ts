@@ -11,6 +11,22 @@ async function mountWorkspace(selectThreadId?: number) {
   return { wrapper, store };
 }
 
+/** 基于 DOM 条件的有界等待（替代固定延时：动态 import 完成时机随套件负载漂移）。*/
+async function waitForCondition(
+  check: () => boolean,
+  timeoutMs = 4000,
+  stepMs = 10
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await flushPromises();
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+  await flushPromises();
+  if (!check()) throw new Error(`waitForCondition 超时（${timeoutMs}ms）`);
+}
+
 describe("CodingThreadWorkspace（W2 组装）", () => {
   it("头部摘要：标题 + 项目 + 分支（公开事实）", async () => {
     const { wrapper } = await mountWorkspace(11);
@@ -51,9 +67,10 @@ describe("CodingThreadWorkspace（W2 组装）", () => {
     history.replaceState(null, "", "?coding=1&coding-run-preview=command-output");
     try {
       const { wrapper } = await mountWorkspace(11);
-      await flushPromises();
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      await flushPromises();
+      // 预览为动态 import：等待工具卡渲染（状态条件，非固定延时）。
+      await waitForCondition(() =>
+        wrapper.find('[data-testid="tool-command"]').exists()
+      );
       expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(false);
       expect(wrapper.find('[data-testid="tool-command"]').exists()).toBe(true);
       // W6-R：命令文本/目录在详情折叠区，展开后呈现。

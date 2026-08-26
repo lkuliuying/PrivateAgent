@@ -130,12 +130,18 @@ describe("ToolDiagnosticsPanel", () => {
     mockedFetch.mockResolvedValue(SNAPSHOT);
     const wrapper = mountPanel({ initialTags: "" });
     await flushPromises();
-    expect(mockedFetch).toHaveBeenLastCalledWith([]);
+    expect(mockedFetch).toHaveBeenLastCalledWith(
+      [],
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
 
     await wrapper.find('[data-testid="tags-input"]').setValue("file.mutate, code.inspect");
     await wrapper.find('[data-testid="apply-tags"]').trigger("click");
     await flushPromises();
-    expect(mockedFetch).toHaveBeenLastCalledWith(["file.mutate", "code.inspect"]);
+    expect(mockedFetch).toHaveBeenLastCalledWith(
+      ["file.mutate", "code.inspect"],
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
   });
 
   it("404 → 端点未启用提示", async () => {
@@ -159,6 +165,42 @@ describe("ToolDiagnosticsPanel", () => {
     const wrapper = mountPanel();
     await flushPromises();
     expect(wrapper.find('[data-testid="empty-tools"]').exists()).toBe(true);
+  });
+
+  it("请求竞态：较慢的旧响应不得覆盖新请求结果（最后一次生效）", async () => {
+    type Resolvers = {
+      resolve: (value: typeof SNAPSHOT) => void;
+      promise: Promise<typeof SNAPSHOT>;
+    };
+    function deferred(): Resolvers {
+      let resolve!: (value: typeof SNAPSHOT) => void;
+      const promise = new Promise<typeof SNAPSHOT>((r) => {
+        resolve = r;
+      });
+      return { resolve, promise };
+    }
+    const first = deferred();
+    const second = deferred();
+    mockedFetch
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+
+    const wrapper = mountPanel();
+    await flushPromises(); // load#1 挂起中（first）
+    // 用未禁用的查询按钮触发 load#2（reload 在加载中被禁用），#1 被取消。
+    await wrapper.find('[data-testid="apply-tags"]').trigger("click");
+    await flushPromises(); // load#2 挂起中（second）
+
+    // 新请求先回：面板呈现新快照。
+    const fresh = { ...SNAPSHOT, direct_total: 7 };
+    second.resolve(fresh);
+    await flushPromises();
+    expect(wrapper.find('[data-testid="count-direct"]').text()).toContain("7");
+
+    // 旧请求后回：不得覆盖新结果（序号防护）。
+    first.resolve({ ...SNAPSHOT, direct_total: 1 });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="count-direct"]').text()).toContain("7");
   });
 
   it("parseExposure：hidden:<reason> 拆分与未知原因回退", async () => {

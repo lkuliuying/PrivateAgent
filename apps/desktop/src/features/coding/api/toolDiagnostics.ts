@@ -62,13 +62,15 @@ export function hiddenReasonLabel(reason: string | null): string {
 }
 
 export async function fetchToolDiagnostics(
-  intentTags?: string[]
+  intentTags?: string[],
+  options?: { signal?: AbortSignal }
 ): Promise<ToolDiagnosticsSnapshot> {
   const { codingFetchJson } = await import("./codingHttp");
   const query = intentTags?.length
     ? `?intent_tags=${encodeURIComponent(intentTags.join(","))}`
     : "";
   return codingFetchJson<ToolDiagnosticsSnapshot>(
-    `/agent-runs/tool-diagnostics${query}`
+    `/agent-runs/tool-diagnostics${query}`,
+    options?.signal ? { signal: options.signal } : undefined
   );
 }

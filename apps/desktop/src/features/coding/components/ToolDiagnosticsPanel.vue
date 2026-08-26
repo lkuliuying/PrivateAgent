@@ -28,6 +28,12 @@ const errorText = ref("");
 const tagsInput = ref(props.initialTags ?? "");
 
 async function load() {
+  // 请求竞态防护（P2）：新请求取消旧请求（AbortController），并用序号保证
+  // 只有最后一次请求能写回状态——较慢的旧响应不得覆盖新结果。
+  inflight?.abort();
+  const controller = new AbortController();
+  inflight = controller;
+  const seq = ++requestSeq;
   loading.value = true;
   notEnabled.value = false;
   errorText.value = "";
@@ -36,8 +42,11 @@ async function load() {
       .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
-    snapshot.value = await fetchToolDiagnostics(tags);
+    const data = await fetchToolDiagnostics(tags, { signal: controller.signal });
+    if (seq !== requestSeq) return;
+    snapshot.value = data;
   } catch (err) {
+    if (seq !== requestSeq || controller.signal.aborted) return;
     const status = (err as { status?: number }).status;
     if (status === 404) {
       notEnabled.value = true;
@@ -47,9 +56,12 @@ async function load() {
     }
     snapshot.value = null;
   } finally {
-    loading.value = false;
+    if (seq === requestSeq) loading.value = false;
   }
 }
+
+let requestSeq = 0;
+let inflight: AbortController | null = null;
 
 onMounted(load);
 
