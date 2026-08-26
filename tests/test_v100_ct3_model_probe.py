@@ -186,6 +186,22 @@ async def test_repeats_bounds_enforced():
         await run_probe(_script(), provider="p", model_name="m", repeats=0)
 
 
+@pytest.mark.asyncio
+async def test_probe_sample_count_includes_failed_provider_attempts():
+    """Provider 每次都抛错时，六个已尝试用例不能被误报成 1 个样本。"""
+
+    class _FailingClient:
+        async def complete(self, request):
+            del request
+            raise RuntimeError("provider unavailable")
+
+    snapshot = await run_probe(
+        _FailingClient(), provider="ollama", model_name="broken", repeats=1
+    )
+    assert snapshot.sample_count == 6
+    assert snapshot.pass_count == 0
+
+
 def test_default_dataset_covers_p0_capabilities():
     capabilities = {case.capability for case in default_probe_cases()}
     assert capabilities == set(ProbeCapability)

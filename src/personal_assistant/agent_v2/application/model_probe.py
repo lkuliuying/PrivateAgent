@@ -300,6 +300,9 @@ async def run_probe(
     for case in resolved_cases:
         case_passed = True
         for _ in range(repeats):
+            # sample_count 统计实际发起的用例尝试；即使 Provider 调用抛错，
+            # 也不能把六次失败误记为 1 个样本。
+            total += 1
             messages = [ModelMessage(role="user", content=case.user_message)]
             responses: list[Any] = []
             rounds = 2 if case.kind in (
@@ -333,7 +336,6 @@ async def run_probe(
             except Exception:  # noqa: BLE001 - 探测失败即该能力未证明
                 case_passed = False
                 break
-            total += 1
             ok = _evaluate_case(case, responses)
             passed_total += 1 if ok else 0
             if not ok:

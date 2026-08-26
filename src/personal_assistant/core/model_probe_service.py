@@ -41,6 +41,10 @@ PROBE_STATUS_RUNNING = "running"
 #: 生产探测默认重复轮数——单次六题探测存在模型波动，多轮聚合降低误判。
 PROBE_REPEATS = 2
 
+# asyncio 事件循环只弱引用 Task；保留进程内强引用既避免后台探测被提前回收，
+# 也给状态/重试端点一个可靠的“本进程确实仍在运行”事实。
+_probe_tasks: dict[str, asyncio.Task[None]] = {}
+
 
 def build_gateway_for_profile(
     profile: ModelProfile,
@@ -217,7 +221,10 @@ class ModelProbeSnapshotRepository:
         statement = (
             select(ModelToolProfileSnapshotRecord)
             .where(ModelToolProfileSnapshotRecord.profile_id == profile_id)
-            .order_by(ModelToolProfileSnapshotRecord.created_at.desc())
+            .order_by(
+                ModelToolProfileSnapshotRecord.created_at.desc(),
+                ModelToolProfileSnapshotRecord.id.desc(),
+            )
             .limit(1)
         )
         return (await self.db.execute(statement)).scalars().first()
@@ -239,10 +246,24 @@ async def profile_tool_protocol_valid(
     requirements = record.requirements_json or {}
     if not bool(requirements.get("function_calling")):
         return False
+    return probe_snapshot_matches_profile(record, profile)
+
+
+def probe_snapshot_matches_profile(
+    record: ModelToolProfileSnapshotRecord,
+    profile: ModelProfile,
+) -> bool:
+    """快照是否属于 profile 当前 provider/model 配置。"""
+    provider = (profile.provider or "").strip().lower()
+    model_name = (profile.model_name or "").strip()
+    if record.provider != provider or record.model_name != model_name:
+        return False
+    if record.status != PROBE_STATUS_OK:
+        return True
     import hashlib
 
     expected = hashlib.sha256(
-        f"{(profile.provider or '').strip().lower()}:{(profile.model_name or '').strip()}".encode("utf-8")
+        f"{provider}:{model_name}".encode("utf-8")
     ).hexdigest()[:16]
     return record.model_digest == expected
 
@@ -383,8 +404,39 @@ def start_probe_for_profile(
         return False
     if not _probe_eligible(profile):
         return False
-    asyncio.get_running_loop().create_task(_probe_background(profile.id, cfg))
+    existing = _probe_tasks.get(profile.id)
+    if existing is not None and not existing.done():
+        return False
+    task = asyncio.get_running_loop().create_task(
+        _probe_background(profile.id, cfg),
+        name=f"model-tool-probe:{profile.id}",
+    )
+    _probe_tasks[profile.id] = task
+
+    def _forget(completed: asyncio.Task[None], *, profile_id: str = profile.id) -> None:
+        if _probe_tasks.get(profile_id) is completed:
+            _probe_tasks.pop(profile_id, None)
+
+    task.add_done_callback(_forget)
     return True
+
+
+def probe_task_active(profile_id: str) -> bool:
+    """当前进程是否确有该 profile 的后台探测任务。"""
+    task = _probe_tasks.get(profile_id)
+    return task is not None and not task.done()
+
+
+async def cancel_probe_for_profile(profile_id: str) -> None:
+    """删除 profile 前取消并回收对应后台探测，防止删除后再次写入孤儿快照。"""
+    task = _probe_tasks.pop(profile_id, None)
+    if task is None or task.done():
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 async def auto_probe_profile(
@@ -402,9 +454,5 @@ async def auto_probe_profile(
     已有探测进行中时不重复调度；返回 None 表示未新启动。
     """
     del provider_settings, timeout_s  # 兼容旧签名；后台任务自行取配置。
-    repository = ModelProbeSnapshotRepository(db)
-    latest = await repository.latest(profile.id)
-    if latest is not None and latest.status == PROBE_STATUS_RUNNING:
-        return None
     start_probe_for_profile(db, profile, cfg=cfg)
     return None

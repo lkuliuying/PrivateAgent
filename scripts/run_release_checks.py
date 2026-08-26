@@ -595,6 +595,10 @@ def assemble_report(
     # strict_gates=False 仅供单元测试隔离步骤汇总逻辑。
     gate_issues: list[str] = []
     if strict_gates:
+        # `alembic current` 返回 0 只表示命令执行成功，不代表数据库已在 head。
+        # 没有显式解析到 “NNNN (head)” 时发布候选必须失败关闭。
+        if schema is None:
+            gate_issues.append("database_schema_not_head")
         if commit.get("dirty"):
             gate_issues.append("worktree_dirty")
         if not version_consistent(version):

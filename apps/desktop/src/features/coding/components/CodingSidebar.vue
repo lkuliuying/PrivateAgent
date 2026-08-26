@@ -37,6 +37,7 @@ import {
 } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
 import { formatRelative as timeFormatRelative } from "../../../services/timeDisplay";
+import { useNotifications } from "../../../stores/notifications";
 import {
   WORKSPACE_STATUS_META,
   type CodingProjectNode,
@@ -54,6 +55,8 @@ import {
 } from "../api/threads";
 // v0.9.0 H1：新建项目对话框（选目录+授权；与新建对话拆分为两个清晰动作）
 import NewProjectDialog from "./NewProjectDialog.vue";
+
+const notify = useNotifications();
 
 /** 个人工作区六入口（W6-R：今日页迁出的纵向模块，计划 §4.1/§6.6） */
 const PERSONAL_ENTRIES: ReadonlyArray<{
@@ -207,7 +210,11 @@ async function onTogglePin(thread: CodingThreadSummary): Promise<void> {
 
 async function onRenameThread(thread: CodingThreadSummary): Promise<void> {
   if (threadActionBusy.value) return;
-  const next = window.prompt("重命名对话", thread.title);
+  const next = await notify.prompt({
+    title: "重命名对话",
+    defaultValue: thread.title,
+    confirmLabel: "保存名称",
+  });
   if (next === null || !next.trim()) return;
   threadActionBusy.value = true;
   try {
@@ -220,9 +227,12 @@ async function onRenameThread(thread: CodingThreadSummary): Promise<void> {
 
 async function onArchiveThread(thread: CodingThreadSummary): Promise<void> {
   if (threadActionBusy.value) return;
-  const confirmed = window.confirm(
-    `归档对话「${thread.title}」？\n\n归档为软删除：不物理删除消息与审计，可从搜索/旧界面找回。`
-  );
+  const confirmed = await notify.confirm({
+    title: `归档对话「${thread.title}」？`,
+    message: "归档为软删除，可从搜索或旧界面找回。",
+    impact: "不会物理删除消息与审计记录。",
+    confirmLabel: "归档",
+  });
   if (!confirmed) return;
   threadActionBusy.value = true;
   try {

@@ -221,15 +221,30 @@ async def get_model_tool_probe(
     profile = await ModelProfileService(db).get(profile_id)
     if profile is None:
         return _error(404, "model_profile_not_found", "Model profile not found")
-    from ..core.model_probe_service import ModelProbeSnapshotRepository
+    from ..core.model_probe_service import (
+        ModelProbeSnapshotRepository,
+        probe_snapshot_matches_profile,
+        probe_task_active,
+    )
     from ..core.timeutil import format_rfc3339_utc
 
     latest = await ModelProbeSnapshotRepository(db).latest(profile_id)
     if latest is None:
         return ModelToolProbeOut(status="none")
+    status = latest.status
+    error_code = latest.error_code
+    if not probe_snapshot_matches_profile(latest, profile):
+        # 配置更新后旧快照不能继续在 UI 中显示为“已验证”。
+        status = "failed"
+        error_code = "probe_stale"
+    elif status == "running" and not probe_task_active(profile_id):
+        # 进程重启/崩溃会留下 durable running 行；本进程没有对应任务时
+        # 明确标成中断，允许用户立即重试，而不是永久 409/无限轮询。
+        status = "failed"
+        error_code = "probe_interrupted"
     return ModelToolProbeOut(
-        status=latest.status,
-        error_code=latest.error_code,
+        status=status,
+        error_code=error_code,
         pass_count=latest.pass_count,
         sample_count=latest.sample_count,
         results=latest.results_json,
@@ -251,14 +266,15 @@ async def retry_model_tool_probe(
     if profile is None:
         return _error(404, "model_profile_not_found", "Model profile not found")
     from ..core.model_probe_service import (
-        ModelProbeSnapshotRepository,
+        probe_task_active,
         start_probe_for_profile,
     )
 
-    latest = await ModelProbeSnapshotRepository(db).latest(profile_id)
-    if latest is not None and latest.status == "running":
+    if probe_task_active(profile_id):
         return _error(409, "probe_running", "Tool probe is already running")
     if not start_probe_for_profile(db, profile, cfg=cfg):
+        if probe_task_active(profile_id):
+            return _error(409, "probe_running", "Tool probe is already running")
         return _error(
             409,
             "probe_ineligible",
@@ -276,6 +292,9 @@ async def delete_model_profile(
     blocked = _require_flag()
     if blocked is not None:
         return blocked
+    from ..core.model_probe_service import cancel_probe_for_profile
+
+    await cancel_probe_for_profile(profile_id)
     try:
         await ModelProfileService(db).delete(profile_id)
     except ModelProfileNotFound as exc:

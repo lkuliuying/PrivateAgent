@@ -236,6 +236,99 @@ async def test_probe_gate_for_run_fail_closed(db) -> None:
             await ModelProfileService(db).delete(profile.id)
 
 
+@pytest.mark.asyncio
+async def test_profile_delete_removes_probe_snapshots(db) -> None:
+    """删除后同 ID 重建不得复用旧模型能力快照。"""
+    profile = ModelProfile(
+        id=f"ct3-delete-{uuid4().hex[:8]}",
+        provider="ollama",
+        display_name="CT3 delete",
+        model_name="qwen-local",
+        is_local=True,
+        native_tool_calls=True,
+        enabled=True,
+    )
+    db.add(profile)
+    await db.commit()
+    repository = ModelProbeSnapshotRepository(db)
+    await repository.save(
+        profile.id, _snapshot("ollama", "qwen-local", results=_all_results(True))
+    )
+
+    await ModelProfileService(db).delete(profile.id)
+    assert await repository.latest(profile.id) is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_probe_prevents_post_delete_background_write(monkeypatch) -> None:
+    """删除 profile 时必须先取消同 ID 后台任务。"""
+    import asyncio
+
+    from personal_assistant.config import settings as cfg
+    from personal_assistant.core import model_probe_service as svc
+
+    monkeypatch.setattr(cfg, "agent_v2_model_probe_enabled", True)
+    started = asyncio.Event()
+
+    async def _blocked_probe(profile_id: str, _cfg) -> None:
+        del profile_id, _cfg
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(svc, "_probe_background", _blocked_probe)
+    profile = ModelProfile(
+        id=f"ct3-cancel-{uuid4().hex[:8]}",
+        provider="ollama",
+        display_name="CT3 cancel",
+        model_name="qwen-local",
+        is_local=True,
+        native_tool_calls=True,
+        enabled=True,
+    )
+    assert svc.start_probe_for_profile(None, profile, cfg=cfg) is True
+    await started.wait()
+    assert svc.probe_task_active(profile.id) is True
+    await svc.cancel_probe_for_profile(profile.id)
+    assert svc.probe_task_active(profile.id) is False
+
+
+@pytest.mark.asyncio
+async def test_probe_status_marks_stale_and_interrupted_snapshots(db, monkeypatch) -> None:
+    """配置变化或进程丢失后台任务后，UI 状态不得继续显示 ok/running。"""
+    from personal_assistant.api import routes_model_profiles as routes
+    from personal_assistant.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "coding_permission_models_enabled", True)
+    profile = ModelProfile(
+        id=f"ct3-status-{uuid4().hex[:8]}",
+        provider="ollama",
+        display_name="CT3 status",
+        model_name="old-model",
+        is_local=True,
+        native_tool_calls=True,
+        enabled=True,
+    )
+    db.add(profile)
+    await db.commit()
+    repository = ModelProbeSnapshotRepository(db)
+    try:
+        await repository.save(
+            profile.id, _snapshot("ollama", "old-model", results=_all_results(True))
+        )
+        profile.model_name = "new-model"
+        await db.commit()
+        stale = await routes.get_model_tool_probe(profile.id, db)
+        assert stale.status == "failed"
+        assert stale.error_code == "probe_stale"
+
+        await repository.mark_running(profile)
+        interrupted = await routes.get_model_tool_probe(profile.id, db)
+        assert interrupted.status == "failed"
+        assert interrupted.error_code == "probe_interrupted"
+    finally:
+        await ModelProfileService(db).delete(profile.id)
+
+
 class _FakeGateway:
     """模拟生产 ModelGateway：complete 强制要求 cancellation 关键字。
 

@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.models import ModelProfile
+from ..core.models import ModelProfile, ModelToolProfileSnapshotRecord
 
 
 class ModelProfileError(ValueError):
@@ -158,6 +158,13 @@ class ModelProfileService:
         existing = await self.db.get(ModelProfile, profile_id)
         if existing is None:
             raise ModelProfileNotFound(f"模型 profile 不存在: {profile_id}")
+        # 探测快照没有数据库外键（兼容既有增量迁移），因此在服务边界显式
+        # 同事务清理，避免删除后用同一 id/model 重建时误复用旧能力事实。
+        await self.db.execute(
+            delete(ModelToolProfileSnapshotRecord).where(
+                ModelToolProfileSnapshotRecord.profile_id == profile_id
+            )
+        )
         await self.db.delete(existing)
         await self.db.commit()
 

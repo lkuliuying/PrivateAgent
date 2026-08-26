@@ -45,8 +45,10 @@ import PaButton from "../design/PaButton.vue";
 import PaDialog from "../design/PaDialog.vue";
 import PaInlineNotice from "../design/PaInlineNotice.vue";
 import PaSpinner from "../design/PaSpinner.vue";
+import { useNotifications } from "../stores/notifications";
 
 const emit = defineEmits<{ saved: [] }>();
+const notify = useNotifications();
 
 const profiles = ref<CodingModelProfileDetail[]>([]);
 const loading = ref(true);
@@ -118,6 +120,10 @@ async function load(): Promise<void> {
   loadError.value = "";
   try {
     profiles.value = await listCodingModelProfiles();
+    // 每次列表变更后都刷新当前 profile 状态；新建/编辑后不能继续沿用旧快照 UI。
+    for (const profile of profiles.value) {
+      if (profile.nativeToolCalls) void refreshToolProbe(profile.id);
+    }
   } catch (error) {
     loadError.value = errorText(error);
   } finally {
@@ -207,18 +213,19 @@ async function onToolProbe(profile: CodingModelProfileDetail): Promise<void> {
   toolProbeBusy.value = [...toolProbeBusy.value, profile.id];
   try {
     await retryModelToolProbe(profile.id);
-  } catch {
-    /* running/ineligible 等 409：以状态查询结果为准 */
+  } catch (error) {
+    notify.error("工具能力探测未启动", errorText(error));
   } finally {
     toolProbeBusy.value = toolProbeBusy.value.filter((id) => id !== profile.id);
   }
   await refreshToolProbe(profile.id);
 }
 
-function startToolProbePolling(profiles: CodingModelProfileDetail[]): void {
+function startToolProbePolling(): void {
   if (toolProbeTimer !== null) return;
   toolProbeTimer = setInterval(() => {
-    const running = profiles.filter(
+    // 读取响应式当前列表，避免挂载时捕获旧数组，导致新建 profile 永不轮询。
+    const running = profiles.value.filter(
       (profile) =>
         profile.nativeToolCalls &&
         toolProbes.value[profile.id]?.status === "running"
@@ -297,9 +304,11 @@ async function onToggleEnabled(profile: CodingModelProfileDetail): Promise<void>
 }
 
 async function onDelete(profile: CodingModelProfileDetail): Promise<void> {
-  const confirmed = window.confirm(
-    `删除模型「${profile.displayName}」？\n\n删除后新执行不能再选择该模型；既有执行保留创建时快照，不受影响。`
-  );
+  const confirmed = await notify.confirm({
+    title: `删除模型「${profile.displayName}」？`,
+    danger: true,
+    impact: "删除后新执行不能再选择该模型；相关工具能力探测快照会一并删除。既有执行保留创建时快照。",
+  });
   if (!confirmed) return;
   busyAction.value = `delete:${profile.id}`;
   try {
@@ -365,10 +374,8 @@ async function onSave(): Promise<void> {
 
 onMounted(async () => {
   await load();
-  // 首次拉取各启用 profile 的工具能力探测状态；运行中状态轮询刷新。
-  const probeTargets = profiles.value.filter((p) => p.nativeToolCalls);
-  for (const profile of probeTargets) void refreshToolProbe(profile.id);
-  startToolProbePolling(profiles.value);
+  // 运行中状态轮询刷新；load() 负责每次列表变化后的立即状态同步。
+  startToolProbePolling();
 });
 </script>
 

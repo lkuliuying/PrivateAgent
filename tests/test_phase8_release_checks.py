@@ -54,6 +54,53 @@ def test_assemble_report_failed():
     assert rep["summary"]["failed"] == 1
 
 
+def test_assemble_report_rejects_database_schema_behind_head():
+    """alembic current 即使命令返回 0，未出现 (head) 也不能通过发布门禁。"""
+    steps = [
+        {
+            "name": "alembic_current",
+            "status": "passed",
+            "duration_ms": 1,
+            "detail": "0033\n",
+        }
+    ]
+    rep = rc.assemble_report(steps, CURRENT_VERSION, strict_gates=True)
+    assert rep["database_schema"] is None
+    assert "database_schema_not_head" in rep["release_gate_issues"]
+
+
+def test_assemble_report_accepts_explicit_database_head(monkeypatch):
+    steps = [
+        {
+            "name": "alembic_current",
+            "status": "passed",
+            "duration_ms": 1,
+            "detail": "0035 (head)\n",
+        }
+    ]
+    monkeypatch.setattr(rc, "version_consistent", lambda _version: True)
+    monkeypatch.setattr(rc, "evidence_bound", lambda _version, _head: True)
+    monkeypatch.setattr(
+        rc,
+        "signing_status",
+        lambda _version: {
+            "version": CURRENT_VERSION,
+            "installer_built": True,
+            "code_signed": False,
+            "evidence": "codesign.json",
+        },
+    )
+    monkeypatch.setattr(
+        rc,
+        "git_commit_info",
+        lambda: {"head": "abc", "short": "abc", "describe": "abc", "dirty": False},
+    )
+    rep = rc.assemble_report(steps, CURRENT_VERSION, strict_gates=True)
+    assert rep["database_schema"] == "0035"
+    assert "database_schema_not_head" not in rep["release_gate_issues"]
+    assert rep["ok"] is True
+
+
 def test_write_report(tmp_path):
     rep = rc.assemble_report(
         [

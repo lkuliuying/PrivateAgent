@@ -14,6 +14,7 @@ import type { View } from "../../../types";
 import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
 import PaButton from "../../../design/PaButton.vue";
+import { useNotifications } from "../../../stores/notifications";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import { useRunStream } from "../composables/useRunStream";
 import { describeRunBlocker } from "../model/runBlocking";
@@ -65,6 +66,7 @@ const emit = defineEmits<{
   /** v0.9.0 H1-D（§5.8）：模型类阻塞 → 进入同一模型管理区（带 returnTo） */
   "configure-provider": [];
 }>();
+const notify = useNotifications();
 
 const thread = computed(() => props.store.selectedThread.value);
 const project = computed(() => props.store.selectedProject.value);
@@ -447,13 +449,15 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
   try {
     const state = await fetchFullAccessGrant(current.id);
     if (state.active) return true;
-    const confirmed = window.confirm(
-      "启用完全访问？\n\n" +
-        "范围：当前系统用户可访问的本机文件与常规命令，免逐次审批。\n" +
-        "有效期：4 小时；切换项目、退出应用或手动撤销后立即失效。\n" +
-        "边界：不获得管理员权限，不绕过系统权限；凭据、秘密与远程外发仍受硬边界约束，全程保留审计。\n\n" +
-        "确认为当前会话启用完全访问吗？"
-    );
+    const confirmed = await notify.confirm({
+      title: "为当前会话启用完全访问？",
+      message:
+        "有效期 4 小时；切换项目、退出应用或手动撤销后立即失效。不获得管理员权限，也不绕过系统权限。",
+      impact:
+        "当前系统用户可访问的本机文件与常规命令将免逐次审批；凭据、秘密与远程外发仍受硬边界约束并保留审计。",
+      confirmLabel: "启用完全访问",
+      danger: true,
+    });
     if (!confirmed) return false;
     const granted = await createFullAccessGrant(current.id);
     return granted.active;

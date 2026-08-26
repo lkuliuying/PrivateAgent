@@ -1,6 +1,6 @@
 {
   "gate": "§19.2 soak",
-  "started_at": "2026-08-26T14:26:38.332563+00:00",
+  "started_at": "2026-08-26T23:08:45.265349+00:00",
   "config": {
     "turns": 1000,
     "replays": 10000,
@@ -15,7 +15,7 @@
     "runtime": "real AgentRuntime + ValidatedToolDispatcher + SqlAgentRunEventSink + ToolExecutionRepository + ToolApprovalRepository"
   },
   "n1c_probe": {
-    "host_child_spawn_ok": false
+    "host_child_spawn_ok": true
   },
   "turns": {
     "total": 1000,
@@ -53,5 +53,5 @@
     "remaining_soak_run_rows": 0
   },
   "verdict": "pass",
-  "finished_at": "2026-08-26T14:29:02.501454+00:00"
+  "finished_at": "2026-08-26T23:12:01.390403+00:00"
 }

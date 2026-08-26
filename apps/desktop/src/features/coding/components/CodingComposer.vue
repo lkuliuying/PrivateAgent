@@ -27,6 +27,7 @@ import type { CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 // v0.9.0 §5.3：full_access 授予查询/撤销 + 有效期显示（产品时区）
 import { fetchFullAccessGrant, revokeFullAccessGrant } from "../api/fullAccess";
 import { formatDateTime } from "../../../services/timeDisplay";
+import { useNotifications } from "../../../stores/notifications";
 
 export interface CodingComposerSendPayload {
   message: string;
@@ -34,6 +35,8 @@ export interface CodingComposerSendPayload {
   modelProfileId: string | null;
   reasoningEffort: string | null;
 }
+
+const notify = useNotifications();
 
 const props = withDefaults(
   defineProps<{
@@ -359,9 +362,11 @@ watch(
 async function onRevokeFullAccess(): Promise<void> {
   const grant = activeGrant.value;
   if (!grant || revoking.value) return;
-  const confirmed = window.confirm(
-    "撤销当前会话的完全访问？\n\n撤销后写入与命令将恢复逐次确认。"
-  );
+  const confirmed = await notify.confirm({
+    title: "撤销当前会话的完全访问？",
+    impact: "撤销后写入与命令将恢复逐次确认。",
+    confirmLabel: "撤销访问",
+  });
   if (!confirmed) return;
   revoking.value = true;
   try {

@@ -67,7 +67,10 @@ async def main() -> int:
     # ---- N1c 探针先行复核 ------------------------------------------------
     from _ct6_probe import host_child_spawn_ok
 
-    n1c_unblocked = host_child_spawn_ok()
+    # host_child_spawn_ok 是同步探针，内部用 asyncio.run 驱动 ExecHostClient；
+    # 当前函数已有事件循环，必须放到工作线程，避免嵌套 asyncio.run 将能力
+    # 误判为不可用并泄漏“coroutine was never awaited”警告。
+    n1c_unblocked = await asyncio.to_thread(host_child_spawn_ok)
     print(f"[soak] N1c probe host_child_spawn_ok={n1c_unblocked}", flush=True)
     if n1c_unblocked:
         import subprocess
