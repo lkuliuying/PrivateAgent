@@ -1564,6 +1564,44 @@ class ModelProfile(Base):
     __table_args__ = (Index("idx_model_profile_provider", "provider", "enabled"),)
 
 
+class ModelToolProfileSnapshotRecord(Base):
+    """v1.0 CT-3（专项计划 §8.2）：模型工具能力探测快照（持久化事实）。
+
+    每次 probe 一行；工具面门禁取 profile 最新一条有效快照（status=ok
+    且能力映射满足最小工具协议）。无有效快照时失败关闭到最小工具面。
+    """
+
+    __tablename__ = "model_tool_profile_snapshots"
+
+    id: Mapped[str] = mapped_column(
+        CHAR(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    profile_id: Mapped[str] = mapped_column(VARCHAR(128), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    model_name: Mapped[str] = mapped_column(VARCHAR(200), nullable=False)
+    model_digest: Mapped[str] = mapped_column(VARCHAR(128), nullable=False)
+    status: Mapped[str] = mapped_column(VARCHAR(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    sample_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=1, server_default="1"
+    )
+    pass_count: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    results_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    requirements_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    probed_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_model_tool_probe_profile_created", "profile_id", "created_at"),
+    )
+
+
 class DocumentCollection(Base):
     """文档集合：围绕一个目标聚合多篇文档，供抽取与检索。"""
 

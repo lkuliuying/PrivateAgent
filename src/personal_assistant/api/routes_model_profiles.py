@@ -186,6 +186,17 @@ async def upsert_model_profile(
         )
     except ModelProfileError as exc:
         return _error(422, "model_profile_invalid", str(exc))
+    # v1.0 CT-3（专项计划 §8.2）：配置保存后自动执行工具能力探测并持久化
+    # 快照（尽力而为：探测失败落失败快照，不阻断配置保存；门禁在 run 创建
+    # 预检与工具注册层失败关闭）。
+    if profile.enabled and profile.native_tool_calls and (profile.model_name or "").strip():
+        from ..core.model_probe_service import auto_probe_profile
+        from ..core.settings import SettingsService
+
+        provider_settings = await SettingsService(db).get_all()
+        await auto_probe_profile(
+            db, profile, cfg=cfg, provider_settings=provider_settings
+        )
     return _profile_out(profile)
 
 

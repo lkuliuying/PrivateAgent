@@ -213,6 +213,26 @@ def _evaluate_case(case: ProbeCase, responses: list[Any]) -> bool:
     return True
 
 
+def requirements_from_results(results: dict[str, bool]) -> ModelRequirements:
+    """§8.2/CT3-01：探测结果 → ModelRequirements 能力映射。
+
+    - function_calling：单一 JSON 调用与必填/enum 遵循都通过才成立（基础
+      工具协议可用）；
+    - parallel_tool_calls：同轮多调用实证通过才开启（§8.1 默认关闭）；
+    - freeform_patch/vision：本用例集不覆盖，保持失败关闭（AD-T04：
+      未知能力不猜测开启）。
+    """
+    single = results.get(ProbeCapability.SINGLE_JSON_TOOL_CALL.value, False)
+    strict = results.get(ProbeCapability.REQUIRED_FIELD_COMPLIANCE.value, False)
+    multi = results.get(ProbeCapability.SAME_TURN_MULTI_CALL.value, False)
+    return ModelRequirements(
+        function_calling=bool(single and strict),
+        freeform_patch=False,
+        vision=False,
+        parallel_tool_calls=bool(multi),
+    )
+
+
 class ModelToolProfileSnapshot(BaseModel):
     """一次 probe 的可持久化快照（写入 model profile 由调用方负责）。"""
 
@@ -331,4 +351,7 @@ async def run_probe(
         sample_count=max(total, 1),
         pass_count=passed_total,
         results=results,
+        # §8.2：能力位由探测结果推导，不写默认值（避免同轮多调实证通过而
+        # 快照仍声明 parallel_tool_calls=false 的能力面收缩错误）。
+        requirements=requirements_from_results(results),
     )

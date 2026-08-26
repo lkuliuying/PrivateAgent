@@ -786,12 +786,27 @@ async def get_agent_tool_bundle(
         run_record = await run_db.get(AgentRunRecord, run_id)
         if run_record is not None:
             permission_mode = run_record.permission_mode
+        # v1.0 CT-3（专项计划 §8.2）：模型工具协议有效性门禁——run 绑定的
+        # profile 无有效探测快照时只注册最小工具面（只读），副作用工具
+        # 不注册（未知能力失败关闭，AD-T04）。无 profile 的 run（历史/
+        # 非 coding）保持既有行为。
+        probe_ok = True
+        if run_record is not None and run_record.model_profile_id:
+            from ..core.model_probe_service import profile_tool_protocol_valid
+
+            profile_record = await run_db.get(
+                ModelProfile, run_record.model_profile_id
+            )
+            if profile_record is not None:
+                probe_ok = await profile_tool_protocol_valid(
+                    run_db, profile_record
+                )
         registry = VersionedToolRegistry()
         result_verifier: ToolResultVerifier | None = None
         if cfg.agent_run_read_only_tools_enabled:
             for spec in build_read_only_tool_registry(run_db).list():
                 registry.register(spec)
-        if cfg.agent_patch_workflow_enabled:
+        if cfg.agent_patch_workflow_enabled and probe_ok:
             for spec in build_patch_tool_registry(run_db).list():
                 registry.register(spec)
         if cfg.agent_run_read_only_tools_enabled or cfg.agent_patch_workflow_enabled:
@@ -806,7 +821,11 @@ async def get_agent_tool_bundle(
                 return project.root_path
 
             result_verifier = FileDiffResultVerifier(resolve_root)
-        if cfg.agent_command_workflow_enabled and permission_mode != "readonly":
+        if (
+            cfg.agent_command_workflow_enabled
+            and permission_mode != "readonly"
+            and probe_ok
+        ):
             # workspace 模式：项目 enabled 命令 profile 全部 safe → 工具自动
             # 允许；存在 confirm/restricted → 整体审批把关（restricted 永不因
             # 模式切换自动获批，execute 内还有执行时拦截）。
@@ -850,7 +869,7 @@ async def get_agent_tool_bundle(
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, command_verifier])
             )
-        if cfg.coding_patchset_enabled:
+        if cfg.coding_patchset_enabled and probe_ok:
             # E1：PatchSet 多文件工具（E0 契约 §2）——safe 预览 + confirm 原子
             # 应用；验证器按 DB 持久化 SHA 复核磁盘事实（T2/T3），模型不能绕过。
             # E4：readonly 只注册只读预览（propose_patch_set），带写能力工具
@@ -874,7 +893,7 @@ async def get_agent_tool_bundle(
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, patchset_verifier])
             )
-        if cfg.agent_http_workflow_enabled:
+        if cfg.agent_http_workflow_enabled and probe_ok:
             # rc.2：未配置任何已启用 endpoint profile 时工具不注册（模型不可见）。
             if has_http_profiles:
                 for spec in build_http_tool_registry(run_db).list():
@@ -893,7 +912,7 @@ async def get_agent_tool_bundle(
                     if result_verifier is None
                     else CompositeToolResultVerifier([result_verifier, http_verifier])
                 )
-        if cfg.agent_sql_readonly_workflow_enabled:
+        if cfg.agent_sql_readonly_workflow_enabled and probe_ok:
             # rc.2：未配置任何已启用只读连接 profile 时工具不注册（模型不可见）。
             if has_sql_profiles:
                 for spec in build_sql_tool_registry(run_db).list():
@@ -1551,13 +1570,20 @@ async def create_agent_run(
         and requires_file_write
         and cfg.agent_v2_tool_preflight_enabled
     ):
+        # v1.0 CT-3（§8.2/AD-T04）：模型工具协议有效性进入预检——
+        # profile 无有效探测快照时文件写入意图即失败关闭（未知能力不猜测）。
+        model_supports_tools = True
+        if coding_profile is not None:
+            from ..core.model_probe_service import profile_tool_protocol_valid
+    
+            model_supports_tools = bool(
+                coding_profile.native_tool_calls
+            ) and await profile_tool_protocol_valid(db, coding_profile)
         preflight = assess_workspace_file_write(
             patch_workflow_enabled=cfg.agent_patch_workflow_enabled,
             patchset_enabled=cfg.coding_patchset_enabled,
             permission_mode=effective_permission_mode,
-            model_supports_tools=(
-                coding_profile is None or bool(coding_profile.native_tool_calls)
-            ),
+            model_supports_tools=model_supports_tools,
         )
         if preflight.blocked:
             compatibility_telemetry.record(

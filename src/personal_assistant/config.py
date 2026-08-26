@@ -178,6 +178,9 @@ class Settings(BaseSettings):
     coding_context_keep_recent_messages: int = Field(default=8, ge=2, le=200)
     # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
     coding_execution_detail_enabled: bool = False
+    # v1.0 CT-3（专项计划 §8.2）：模型配置保存后自动执行工具能力探测并持久化
+    # 快照；快照进入预检与工具面门禁（无有效快照失败关闭到最小工具面）。
+    agent_v2_model_probe_enabled: bool = True
     # v1.0 CT-9（专项计划 §14.2/§20）：工具快照诊断 API（observe-only，
     # 脱敏视图；不改变任何执行语义）。默认关闭，灰度按专项计划 §20 顺序。
     agent_v2_tool_snapshot_enabled: bool = False

@@ -379,7 +379,7 @@ async def test_legacy_permission_modes_rejected(client, monkeypatch, tmp_path):
 
 
 async def test_no_native_tool_calls_model_rejected_for_coding(
-    client, monkeypatch, tmp_path
+    client, monkeypatch, tmp_path, db
 ):
     """不支持原生工具调用的模型 profile 不能进入 Coding 执行循环。
 
@@ -420,6 +420,12 @@ async def test_no_native_tool_calls_model_rejected_for_coding(
             "model_name": "qwen3-coder",
             "native_tool_calls": True,
         },
+    )
+    # v1.0 CT-3（§8.2）：写工具面需有效探测快照——种入全能力通过的快照。
+    from test_v100_ct3_probe_production import seed_valid_probe_snapshot
+
+    await seed_valid_probe_snapshot(
+        db, "local-coder", provider="ollama", model_name="qwen3-coder"
     )
     captured: dict = {}
 

@@ -223,6 +223,17 @@ async def client():
         await test_engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _disable_model_probe_in_tests(monkeypatch):
+    """v1.0 CT-3：测试期默认关闭模型自动探测（不真实调用模型）。
+
+    需要验证探测接线的用例自行 monkeypatch 开启并注入受控网关。
+    """
+    from personal_assistant.config import settings as cfg
+
+    monkeypatch.setattr(cfg, "agent_v2_model_probe_enabled", False)
+
+
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _clean_stale_test_data():
     """session 开始时清理历史测试残留（perf-*/upgrade-smoke-*/integration:ics 等）。
@@ -245,6 +256,7 @@ async def _clean_stale_test_data():
         IntegrationSource,
         Message,
         ModelProfile,
+        ModelToolProfileSnapshotRecord,
         Reminder,
         UpgradeSmokeRun,
     )
@@ -272,6 +284,8 @@ async def _clean_stale_test_data():
             # v0.9.0 H1-D：共享库会残留测试创建的 model profile（全部是测试
             # 产物，用例各自创建；清空保证导入/默认绑定类用例确定性，仅测试库）。
             await s.execute(delete(ModelProfile))
+            # v1.0 CT-3：探测快照随 profile 一并清空（仅测试库）。
+            await s.execute(delete(ModelToolProfileSnapshotRecord))
             await s.execute(delete(ChatSession).where(ChatSession.title.like("perf-session-%")))
             await s.execute(delete(InboxItem).where(InboxItem.title.like("perf-inbox-%")))
             # v0.9.0 H1-B/C：共享测试库会跨会话积压未处理 inbox 条目，超过
