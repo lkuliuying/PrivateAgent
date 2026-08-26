@@ -1,6 +1,6 @@
 {
   "gate": "§19.2 soak",
-  "started_at": "2026-08-26T06:16:19.597889+00:00",
+  "started_at": "2026-08-26T14:26:38.332563+00:00",
   "config": {
     "turns": 1000,
     "replays": 10000,
@@ -30,7 +30,8 @@
       "completed": 1000
     },
     "approvals_granted": 200,
-    "events_persisted_total": 10800
+    "events_persisted_total": 10800,
+    "deadlock_retries": 0
   },
   "recovery": {
     "approval_checkpoints_resumed": 200
@@ -38,6 +39,7 @@
   "chaos": {
     "attempts": 10000,
     "duplicates_absorbed_idempotently": 10000,
+    "deadlock_retries": 0,
     "note": "对终态 run 的精确重复投递全部被幂等吸收（不产生新行）"
   },
   "integrity": {
@@ -51,5 +53,5 @@
     "remaining_soak_run_rows": 0
   },
   "verdict": "pass",
-  "finished_at": "2026-08-26T06:19:09.428783+00:00"
+  "finished_at": "2026-08-26T14:29:02.501454+00:00"
 }

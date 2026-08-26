@@ -352,8 +352,84 @@ async def main() -> int:
                 return pattern, status_value, run_id
 
             # ---- 主循环 -------------------------------------------------
+            # MySQL 1213 死锁重试（风险项）：单轮事务在多表写入下偶发死锁；
+            # 重试前清理该轮残留行（run_id 前缀），避免半成轮污染完整性核验。
+            async def _cleanup_turn_rows(prefix: str) -> None:
+                from personal_assistant.core.models import (
+                    AgentToolExecution as ExecRow,
+                )
+                from personal_assistant.core.models import (
+                    ToolApproval as ApprovalRow,
+                )
+
+                async with factory() as cdb:
+                    await cdb.execute(sql_delete(EventRow).where(
+                        EventRow.run_id.like(f"{prefix}%")))
+                    await cdb.execute(sql_delete(ApprovalRow).where(
+                        ApprovalRow.run_id.like(f"{prefix}%")))
+                    await cdb.execute(sql_delete(ExecRow).where(
+                        ExecRow.run_id.like(f"{prefix}%")))
+                    await cdb.execute(sql_delete(AgentRunRow).where(
+                        AgentRunRow.id.like(f"{prefix}%")))
+                    await cdb.commit()
+
+            def _is_deadlock(exc: Exception) -> bool:
+                # MySQL 1213 可能被 DBAPIError（.orig）或业务包装异常
+                # （EventSinkError，__cause__/__context）多层包裹；逐层解包判定。
+                cur: Exception | None = exc
+                for _ in range(4):
+                    if cur is None:
+                        return False
+                    orig = getattr(cur, "orig", None)
+                    args = getattr(orig, "args", ()) or ()
+                    if args and args[0] == 1213:
+                        return True
+                    nxt = getattr(cur, "__cause__", None) or getattr(
+                        cur, "__context__", None)
+                    if nxt is cur:
+                        return False
+                    cur = nxt
+                return False
+
+            def _is_transient_turn(exc: Exception) -> bool:
+                """轮次级瞬态故障：死锁，或死锁受害后的级联（运行中途被置终态、
+                后续事件被投影拒绝）。此类轮次经清理后可重驶；完整性核验仍对
+                最终落库流生效，不掩盖真实回归。"""
+                if _is_deadlock(exc):
+                    return True
+                cur: Exception | None = exc
+                for _ in range(4):
+                    if cur is None:
+                        return False
+                    name = type(cur).__name__
+                    if name in ("EventSinkError", "AgentRunProjectionError"):
+                        return True
+                    nxt = getattr(cur, "__cause__", None) or getattr(
+                        cur, "__context__", None)
+                    if nxt is cur:
+                        return False
+                    cur = nxt
+                return False
+
+            deadlock_retries = 0
             for i in range(args.turns):
-                pattern, status, run_id = await drive(i)
+                prefix = f"soak-{i:05d}-"
+                attempt = 0
+                while True:
+                    try:
+                        pattern, status, run_id = await drive(i)
+                        break
+                    except Exception as exc:  # noqa: BLE001 - 仅瞬态故障重试，其余照旧报错
+                        if _is_transient_turn(exc) and attempt < 3:
+                            attempt += 1
+                            deadlock_retries += 1
+                            print(f"[soak] turn {i} transient "
+                                  f"({type(exc).__name__}), retry {attempt}",
+                                  flush=True)
+                            await _cleanup_turn_rows(prefix)
+                            await asyncio.sleep(0.2 * attempt)
+                            continue
+                        raise
                 pattern_counts[pattern] += 1
                 status_counts[status] += 1
 
@@ -397,23 +473,39 @@ async def main() -> int:
             attempts = args.replays
             sink = SqlAgentRunEventSink(AgentRunRepository(db))
             absorbed = 0
+            emit_deadlock_retries = 0
             for attempt in range(attempts):
                 src_id = runs_list[rng.randrange(len(runs_list))]
                 stream = canonical_streams[src_id]
                 seq, envelope_json = stream[rng.randrange(len(stream))]
                 envelope = json.loads(envelope_json)
-                await sink.emit(AgentEvent(
-                    run_id=src_id, sequence=seq, type=envelope["type"],
-                    step_id=envelope["step_id"], payload=envelope["payload"],
-                ))
+                # 重复投递本身幂等：死锁时重试同一事件不产生新事实。
+                emit_attempt = 0
+                while True:
+                    try:
+                        await sink.emit(AgentEvent(
+                            run_id=src_id, sequence=seq, type=envelope["type"],
+                            step_id=envelope["step_id"],
+                            payload=envelope["payload"],
+                        ))
+                        break
+                    except Exception as exc:  # noqa: BLE001 - 仅死锁重试
+                        if _is_deadlock(exc) and emit_attempt < 3:
+                            emit_attempt += 1
+                            emit_deadlock_retries += 1
+                            await asyncio.sleep(0.2 * emit_attempt)
+                            continue
+                        raise
                 absorbed += 1
                 if (attempt + 1) % 2000 == 0:
                     print(f"[soak] replay {attempt + 1}/{attempts}", flush=True)
             results["chaos"] = {
                 "attempts": attempts,
                 "duplicates_absorbed_idempotently": absorbed - args.turns * 0,
+                "deadlock_retries": emit_deadlock_retries,
                 "note": "对终态 run 的精确重复投递全部被幂等吸收（不产生新行）",
             }
+            results["turns"]["deadlock_retries"] = deadlock_retries
 
             # ---- 完整性核验 ---------------------------------------------
             loss_runs = dup_runs = mismatch_events = 0
