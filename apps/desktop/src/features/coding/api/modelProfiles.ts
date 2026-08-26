@@ -175,6 +175,38 @@ export async function setCodingDefaultProfile(
   return toModelProfileDetail(dto);
 }
 
+/** v1.0 CT-3（§8.2）：工具能力探测最新快照（进度/结果可查；后台执行）。*/
+export interface ModelToolProbeStatus {
+  status: "none" | "running" | "ok" | "failed";
+  error_code: string | null;
+  pass_count: number;
+  sample_count: number;
+  results: Record<string, boolean> | null;
+  requirements: Record<string, boolean> | null;
+  probed_at: string | null;
+}
+
+export async function fetchModelToolProbe(
+  profileId: string,
+  options?: { signal?: AbortSignal }
+): Promise<ModelToolProbeStatus> {
+  return codingFetchJson<ModelToolProbeStatus>(
+    `/agent-model-profiles/${encodeURIComponent(profileId)}/tool-probe`,
+    options?.signal ? { signal: options.signal } : undefined
+  );
+}
+
+/** 重试入口：调度后台探测（立即返回；运行中/不合格时后端返回 409）。*/
+export async function retryModelToolProbe(profileId: string): Promise<void> {
+  const response = await codingFetch(
+    `/agent-model-profiles/${encodeURIComponent(profileId)}/tool-probe`,
+    codingJsonInit("POST", {})
+  );
+  if (!response.ok && response.status !== 202) {
+    throw await toCodingApiError(response);
+  }
+}
+
 /** 幂等导入全局 Provider 配置为默认 profile（用户在向导中显式发起） */
 export async function importCodingModelProfile(): Promise<CodingProfileImportResult> {
   const body = await codingFetchJson<{

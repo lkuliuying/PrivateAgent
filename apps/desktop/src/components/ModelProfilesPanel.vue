@@ -10,7 +10,7 @@
  * - 所有写操作经 typed API（features/coding/api/modelProfiles.ts），
  *   组件不拼 URL、不接触任何 Provider secret。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onScopeDispose, ref } from "vue";
 import {
   PhCheckCircle,
   PhDownloadSimple,
@@ -30,11 +30,14 @@ import type {
 import {
   deleteCodingModelProfile,
   fetchCodingProfileImportStatus,
+  fetchModelToolProbe,
   importCodingModelProfile,
   listCodingModelProfiles,
   probeCodingModelProfile,
+  retryModelToolProbe,
   setCodingDefaultProfile,
   upsertCodingModelProfile,
+  type ModelToolProbeStatus,
 } from "../features/coding/api/modelProfiles";
 import { updateSettings } from "../api";
 import PaBadge from "../design/PaBadge.vue";
@@ -175,6 +178,64 @@ async function probe(profile: CodingModelProfileDetail): Promise<void> {
 }
 
 // ============ 动作 ============
+// ============ v1.0 CT-3（§8.2）：工具能力探测（后台执行，进度/结果/重试） ============
+const toolProbes = ref<Record<string, ModelToolProbeStatus>>({});
+const toolProbeBusy = ref<string[]>([]);
+let toolProbeAbort: AbortController = new AbortController();
+let toolProbeTimer: ReturnType<typeof setInterval> | null = null;
+
+const TOOL_PROBE_LABEL: Record<string, string> = {
+  none: "工具能力未探测（副作用工具面不可用）",
+  running: "工具能力探测中…",
+  ok: "工具能力已验证",
+  failed: "工具能力探测未通过",
+};
+
+async function refreshToolProbe(profileId: string): Promise<void> {
+  try {
+    const status = await fetchModelToolProbe(profileId, {
+      signal: toolProbeAbort?.signal,
+    });
+    toolProbes.value = { ...toolProbes.value, [profileId]: status };
+  } catch {
+    /* 状态查询失败保留旧状态；组件卸载时请求已被取消 */
+  }
+}
+
+async function onToolProbe(profile: CodingModelProfileDetail): Promise<void> {
+  if (toolProbeBusy.value.includes(profile.id)) return;
+  toolProbeBusy.value = [...toolProbeBusy.value, profile.id];
+  try {
+    await retryModelToolProbe(profile.id);
+  } catch {
+    /* running/ineligible 等 409：以状态查询结果为准 */
+  } finally {
+    toolProbeBusy.value = toolProbeBusy.value.filter((id) => id !== profile.id);
+  }
+  await refreshToolProbe(profile.id);
+}
+
+function startToolProbePolling(profiles: CodingModelProfileDetail[]): void {
+  if (toolProbeTimer !== null) return;
+  toolProbeTimer = setInterval(() => {
+    const running = profiles.filter(
+      (profile) =>
+        profile.nativeToolCalls &&
+        toolProbes.value[profile.id]?.status === "running"
+    );
+    if (!running.length) return;
+    for (const profile of running) void refreshToolProbe(profile.id);
+  }, 3000);
+}
+
+onScopeDispose(() => {
+  toolProbeAbort.abort();
+  if (toolProbeTimer !== null) {
+    clearInterval(toolProbeTimer);
+    toolProbeTimer = null;
+  }
+});
+
 async function onImport(): Promise<void> {
   if (importing.value) return;
   importing.value = true;
@@ -302,7 +363,13 @@ async function onSave(): Promise<void> {
   }
 }
 
-onMounted(() => void load());
+onMounted(async () => {
+  await load();
+  // 首次拉取各启用 profile 的工具能力探测状态；运行中状态轮询刷新。
+  const probeTargets = profiles.value.filter((p) => p.nativeToolCalls);
+  for (const profile of probeTargets) void refreshToolProbe(profile.id);
+  startToolProbePolling(profiles.value);
+});
 </script>
 
 <template>
@@ -377,8 +444,43 @@ onMounted(() => void load());
             {{ PROBE_LABEL[probeResults[profile.id].status]?.text ?? probeResults[profile.id].status }}
             <template v-if="probeResults[profile.id].detail"> · {{ probeResults[profile.id].detail }}</template>
           </p>
+          <!-- v1.0 CT-3（§8.2）：工具能力探测状态（后台执行；未验证时副作用工具面失败关闭） -->
+          <p
+            v-if="profile.nativeToolCalls && toolProbes[profile.id]"
+            class="probe-line"
+            :data-testid="`tool-probe-${profile.id}`"
+          >
+            <PhCheckCircle
+              v-if="toolProbes[profile.id].status === 'ok'"
+              :size="13"
+              class="probe-ok"
+              aria-hidden="true"
+            />
+            <PhWarningCircle v-else :size="13" class="probe-warn" aria-hidden="true" />
+            {{ TOOL_PROBE_LABEL[toolProbes[profile.id].status] ?? toolProbes[profile.id].status }}
+            <template v-if="toolProbes[profile.id].status === 'ok'">
+              · {{ toolProbes[profile.id].pass_count }}/{{ toolProbes[profile.id].sample_count }}
+            </template>
+            <template v-else-if="toolProbes[profile.id].error_code">
+              · {{ toolProbes[profile.id].error_code }}
+            </template>
+          </p>
         </div>
         <div class="profile-actions">
+          <PaButton
+            v-if="profile.nativeToolCalls"
+            size="sm"
+            variant="ghost"
+            :data-testid="`tool-probe-btn-${profile.id}`"
+            :disabled="toolProbeBusy.includes(profile.id) || toolProbes[profile.id]?.status === 'running'"
+            @click="void onToolProbe(profile)"
+          >
+            <PaSpinner
+              v-if="toolProbeBusy.includes(profile.id) || toolProbes[profile.id]?.status === 'running'"
+              :size="13"
+            />
+            <template v-else>探测能力</template>
+          </PaButton>
           <PaButton
             size="sm"
             variant="ghost"

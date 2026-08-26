@@ -7,7 +7,7 @@
  *  - 每个工具的暴露状态与隐藏原因（稳定枚举 → 中文标签）；
  *  - 脱敏视图：不含 schema 全文/描述正文/参数/secret。
  */
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onScopeDispose, ref } from "vue";
 import {
   fetchToolDiagnostics,
   hiddenReasonLabel,
@@ -62,6 +62,11 @@ async function load() {
 
 let requestSeq = 0;
 let inflight: AbortController | null = null;
+
+// 组件卸载（P2）：取消在途请求，避免卸载后写回状态或泄漏连接。
+onScopeDispose(() => {
+  inflight?.abort();
+});
 
 onMounted(load);
 
