@@ -786,6 +786,11 @@ class AgentRuntime:
                     "latency_ms": response.latency_ms,
                 },
             )
+            # v0.9.0 H0 §8：逐轮公开决策摘要——只从公开事实派生（用户目标/
+            # 本轮工具决策），不读取也不输出模型隐藏推理；无事实则不发射。
+            await self._emit_decision_summary(
+                context, conversation, response
+            )
 
             if not response.tool_calls:
                 if self._output_verifier is None:
@@ -1072,6 +1077,42 @@ class AgentRuntime:
             f"result: {verification.message}\n"
             f"correction: {correction}\n"
             "</output_validation_feedback>"
+        )
+
+    async def _emit_decision_summary(
+        self,
+        context: "_RunContext",
+        conversation: list[ModelMessage],
+        response: ModelResponse,
+    ) -> None:
+        """v0.9.0 H0 §8：公开决策摘要（decision.summary）。
+
+        只从公开事实派生：用户目标（最近一条用户消息）、本轮工具决策与后续
+        步骤（模型公开声明的 tool_calls）。不读取、不推测、不输出模型隐藏
+        chain-of-thought；无公开事实时不发射（前端呈现「本轮无公开摘要」）。
+        payload 键集由 execution_contracts.DECISION_SUMMARY_PAYLOAD_KEYS 冻结。
+        """
+        goal = ""
+        for message in reversed(conversation):
+            if message.role == "user" and message.content:
+                goal = message.content
+                break
+        if not goal:
+            return
+        if response.tool_calls:
+            tool_names = sorted({call.name for call in response.tool_calls})
+            method = "本轮决策：调用工具 " + "、".join(tool_names)
+            next_steps = list(tool_names)[:12]
+        else:
+            method = "本轮决策：给出最终回答"
+            next_steps = []
+        await context.emit(
+            AgentEventType.DECISION_SUMMARY,
+            payload={
+                "goal": goal[:1000],
+                "method": method[:1000],
+                "next_steps": next_steps,
+            },
         )
 
     @staticmethod

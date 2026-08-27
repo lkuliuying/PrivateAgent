@@ -1,49 +1,59 @@
-# Personal Agent UI Refactor — Design QA
+**Comparison Target**
 
-- source visual truth path: `F:\Program\Agent\docs\assets\ui\agent-workbench-reference-20260731.png`
-- implementation screenshot path: `F:\Program\Agent\docs\archive\design-artifacts\design-implementation-agent-workspace-final-1536x1024.png`
-- combined comparison input: `F:\Program\Agent\docs\archive\design-artifacts\design-reference-comparison-1536x1024.png`
-- viewport: source `1536 x 1024`; implementation `1536 x 1024`
-- density normalization: both images were compared at native 1:1 pixel density with no scaling or crop
-- state: development-only running-task fixture at `?workspace-preview=running`; production data paths and backend APIs remain unchanged
-- full-view comparison evidence: the source and implementation were placed side-by-side in one `3072 x 1024` comparison image and inspected at original resolution
-- focused region comparison evidence: the task plan, activity timeline, tool-call cards, persistent composer, left navigation, Files/Context/Artifacts tabs, and status bar were inspected in the full-resolution comparison; no extra crop was necessary because labels, icons, borders, and focus surfaces remained legible
+- Source visual truth: `C:\Users\LIKECA~1\AppData\Local\Temp\codex-clipboard-8f748534-55ee-40bf-a560-74e7e36c5078.png`
+- Browser-rendered implementation: `F:\Program\Agent\.tmp\design-qa\composer-full-final.png`
+- Normalized implementation crop: `F:\Program\Agent\.tmp\design-qa\composer-implementation.png`
+- Side-by-side evidence: `F:\Program\Agent\.tmp\design-qa\composer-comparison.png`
+- Local route: `http://127.0.0.1:1420/?ui-lab=1#composer`, direct to UI Lab → 任务输入器
+- Viewport: 1280 × 720 CSS px, light theme, idle/unfocused state
+- Source pixels: 1014 × 158. Implementation viewport pixels: 1280 × 720. Normalized implementation crop: 1014 × 158.
+- Density normalization: both artifacts were compared at 1:1 pixel dimensions; no scaling was applied to the focused comparison. The implementation component is 922 × 124 CSS px inside the normalized crop.
 
-## Findings
+**Findings**
 
-- No remaining P0, P1, or P2 fidelity issues.
-- The implementation follows the prompt-specified rail widths (`240px` left, `360px` right) rather than the narrower proportions visible in the generated reference image. This intentional difference improves scanability and remains inside the requested `220–248px` and `320–380px` ranges.
-- The reference contains a large inline diff preview. The implementation represents the same workflow through expandable, human-readable tool cards because the current backend exposes tool arguments/results rather than structured side-by-side diff hunks. The complete payload remains available on demand.
+- No actionable P0/P1/P2 differences remain.
+- Fonts and typography: the implementation uses the product's existing Windows UI font stack and matches the source hierarchy, placeholder scale, compact toolbar text, and single-line truncation behavior.
+- Spacing and layout rhythm: the 922 × 124 card, large rounded corners, top input area, bottom-aligned toolbar, edge padding, and 36 px circular primary action match the source composition.
+- Colors and visual tokens: the card is white with a neutral low-contrast border, restrained shadow, dark primary action, and existing product focus token. The surrounding UI Lab canvas is intentionally the application's background token rather than part of the component.
+- Image quality and asset fidelity: the source contains no raster product imagery. All visible controls use the project's existing Phosphor icon library; no placeholder glyphs, CSS drawings, or approximate inline SVG assets were introduced.
+- Copy and content: `随心输入` matches the source. Permission/model/effort labels remain driven by real application configuration, and the existing context-usage ring is retained because it is a product requirement from the current implementation rather than decorative source content.
 
-## Required Fidelity Surfaces
+**Open Questions**
 
-- Fonts and typography: compact sans-serif hierarchy, semibold task title, small uppercase section labels, readable 12–14px supporting copy, and truncation for long session/file names.
-- Spacing and layout: true three-column workbench, independent center/inspector scrolling, persistent composer, consistent 14px surfaces, subtle borders, and restrained elevation.
-- Colors and visual tokens: dark teal navigation, cool white/gray workspace, cyan accent, semantic success/warning/danger tones, no decorative gradients or glass effects.
-- Image quality and asset fidelity: the source contains no photographic or illustrative assets. All interface icons use the existing Phosphor library; no placeholder imagery, handcrafted SVGs, emoji, or CSS art were introduced.
-- Copy and content: task states, plan steps, tool summaries, file authorization, and artifacts use concise Chinese product copy while preserving raw tool identifiers as secondary technical detail.
-- Icons and controls: navigation, status, file, tool, composer, collapse, and inspector controls share one icon family and consistent stroke/size treatment.
-- States and interactions: Files/Context/Artifacts tabs, tool detail disclosure, sidebar collapse, inspector toggle, stop control, disabled attachment/submit states, keyboard submit, hover/focus, and empty/running/waiting/completed/failed mappings are implemented.
-- Accessibility: semantic navigation/main/aside regions, labels, `aria-selected`, `aria-pressed`, keyboard access, visible focus rings, disabled-state explanations, and reduced-motion handling are present.
-- Responsiveness: verified without horizontal overflow at `1280 x 900`, `1440 x 900`, `1536 x 1024`, and `1920 x 1080`. The inspector automatically hides below `1320px`; the left rail collapses to `72px` on demand.
+- None blocking. Voice input remains visibly represented but disabled with an explanatory tooltip because no voice capture runtime exists in the current product scope.
 
-## Comparison History
+**Full-view Comparison Evidence**
 
-### Pass 1
+- The full browser capture confirms the component is centered in the available desktop workspace, does not overflow, and preserves the existing application hierarchy.
+- The normalized side-by-side image confirms the card silhouette, internal vertical rhythm, left/right control grouping, and primary action placement against the reference.
 
-- [P2] The initial composer and plan treatment used more decorative surface color than the flat reference.
-- [P2] Keeping both side panels open at `1280px` compressed the central task activity too aggressively.
+**Focused Region Comparison Evidence**
 
-### Fixes
+- The normalized 1014 × 158 component crop was compared directly with the 1014 × 158 source. This focused region is sufficient because the supplied visual target contains only the composer component and no surrounding application chrome.
 
-- Replaced decorative fills with flat white/cool-gray surfaces, subtle borders, and tokenized state colors.
-- Added the `1320px` inspector breakpoint and a manual `240px → 72px` navigation collapse while keeping the composer centered and bounded.
-- Waited for entry transitions to settle before the final capture so the comparison reflects the stable rendered state.
+**Primary Interactions Tested**
 
-### Pass 2
+- Clicking the plus button opens the project-file reference entry and invokes file search.
+- Typing text changes the circular primary action from the idle waveform to the send state.
+- The placeholder returns to `随心输入` after clearing the field.
+- Browser console checked after a fresh reload: 0 error/assert entries.
 
-- Native-resolution side-by-side comparison shows matching information architecture, hierarchy, palette, activity rhythm, and persistent composer behavior.
-- Browser interaction checks confirmed Context and Artifacts tabs, two artifact cards, stop-to-edit state transition, expandable tool payloads, and sidebar collapse.
-- No P0/P1/P2 issues remain.
+**Comparison History**
+
+1. Initial comparison found three visible differences: the QA fixture was 960 px rather than the source's 922 px card width (P2), the screenshot represented a focused state while the source was unfocused (P2), and the disabled microphone had lower contrast than the source (P3).
+2. Fixes applied: constrained the QA fixture to 922 px, captured an unfocused idle state, changed the base border to neutral gray, and restored full microphone icon contrast.
+3. Post-fix evidence: `F:\Program\Agent\.tmp\design-qa\composer-comparison.png`. The repeated comparison has no remaining actionable P0/P1/P2 mismatch.
+
+**Implementation Checklist**
+
+- [x] Match the source card dimensions, radius, border, shadow, and vertical rhythm.
+- [x] Preserve functional permission, model, reasoning, context, file-reference, input, send, and stop behavior.
+- [x] Verify the real component in the in-app browser.
+- [x] Run component and full frontend regression tests.
+- [x] Run the production frontend build.
+
+**Follow-up Polish**
+
+- P3: when a voice-input runtime is added, replace the explanatory disabled state with an active capture/recording interaction while preserving the current placement.
 
 final result: passed

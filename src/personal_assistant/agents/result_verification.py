@@ -24,6 +24,8 @@ from typing import Any, Protocol
 from jsonschema import Draft202012Validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.code_tools import normalize_patch_content
+
 MAX_MESSAGE = 2_000
 MAX_CORRECTION = 4_000
 _CODE_PATTERN = re.compile(r"^[a-z0-9_]{1,64}$")
@@ -170,7 +172,8 @@ class FileDiffResultVerifier:
         # 入参交叉校验：new_content → new_sha256 必须一致
         new_content = arguments.get("new_content")
         if isinstance(new_content, str) and isinstance(result_new, str):
-            if _sha256_text(new_content) != result_new:
+            normalized_content = normalize_patch_content(rel_path, new_content)
+            if _sha256_text(normalized_content) != result_new:
                 return ResultVerification.fail(
                     "new_sha256_mismatch",
                     "结果声明的 new_sha256 与入参 new_content 不匹配",

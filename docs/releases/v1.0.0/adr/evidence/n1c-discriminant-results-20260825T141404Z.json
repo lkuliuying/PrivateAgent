@@ -1,0 +1,29 @@
+{
+  "evidence": "N1c-discriminant",
+  "at": "2026-08-25T14:14:04.582892+00:00",
+  "probe": {
+    "host_child_spawn_ok": true
+  },
+  "suites": {
+    "tests/test_v100_ct6_rust_host_e2e.py": {
+      "rc": 0,
+      "tail": "6 passed in 1.77s"
+    },
+    "tests/test_v100_ct6_sandbox_enforcement.py": {
+      "rc": 0,
+      "tail": "2 passed, 2 skipped in 3.53s"
+    },
+    "tests/test_v100_ct6_appcontainer.py": {
+      "rc": 0,
+      "tail": "3 passed, 1 skipped in 6.42s"
+    }
+  },
+  "discriminant": {
+    "ac": "NOT_OBSERVED",
+    "control": "NOT_OBSERVED",
+    "pair_confirmed": false,
+    "note": "本机为 fail_closed 形态：AC 加载链不兼容，创建阶段即失败关闭；强形态 kernel_deny 需无加载链限制的环境",
+    "rc": 0,
+    "raw_tail": "..\n2 passed in 10.95s\n"
+  }
+}

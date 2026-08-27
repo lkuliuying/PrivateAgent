@@ -195,6 +195,7 @@ export { listTestRuns, listUpgradeSmokeRuns } from "./api/testing";
 export {
   getRuntimeCapabilities,
   shouldUseLegacyToolPlanner,
+  supportsCodingRunCreation,
 } from "./api/runtime";
 export type {
   ChatExecutionMode,
@@ -216,6 +217,32 @@ export async function getHealth(): Promise<Record<string, unknown>> {
   const r = await fetch(`${base}/health`);
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
+}
+
+/**
+ * v0.9.0 H1-A：会话上下文预算（typed context budget，H0 §7.1）。
+ * 后端返回真实计量；用量不可用时 source=unavailable + 原因，
+ * 前端如实呈现「不可用」，不伪造百分比。
+ */
+export interface ContextBudgetResponse {
+  used_tokens: number;
+  max_context_tokens: number;
+  reserved_output_tokens: number;
+  usage_percent: number | null;
+  source: "provider_usage" | "tokenizer" | "runtime_count" | "unavailable";
+  compaction_state: "idle" | "compacting" | "compacted" | "failed";
+  last_compacted_at: string | null;
+  error_code: string | null;
+  error_reason: string | null;
+}
+
+export async function getContextBudget(
+  sessionId: number
+): Promise<ContextBudgetResponse> {
+  const base = await ensureApiBase();
+  const response = await fetch(`${base}/sessions/${sessionId}/context-budget`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return (await response.json()) as ContextBudgetResponse;
 }
 
 export async function getApiInfo(): Promise<Record<string, unknown>> {
@@ -2076,6 +2103,8 @@ export interface AppSettings {
   reminders_enabled: boolean;
   reminder_tick_seconds: number;
   desktop_notifications_enabled: boolean;
+  /** v0.9.0 H1-D（§5.8）：旧配置 → Coding profile 导入状态（一次性向导） */
+  coding_profile_import_state?: string;
 }
 
 export async function getSettings(): Promise<AppSettings> {

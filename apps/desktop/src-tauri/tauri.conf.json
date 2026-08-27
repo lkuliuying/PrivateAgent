@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "PrivateAgent",
-  "version": "0.7.0-rc.1",
+  "version": "1.0.0",
   "identifier": "com.personal-assistant.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -34,8 +34,8 @@
       "icons/icon.ico"
     ],
     "externalBin": ["binaries/personal-assistant-server"],
-    "publisher": "Personal Assistant",
-    "copyright": "© 2026 Personal Assistant",
+    "publisher": "PrivateAgent",
+    "copyright": "© 2026 lkuliuying",
     "category": "Productivity",
     "shortDescription": "本地优先的私人助手",
     "longDescription": "私人助手 Agent —— 本地优先、隐私可控的桌面个人助手（Tauri + Python + Ollama + MySQL + ChromaDB）。",
@@ -52,7 +52,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/lkuliuying/PrivateAgent-updates/releases/latest/download/latest.json"
+        "https://github.com/lkuliuying/PrivateAgent/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDVFMTU3NzVGNzI3NjY0MUYKUldRZlpIWnlYM2NWWGhjd0NBL3U1OFF4S0w1eXV2N3MwSnFiUThDN0hTbXR4aGFMYksxNVhuK2EK",
       "dialog": false

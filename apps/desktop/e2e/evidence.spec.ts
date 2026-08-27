@@ -112,7 +112,7 @@ async function openV2(page: Page, width: number, height = 900) {
   await page.setViewportSize({ width, height });
   await freezeClock(page);
   await mockApi(page);
-  await page.goto("/?ui=v2");
+  await page.goto("/?ui=v2&coding=0");
   await expect(page.getByTestId("nav-chat")).toBeVisible();
   await expect(page.getByRole("heading", { name: "证据采集会话" })).toBeVisible();
   // 等待异步请求（消息重水合/授权路径/活动轮询）收敛，避免截图落在渲染竞态中
@@ -172,7 +172,7 @@ test.describe("0.4.0 视觉证据", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await freezeClock(page);
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await page.getByTestId("nav-today").click();
     await expect(page.getByTestId("nav-today")).toHaveAttribute("aria-current", "page");
     await settleAndShot(page, `${EVIDENCE_DIR}/v2-today-1440.png`);

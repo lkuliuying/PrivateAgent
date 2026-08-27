@@ -19,7 +19,7 @@ from personal_assistant.core.models import RunStep as RunStepRecord
 from personal_assistant.core.models import ToolApproval as ToolApprovalRecord
 
 from .contracts import ToolCall
-from .tools import ToolSpec, build_tool_idempotency_key
+from .tools import ToolCapability, ToolSpec, build_tool_idempotency_key
 
 
 class ToolApprovalError(RuntimeError):
@@ -501,4 +501,76 @@ class SqlToolApprovalConsumer:
                 arguments=arguments,
             )
         self._used = True
+        return record.id
+
+
+# v0.9.0 H0 §6.2 硬阻断能力：远程外发/外部 MCP 永不自动批准，回落逐次审批。
+_FULL_ACCESS_HARD_BLOCK_CAPABILITIES = frozenset(
+    {ToolCapability.NETWORK_FETCH, ToolCapability.EXTERNAL_MCP}
+)
+
+
+class FullAccessAutoApproveConsumer:
+    """v0.9.0 H1-A：full_access 自动批准消费者（H0 §6.2/§6.3）。
+
+    语义（与 ``workspace`` 互相独立，不是别名）：
+    - 每次工具调用前重新校验授予有效性（失败关闭）；无效时返回 None →
+      dispatcher 回落正常审批请求链（降级为 confirm 语义）；
+    - 涉及远程外发/外部 MCP 能力的工具永不自动批准（硬边界，独立确认）；
+    - 其余待审批工具：创建 pending → 立即批准 → 立即消费，完整保留
+      pending/approved/consumed 审批事实（审计不跳过）；
+    - restricted 工具不会到达此处（ToolCapabilityPolicy 层已 DENY）。
+    """
+
+    def __init__(self, db: AsyncSession, *, run_id: str, session_id: int) -> None:
+        self._db = db
+        self._repository = ToolApprovalRepository(db)
+        self._run_id = run_id
+        self._session_id = session_id
+
+    async def consume(
+        self,
+        spec: ToolSpec,
+        call: ToolCall,
+        arguments: Mapping[str, Any],
+    ) -> str | None:
+        from personal_assistant.core.compatibility import (
+            compatibility_telemetry,
+        )
+        from personal_assistant.core.full_access import FullAccessGrantService
+
+        # 硬边界：远程外发/外部 MCP 不自动批准（回落逐次审批）
+        if _FULL_ACCESS_HARD_BLOCK_CAPABILITIES & set(spec.required_capabilities):
+            compatibility_telemetry.record(
+                path="full_access_grant",
+                mode="session",
+                outcome="downgraded",
+            )
+            return None
+        # 每次调用前重新校验授予（到期/撤销 → 降级，不静默继续）
+        grant = await FullAccessGrantService(self._db).get_active(
+            self._session_id
+        )
+        if grant is None:
+            compatibility_telemetry.record(
+                path="permission_downgrade",
+                mode="full_access",
+                outcome="grant_invalid",
+            )
+            return None
+        # 完整审批事实链：pending → approved → consumed（审计不跳过）
+        record = await self._repository.create_pending(
+            run_id=self._run_id,
+            step_id=None,
+            tool_call_id=call.id,
+            spec=spec,
+            arguments=arguments,
+        )
+        approved = await self._repository.approve(record.id)
+        await self._repository.consume(
+            record.id,
+            token=approved.token,
+            spec=spec,
+            arguments=arguments,
+        )
         return record.id

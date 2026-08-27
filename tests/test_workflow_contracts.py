@@ -176,6 +176,19 @@ def test_command_contract_accepts_only_argument_arrays():
     assert "oneOf" not in schema["properties"]["command"]
 
 
+def test_command_contract_explicitly_excludes_file_writes():
+    description = _contract("run_whitelisted_command").description
+    assert "不得用于" in description
+    assert "文件" in description
+    assert "Patch" in description
+
+
+def test_patch_preview_contract_requires_follow_up_apply_for_writes():
+    description = _contract("propose_patch").description
+    assert "不写入" in description
+    assert "apply_patch_to_workspace" in description
+
+
 def test_http_contract_allows_only_frozen_methods():
     method = _contract("call_allowlisted_api").input_schema["properties"]["method"]
     assert method == {

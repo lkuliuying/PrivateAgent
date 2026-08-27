@@ -1,0 +1,29 @@
+[package]
+name = "exec-host"
+version = "0.1.0"
+edition = "2021"
+description = "PrivateAgent Exec Host: controlled JSONL process executor (AD-T02 boundary)"
+license = "Apache-2.0"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_IO",
+    "Win32_Security_Authorization",
+    "Win32_Security_Isolation",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_Storage_FileSystem",
+] }
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1

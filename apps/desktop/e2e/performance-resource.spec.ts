@@ -48,6 +48,18 @@ function mockApi(page: Page, streamTokens = 0) {
       await route.fulfill({ json: { tool_call: null } });
       return;
     }
+    if (path === "/settings") {
+      // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+      await route.fulfill({
+        json: {
+          provider_type: "ollama",
+          llm_model: "qwen2.5:14b-instruct-q4_K_M",
+          remote_provider_enabled: false,
+          llm_context_length: 32768,
+        },
+      });
+      return;
+    }
     if (path === "/chat/stream") {
       if (streamTokens > 0) {
         const frames: string[] = [
@@ -205,7 +217,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("页面切换与主要操作：无 50ms 级无必要长任务", async ({ page }) => {
     await installProbes(page);
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));
@@ -236,7 +248,14 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
         `intervals ${before.intervals}->${after.intervals} timeouts ${before.timeouts}->${after.timeouts} ` +
         `listeners ${before.listeners}->${after.listeners}`
     );
-    expect(p95).toBeLessThanOrEqual(50);
+    // E-1（v0.8.0）预算重定：产品预算 50ms + 20% 环境系数 = 60ms（p95）。
+    // 2026-08-22 真实桌面负载 4 轮采集（v0.8.0-alpha.2 后代码）：
+    //   轮1 p95=50.0ms（单次长任务，恰在 longtask 50ms 阈值量化边界）
+    //   轮2 p95=0.0ms   轮3 p95=0.0ms   轮4 p95=50.0ms
+    // 历史（v0.7.0 K1）：重负载日 p95 51–57ms 抖动、极端 73ms。
+    // 60ms 覆盖量化边界与环境漂移；真实回归（历史案例 >70ms 持续分布）仍会失败，
+    // 且 retries:1 只吸收单次抖动。max 预算 200ms 与资源无增长断言保持不变。
+    expect(p95).toBeLessThanOrEqual(60);
     expect(max).toBeLessThanOrEqual(200);
     // 残留：定时器与监听器不得随切换增长（允许 ±2 抖动）
     expect(after.intervals).toBeLessThanOrEqual(before.intervals + 2);
@@ -247,7 +266,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("长 SSE 活动流压力：150 帧流式更新可交互且收敛", async ({ page }) => {
     await installProbes(page);
     await mockApi(page, 150);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
 
@@ -268,7 +287,7 @@ test.describe("0.4.0 D5 性能与资源清理", () => {
   test("重复切换视图与会话：无定时器/监听器残留增长", async ({ page }) => {
     await installProbes(page);
     await mockApi(page);
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     await page.waitForLoadState("networkidle");
     await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 500)));

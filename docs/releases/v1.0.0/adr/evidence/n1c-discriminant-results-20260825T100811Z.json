@@ -1,0 +1,27 @@
+{
+  "evidence": "N1c-discriminant",
+  "at": "2026-08-25T10:08:11.183819+00:00",
+  "probe": {
+    "host_child_spawn_ok": true
+  },
+  "suites": {
+    "tests/test_v100_ct6_rust_host_e2e.py": {
+      "rc": 1,
+      "tail": "4 failed, 2 passed in 91.26s (0:01:31)"
+    },
+    "tests/test_v100_ct6_sandbox_enforcement.py": {
+      "rc": 1,
+      "tail": "4 failed in 121.16s (0:02:01)"
+    },
+    "tests/test_v100_ct6_appcontainer.py": {
+      "rc": 1,
+      "tail": "2 failed, 1 passed, 1 skipped in 29.16s"
+    }
+  },
+  "discriminant": {
+    "ac": "fail_closed(sandbox_policy_unavailable)",
+    "control": "NET_OK",
+    "pair_confirmed": false,
+    "raw_tail": "        listener = socket.socket()\n        listener.bind((\"127.0.0.1\", 0))\n        listener.listen(1)\n        port = listener.getsockname()[1]\n        client = ExecHostClient([str(EXEC_HOST_BINARY)])\n        try:\n            await client.start()\n            try:\n                await client.start_execution(\n                    _params(\"exec-rust-ac-net-1\", _probe_code(port), appcontainer=True)\n                )\n                events = await _run_to_exited(client)\n                text = _stdout(events)\n                assert \"NET_OK\" not in text, f\"AC 泄漏出网：{text!r}\"\n                if text:\n                    assert \"NET_DENIED\" in text and \"10013\" in text, (\n                        f\"AC 非预期网络结果：{text!r}\"\n                    )\n                else:\n                    pytest.fail(\"AC 子进程无输出且未拒绝执行，行为未定义\")\n            except ExecutorUnavailable as exc:\n                # N1b 环境阻断：AC 创建失败 → 结构化失败关闭（合法结局）。\n>               assert \"ac:create_process\" in str(exc) or (\n                    \"sandbox_policy_unavailable\" in str(exc)\n                ), str(exc)\nE               AssertionError: 请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)\nE               assert ('ac:create_process' in '请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)' or 'sandbox_policy_unavailable' in '请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)')\nE                +  where '请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)' = str(ExecutorUnavailable('请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)'))\nE                +  and   '请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)' = str(ExecutorUnavailable('请求失败：appcontainer 准备失败：profile: 操作成功完成。 (os error 0)'))\n\ntests\\test_v100_ct6_appcontainer.py:135: AssertionError\n=========================== short test summary info ===========================\nFAILED tests/test_v100_ct6_appcontainer.py::test_control_group_establishes_connection\nFAILED tests/test_v100_ct6_appcontainer.py::test_appcontainer_never_lets_probe_succeed\n2 failed in 21.35s\n"
+  }
+}

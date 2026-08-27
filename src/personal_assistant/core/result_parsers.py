@@ -38,6 +38,8 @@ RESULT_PARSERS = frozenset(
         "cargo_test",
         "cargo_check",
         "plain",
+        # v0.9.0 H1-B（计划 §5.6）：内置诊断 typed service probe 解析（纯追加）
+        "windows_service_probe",
     }
 )
 
@@ -394,6 +396,42 @@ def _parse_plain(output: str) -> dict[str, Any]:
     return _make("plain", output.strip() or "（无输出）", [])
 
 
+# v0.9.0 H1-B（计划 §5.6）：sc.exe query 输出结构化解析（固定 argv 诊断）。
+# 只提取服务名/状态等低基数事实；不记录完整路径与凭据类字段。
+_SC_SERVICE_NAME = re.compile(r"^SERVICE_NAME:\s*(?P<name>\S+)\s*$", re.MULTILINE)
+_SC_DISPLAY_NAME = re.compile(
+    r"^DISPLAY_NAME:\s*(?P<name>.+?)\s*$", re.MULTILINE
+)
+_SC_STATE = re.compile(
+    r"STATE\s*:\s*(?P<code>\d+)\s+(?P<state>[A-Z_]+)", re.IGNORECASE
+)
+
+
+def _parse_windows_service_probe(output: str) -> dict[str, Any]:
+    result = _make("windows_service_probe", "", [])
+    service = _SC_SERVICE_NAME.search(output)
+    state = _SC_STATE.search(output)
+    display = _SC_DISPLAY_NAME.search(output)
+    found = bool(service and state)
+    result["found"] = found
+    if service:
+        result["service_name"] = _bounded(service.group("name"), _MAX_CODE_CHARS)
+    if display:
+        result["display_name"] = _bounded(
+            display.group("name"), _MAX_CODE_CHARS
+        )
+    if state:
+        result["state"] = _bounded(state.group("state").upper(), _MAX_CODE_CHARS)
+        result["state_code"] = int(state.group("code"))
+    if found:
+        result["summary"] = (
+            f"服务 {result['service_name']} 状态：{result['state']}"
+        )
+    else:
+        result["summary"] = "sc.exe query 输出未含服务状态事实"
+    return result
+
+
 # === 分派 ===
 
 _PARSERS: dict[str, Any] = {
@@ -408,6 +446,7 @@ _PARSERS: dict[str, Any] = {
     "cargo_test": lambda out: _parse_cargo(out, "cargo_test"),
     "cargo_check": lambda out: _parse_cargo(out, "cargo_check"),
     "plain": _parse_plain,
+    "windows_service_probe": _parse_windows_service_probe,
 }
 
 

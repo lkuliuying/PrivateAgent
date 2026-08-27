@@ -180,18 +180,21 @@ async def test_agent_run_create_status_and_event_replay(client, db, monkeypatch)
         all_events = await client.get(f"/agent-runs/{run_id}/events")
         assert all_events.status_code == 200
         items = all_events.json()["items"]
-        assert [item["sequence"] for item in items] == [1, 2, 3, 4]
+        assert [item["sequence"] for item in items] == [1, 2, 3, 4, 5]
         assert [item["type"] for item in items] == [
             "run.started",
             "model.started",
             "model.completed",
+            # v0.9.0 H0 §8：逐轮公开决策摘要（additive，只含公开事实）
+            "decision.summary",
             "run.completed",
         ]
 
         replay = await client.get(
             f"/agent-runs/{run_id}/events", params={"after_sequence": 2}
         )
-        assert [item["sequence"] for item in replay.json()["items"]] == [3, 4]
+        # v0.9.0 H0 §8：after_sequence 重放含新增的 decision.summary（seq 4）
+        assert [item["sequence"] for item in replay.json()["items"]] == [3, 4, 5]
     finally:
         app.dependency_overrides.pop(get_agent_model_client, None)
         await _cleanup(db, run_id, session.id)
@@ -313,6 +316,7 @@ async def test_agent_tool_bundle_is_default_off_and_contains_only_read_only_tool
     assert bundle is not None
     assert {definition.name for definition in bundle.definitions} == {
         "read_file",
+        "list_directory",
         "search_files",
         "grep_code",
         "read_code_file",
@@ -367,11 +371,14 @@ async def test_agent_run_executes_injected_tool_dispatcher_to_completion(
             "run.started",
             "model.started",
             "model.completed",
+            # v0.9.0 H0 §8：逐轮公开决策摘要（additive）
+            "decision.summary",
             "tool.requested",
             "tool.started",
             "tool.completed",
             "model.started",
             "model.completed",
+            "decision.summary",
             "run.completed",
         ]
     finally:

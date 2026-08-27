@@ -68,7 +68,7 @@ function mockApi(page: Page) {
 
 async function openApp(page: Page, ui = "v2") {
   await mockApi(page);
-  await page.goto(`/?ui=${ui}`);
+  await page.goto(`/?ui=${ui}&coding=0`);
   await expect(page.getByTestId("nav-chat")).toBeVisible({ timeout: 10000 });
 }
 
@@ -90,13 +90,15 @@ test.describe("0.4.0 AppShell v2", () => {
     await expect(page.getByTestId("nav-chat")).toHaveAttribute("aria-current", "page");
   });
 
-  test("上下文栏仅 chat 视图且宽屏可切换", async ({ page }) => {
+  test("上下文入口已移除（W6-R3）：顶部无上下文按钮，上下文改由 Runtime 自动装配", async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await openApp(page, "v2");
     await page.getByTestId("nav-chat").click();
-    await expect(page.getByRole("tab", { name: "Files" })).toBeVisible();
-    await page.getByLabel("切换上下文栏").click();
-    await expect(page.getByRole("tab", { name: "Files" })).toBeHidden();
+    // W6-R3：顶部上下文切换按钮与会话头部上下文按钮均已移除，不残留隐藏 DOM
+    await expect(page.getByLabel("切换上下文栏")).toHaveCount(0);
+    await expect(page.getByTestId("session-context-toggle")).toHaveCount(0);
+    // 上下文改由底部用量模块反馈（真实事实或不可用态，不伪造）
+    await expect(page.getByTestId("context-usage-ring")).toBeVisible();
   });
 
   test("Ctrl/Cmd+K 打开命令面板并包含注册表视图命令", async ({ page }) => {
@@ -149,6 +151,18 @@ test.describe("0.4.0 AppShell v2", () => {
         await route.fulfill({ json: [] });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/chat/stream") {
         streamCount += 1;
         await route.fulfill({
@@ -190,7 +204,7 @@ test.describe("0.4.0 AppShell v2", () => {
       await route.fulfill({ json: {} });
     });
 
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
 
     // 发送任务
@@ -207,9 +221,7 @@ test.describe("0.4.0 AppShell v2", () => {
     // 批准后 continuation 流式完成，带 RAG 来源
     await expect(page.getByText("已写入文件，任务完成。")).toBeVisible({ timeout: 10000 });
     await expect(page.getByText("运维手册-备份章节.md")).toBeVisible();
-
-    // 上下文栏 Sources 可见来源
-    await expect(page.getByRole("tab", { name: /Sources/ })).toBeVisible();
+    // W6-R3：上下文栏入口已移除；RAG 来源在转录中可见（上方断言）
   });
 
   test("v2 停止：流式期间停止按钮立即反馈", async ({ page }) => {
@@ -249,6 +261,18 @@ test.describe("0.4.0 AppShell v2", () => {
         await route.fulfill({ json: { tool_call: null } });
         return;
       }
+      if (path === "/settings") {
+        // v0.9.0 H1-B（§5.6）：模型未配置时执行按钮禁用；声明已配置模型
+        await route.fulfill({
+          json: {
+            provider_type: "ollama",
+            llm_model: "qwen2.5:14b-instruct-q4_K_M",
+            remote_provider_enabled: false,
+            llm_context_length: 32768,
+          },
+        });
+        return;
+      }
       if (path === "/chat/stream") {
         // 延迟返回，保持「运行中」窗口以验证停止按钮与即时反馈
         await new Promise((resolve) => setTimeout(resolve, 3000));
@@ -262,7 +286,7 @@ test.describe("0.4.0 AppShell v2", () => {
       await route.fulfill({ json: {} });
     });
 
-    await page.goto("/?ui=v2");
+    await page.goto("/?ui=v2&coding=0");
     await expect(page.getByTestId("nav-chat")).toBeVisible();
     const input = page.getByTestId("task-composer-input");
     await input.fill("生成一份草稿");

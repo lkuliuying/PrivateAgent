@@ -13,6 +13,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 import sign_installer as si  # noqa: E402
@@ -87,6 +90,44 @@ def test_build_signtool_verify_command():
     assert cmd == ["signtool", "verify", "/pa", "/v", "installer.exe"]
 
 
+def test_build_powershell_signature_command():
+    cmd = si.build_powershell_signature_command("installer.exe")
+    assert cmd[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
+    assert "Get-AuthenticodeSignature" in cmd[4]
+    assert cmd[-1] == "installer.exe"
+
+
+def test_verify_existing_signature_accepts_valid(monkeypatch, tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"signed")
+    monkeypatch.setattr(
+        si.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout='{"Status":"Valid","Subject":"CN=SignPath Foundation"}\n',
+        ),
+    )
+    details = si.verify_existing_signature(installer)
+    assert details["Status"] == "Valid"
+    assert details["Subject"] == "CN=SignPath Foundation"
+
+
+def test_verify_existing_signature_rejects_invalid(monkeypatch, tmp_path):
+    installer = tmp_path / "installer.exe"
+    installer.write_bytes(b"unsigned")
+    monkeypatch.setattr(
+        si.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=2,
+            stdout='{"Status":"NotSigned","Subject":""}\n',
+        ),
+    )
+    with pytest.raises(RuntimeError, match="NotSigned"):
+        si.verify_existing_signature(installer)
+
+
 def test_unsigned_release_notes_mentions_smartscreen():
     note = si.unsigned_release_notes("0.1.1")
     assert "SmartScreen" in note
@@ -105,10 +146,12 @@ def test_signing_order_sign_before_updater_sig():
 
 def test_write_status(tmp_path, monkeypatch):
     monkeypatch.setattr(si, "DIST", tmp_path)
-    p = si.write_status("0.1.1", code_signed=False)
+    p = si.write_status("0.1.1", code_signed=False, provider="SignPath")
     data = json.loads(p.read_text(encoding="utf-8"))
     assert data["code_signed"] is False
     assert data["version"] == "0.1.1"
+    assert data["provider"] == "SignPath"
+    assert data["timestamp_server"] is None
 
 
 def test_gitignore_covers_cert_and_key_files():

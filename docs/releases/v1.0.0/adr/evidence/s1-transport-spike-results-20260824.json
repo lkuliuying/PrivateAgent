@@ -1,0 +1,174 @@
+{
+  "spike": "s1-transport-stdio-jsonl",
+  "protocol_version": "1.0-draft",
+  "max_line_bytes": 1048576,
+  "work_queue_size": 64,
+  "python": "3.13.13 (tags/v3.13.13:01104ce, Apr  7 2026, 19:25:48) [MSC v.1944 64 bit (AMD64)]",
+  "results": [
+    {
+      "proof": "T1",
+      "description": "initialize 顺序强制：未初始化调用被拒绝",
+      "passed": true,
+      "expected": true,
+      "detail": "响应: {\"jsonrpc\": \"2.0\", \"id\": \"t1\", \"error\": {\"code\": -32001, \"message\": \"not_initialized\", \"retryable\": false, \"details\": \"initialize 必须是首个方法（§8.1）\", \"trace_id\": \"s",
+      "raw": {
+        "jsonrpc": "2.0",
+        "id": "t1",
+        "error": {
+          "code": -32001,
+          "message": "not_initialized",
+          "retryable": false,
+          "details": "initialize 必须是首个方法（§8.1）",
+          "trace_id": "spike-1787535998762"
+        }
+      }
+    },
+    {
+      "proof": "T2",
+      "description": "initialize 交换版本/能力/通知偏好",
+      "passed": true,
+      "expected": true,
+      "detail": "protocol_version=1.0-draft，capabilities keys=['notifications', 'thread', 'turn']",
+      "raw": {
+        "jsonrpc": "2.0",
+        "id": "t2",
+        "result": {
+          "protocol_version": "1.0-draft",
+          "server_info": {
+            "name": "pa-agent-spike",
+            "version": "0.1.0"
+          },
+          "capabilities": {
+            "thread": [
+              "start",
+              "read",
+              "list"
+            ],
+            "turn": [
+              "start",
+              "steer",
+              "interrupt"
+            ],
+            "notifications": [
+              "item/started",
+              "item/delta",
+              "item/completed"
+            ]
+          },
+          "notification_preferences": [
+            "item/delta"
+          ]
+        }
+      }
+    },
+    {
+      "proof": "T3",
+      "description": "ping 往返与 request id 原样回带",
+      "passed": true,
+      "expected": true,
+      "detail": "result={'pong': True, 'echo': {'nonce': 42}}",
+      "raw": {
+        "jsonrpc": "2.0",
+        "id": "t3",
+        "result": {
+          "pong": true,
+          "echo": {
+            "nonce": 42
+          }
+        }
+      }
+    },
+    {
+      "proof": "T4",
+      "description": "未知方法 → 五字段错误信封",
+      "passed": true,
+      "expected": true,
+      "detail": "error keys=['code', 'details', 'message', 'retryable', 'trace_id']",
+      "raw": {
+        "jsonrpc": "2.0",
+        "id": "t4",
+        "error": {
+          "code": -32601,
+          "message": "method_not_found",
+          "retryable": false,
+          "details": "unknown method: no/such/method",
+          "trace_id": "spike-1787535998762"
+        }
+      }
+    },
+    {
+      "proof": "T5",
+      "description": "超长消息被拒且连接不中断",
+      "passed": true,
+      "expected": true,
+      "detail": "超长拒绝=True，后续 ping 正常=True",
+      "raw": {
+        "oversize": {
+          "jsonrpc": "2.0",
+          "id": null,
+          "error": {
+            "code": -32002,
+            "message": "message_too_large",
+            "retryable": false,
+            "details": "line 1049601 bytes > 1048576",
+            "trace_id": "spike-1787535998765"
+          }
+        },
+        "followup": {
+          "jsonrpc": "2.0",
+          "id": "t5b",
+          "result": {
+            "pong": true,
+            "echo": {}
+          }
+        }
+      }
+    },
+    {
+      "proof": "T6",
+      "description": "有界队列背压：饱和时显式拒绝且不丢失正常服务",
+      "passed": true,
+      "expected": true,
+      "detail": "正常处理=65，过载拒绝=319（队列上限=64，洪泛=384）",
+      "raw": {
+        "served": 65,
+        "overloaded": 319
+      }
+    },
+    {
+      "proof": "T8",
+      "description": "吞吐基线：500 次 ping 往返（仅本机管道参考值）",
+      "passed": true,
+      "expected": true,
+      "detail": "完成=500/500，p50=0.05ms，p95=0.08ms",
+      "raw": {
+        "n": 500,
+        "p50_ms": 0.046,
+        "p95_ms": 0.08
+      }
+    },
+    {
+      "proof": "T7",
+      "description": "stdin EOF → 服务端干净退出（码 0）",
+      "passed": true,
+      "expected": true,
+      "detail": "exit_code=0",
+      "raw": {
+        "exit_code": 0
+      }
+    }
+  ],
+  "meta": {
+    "server_cmd": [
+      "F:\\Program\\Agent\\.venv\\Scripts\\python.exe",
+      "f:\\Program\\Agent\\scripts\\spikes\\s1_transport_stdio_spike.py",
+      "--server-mode"
+    ],
+    "latency": {
+      "n": 500,
+      "p50_ms": 0.046,
+      "p95_ms": 0.08
+    }
+  },
+  "all_consistent": true
+}

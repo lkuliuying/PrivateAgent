@@ -8,22 +8,29 @@
 import type { Component } from "vue";
 import {
   PhActivity,
+  PhBell,
   PhBooks,
   PhBrain,
   PhChatsCircle,
+  PhCode,
   PhDatabase,
   PhFolderSimple,
   PhGearSix,
   PhGraduationCap,
   PhListChecks,
+  PhNewspaper,
+  PhNotePencil,
   PhPlugs,
   PhPuzzlePiece,
+  PhShieldCheck,
   PhSun,
+  PhTarget,
+  PhTray,
 } from "@phosphor-icons/vue";
 import type { View } from "../types";
 
-/** 导航分组（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §4） */
-export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system";
+/** 导航分组（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §4）；coding 为 v0.8.0 新增、不进入旧 NavRail 分组 */
+export type ViewGroup = "daily" | "agent" | "work" | "knowledge" | "connect" | "system" | "coding";
 
 export interface ViewMeta {
   key: View;
@@ -42,14 +49,25 @@ export interface ViewMeta {
 
 export const VIEW_GROUP_META: Record<ViewGroup, { label: string }> = {
   daily: { label: "日常" },
-  agent: { label: "执行" },
+  // W6-R3：最近任务随「Agent 执行」分组展示（§4.1）
+  agent: { label: "Agent 执行" },
   work: { label: "工作" },
   knowledge: { label: "知识" },
   connect: { label: "连接" },
   system: { label: "系统" },
+  coding: { label: "Coding" },
 };
 
 export const VIEW_REGISTRY: Record<View, ViewMeta> = {
+  coding: {
+    key: "coding",
+    label: "Coding",
+    icon: PhCode,
+    group: "coding",
+    keywords: ["coding", "代码", "工作台", "项目", "分支", "branch"],
+    // v0.8.0 W1：文档式主区（首页/任务页自带头部），不渲染通用顶栏。
+    showTopbar: false,
+  },
   today: {
     key: "today",
     label: "今日",
@@ -58,6 +76,49 @@ export const VIEW_REGISTRY: Record<View, ViewMeta> = {
     keywords: ["today", "今日", "简报", "待办", "收件箱", "提醒"],
     showTopbar: false,
     showStatusbar: false,
+  },
+  // v0.8.0 W6-R：今日页六个纵向工作台模块迁入左侧栏独立主区（计划 §4.1/§6.6）
+  reminders: {
+    key: "reminders",
+    label: "提醒",
+    icon: PhBell,
+    group: "daily",
+    keywords: ["reminder", "提醒", "到期", "闹钟", "重复"],
+  },
+  inbox: {
+    key: "inbox",
+    label: "收件箱",
+    icon: PhTray,
+    group: "daily",
+    keywords: ["inbox", "收件箱", "待处理", "捕获"],
+  },
+  goals: {
+    key: "goals",
+    label: "长期目标",
+    icon: PhTarget,
+    group: "daily",
+    keywords: ["goal", "目标", "长期", "回顾", "checkin"],
+  },
+  briefings: {
+    key: "briefings",
+    label: "主动简报",
+    icon: PhNewspaper,
+    group: "daily",
+    keywords: ["briefing", "简报", "今日简报", "周报"],
+  },
+  capture: {
+    key: "capture",
+    label: "快速捕获",
+    icon: PhNotePencil,
+    group: "daily",
+    keywords: ["capture", "捕获", "剪贴板", "速记"],
+  },
+  privacy: {
+    key: "privacy",
+    label: "隐私与维护",
+    icon: PhShieldCheck,
+    group: "daily",
+    keywords: ["privacy", "隐私", "审计", "维护", "体检"],
   },
   chat: {
     key: "chat",

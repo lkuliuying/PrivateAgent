@@ -31,6 +31,7 @@ from .code_tools import (
     get_git_diff,
     get_git_status,
     grep_code,
+    list_directory,
     propose_patch,
     read_code_file,
     run_whitelisted_command,
@@ -181,7 +182,62 @@ def _require_project_id(inputs: dict) -> int:
 
 
 async def _search_files_execute(inputs: dict, ctx: ToolContext) -> dict:
-    return await search_files(ctx.db, _require_project_id(inputs), inputs.get("query", ""))
+    project_id = _require_project_id(inputs)
+    query = inputs.get("query", "")
+    if not isinstance(query, str):
+        raise ToolError("query 必须为字符串")
+    if not query.strip():
+        # 部分本地模型会在“列出当前目录”语义下固定选择
+        # search_files，但不生成 query。这是一个有界的兼容别名：
+        # 只列项目根目录的直接子项，不放宽路径或文件系统权限。
+        listing = await list_directory(ctx.db, project_id)
+        return {
+            "mode": "directory",
+            "rel_path": listing["rel_path"],
+            "results": [
+                {
+                    "rel_path": item["rel_path"],
+                    "name": item["name"],
+                    "kind": item["kind"],
+                    "language": item["language"],
+                    "size_bytes": item["size_bytes"],
+                }
+                for item in listing["entries"]
+            ],
+            "count": listing["count"],
+            "truncated": listing["truncated"],
+        }
+
+    result = await search_files(ctx.db, project_id, query.strip())
+    return {
+        "mode": "search",
+        "results": [
+            {**item, "kind": "file"}
+            for item in result["results"]
+        ],
+        "count": result["count"],
+    }
+
+
+async def _list_directory_execute(inputs: dict, ctx: ToolContext) -> dict:
+    rel_path = inputs.get("rel_path", ".")
+    if not isinstance(rel_path, str) or not rel_path.strip():
+        rel_path = "."
+    try:
+        return await list_directory(
+            ctx.db,
+            _require_project_id(inputs),
+            rel_path,
+            limit=int(inputs.get("limit", 200) or 200),
+        )
+    except (
+        PermissionError_,
+        FileNotFoundError,
+        NotADirectoryError,
+        OSError,
+        ValueError,
+    ) as e:
+        raise ToolError(str(e)) from e
 
 
 async def _grep_code_execute(inputs: dict, ctx: ToolContext) -> dict:
@@ -555,8 +611,86 @@ def build_default_registry() -> ToolRegistry:
     # ---- 第三阶段 M1：代码工作区只读工具 ----
     reg.register(
         ToolDefinition(
+            name="list_directory",
+            description=(
+                "列出已授权项目内指定相对目录的直接子目录和文件。"
+                "查看项目根目录时省略 rel_path 或传 '.'；不依赖 Git。"
+                "目录查看应优先使用本工具，不要用 read_code_file 读取目录。"
+            ),
+            risk_level=RiskLevel.SAFE.value,
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "已授权项目 ID",
+                    },
+                    "rel_path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 2048,
+                        "description": "项目内相对目录；省略或 . 表示项目根目录",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 500,
+                        "description": "最多返回条目数，默认 200",
+                    },
+                },
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "rel_path": {"type": "string", "maxLength": 2048},
+                    "entries": {
+                        "type": "array",
+                        "maxItems": 500,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "rel_path": {"type": "string", "maxLength": 2048},
+                                "name": {"type": "string", "maxLength": 1024},
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["file", "directory"],
+                                },
+                                "language": {"type": ["string", "null"]},
+                                "size_bytes": {
+                                    "type": ["integer", "null"],
+                                    "minimum": 0,
+                                },
+                            },
+                            "required": [
+                                "rel_path",
+                                "name",
+                                "kind",
+                                "language",
+                                "size_bytes",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "count": {"type": "integer", "minimum": 0},
+                    "truncated": {"type": "boolean"},
+                },
+                "required": ["rel_path", "entries", "count", "truncated"],
+                "additionalProperties": False,
+            },
+            execute=_list_directory_execute,
+        )
+    )
+    reg.register(
+        ToolDefinition(
             name="search_files",
-            description="在已授权的项目中按文件名/相对路径搜索文件（需先授权项目并在聊天或项目页获得 project_id）。",
+            description=(
+                "在已授权项目中按文件名或相对路径片段搜索文件。"
+                "查看目录应优先调用 list_directory；为兼容本地模型，"
+                "省略 query 或传空字符串时会安全列出项目根目录。"
+            ),
             risk_level=RiskLevel.SAFE.value,
             input_schema={
                 "type": "object",
@@ -568,37 +702,53 @@ def build_default_registry() -> ToolRegistry:
                     },
                     "query": {
                         "type": "string",
-                        "minLength": 1,
                         "maxLength": 500,
-                        "description": "文件名或路径片段",
+                        "description": "文件名或路径片段；省略或空值则列项目根目录",
                     },
                 },
-                "required": ["project_id", "query"],
+                "required": ["project_id"],
                 "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["search", "directory"],
+                    },
+                    "rel_path": {"type": "string", "maxLength": 2048},
                     "results": {
                         "type": "array",
+                        "maxItems": 500,
                         "items": {
                             "type": "object",
                             "properties": {
-                                "rel_path": {"type": "string"},
-                                "name": {"type": "string"},
+                                "rel_path": {"type": "string", "maxLength": 2048},
+                                "name": {"type": "string", "maxLength": 1024},
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["file", "directory"],
+                                },
                                 "language": {"type": ["string", "null"]},
                                 "size_bytes": {
                                     "type": ["integer", "null"],
                                     "minimum": 0,
                                 },
                             },
-                            "required": ["rel_path", "name", "language", "size_bytes"],
+                            "required": [
+                                "rel_path",
+                                "name",
+                                "kind",
+                                "language",
+                                "size_bytes",
+                            ],
                             "additionalProperties": False,
                         },
                     },
                     "count": {"type": "integer", "minimum": 0},
+                    "truncated": {"type": "boolean"},
                 },
-                "required": ["results", "count"],
+                "required": ["mode", "results", "count"],
                 "additionalProperties": False,
             },
             execute=_search_files_execute,
@@ -656,7 +806,11 @@ def build_default_registry() -> ToolRegistry:
     reg.register(
         ToolDefinition(
             name="read_code_file",
-            description="读取已授权项目内的代码文件片段（按行分页）。rel_path 必须为项目内相对路径。",
+            description=(
+                "读取已授权项目内一个具体代码文件的片段（按行分页）。"
+                "rel_path 必须是文件相对路径，不能传目录或 '.'；"
+                "查看目录请调用 list_directory。"
+            ),
             risk_level=RiskLevel.CONFIRM.value,
             input_schema={
                 "type": "object",
@@ -817,7 +971,7 @@ def build_default_registry() -> ToolRegistry:
                     "new_content": {
                         "type": "string",
                         "maxLength": 500000,
-                        "description": "拟写入的完整新文件内容",
+                        "description": "拟写入的原始完整文件内容；不要使用 Markdown 围栏或二次 JSON 转义",
                     },
                     "create": {"type": "boolean", "description": "文件不存在时是否按新文件预览"},
                 },
@@ -867,7 +1021,10 @@ def build_default_registry() -> ToolRegistry:
                 "properties": {
                     "project_id": {"type": "integer", "description": "已授权项目 ID"},
                     "rel_path": {"type": "string", "description": "项目内相对路径"},
-                    "new_content": {"type": "string", "description": "完整新文件内容"},
+                    "new_content": {
+                        "type": "string",
+                        "description": "原始完整文件内容；不要使用 Markdown 围栏或二次 JSON 转义",
+                    },
                     "expected_old_sha256": {"type": "string", "description": "预览时返回的旧内容哈希"},
                     "create": {"type": "boolean", "description": "是否允许创建新文件"},
                 },
@@ -1211,7 +1368,8 @@ _PLAN_PROMPT = """你是一个工具规划器。根据用户消息判断是否�
 规则：
 - 仅当用户意图明确匹配某工具时才提议调用；普通问答不要调用工具。
 - read_file：读取文件内容；summarize_file：生成文件摘要；import_to_kb：把文件加入知识库。
-- search_files/grep_code/read_code_file/get_git_status/get_git_diff：读取已授权项目的代码、状态与 diff。
+- list_directory：列出已授权项目内一个目录的直接子项；项目根目录传 '.'。
+- search_files/grep_code/read_code_file/get_git_status/get_git_diff：搜索或读取已授权项目的代码、状态与 diff；search_files 缺少 query 时兼容为根目录枚举，read_code_file 只能读取具体文件。
 - propose_patch：只生成 diff 预览，不写入；apply_patch_to_workspace：审批后写入授权项目文件。
 - run_whitelisted_command：审批后运行白名单验证命令，如 pytest、npm run build、cargo check。
 - 需要文件路径、project_id、topic_id 等参数时，必须从用户消息或当前上下文中提取；不要编造。

@@ -1,0 +1,27 @@
+{
+  "evidence": "N1c-discriminant",
+  "at": "2026-08-25T14:09:12.416505+00:00",
+  "probe": {
+    "host_child_spawn_ok": true
+  },
+  "suites": {
+    "tests/test_v100_ct6_rust_host_e2e.py": {
+      "rc": 0,
+      "tail": "6 passed in 2.24s"
+    },
+    "tests/test_v100_ct6_sandbox_enforcement.py": {
+      "rc": 0,
+      "tail": "2 passed, 2 skipped in 4.01s"
+    },
+    "tests/test_v100_ct6_appcontainer.py": {
+      "rc": 0,
+      "tail": "3 passed, 1 skipped in 13.75s"
+    }
+  },
+  "discriminant": {
+    "ac": "NOT_OBSERVED",
+    "control": "NOT_OBSERVED",
+    "pair_confirmed": false,
+    "raw_tail": "..\n2 passed in 12.89s\n"
+  }
+}

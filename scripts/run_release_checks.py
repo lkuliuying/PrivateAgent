@@ -42,6 +42,7 @@ from _release_utils import (  # noqa: E402
 )
 
 DIST = PROJECT_ROOT / "dist"
+PYTEST_TIMEOUT_SECONDS = 900
 
 
 # ============ 通用步骤运行 ============
@@ -110,6 +111,16 @@ def skipped_step(name: str, detail: str) -> dict:
         "returncode": None,
         "detail": detail,
     }
+
+
+def run_pytest_step() -> dict:
+    """Run the full Python suite with its reviewed release-gate time budget."""
+    return run_shell_step(
+        "pytest",
+        ["uv", "run", "pytest", "-q"],
+        cwd=str(PROJECT_ROOT),
+        timeout=PYTEST_TIMEOUT_SECONDS,
+    )
 
 
 def npm_script_exists(script: str) -> bool:
@@ -584,6 +595,10 @@ def assemble_report(
     # strict_gates=False 仅供单元测试隔离步骤汇总逻辑。
     gate_issues: list[str] = []
     if strict_gates:
+        # `alembic current` 返回 0 只表示命令执行成功，不代表数据库已在 head。
+        # 没有显式解析到 “NNNN (head)” 时发布候选必须失败关闭。
+        if schema is None:
+            gate_issues.append("database_schema_not_head")
         if commit.get("dirty"):
             gate_issues.append("worktree_dirty")
         if not version_consistent(version):
@@ -681,7 +696,7 @@ def run_all() -> dict:
     npm = npm_executable()
     steps: list[dict] = []
 
-    steps.append(run_shell_step("pytest", ["uv", "run", "pytest", "-q"], cwd=str(PROJECT_ROOT)))
+    steps.append(run_pytest_step())
     steps.append(
         run_shell_step(
             "ruff_check",

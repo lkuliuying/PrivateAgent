@@ -1,0 +1,27 @@
+{
+  "evidence": "N1c-discriminant",
+  "at": "2026-08-25T10:01:50.245241+00:00",
+  "probe": {
+    "host_child_spawn_ok": true
+  },
+  "suites": {
+    "tests/test_v100_ct6_rust_host_e2e.py": {
+      "rc": 1,
+      "tail": "4 failed, 2 passed in 91.28s (0:01:31)"
+    },
+    "tests/test_v100_ct6_sandbox_enforcement.py": {
+      "rc": 1,
+      "tail": "4 failed in 121.18s (0:02:01)"
+    },
+    "tests/test_v100_ct6_appcontainer.py": {
+      "rc": 1,
+      "tail": "2 failed, 1 passed, 1 skipped in 28.51s"
+    }
+  },
+  "discriminant": {
+    "ac": "NOT_OBSERVED",
+    "control": "NOT_OBSERVED",
+    "pair_confirmed": false,
+    "raw_tail": "\nno tests ran in 0.13s\nERROR: not found: F:\\Program\\Agent\\tests\\test_v100_ct6_appcontainer.py::test_appcontainer_denies_loopback_at_kernel_level\n(no match in any of [<Module test_v100_ct6_appcontainer.py>])\n\n"
+  }
+}

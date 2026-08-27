@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch } from "vue";
+import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, shallowRef } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import WorkspaceShell from "./components/WorkspaceShell.vue";
 import NavRail from "./components/NavRail.vue";
@@ -15,6 +15,13 @@ import ProjectWorkspace from "./components/ProjectWorkspace.vue";
 import LearningWorkspace from "./components/LearningWorkspace.vue";
 import MemoryWorkspace from "./components/MemoryWorkspace.vue";
 import TodayView from "./components/TodayView.vue";
+// v0.8.0 W6-R：今日页六模块迁入左侧栏独立主区（计划 §4.1/§6.6）
+import ReminderPanel from "./components/ReminderPanel.vue";
+import InboxPanel from "./components/InboxPanel.vue";
+import GoalsWorkspace from "./components/GoalsWorkspace.vue";
+import BriefingPanel from "./components/BriefingPanel.vue";
+import CapturePanel from "./components/CapturePanel.vue";
+import PrivacyAuditPanel from "./components/PrivacyAuditPanel.vue";
 import SettingsView from "./components/SettingsView.vue";
 import DiagnosticsView from "./components/DiagnosticsView.vue";
 import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
@@ -26,63 +33,102 @@ import ConfirmDialog from "./components/ConfirmDialog.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import GlobalSearch from "./components/GlobalSearch.vue";
-import { useNotifications } from "./stores/notifications";
 import {
-  createSession,
-  getMessages,
-  listSessions,
-  listActivities,
-  listTrustedPaths,
   setApiBase,
   setApiBaseDefault,
-  streamChat,
-  streamAgentRunContinuation,
-  planTools,
-  approveToolCall,
-  approveAgentRunTool,
-  rejectToolCall,
-  rejectAgentRunTool,
-  listToolCalls,
-  listPendingAgentApprovals,
-  listAgentRunExecutions,
   cmdStartSidecar,
   cmdConfigExists,
   cmdRelaunchApp,
   isDesktopRuntime,
-  candidateMemories,
-  createInbox,
   getApiInfo,
+  getToday,
   getRuntimeCapabilities,
-  shouldUseLegacyToolPlanner,
+  supportsCodingRunCreation,
 } from "./api";
-import type { Session, View, Activity, TrustedPath } from "./types";
-import type { AgentToolExecution } from "./types";
+import type { View } from "./types";
 import { viewLabel } from "./models/viewRegistry";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
-import {
-  deriveTaskState,
-  type AgentWorkspaceMessage,
-} from "./models/agentWorkspace";
 import { createAgentWorkspacePreview } from "./dev/agentWorkspacePreview";
-import { isUiV2 } from "./config/uiFlags";
+import { useLegacyChatSession } from "./features/agent/useLegacyChatSession";
+import {
+  isUiV2,
+  isCodingWorkbench,
+  setCodingUiCapability,
+} from "./config/uiFlags";
+import {
+  recordCodingFallback,
+  recordCodingViewEntry,
+} from "./features/coding/model/codingUiTelemetry";
 import { useViewHistory } from "./composables/useViewHistory";
 import { useShortcuts } from "./composables/useShortcuts";
 import { AgentWorkspace } from "./features/agent";
+import {
+  CodingHome,
+  CodingSidebar,
+  CodingThreadWorkspace,
+  useCodingWorkspace,
+  type CodingWorkspaceStore,
+} from "./features/coding";
 import UiLab from "./dev/UiLab.vue";
 
-// 统一通知/确认/toast store（第七阶段 M4 基建）
-const notify = useNotifications();
 // UI Lab：仅开发模式且显式开启（?ui-lab=1），生产构建不可达。
 const uiLabEnabled =
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("ui-lab") === "1";
 // ui_v2：alpha.1 默认兼容壳，新壳按开关开启（?ui=v2 / pa_ui_v2=1）。
 const uiV2 = isUiV2();
+// v0.9.0 H1：Coding UI 默认开启（计划 §3.1）；启动后按 /capabilities 的
+// coding_agent_ui_enabled 能力位回退（仅非显式选择时），回退原因本地计数。
+const codingUiActive = ref(uiV2 && isCodingWorkbench());
+const codingEnabled = computed(() => codingUiActive.value);
+const codingStore = useCodingWorkspace();
+// ?coding-preview=<key>：首页六状态开发预览（动态 import，生产构建不进入）
+const codingPreviewKey = import.meta.env.DEV
+  ? new URLSearchParams(window.location.search).get("coding-preview")
+  : null;
+const codingPreviewStore = shallowRef<CodingWorkspaceStore | null>(null);
+// 活动 store 用 shallowRef 持有（预览夹具异步就绪后整体替换，避免深层解包改写 Ref 字段类型）
+const codingActiveStoreRef = shallowRef<CodingWorkspaceStore>(codingStore);
+if (codingPreviewKey) {
+  void import("./features/coding/dev/codingHomePreview").then((preview) => {
+    const keys: readonly string[] = preview.CODING_HOME_PREVIEW_KEYS;
+    if (keys.includes(codingPreviewKey)) {
+      const previewStore = preview.createCodingWorkspacePreviewStore(
+        codingPreviewKey as Parameters<typeof preview.createCodingWorkspacePreviewStore>[0]
+      );
+      codingPreviewStore.value = previewStore;
+      codingActiveStoreRef.value = previewStore;
+    }
+  });
+}
+const codingThreadSelected = computed(
+  () => codingActiveStoreRef.value.selectedThreadId.value !== null
+);
+// 任务页按 thread 重建（:key）：切换任务即卸载 run 流/定时器（W2 清理语义）
+const codingThreadKey = computed(
+  () => codingActiveStoreRef.value.selectedThreadId.value ?? "none"
+);
 // 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
 const searchOpen = ref(false);
+
+// v0.8.0 W6-R：个人工作区待处理徽标（今日快照只读数字；拉取失败不阻断导航）
+const personalCounts = ref<Partial<Record<View, number>>>({});
+async function loadPersonalCounts(): Promise<void> {
+  try {
+    const snapshot = await getToday();
+    personalCounts.value = {
+      reminders: snapshot.summary.due_reminders,
+      inbox: snapshot.summary.open_inbox,
+      privacy:
+        snapshot.maintenance.failed_activities + snapshot.maintenance.orphan_evidence,
+    };
+  } catch {
+    /* 徽标缺失不影响入口可用性 */
+  }
+}
 
 // bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
 //   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
@@ -105,46 +151,41 @@ function clearBootLoading() {
   bootLoadingVisible.value = false;
 }
 
-const sessions = ref<Session[]>([]);
-const currentSessionId = ref<number | null>(null);
-const messages = ref<AgentWorkspaceMessage[]>([]);
-const streaming = ref(false);
-
-/**
- * v0.5.0 B1：已脱敏/限长并持久化的工具执行结果（ContextRail Files/Diff 事实源）。
- * 每次 run 结束后拉取一次；会话重载时对存在审批的 run 一并拉取。
- */
-const runExecutions = ref<AgentToolExecution[]>([]);
-
-async function loadRunExecutions(runId: string) {
-  if (!runId) return;
-  try {
-    const executions = await listAgentRunExecutions(runId);
-    const patchResults = executions.filter(
-      (execution) => execution.tool_name === "apply_patch_to_workspace"
-    );
-    const merged = runExecutions.value.filter(
-      (execution) =>
-        !patchResults.some((candidate) => candidate.id === execution.id)
-    );
-    runExecutions.value = [...merged, ...patchResults];
-  } catch {
-    // 执行结果缺失不影响聊天流；后续可在同一 run 上重试
-  }
-}
-// v2 上下文栏数据：会话活动（5s 轮询）与授权路径，与当前任务绑定
-const sessionActivities = ref<Activity[]>([]);
-const trustedPaths = ref<TrustedPath[]>([]);
-let activityTimer: number | null = null;
-// 上下文加载请求序号：快速切换会话时，旧调用在任一 await 后检查所有权，放弃自身并
-// 不建立定时器，保证任意时刻最多存在一个活动轮询。
-let contextSeq = 0;
 // 导航历史：视图切换/返回/前进/恢复上次视图（本地存储）
 const history = useViewHistory("chat");
 const view = history.current;
-// Capability discovery is backward-compatible: unknown/old backends retain the legacy planner.
-const useLegacyToolPlanner = ref(true);
-const knowledgeBase = ref(false);
+
+// v0.8.0 W4：旧 chat 编排（会话/消息/流式/planner/审批/上下文轮询/执行结果）
+// 整体迁至 features/agent/useLegacyChatSession.ts；App.vue 只保留壳与全局编排。
+const legacyChat = useLegacyChatSession({
+  navigateToChat: (sessionId) => history.navigate({ view: "chat", sessionId }),
+});
+const {
+  sessions,
+  currentSessionId,
+  messages,
+  streaming,
+  knowledgeBase,
+  runExecutions,
+  sessionActivities,
+  trustedPaths,
+  hasPendingTool,
+  taskState,
+  currentSession,
+  runtimeCapabilities,
+  selectSession,
+  newSession,
+  sendMessage,
+  stopGenerate,
+  onApproveToolCall,
+  onRejectToolCall,
+  onApproveAgentRunTool,
+  onRejectAgentRunTool,
+  onGenCandidates,
+  onSaveMessageToInbox,
+  applyWorkspacePreview,
+} = legacyChat;
+
 const railCollapsed = ref(false);
 const previewMode =
   import.meta.env.DEV &&
@@ -152,48 +193,18 @@ const previewMode =
 const workspacePreview = previewMode ? createAgentWorkspacePreview() : null;
 // 当前在上下文中展示的引用片段 id（点击来源后设置）
 const currentChunkId = ref<number | null>(null);
-// 右侧上下文栏折叠状态：宽屏默认展开，窄屏默认收起
+// 右侧上下文栏：W6-R2 改为按需抽屉（不作永久第三列），经 SessionHeader 入口打开
 const INSPECTOR_MIN_W = 1320;
+// v0.8.0 W1：coding 侧栏 <1280px 进入抽屉模式（W0 冻结 §2.2），rail 槽收为 0 宽
+const CODING_RAIL_DRAWER_MAX = 1280;
 const viewportWidth = ref(
   typeof window !== "undefined" ? window.innerWidth : 1280
 );
-const inspectorOpen = ref(
-  typeof window !== "undefined" && window.innerWidth >= INSPECTOR_MIN_W
-);
-const inspectorToggleable = computed(
-  () => view.value === "chat" && viewportWidth.value >= INSPECTOR_MIN_W
-);
-let controller: AbortController | null = null;
+// 右侧上下文栏：W6-R3 已移除顶部上下文按钮（上下文由 Runtime 自动装配，
+// 底部用量模块反馈）；v2 壳不再提供顶栏切换入口，旧壳保留既有行为。
+const inspectorOpen = ref(false);
+const inspectorToggleable = computed(() => false);
 let pageAnimations: AnimationHandle | null = null;
-// 流请求序号：停止后即使旧 reader/onClose 延迟回调，也不能再改写当前会话或新流状态。
-let streamSeq = 0;
-let chatMessageSeq = 0;
-function nextChatKey(kind: "user" | "assistant" | "tool"): string {
-  chatMessageSeq += 1;
-  return `${kind}-${Date.now()}-${chatMessageSeq}`;
-}
-// plan 请求序号：每次 sendMessage 自增，旧 plan 解析回来时若序号不匹配则放弃
-let planSeq = 0;
-// plan-then-reply：toolCallId -> 原始用户消息（批准后用于流式总结）
-const pendingToolText = ref<Map<number, string>>(new Map());
-// 用户在 planning 阶段点停止时置 true，阻止 plan 完成后继续回复
-const planningCancelled = ref(false);
-// 是否有未决工具调用（待审批时阻止发送新消息）
-const hasPendingTool = computed(
-  () =>
-    messages.value.some(
-      (m) =>
-        m.tool_call?.status === "pending_approval" ||
-        m.agent_approval?.status === "pending"
-    )
-);
-const taskState = computed(() =>
-  deriveTaskState(messages.value, streaming.value)
-);
-
-const currentSession = computed(
-  () => sessions.value.find((s) => s.id === currentSessionId.value) ?? null
-);
 
 // 顶栏标题（视图注册表 + 会话标题）
 const pageTitle = computed(() => {
@@ -213,15 +224,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   clearBootLoading();
-  contextSeq += 1; // 使在途上下文加载/轮询失效
-  if (activityTimer !== null) {
-    window.clearInterval(activityTimer);
-    activityTimer = null;
-  }
-  planningCancelled.value = true;
-  streamSeq += 1;
-  controller?.abort();
-  controller = null;
+  legacyChat.dispose(); // 在途上下文轮询/流/序号统一失效
   pageAnimations?.destroy();
   pageAnimations = null;
 });
@@ -229,7 +232,8 @@ onBeforeUnmount(() => {
 // 全局快捷键：Ctrl/Cmd+K 命令面板；Ctrl/Cmd+N 新建任务；Alt+←/→ 视图历史
 useShortcuts({
   openCommand: () => (commandPaletteOpen.value = true),
-  newSession: () => void newSession(),
+  // v0.8.0 W1：coding 模式下 Ctrl+N 进入首页输入器而非旧会话
+  newSession: () => (codingEnabled.value ? onCodingNewTask() : void newSession()),
   goBack: () => {
     const target = history.back();
     if (target?.sessionId && target.view === "chat") {
@@ -268,11 +272,7 @@ async function boot() {
     setApiBaseDefault();
     bootState.value = "done";
     if (previewMode) {
-      const preview = workspacePreview!;
-      sessions.value = [preview.session];
-      currentSessionId.value = preview.session.id;
-      messages.value = preview.messages;
-      streaming.value = true;
+      applyWorkspacePreview(workspacePreview!);
       return;
     }
     await initializeConnectedWorkspace();
@@ -398,7 +398,36 @@ async function quitApp() {
 // ============ 导航 ============
 
 function onNavigate(v: View) {
-  history.navigate({ view: v });
+  // coding 视图仅在启用时可达；命令面板等入口在关闭时回落旧 Agent 视图
+  history.navigate({ view: v === "coding" && !codingEnabled.value ? "chat" : v });
+}
+
+// v0.9.0 H1-D（计划 §5.8）：配置闭环——PrivateAgent 入口与 Coding 首页阻塞操作都进入同一个模型管理区；
+// 往返保留项目/会话/草稿（由各自组件维护），保存后自动返回并原位重探测解除阻塞。
+const settingsFocus = ref<{ section: string; returnTo: View } | null>(null);
+
+function openModelSettings(returnTo: View) {
+  settingsFocus.value = { section: "model-profiles", returnTo };
+  onNavigate("settings");
+}
+
+function onSettingsReturn() {
+  const target = settingsFocus.value?.returnTo ?? null;
+  settingsFocus.value = null;
+  if (target === null) return;
+  // 返回后重拉 profile/能力位：首页阻塞原位解除，无需新建项目或重启应用。
+  if (target === "coding") void codingActiveStoreRef.value.refresh();
+  onNavigate(target);
+}
+
+// v0.8.0 W1：coding 首页/侧栏动作接线（线程选择由 codingWorkspaceStore 维护）
+function onCodingNewTask() {
+  codingActiveStoreRef.value.startNewTask();
+  onNavigate("coding");
+}
+
+function onCodingThreadCreated() {
+  onNavigate("coding");
 }
 
 function onGoBack() {
@@ -431,492 +460,37 @@ function onSearchNavigate(v: View) {
 // ============ 会话 / 对话 ============
 
 async function initializeConnectedWorkspace() {
+  await legacyChat.initializeLegacyWorkspace();
+  // v0.9.0 H1：启动后核对创建执行所需的完整能力链。UI/API/project-bound
+  // 任一缺失都回落旧 UI，避免用户发送后才收到隐藏端点的 404。
   try {
-    const capabilities = await getRuntimeCapabilities();
-    useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(capabilities);
-  } catch {
-    useLegacyToolPlanner.value = shouldUseLegacyToolPlanner(null);
-  }
-  await loadSessions();
-}
-
-async function loadSessions() {
-  try {
-    sessions.value = await listSessions();
-    if (sessions.value.length > 0 && currentSessionId.value === null) {
-      await selectSession(sessions.value[0].id, false);
-    }
-  } catch {
-    // 后端未连接，设置/状态页会展示提示
-  }
-}
-
-async function selectSession(id: number, switchToChat = true) {
-  if (streaming.value) return;
-  currentSessionId.value = id;
-  if (switchToChat) history.navigate({ view: "chat", sessionId: id });
-  try {
-    messages.value = await getMessages(id);
-  } catch {
-    messages.value = [];
-  }
-  // 重水合未决工具调用卡片（重载/切换会话后仍可审批）
-  await rehydrateToolCalls(id);
-  loadSessionContext(id);
-}
-
-/** v2 上下文栏：加载授权路径并轮询会话活动；切换会话/卸载时清理旧定时器。 */
-async function loadSessionContext(sessionId: number) {
-  const mine = ++contextSeq;
-  if (activityTimer !== null) {
-    window.clearInterval(activityTimer);
-    activityTimer = null;
-  }
-  try {
-    trustedPaths.value = await listTrustedPaths();
-  } catch {
-    trustedPaths.value = [];
-  }
-  // 期间发生了更新的会话切换：放弃本次调用，不建立定时器
-  if (mine !== contextSeq) return;
-  const refreshActivities = async () => {
-    if (mine !== contextSeq || currentSessionId.value !== sessionId) return;
-    try {
-      sessionActivities.value = await listActivities(sessionId);
-    } catch {
-      // 后端未连接时保留现有数据，不因瞬时失败清空
-    }
-  };
-  await refreshActivities();
-  if (mine !== contextSeq) return;
-  activityTimer = window.setInterval(() => void refreshActivities(), 5000);
-}
-
-/** 加载会话的工具调用，把未决（pending_approval）的重新渲染为审批卡片。 */
-async function rehydrateToolCalls(sessionId: number) {  try {
-    const calls = await listToolCalls(sessionId);
-    for (const tc of calls) {
-      if (
-        tc.status === "pending_approval" &&
-        !messages.value.some((m) => m.tool_call?.id === tc.id)
-      ) {
-        messages.value.push({
-          id: -1000000 - tc.id,
-          session_id: sessionId,
-          role: "assistant",
-          content: "",
-          created_at: tc.created_at,
-          tool_call: tc,
-          clientKey: `tool-${tc.id}`,
-        });
-        pendingToolText.value.set(tc.id, "");
+    const caps = await getRuntimeCapabilities();
+    if (!supportsCodingRunCreation(caps)) {
+      setCodingUiCapability(false);
+      if (codingUiActive.value) {
+        codingUiActive.value = false;
+        recordCodingFallback("capability_disabled");
+        if (view.value === "coding") onNavigate("chat");
       }
     }
   } catch {
-    // 工具调用加载失败不影响会话查看
+    /* 能力位获取失败不阻断启动；保持默认呈现 */
   }
-  try {
-    const approvals = await listPendingAgentApprovals(sessionId);
-    for (const approval of approvals) {
-      if (
-        !messages.value.some((message) => message.agent_approval?.id === approval.id)
-      ) {
-        messages.value.push({
-          id: -Date.now() - messages.value.length,
-          session_id: sessionId,
-          role: "assistant",
-          content: "",
-          created_at: approval.created_at,
-          agent_approval: approval,
-          runId: approval.run_id,
-          clientKey: `agent-approval-${approval.id}`,
-        });
-      }
-    }
-  } catch {
-    // Agent Runtime is default-off; a hidden approval API must not break chat loading.
-  }
-  // B1：会话重载时对存在审批的 run 一并拉取已脱敏的执行结果（Files/Diff 事实源）。
-  for (const message of messages.value) {
-    if (message.agent_approval?.run_id) {
-      loadRunExecutions(message.agent_approval.run_id);
-    }
+  // v0.8.0 W1：coding 工作台就绪后加载项目树并落在首页（计划 §1：首页为核心入口）；
+  // W6-R：深链/刷新后保持已恢复的视图（仅默认 chat 回落 coding 首页）。
+  if (codingEnabled.value) {
+    if (!codingPreviewStore.value) void codingStore.bootstrap();
+    if (view.value === "chat") onNavigate("coding");
+    recordCodingViewEntry("coding");
+    void loadPersonalCounts();
+  } else {
+    recordCodingViewEntry("legacy");
   }
 }
 
-async function newSession() {
-  if (streaming.value) return;
-  try {
-    const s = await createSession();
-    sessions.value.unshift(s);
-    await selectSession(s.id);
-  } catch (e) {
-    notify.error("新建会话失败", String(e));
-  }
-}
+// v0.8.0 W6-R2：今日页已移除 Agent 对话框，onTodaySubmit 发送链随之删除；
+// 发起对话统一进入 Agent 页（计划 §4.2 布局约束）。
 
-type TodayComposerMode = "chat" | "knowledge" | "plan" | "code";
-
-async function onTodaySubmit(text: string, mode: TodayComposerMode) {
-  const value = text.trim();
-  if (!value || streaming.value || hasPendingTool.value) return;
-
-  if (!currentSession.value) {
-    await newSession();
-  }
-  if (!currentSession.value) return;
-
-  const prefixes: Record<TodayComposerMode, string> = {
-    chat: "",
-    knowledge: "请优先结合本地知识库回答：",
-    plan: "请帮我生成一个清晰、可执行的计划：",
-    code: "请作为代码助手协助我：",
-  };
-  knowledgeBase.value = mode === "knowledge";
-  history.navigate({ view: "chat" });
-  sendMessage(`${prefixes[mode]}${value}`);
-}
-
-function sendMessage(text: string) {
-  if (!currentSession.value || streaming.value || hasPendingTool.value) return;
-  const sid = currentSession.value.id;
-  const now = new Date().toISOString();
-  const kb = knowledgeBase.value;
-
-  messages.value.push({
-    id: -Date.now(),
-    session_id: sid,
-    role: "user",
-    content: text,
-    created_at: now,
-    clientKey: nextChatKey("user"),
-  });
-  streaming.value = true;
-  planningCancelled.value = false;
-  const mySeq = ++planSeq;
-
-  if (!useLegacyToolPlanner.value) {
-    streamAssistantReply(sid, text, kb);
-    return;
-  }
-
-  // Legacy compatibility only: Agent Runtime performs its own planning in /chat/stream.
-  planTools(sid, text)
-    .then((res) => {
-      // 被用户停止或被新消息取代：放弃本次 plan 结果
-      if (planningCancelled.value || mySeq !== planSeq) {
-        if (mySeq === planSeq) streaming.value = false;
-        return;
-      }
-      const tc = res?.tool_call ?? null;
-      if (tc) {
-        messages.value.push({
-          id: -Date.now() - 1,
-          session_id: sid,
-          role: "assistant",
-          content: "",
-          created_at: new Date().toISOString(),
-          tool_call: tc,
-          clientKey: `tool-${tc.id}`,
-        });
-        pendingToolText.value.set(tc.id, text);
-        streaming.value = false;
-        return;
-      }
-      // 无工具：普通流式回复
-      streamAssistantReply(sid, text, kb);
-    })
-    .catch(() => {
-      if (planningCancelled.value || mySeq !== planSeq) {
-        if (mySeq === planSeq) streaming.value = false;
-        return;
-      }
-      streamAssistantReply(sid, text, kb);
-    });
-}
-
-/** 流式助手回复（无工具，或工具执行后带 tool_result 总结）。 */
-function streamAssistantReply(
-  sid: number,
-  text: string,
-  kb: boolean,
-  toolResult?: { tool_name: string; output: Record<string, unknown> }
-) {
-  const streamId = ++streamSeq;
-  const assistantMessage: AgentWorkspaceMessage = {
-    id: -2,
-    session_id: sid,
-    role: "assistant",
-    content: "",
-    created_at: new Date().toISOString(),
-    clientKey: nextChatKey("assistant"),
-  };
-  messages.value.push(assistantMessage);
-  let responseMessage: AgentWorkspaceMessage | null = assistantMessage;
-  let activeRunId: string | undefined;
-  streaming.value = true;
-
-  const ensureResponseMessage = (): AgentWorkspaceMessage => {
-    if (responseMessage) return responseMessage;
-    responseMessage = {
-      id: -Date.now(),
-      session_id: sid,
-      role: "assistant",
-      content: "",
-      created_at: new Date().toISOString(),
-      clientKey: nextChatKey("assistant"),
-      runId: activeRunId,
-    };
-    messages.value.push(responseMessage);
-    return responseMessage;
-  };
-
-  const isCurrentStream = () =>
-    streamId === streamSeq && currentSessionId.value === sid;
-
-  controller = streamChat(
-    sid,
-    text,
-    kb,
-    (e) => {
-      if (!isCurrentStream()) return;
-      if (e.type === "run" && e.run_id) {
-        activeRunId = e.run_id;
-        if (responseMessage) responseMessage.runId = e.run_id;
-      } else if (e.type === "approval" && e.approval) {
-        activeRunId = e.approval.run_id;
-        const approvalMessage = ensureResponseMessage();
-        approvalMessage.content = "";
-        approvalMessage.runId = e.approval.run_id;
-        approvalMessage.agent_approval = e.approval;
-        approvalMessage.clientKey = `agent-approval-${e.approval.id}`;
-        responseMessage = null;
-      } else if (e.type === "token" && e.content) {
-        ensureResponseMessage().content += e.content;
-      } else if (e.type === "done") {
-        const completedMessage = ensureResponseMessage();
-        if (e.run_id) {
-          loadRunExecutions(e.run_id);
-          for (const message of messages.value) {
-            if (
-              message.agent_approval?.run_id === e.run_id &&
-              message.agent_approval.status === "approved"
-            ) {
-              message.agent_approval = {
-                ...message.agent_approval,
-                status: "consumed",
-              };
-            }
-          }
-        }
-        if (e.run_id) completedMessage.runId = e.run_id;
-        if (e.message_id) completedMessage.id = e.message_id;
-        if (e.content) completedMessage.content = e.content;
-        if (e.sources) completedMessage.sources = e.sources;
-        if (e.memories) completedMessage.memories = e.memories;
-      } else if (e.type === "title" && e.title) {
-        const s = sessions.value.find((x) => x.id === sid);
-        if (s) s.title = e.title;
-      } else if (e.type === "error" && e.message) {
-        ensureResponseMessage().content += `\n\n[错误：${e.message}]`;
-      }
-    },
-    (err) => {
-      if (!isCurrentStream()) return;
-      ensureResponseMessage().content += `\n\n[连接错误：${err}]`;
-      streaming.value = false;
-      controller = null;
-    },
-    () => {
-      if (!isCurrentStream()) return;
-      streaming.value = false;
-      controller = null;
-    },
-    toolResult
-  );
-}
-
-/** 从当前对话生成候选记忆（落库 draft，待用户在记忆页确认）。 */
-function continueAgentReply(runId: string, sid: number) {
-  const streamId = ++streamSeq;
-  const assistantMessage: AgentWorkspaceMessage = {
-    id: -Date.now(),
-    session_id: sid,
-    role: "assistant",
-    content: "",
-    created_at: new Date().toISOString(),
-    clientKey: nextChatKey("assistant"),
-    runId,
-  };
-  messages.value.push(assistantMessage);
-  streaming.value = true;
-  const isCurrentStream = () =>
-    streamId === streamSeq && currentSessionId.value === sid;
-
-  controller = streamAgentRunContinuation(
-    runId,
-    (event) => {
-      if (!isCurrentStream()) return;
-      if (event.type === "token" && event.content) {
-        assistantMessage.content += event.content;
-      } else if (event.type === "done") {
-        loadRunExecutions(runId);
-        if (event.message_id) assistantMessage.id = event.message_id;
-        if (event.content) assistantMessage.content = event.content;
-        if (event.sources) assistantMessage.sources = event.sources;
-        if (event.memories) assistantMessage.memories = event.memories;
-        for (const message of messages.value) {
-          if (message.agent_approval?.run_id === runId) {
-            message.agent_approval = {
-              ...message.agent_approval,
-              status: "consumed",
-            };
-          }
-        }
-      } else if (event.type === "error" && event.message) {
-        assistantMessage.content += `\n\n[错误：${event.message}]`;
-      }
-    },
-    (error) => {
-      if (!isCurrentStream()) return;
-      assistantMessage.content += `\n\n[连接错误：${error}]`;
-      streaming.value = false;
-      controller = null;
-    },
-    () => {
-      if (!isCurrentStream()) return;
-      streaming.value = false;
-      controller = null;
-    }
-  );
-}
-
-async function onGenCandidates() {
-  if (!currentSession.value) return;
-  const sid = currentSession.value.id;
-  try {
-    const list = await candidateMemories({
-      source_type: "chat_session",
-      source_id: sid,
-    });
-    notify.success("候选记忆已生成", `${list.length} 条 draft，请在记忆页确认`);
-  } catch (e) {
-    notify.error("生成候选记忆失败", String(e));
-  }
-}
-
-/** 把一条聊天消息保存到收件箱（保留 chat_message 来源引用）。 */
-async function onSaveMessageToInbox(messageId: number, content: string) {
-  const text = content.trim();
-  const title = (text.split("\n")[0] || text).slice(0, 255);
-  try {
-    await createInbox({
-      title: title || `消息 #${messageId}`,
-      item_type: "note",
-      body_md: text || undefined,
-      source_type: "chat_message",
-      source_id: messageId,
-    });
-    notify.success("已保存到收件箱", "今日页可查看");
-  } catch (e) {
-    notify.error("保存到收件箱失败", String(e));
-  }
-}
-
-/** 批准工具调用：执行后流式总结结果。 */
-async function onApproveToolCall(id: number) {
-  if (!currentSession.value) return;
-  const sid = currentSession.value.id;
-  const msgIdx = messages.value.findIndex((m) => m.tool_call?.id === id);
-  if (msgIdx < 0) return;
-  messages.value[msgIdx].tool_call = {
-    ...messages.value[msgIdx].tool_call!,
-    status: "running",
-  };
-  streaming.value = true;
-  try {
-    const updated = await approveToolCall(id);
-    messages.value[msgIdx].tool_call = updated;
-    if (updated.status === "succeeded" && updated.output_json) {
-      const text =
-        pendingToolText.value.get(id) || "请基于以下工具结果回答。";
-      pendingToolText.value.delete(id);
-      streamAssistantReply(sid, text, knowledgeBase.value, {
-        tool_name: updated.tool_name,
-        output: updated.output_json,
-      });
-    } else {
-      streaming.value = false;
-      pendingToolText.value.delete(id);
-    }
-  } catch (e) {
-    streaming.value = false;
-    pendingToolText.value.delete(id);
-    messages.value[msgIdx].tool_call = {
-      ...messages.value[msgIdx].tool_call!,
-      status: "failed",
-      error_message: String(e),
-    };
-  }
-}
-
-/** 拒绝工具调用：不执行，状态写回卡片。 */
-async function onRejectToolCall(id: number) {
-  const msgIdx = messages.value.findIndex((m) => m.tool_call?.id === id);
-  if (msgIdx < 0) return;
-  try {
-    const updated = await rejectToolCall(id);
-    messages.value[msgIdx].tool_call = updated;
-  } catch {
-    messages.value[msgIdx].tool_call = {
-      ...messages.value[msgIdx].tool_call!,
-      status: "rejected",
-    };
-  }
-  pendingToolText.value.delete(id);
-}
-
-async function onApproveAgentRunTool(runId: string, approvalId: string) {
-  if (!currentSession.value) return;
-  const sessionId = currentSession.value.id;
-  const hasLiveStream = controller !== null && streaming.value;
-  const message = messages.value.find(
-    (item) =>
-      item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
-  );
-  if (!message?.agent_approval) return;
-  message.agent_approval = { ...message.agent_approval, status: "approved" };
-  try {
-    await approveAgentRunTool(runId, approvalId);
-    if (!hasLiveStream) continueAgentReply(runId, sessionId);
-  } catch (error) {
-    message.agent_approval = { ...message.agent_approval, status: "pending" };
-    notify.error("Agent 工具审批失败", String(error));
-  }
-}
-
-async function onRejectAgentRunTool(runId: string, approvalId: string) {
-  const message = messages.value.find(
-    (item) =>
-      item.agent_approval?.id === approvalId && item.agent_approval.run_id === runId
-  );
-  if (!message?.agent_approval) return;
-  try {
-    await rejectAgentRunTool(runId, approvalId);
-    message.agent_approval = { ...message.agent_approval, status: "rejected" };
-  } catch (error) {
-    notify.error("Agent 工具拒绝失败", String(error));
-  }
-}
-
-function stopGenerate() {
-  planningCancelled.value = true;
-  streamSeq += 1;
-  const activeController = controller;
-  controller = null;
-  activeController?.abort();
-  streaming.value = false;
-}
 </script>
 
 <template>
@@ -971,10 +545,11 @@ function stopGenerate() {
       :view="view"
       :title="pageTitle"
       :task-state="taskState"
-      :show-dev-tag="bootState === 'dev' || previewMode"
+      :show-dev-tag="bootState === 'dev' || previewMode || !!codingPreviewStore"
       :context-open="view === 'chat' && inspectorOpen"
       :context-toggleable="inspectorToggleable"
       :rail-collapsed="railCollapsed"
+      :rail-hidden="codingEnabled && viewportWidth < CODING_RAIL_DRAWER_MAX"
       :can-go-back="history.state().canGoBack"
       :can-go-forward="history.state().canGoForward"
       @toggle-context="inspectorOpen = !inspectorOpen"
@@ -982,7 +557,19 @@ function stopGenerate() {
       @go-forward="onGoForward"
     >
       <template #rail>
+        <CodingSidebar
+          v-if="codingEnabled"
+          :store="codingActiveStoreRef"
+          :active-view="view"
+          :collapsed="railCollapsed"
+          :personal-counts="personalCounts"
+          @navigate="onNavigate"
+          @new-task="onCodingNewTask"
+          @open-command="commandPaletteOpen = true"
+          @toggle-collapse="railCollapsed = !railCollapsed"
+        />
         <NavRailV2
+          v-else
           :active="view"
           :sessions="sessions"
           :current-id="currentSessionId"
@@ -995,7 +582,28 @@ function stopGenerate() {
         />
       </template>
 
-      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <!-- v0.8.0 W1：coding 首页/任务页（内部 flag 启用；任务页 W2 起补全） -->
+      <CodingHome
+        v-if="codingEnabled && view === 'coding' && !codingThreadSelected"
+        :store="codingActiveStoreRef"
+        @navigate="onNavigate"
+        @configure-provider="openModelSettings('coding')"
+        @thread-created="onCodingThreadCreated"
+      />
+      <CodingThreadWorkspace
+        v-else-if="codingEnabled && view === 'coding'"
+        :key="codingThreadKey"
+        :store="codingActiveStoreRef"
+        @navigate="onNavigate"
+        @configure-provider="openModelSettings('coding')"
+      />
+      <SettingsView
+        v-else-if="view === 'settings'"
+        :focus-section="settingsFocus?.section ?? null"
+        :return-to="settingsFocus?.returnTo ?? null"
+        @reconfigure="reconfigure"
+        @return="onSettingsReturn"
+      />
       <DiagnosticsView v-else-if="view === 'diagnostics'" />
       <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
       <IntegrationImportPanel v-else-if="view === 'integrations'" />
@@ -1003,9 +611,27 @@ function stopGenerate() {
       <TodayView
         v-else-if="view === 'today'"
         @navigate="onNavigate"
-        @submit="onTodaySubmit"
         @open-command="commandPaletteOpen = true"
       />
+      <!-- v0.8.0 W6-R：六模块独立主区（沿用既有业务组件，能力/确认/通知语义保真） -->
+      <section v-else-if="view === 'reminders'" class="personal-view" aria-label="提醒">
+        <ReminderPanel />
+      </section>
+      <section v-else-if="view === 'inbox'" class="personal-view" aria-label="收件箱">
+        <InboxPanel />
+      </section>
+      <section v-else-if="view === 'goals'" class="personal-view" aria-label="长期目标">
+        <GoalsWorkspace />
+      </section>
+      <section v-else-if="view === 'briefings'" class="personal-view" aria-label="主动简报">
+        <BriefingPanel />
+      </section>
+      <section v-else-if="view === 'capture'" class="personal-view" aria-label="快速捕获">
+        <CapturePanel />
+      </section>
+      <section v-else-if="view === 'privacy'" class="personal-view" aria-label="隐私与维护">
+        <PrivacyAuditPanel />
+      </section>
       <KnowledgeView v-else-if="view === 'kb'" />
       <ProjectWorkspace v-else-if="view === 'projects'" />
       <LearningWorkspace v-else-if="view === 'learning'" />
@@ -1015,19 +641,22 @@ function stopGenerate() {
         v-else-if="view === 'chat' && currentSession"
         :messages="messages"
         :streaming="streaming"
-        :knowledge-base="knowledgeBase"
         :pending-tool="hasPendingTool"
         :task-state="taskState"
+        :sessions="sessions"
+        :current-session-id="currentSessionId"
+        :capabilities="runtimeCapabilities"
         @send="sendMessage"
         @stop="stopGenerate"
-        @toggle-kb="knowledgeBase = !knowledgeBase"
         @approve="onApproveToolCall"
         @reject="onRejectToolCall"
         @approve-agent="onApproveAgentRunTool"
         @reject-agent="onRejectAgentRunTool"
         @select-chunk="currentChunkId = $event"
-        @gen-candidates="onGenCandidates"
         @save-inbox="onSaveMessageToInbox"
+        @select-session="(id) => void selectSession(id, false)"
+        @new-session="newSession"
+        @configure-model="openModelSettings('chat')"
       />
       <div v-else class="welcome">
         <span class="welcome-kicker">PRIVATE AGENT WORKSPACE</span>
@@ -1085,7 +714,13 @@ function stopGenerate() {
         />
       </template>
 
-      <SettingsView v-if="view === 'settings'" @reconfigure="reconfigure" />
+      <SettingsView
+        v-if="view === 'settings'"
+        :focus-section="settingsFocus?.section ?? null"
+        :return-to="settingsFocus?.returnTo ?? null"
+        @reconfigure="reconfigure"
+        @return="onSettingsReturn"
+      />
       <DiagnosticsView v-else-if="view === 'diagnostics'" />
       <ExtensionRegistryPanel v-else-if="view === 'extensions'" />
       <IntegrationImportPanel v-else-if="view === 'integrations'" />
@@ -1093,9 +728,27 @@ function stopGenerate() {
       <TodayView
         v-else-if="view === 'today'"
         @navigate="onNavigate"
-        @submit="onTodaySubmit"
         @open-command="commandPaletteOpen = true"
       />
+      <!-- v0.8.0 W6-R：旧壳回退路径同样可经命令面板/今日页链接到达六模块 -->
+      <section v-else-if="view === 'reminders'" class="personal-view" aria-label="提醒">
+        <ReminderPanel />
+      </section>
+      <section v-else-if="view === 'inbox'" class="personal-view" aria-label="收件箱">
+        <InboxPanel />
+      </section>
+      <section v-else-if="view === 'goals'" class="personal-view" aria-label="长期目标">
+        <GoalsWorkspace />
+      </section>
+      <section v-else-if="view === 'briefings'" class="personal-view" aria-label="主动简报">
+        <BriefingPanel />
+      </section>
+      <section v-else-if="view === 'capture'" class="personal-view" aria-label="快速捕获">
+        <CapturePanel />
+      </section>
+      <section v-else-if="view === 'privacy'" class="personal-view" aria-label="隐私与维护">
+        <PrivacyAuditPanel />
+      </section>
       <KnowledgeView v-else-if="view === 'kb'" />
       <ProjectWorkspace v-else-if="view === 'projects'" />
       <LearningWorkspace v-else-if="view === 'learning'" />
@@ -1209,6 +862,14 @@ function stopGenerate() {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* v0.8.0 W6-R：个人工作区独立主区容器（面板自带内部布局，壳层仅提供滚动与边距） */
+.personal-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
 }
 
 /* chat 无会话时的欢迎占位（位于主工作区） */

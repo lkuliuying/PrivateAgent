@@ -54,6 +54,53 @@ def test_assemble_report_failed():
     assert rep["summary"]["failed"] == 1
 
 
+def test_assemble_report_rejects_database_schema_behind_head():
+    """alembic current 即使命令返回 0，未出现 (head) 也不能通过发布门禁。"""
+    steps = [
+        {
+            "name": "alembic_current",
+            "status": "passed",
+            "duration_ms": 1,
+            "detail": "0033\n",
+        }
+    ]
+    rep = rc.assemble_report(steps, CURRENT_VERSION, strict_gates=True)
+    assert rep["database_schema"] is None
+    assert "database_schema_not_head" in rep["release_gate_issues"]
+
+
+def test_assemble_report_accepts_explicit_database_head(monkeypatch):
+    steps = [
+        {
+            "name": "alembic_current",
+            "status": "passed",
+            "duration_ms": 1,
+            "detail": "0035 (head)\n",
+        }
+    ]
+    monkeypatch.setattr(rc, "version_consistent", lambda _version: True)
+    monkeypatch.setattr(rc, "evidence_bound", lambda _version, _head: True)
+    monkeypatch.setattr(
+        rc,
+        "signing_status",
+        lambda _version: {
+            "version": CURRENT_VERSION,
+            "installer_built": True,
+            "code_signed": False,
+            "evidence": "codesign.json",
+        },
+    )
+    monkeypatch.setattr(
+        rc,
+        "git_commit_info",
+        lambda: {"head": "abc", "short": "abc", "describe": "abc", "dirty": False},
+    )
+    rep = rc.assemble_report(steps, CURRENT_VERSION, strict_gates=True)
+    assert rep["database_schema"] == "0035"
+    assert "database_schema_not_head" not in rep["release_gate_issues"]
+    assert rep["ok"] is True
+
+
 def test_write_report(tmp_path):
     rep = rc.assemble_report(
         [
@@ -265,6 +312,32 @@ def test_shell_step_captures_output_without_pipe(tmp_path):
     )
     assert result["status"] == "passed"
     assert "release-check-output" in result["detail"]
+
+
+def test_release_pytest_step_uses_reviewed_timeout(monkeypatch):
+    observed: dict[str, object] = {}
+
+    def fake_shell_step(name, cmd, cwd=None, timeout=600, env=None):
+        observed.update(name=name, cmd=cmd, cwd=cwd, timeout=timeout, env=env)
+        return {
+            "name": name,
+            "kind": "shell",
+            "status": "passed",
+            "duration_ms": 1,
+            "returncode": 0,
+            "detail": "",
+        }
+
+    monkeypatch.setattr(rc, "run_shell_step", fake_shell_step)
+
+    result = rc.run_pytest_step()
+
+    assert result["status"] == "passed"
+    assert observed["name"] == "pytest"
+    assert observed["cmd"] == ["uv", "run", "pytest", "-q"]
+    assert observed["cwd"] == str(rc.PROJECT_ROOT)
+    assert observed["timeout"] == 900
+    assert observed["env"] is None
 
 
 def test_managed_e2e_uses_external_server_and_stops_it(tmp_path, monkeypatch):

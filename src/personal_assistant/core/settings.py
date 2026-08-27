@@ -58,6 +58,10 @@ DEFAULTS: dict[str, str] = {
     "reminders_enabled": "true",
     "reminder_tick_seconds": "60",
     "desktop_notifications_enabled": "false",
+    # v0.9.0 H1-D（计划 §5.8）：旧配置 → Coding profile 导入状态（幂等升级）。
+    # 词汇：pending（未评估）/ auto_imported（升级自动导入）/
+    # imported（用户显式导入）/ dismissed（用户关闭一次性向导）/ not_needed。
+    "coding_profile_import_state": "pending",
 }
 
 

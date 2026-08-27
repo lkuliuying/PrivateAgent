@@ -26,11 +26,13 @@ from .api.routes_capture import router as capture_router
 from .api.routes_chat import router as chat_router
 from .api.routes_coding import router as coding_router
 from .api.routes_commands import router as commands_router
+from .api.routes_context_budget import router as context_budget_router
 from .api.routes_diagnostics import router as diagnostics_router
 from .api.routes_document_collections import router as document_collections_router
 from .api.routes_documents import router as documents_router
 from .api.routes_extensions import router as extensions_router
 from .api.routes_files import router as files_router
+from .api.routes_full_access import router as full_access_router
 from .api.routes_goals import router as goals_router
 from .api.routes_health import router as health_router
 from .api.routes_http_profiles import router as http_profiles_router
@@ -58,6 +60,7 @@ from .api.routes_testing import router as testing_router
 from .api.routes_today import router as today_router
 from .api.routes_tools import router as tools_router
 from .api.routes_workspaces import router as workspaces_router
+from .api.routes_worktrees import router as worktrees_router
 from .api.security import (
     LocalApiSecurityMiddleware,
     parse_csv_setting,
@@ -165,9 +168,22 @@ async def lifespan(app: FastAPI):
             scope_key=telemetry_persister.scope_key,
             flush_interval_seconds=settings.compatibility_telemetry_flush_seconds,
         )
+    # v0.9.0 H1 升级契约：旧项目幂等补建 root workspace + full_access 授予
+    # 进程重启回收（失败关闭；不阻断启动）。
+    from .core.db import async_session_factory as _v090_factory
+    from .core.v090_upgrade import reconcile_v090_upgrade
+
+    v090_task = asyncio.create_task(reconcile_v090_upgrade(_v090_factory))
     try:
         yield
     finally:
+        from .core.v090_upgrade import shutdown_v090
+
+        await shutdown_v090(_v090_factory)
+        with suppress(asyncio.CancelledError):
+            if not v090_task.done():
+                v090_task.cancel()
+            await v090_task
         await agent_run_coordinator.shutdown()
         if telemetry_task is not None:
             # 先取消 run 循环再 flush，避免两个 flush 并发交错导致 ended_at 丢失
@@ -234,6 +250,8 @@ app.include_router(goals_router)
 app.include_router(briefings_router)
 app.include_router(privacy_router)
 app.include_router(sessions_router)
+app.include_router(context_budget_router)
+app.include_router(full_access_router)
 app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(settings_router)
@@ -267,6 +285,7 @@ app.include_router(reminders_router)
 app.include_router(search_router)
 app.include_router(testing_router)
 app.include_router(workspaces_router)
+app.include_router(worktrees_router)
 
 
 @app.get("/")

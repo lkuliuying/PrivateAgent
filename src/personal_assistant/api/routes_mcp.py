@@ -15,8 +15,12 @@ from personal_assistant.config import settings
 from personal_assistant.core.db import get_session
 from personal_assistant.core.models import McpCallLog, McpServer
 from personal_assistant.mcp import McpClientError, McpManager, McpRepository
-from personal_assistant.mcp.contracts import McpServerConfig, McpTransport
-from personal_assistant.mcp.repository import server_config
+from personal_assistant.mcp.contracts import (
+    McpApprovalMode,
+    McpServerConfig,
+    McpTransport,
+)
+from personal_assistant.mcp.repository import parse_approval_policy, server_config
 from personal_assistant.mcp.validation import (
     UnsafeMcpConfigurationError,
     validate_mcp_config,
@@ -46,6 +50,11 @@ class McpServerRequest(BaseModel):
     trusted: bool = False
     enabled: bool = False
     allowed_tools: list[str] = Field(default_factory=list, max_length=512)
+    # §12.2：server 默认审批模式与逐工具覆盖；缺省 prompt（逐次审批）。
+    approval_default: McpApprovalMode = McpApprovalMode.PROMPT
+    approval_overrides: dict[str, McpApprovalMode] = Field(
+        default_factory=dict, max_length=512
+    )
     timeout_ms: int = Field(default=30_000, ge=100, le=600_000)
     max_output_bytes: int = Field(
         default=256 * 1024, ge=128, le=10 * 1024 * 1024
@@ -67,6 +76,8 @@ class McpServerRequest(BaseModel):
             trusted=self.trusted,
             enabled=self.enabled,
             allowed_tools=frozenset(self.allowed_tools),
+            approval_default=self.approval_default,
+            approval_overrides=dict(self.approval_overrides),
             timeout_ms=self.timeout_ms,
             max_output_bytes=self.max_output_bytes,
         )
@@ -87,6 +98,8 @@ class McpServerResponse(BaseModel):
     trusted: bool
     enabled: bool
     allowed_tools: list[str]
+    approval_default: McpApprovalMode = McpApprovalMode.PROMPT
+    approval_overrides: dict[str, McpApprovalMode] = Field(default_factory=dict)
     timeout_ms: int
     max_output_bytes: int
     status: str
@@ -119,9 +132,17 @@ class McpServerStateRequest(BaseModel):
     trusted: bool
     enabled: bool
     allowed_tools: list[str] = Field(default_factory=list, max_length=512)
+    # §12.2：缺省不变更（旧客户端兼容）；显式传值才更新审批策略。
+    approval_default: McpApprovalMode | None = None
+    approval_overrides: dict[str, McpApprovalMode] | None = Field(
+        default=None, max_length=512
+    )
 
 
 def _server_response(record: McpServer) -> McpServerResponse:
+    approval_default, approval_overrides = parse_approval_policy(
+        record.approval_policy_json
+    )
     return McpServerResponse(
         id=record.id,
         name=record.name,
@@ -137,6 +158,10 @@ def _server_response(record: McpServer) -> McpServerResponse:
         trusted=record.trusted,
         enabled=record.enabled,
         allowed_tools=list(record.allowed_tools_json or []),
+        approval_default=approval_default,
+        approval_overrides={
+            name: mode for name, mode in sorted(approval_overrides.items())
+        },
         timeout_ms=record.timeout_ms,
         max_output_bytes=record.max_output_bytes,
         status=record.status,
@@ -255,6 +280,8 @@ async def update_mcp_server_state(
         trusted=config.trusted,
         enabled=config.enabled,
         allowed_tools=config.allowed_tools,
+        approval_default=body.approval_default,
+        approval_overrides=body.approval_overrides,
     )
     return _server_response(record)
 

@@ -375,6 +375,10 @@ class ToolExecutionRepository:
             record.status = "succeeded"
         elif decision == "failed":
             record.status = "failed"
+        elif decision == "not_executed":
+            # v0.9.0 H2（计划 §6.2）：用户确认「未执行」——安全重试由用户
+            # 显式发起，系统仍不自动重跑；记录为失败终态 + 事实备注。
+            record.status = "failed"
         else:
             raise ToolExecutionConflictError(f"unsupported decision: {decision}")
         record.error_code = "resolved_manually"
@@ -385,6 +389,19 @@ class ToolExecutionRepository:
         record.lease_expires_at = None
         record.claim_token_sha256 = None
         record.updated_at = now
+        # v0.9.0 H2：人工处置低基数遥测（不含备注/输出正文）
+        try:
+            from personal_assistant.core.compatibility import (
+                compatibility_telemetry,
+            )
+
+            compatibility_telemetry.record(
+                path="manual_execution_resolution",
+                mode="unknown",
+                outcome=decision,
+            )
+        except ValueError:
+            pass
         await self.db.commit()
         await self.db.refresh(record)
         return record

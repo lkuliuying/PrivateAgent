@@ -97,9 +97,116 @@ def _map_project(p) -> ProjectOut:
     return ProjectOut.model_validate(p)
 
 
+class UserHomeCandidateOut(BaseModel):
+    """v0.9.0 H1：「当前用户目录」候选状态。
+
+    不返回绝对路径（脱敏契约）；候选态不携带 trusted path，
+    ``authorized`` 只有用户显式确认后才为 True。
+    """
+
+    available: bool
+    exists: bool
+    created: bool = False
+    authorized: bool
+    project_id: int | None = None
+    workspace_id: int | None = None
+    name: str | None = None
+
+
+async def _user_home_workspace_id(db: AsyncSession, project_id: int) -> int | None:
+    from ..core.repo_workspaces import ProjectWorkspaceRepository
+
+    workspaces = await ProjectWorkspaceRepository(db).list_by_project(project_id)
+    for ws in workspaces:
+        if ws.kind == "root" and ws.status in {"active", "dirty"}:
+            return ws.id
+    return None
+
+
+@router.get("/projects/user-home-candidate", response_model=UserHomeCandidateOut)
+async def user_home_candidate(db: AsyncSession = Depends(get_session)):
+    """查询内置「当前用户目录」候选（不创建、不授权）。"""
+    from ..config import settings as cfg
+
+    if not cfg.project_bound_runs_enabled:
+        return UserHomeCandidateOut(available=False, exists=False, authorized=False)
+    svc = ProjectService(db)
+    project = await svc.get_user_home_project()
+    if project is None:
+        return UserHomeCandidateOut(available=True, exists=False, authorized=False)
+    return UserHomeCandidateOut(
+        available=project.status == "active",
+        exists=True,
+        authorized=await svc.is_scope_authorized(project.id),
+        project_id=project.id,
+        workspace_id=await _user_home_workspace_id(db, project.id),
+        name=project.name,
+    )
+
+
+@router.post(
+    "/projects/user-home",
+    response_model=UserHomeCandidateOut,
+    status_code=201,
+)
+async def create_user_home_project(db: AsyncSession = Depends(get_session)):
+    """幂等创建「当前用户目录」候选项目（只解决归属/起始目录）。
+
+    契约（H0 §4.2）：不写 trusted_paths，不自动授权整个用户目录；
+    首次副作用仍走 confirm 与显式范围确认（``/authorize-scope``）。
+    """
+    from ..config import settings as cfg
+
+    if not cfg.project_bound_runs_enabled:
+        raise HTTPException(409, "Project-bound runs are disabled")
+    try:
+        svc = ProjectService(db)
+        project, created = await svc.ensure_user_home_project()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return UserHomeCandidateOut(
+        available=project.status == "active",
+        exists=True,
+        created=created,
+        authorized=await svc.is_scope_authorized(project.id),
+        project_id=project.id,
+        workspace_id=await _user_home_workspace_id(db, project.id),
+        name=project.name,
+    )
+
+
+@router.post(
+    "/projects/{project_id}/authorize-scope", response_model=ProjectOut
+)
+async def authorize_project_scope(
+    project_id: int, db: AsyncSession = Depends(get_session)
+):
+    """显式确认授权项目范围（用户确认动作；候选项目首次使用前必经）。"""
+    try:
+        return _map_project(await ProjectService(db).authorize_scope(project_id))
+    except ProjectNotFound:
+        raise HTTPException(404, "项目不存在")
+
+
 @router.get("/projects", response_model=list[ProjectOut])
 async def list_projects(db: AsyncSession = Depends(get_session)):
     return [_map_project(p) for p in await ProjectService(db).list()]
+
+
+@router.get("/projects/search", response_model=list[ProjectOut])
+async def search_projects(
+    q: str = Query(..., min_length=1, max_length=100),
+    db: AsyncSession = Depends(get_session),
+):
+    """v0.9.0 H4：按名称搜索项目（含已归档，前端可过滤；含有界）。"""
+    from ..core.repo_projects import ProjectRepository
+
+    keyword = q.strip()
+    projects = await ProjectRepository(db).list()
+    matched = [
+        p for p in projects if keyword.lower() in (p.name or "").lower()
+    ][:100]
+    return [_map_project(p) for p in matched]
 
 
 @router.post("/projects", response_model=ProjectOut, status_code=201)

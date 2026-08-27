@@ -69,3 +69,10 @@ docs/webfront-code_0.1.5.zip
 # 测试/调试临时目录（pytest-safe、debug 输出）
 .tmp/
 
+# v1.0.0 Rust Exec Host / 沙箱 spike 构建产物（AD-T02/ADR-006）
+apps/exec-host/target/
+apps/spawn-test/target/
+
+# Canvas 报告会话状态（仅 .canvas.tsx 本体入库）
+*.canvas.status.json
+

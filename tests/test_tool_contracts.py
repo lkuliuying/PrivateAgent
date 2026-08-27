@@ -312,6 +312,7 @@ def test_legacy_adapter_exposes_only_audited_read_only_tools() -> None:
 
     assert set(specs) == {
         "read_file",
+        "list_directory",
         "search_files",
         "grep_code",
         "read_code_file",
@@ -323,6 +324,7 @@ def test_legacy_adapter_exposes_only_audited_read_only_tools() -> None:
     assert {
         name for name, spec in specs.items() if spec.risk_level == ToolRiskLevel.SAFE
     } == {
+        "list_directory",
         "search_files",
         "grep_code",
         "get_git_status",

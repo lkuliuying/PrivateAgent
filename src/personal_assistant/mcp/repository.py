@@ -2,16 +2,86 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from personal_assistant.core.models import McpCallLog, McpServer
 from personal_assistant.core.timeutil import utcnow
 
-from .contracts import McpDiscovery, McpServerConfig, McpTransport
+from .contracts import McpApprovalMode, McpDiscovery, McpServerConfig, McpTransport
+
+
+def parse_approval_policy(
+    raw: dict | None,
+) -> tuple[McpApprovalMode, dict[str, McpApprovalMode]]:
+    """宽容解析 §12.2 审批策略：非法值不扩大权限，回落 prompt/忽略。
+
+    返回 (server 默认模式, 逐工具覆盖)。
+    """
+    default = McpApprovalMode.PROMPT
+    overrides: dict[str, McpApprovalMode] = {}
+    if isinstance(raw, dict):
+        raw_default = raw.get("default")
+        if isinstance(raw_default, str):
+            try:
+                default = McpApprovalMode(raw_default)
+            except ValueError:
+                default = McpApprovalMode.PROMPT
+        raw_tools = raw.get("tools")
+        if isinstance(raw_tools, dict):
+            for name, mode in list(raw_tools.items())[:512]:
+                if not isinstance(name, str) or not name or len(name) > 128:
+                    continue
+                if not isinstance(mode, str):
+                    continue
+                try:
+                    overrides[name] = McpApprovalMode(mode)
+                except ValueError:
+                    continue
+    return default, overrides
+
+
+def approval_policy_payload(
+    default: McpApprovalMode, overrides: dict[str, McpApprovalMode] | None
+) -> dict:
+    return {
+        "default": default.value,
+        "tools": {
+            name: mode.value for name, mode in sorted((overrides or {}).items())
+        },
+    }
+
+
+def config_identity_hash(config: McpServerConfig) -> str:
+    """连接身份规范化哈希（§12.1）：任一连接要素变化即使 discovery 失效。
+
+    不含 secret 值（仅名称）；不含审批/限额等非身份字段。
+    """
+    payload = {
+        "transport": config.transport.value,
+        "command": config.command,
+        "args": list(config.args),
+        "working_directory": config.working_directory,
+        "url": config.url,
+        "env_names": sorted((config.env or {}).keys()),
+        "secret_ref_names": sorted((config.secret_refs or {}).keys()),
+        "allow_insecure_local": config.allow_insecure_local,
+        "allow_private_network": config.allow_private_network,
+    }
+    encoded = json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def server_config(record: McpServer) -> McpServerConfig:
+    approval_default, approval_overrides = parse_approval_policy(
+        record.approval_policy_json
+    )
     return McpServerConfig(
         id=record.id,
         name=record.name,
@@ -27,6 +97,8 @@ def server_config(record: McpServer) -> McpServerConfig:
         trusted=record.trusted,
         enabled=record.enabled,
         allowed_tools=frozenset(record.allowed_tools_json or ()),
+        approval_default=approval_default,
+        approval_overrides=approval_overrides,
         timeout_ms=record.timeout_ms,
         max_output_bytes=record.max_output_bytes,
     )
@@ -52,6 +124,9 @@ class McpRepository:
             trusted=config.trusted,
             enabled=config.enabled,
             allowed_tools_json=sorted(config.allowed_tools),
+            approval_policy_json=approval_policy_payload(
+                config.approval_default, config.approval_overrides
+            ),
             timeout_ms=config.timeout_ms,
             max_output_bytes=config.max_output_bytes,
             status="disconnected" if config.enabled else "disabled",
@@ -75,6 +150,9 @@ class McpRepository:
         record.trusted = config.trusted
         record.enabled = config.enabled
         record.allowed_tools_json = sorted(config.allowed_tools)
+        record.approval_policy_json = approval_policy_payload(
+            config.approval_default, config.approval_overrides
+        )
         record.timeout_ms = config.timeout_ms
         record.max_output_bytes = config.max_output_bytes
         record.status = "disconnected" if config.enabled else "disabled"
@@ -115,12 +193,24 @@ class McpRepository:
         trusted: bool,
         enabled: bool,
         allowed_tools: frozenset[str],
+        approval_default: McpApprovalMode | None = None,
+        approval_overrides: dict[str, McpApprovalMode] | None = None,
     ) -> McpServer:
         """Update trust/activation without round-tripping hidden secret values."""
 
         record.trusted = trusted
         record.enabled = enabled
         record.allowed_tools_json = sorted(allowed_tools)
+        if approval_default is not None or approval_overrides is not None:
+            current_default, current_overrides = parse_approval_policy(
+                record.approval_policy_json
+            )
+            record.approval_policy_json = approval_policy_payload(
+                approval_default if approval_default is not None else current_default,
+                approval_overrides
+                if approval_overrides is not None
+                else current_overrides,
+            )
         if not enabled:
             record.status = "disabled"
         elif record.status == "disabled":
@@ -136,6 +226,8 @@ class McpRepository:
         record.discovery_resources_json = list(discovery.resources)
         record.discovery_prompts_json = list(discovery.prompts)
         record.discovery_sha256 = discovery.sha256
+        # §12.1：绑定保存时的连接身份；后续配置变化 → 目录失效（失败关闭）。
+        record.discovery_config_hash = config_identity_hash(server_config(record))
         record.status = "healthy"
         record.last_error_code = None
         record.last_checked_at = now

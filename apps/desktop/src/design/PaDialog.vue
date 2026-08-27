@@ -5,6 +5,8 @@
  */
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
+defineOptions({ inheritAttrs: false });
+
 const props = withDefaults(
   defineProps<{
     open: boolean;
@@ -81,6 +83,7 @@ onBeforeUnmount(() => {
       >
         <div
           ref="panelRef"
+          v-bind="$attrs"
           class="pa-dialog-panel"
           role="dialog"
           aria-modal="true"

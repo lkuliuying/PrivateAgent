@@ -2,20 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   shouldUseLegacyToolPlanner,
+  supportsCodingRunCreation,
   type RuntimeCapabilities,
 } from "./runtime";
 
 function capabilities(
   chat_execution_mode: RuntimeCapabilities["chat_execution_mode"],
-  workflows: Partial<
-    Pick<
-      RuntimeCapabilities,
-      | "patch_workflow_enabled"
-      | "command_workflow_enabled"
-      | "http_workflow_enabled"
-      | "sql_readonly_workflow_enabled"
-    >
-  > = {}
+  overrides: Partial<RuntimeCapabilities> = {}
 ): RuntimeCapabilities {
   return {
     chat_execution_mode,
@@ -26,7 +19,7 @@ function capabilities(
     command_workflow_enabled: false,
     http_workflow_enabled: false,
     sql_readonly_workflow_enabled: false,
-    ...workflows,
+    ...overrides,
   };
 }
 
@@ -41,6 +34,40 @@ describe("chat execution mode", () => {
 
   it("bypasses the planner in Agent Runtime mode", () => {
     expect(shouldUseLegacyToolPlanner(capabilities("agent_runtime"))).toBe(false);
+  });
+});
+
+describe("coding run creation capability", () => {
+  it("requires UI, Agent Runs API, and project-bound capabilities together", () => {
+    expect(
+      supportsCodingRunCreation(
+        capabilities("legacy", {
+          coding_agent_ui_enabled: true,
+          agent_runs_api_enabled: true,
+          project_bound_runs_enabled: true,
+        })
+      )
+    ).toBe(true);
+  });
+
+  it("fails closed when Agent Runs API is disabled or absent", () => {
+    expect(
+      supportsCodingRunCreation(
+        capabilities("legacy", {
+          coding_agent_ui_enabled: true,
+          agent_runs_api_enabled: false,
+          project_bound_runs_enabled: true,
+        })
+      )
+    ).toBe(false);
+    expect(
+      supportsCodingRunCreation(
+        capabilities("legacy", {
+          coding_agent_ui_enabled: true,
+          project_bound_runs_enabled: true,
+        })
+      )
+    ).toBe(false);
   });
 });
 

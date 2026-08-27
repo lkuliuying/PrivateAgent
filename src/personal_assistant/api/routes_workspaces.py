@@ -12,11 +12,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings as cfg
 from ..core.db import get_session
+from ..core.timeutil import format_rfc3339_utc
 from ..core.workspaces import ProjectWorkspaceService
 from ..logging_setup import get_logger
 
@@ -36,6 +37,11 @@ class WorkspaceOut(BaseModel):
     last_used_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+    # v0.9.0 H0 §5：统一带 Z 的 RFC 3339 UTC
+    @field_serializer("last_used_at", "created_at", "updated_at")
+    def _serialize_time(self, value: datetime | None) -> str | None:
+        return format_rfc3339_utc(value)
 
 
 def _require_project_bound() -> None:

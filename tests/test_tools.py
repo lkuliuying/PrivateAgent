@@ -209,6 +209,7 @@ async def test_legacy_planner_hides_runtime_owned_read_only_tools(
         prompt = seen_system_prompts[0]
         for native_tool in (
             "read_file",
+            "list_directory",
             "search_files",
             "grep_code",
             "read_code_file",

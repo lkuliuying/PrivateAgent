@@ -139,6 +139,9 @@ class AgentRunRepository:
         permission_snapshot_json: dict | None = None,
         client_request_id: str | None = None,
         request_payload_sha256: str | None = None,
+        # Coding 会话的用户原始请求。与 run 在同一事务持久化，保证任务列表、
+        # last_run_id 与对话事实不会出现“有任务、无消息”的分裂状态。
+        request_message: str | None = None,
     ) -> AgentRunRecord:
         if not run_id or len(run_id) > 36:
             raise ValueError("run_id must contain 1-36 characters")
@@ -184,6 +187,32 @@ class AgentRunRepository:
         )
         self.db.add(record)
         try:
+            if request_message is not None:
+                if session_id is None:
+                    raise ValueError(
+                        "request_message requires a session-bound run"
+                    )
+                session = (
+                    await self.db.execute(
+                        select(ChatSession)
+                        .where(ChatSession.id == session_id)
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if session is None:
+                    raise AgentRunProjectionError(
+                        f"Chat session not found: {session_id}"
+                    )
+                occurred_at = datetime.now(timezone.utc).replace(tzinfo=None)
+                self.db.add(
+                    Message(
+                        session_id=session_id,
+                        role="user",
+                        content=request_message,
+                    )
+                )
+                session.last_run_id = run_id
+                session.updated_at = occurred_at
             await self.db.commit()
             await self.db.refresh(record)
         except Exception:
@@ -831,6 +860,25 @@ class AgentRunRepository:
                     AgentRunCheckpointRecord.run_id == run.id
                 )
             )
+            # Coding run 与对话共用 Session：终态投影与 assistant 消息在同一
+            # 事务提交。失败/取消仍 touch 会话排序，但不伪造 assistant 回复。
+            if (
+                run.session_id is not None
+                and run.project_id is not None
+                and run.workspace_id is not None
+            ):
+                session = await self.db.get(ChatSession, run.session_id)
+                if session is not None:
+                    session.last_run_id = run.id
+                    session.updated_at = occurred_at
+                if event.type == AgentEventType.RUN_COMPLETED and run.output:
+                    self.db.add(
+                        Message(
+                            session_id=run.session_id,
+                            role="assistant",
+                            content=run.output,
+                        )
+                    )
             return
 
         # v0.6.0 C0 §4.5：plan/artifact 稳定事件只推进 sequence，不改变 run 状态。
@@ -846,6 +894,12 @@ class AgentRunRepository:
             AgentEventType.PATCH_SET_ROLLED_BACK,
             AgentEventType.PATCH_SET_FAILED,
             AgentEventType.PATCH_SET_UNKNOWN,
+            # v0.9.0 H0 §7.2/§8：公开决策摘要、上下文压缩与权限降级（additive）
+            AgentEventType.DECISION_SUMMARY,
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            AgentEventType.CONTEXT_COMPACTION_FAILED,
+            AgentEventType.PERMISSION_DOWNGRADED,
         }:
             if run.status not in {"created", "running", "waiting_approval"}:
                 raise AgentRunProjectionError(
@@ -935,6 +989,85 @@ class AgentRunRepository:
             ):
                 raise AgentRunProjectionError(
                     "artifact.created requires a bounded step_id"
+                )
+            return
+        # v0.9.0 H0 §8：公开决策摘要——只含结构化公开键（不含隐藏推理），有界。
+        if event_type == AgentEventType.DECISION_SUMMARY:
+            from personal_assistant.core.execution_contracts import (
+                DECISION_SUMMARY_PAYLOAD_KEYS,
+            )
+
+            unknown = set(payload) - DECISION_SUMMARY_PAYLOAD_KEYS
+            if unknown:
+                raise AgentRunProjectionError(
+                    f"decision.summary carries unknown keys: {sorted(unknown)}"
+                )
+            goal = payload.get("goal")
+            if not isinstance(goal, str) or not 1 <= len(goal) <= 1000:
+                raise AgentRunProjectionError(
+                    "decision.summary requires a bounded goal"
+                )
+            for key in ("method", "rationale", "verification"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, str) or len(value) > 1000
+                ):
+                    raise AgentRunProjectionError(
+                        f"decision.summary requires a bounded {key}"
+                    )
+            for key in ("key_judgments", "next_steps", "risks"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, list)
+                    or len(value) > 12
+                    or any(
+                        not isinstance(item, str) or len(item) > 300
+                        for item in value
+                    )
+                ):
+                    raise AgentRunProjectionError(
+                        f"decision.summary requires bounded {key}"
+                    )
+            return
+        # v0.9.0 H0 §7.2：上下文压缩事件——低基数状态与有界错误信息。
+        if event_type in {
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            AgentEventType.CONTEXT_COMPACTION_FAILED,
+        }:
+            for key in ("before_tokens", "after_tokens", "threshold_percent"):
+                value = payload.get(key)
+                if value is not None and (
+                    not isinstance(value, int) or value < 0
+                ):
+                    raise AgentRunProjectionError(
+                        f"{event_type.value} requires a non-negative {key}"
+                    )
+            if event_type == AgentEventType.CONTEXT_COMPACTION_FAILED:
+                error_code = payload.get("error_code")
+                error_reason = payload.get("error_reason")
+                if not isinstance(error_code, str) or not 1 <= len(error_code) <= 64:
+                    raise AgentRunProjectionError(
+                        "context.compaction_failed requires a bounded error_code"
+                    )
+                if error_reason is not None and (
+                    not isinstance(error_reason, str) or len(error_reason) > 500
+                ):
+                    raise AgentRunProjectionError(
+                        "context.compaction_failed requires a bounded error_reason"
+                    )
+            return
+        # v0.9.0 H0 §6.3：权限降级事件——低基数原因，不含正文。
+        if event_type == AgentEventType.PERMISSION_DOWNGRADED:
+            reason = payload.get("reason")
+            downgraded_to = payload.get("downgraded_to")
+            if not isinstance(reason, str) or not 1 <= len(reason) <= 64:
+                raise AgentRunProjectionError(
+                    "permission.downgraded requires a bounded reason"
+                )
+            if downgraded_to != "confirm":
+                raise AgentRunProjectionError(
+                    "permission.downgraded only targets confirm（失败关闭）"
                 )
             return
         # v0.7.0 E0 §1：patch_set.* 事件 payload 校验（键集由

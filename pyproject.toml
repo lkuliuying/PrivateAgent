@@ -1,6 +1,6 @@
 [project]
 name = "personal-assistant"
-version = "0.7.0-rc.1"
+version = "1.0.0"
 description = "本地优先、隐私可控的桌面私人助手 - 第一阶段"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -9,6 +9,9 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "python-multipart>=0.0.12",
+    # v0.9.0 H0 §5：产品时区 Asia/Shanghai（zoneinfo 在无系统 tz 数据库的
+    # 环境——Windows/uv 独立解释器/容器——需要 tzdata 包）。
+    "tzdata>=2024.1",
     # Provider 直接使用 httpx；socks extra 兼容桌面环境常见的 ALL_PROXY=socks5 配置。
     "httpx[socks]>=0.27",
     # 配置与日志
@@ -33,12 +36,17 @@ dependencies = [
     "markdown>=3.7",
     "cryptography>=49.0.0",
     "sqlglot>=30.15.0",
+    # MCP 与安全加固的 HTTP 传输（代码实际引用；与 requirements.txt 版本对齐）
+    "mcp==2.0.0",
+    "httpx2==2.9.1",
+    "httpcore2==2.9.1",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.16",
 ]
 
 [build-system]

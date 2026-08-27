@@ -54,6 +54,10 @@ struct SidecarState {
 /// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
 /// 0.3.0 M1 起显式承载 Agent Runtime 两个灰度开关，与后端 config.py 的
 /// PA_CHAT_AGENT_RUNTIME_ENABLED / PA_CONVERSATION_SUMMARY_WORKER_ENABLED 对齐。
+/// v0.9.0 H1-C（计划 §1.3/§5.7）：承载 Coding Agent 默认切换与三档权限/
+/// 上下文能力位；发布门禁已通过，产品默认开启（可显式置 false 精确回退）。
+/// 这些是能力可用性声明，不是权限授予：默认权限模式仍为 confirm，
+/// 不扩大既有 trusted path 或命令 profile。
 #[derive(Serialize, Deserialize, Clone)]
 struct ConfigData {
     db_host: String,
@@ -75,6 +79,55 @@ struct ConfigData {
     http_workflow_enabled: bool,
     #[serde(default)]
     sql_readonly_workflow_enabled: bool,
+    // === v0.9.0 能力位（默认 true：版本主题即默认切换，§1.3） ===
+    // Coding UI 通过 /agent-runs 创建执行；该 API 必须与 UI 一起默认开启，
+    // 否则后端会按隐藏端点语义返回 404。
+    #[serde(default = "default_true")]
+    agent_runs_api_enabled: bool,
+    #[serde(default = "default_true")]
+    project_bound_runs_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_run_plan_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_run_event_stream_enabled: bool,
+    // Coding Agent 的基础读取、单文件 Patch、上下文续接与可信完成校验。
+    // 这些开关此前未由安装版注入，导致 UI 提示模型调用未注册工具，且任务
+    // 重开后模型拿不到历史对话。
+    #[serde(default = "default_true")]
+    agent_run_read_only_tools_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_patch_workflow_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_context_builder_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_output_verification_enabled: bool,
+    #[serde(default = "default_true")]
+    agent_command_workflow_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_patchset_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_command_profiles_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_artifacts_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_permission_models_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_agent_ui_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_workspace_auto_approve_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_full_access_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_context_budget_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_execution_detail_enabled: bool,
+    #[serde(default = "default_true")]
+    coding_worktree_enabled: bool,
+}
+
+/// v0.9.0 能力位默认开启（发布门禁通过后的产品默认值，计划 §3.1）。
+fn default_true() -> bool {
+    true
 }
 
 impl Default for ConfigData {
@@ -93,6 +146,25 @@ impl Default for ConfigData {
             conversation_summary_worker_enabled: false,
             http_workflow_enabled: false,
             sql_readonly_workflow_enabled: false,
+            agent_runs_api_enabled: true,
+            project_bound_runs_enabled: true,
+            agent_run_plan_enabled: true,
+            agent_run_event_stream_enabled: true,
+            agent_run_read_only_tools_enabled: true,
+            agent_patch_workflow_enabled: true,
+            agent_context_builder_enabled: true,
+            agent_output_verification_enabled: true,
+            agent_command_workflow_enabled: true,
+            coding_patchset_enabled: true,
+            coding_command_profiles_enabled: true,
+            coding_artifacts_enabled: true,
+            coding_permission_models_enabled: true,
+            coding_agent_ui_enabled: true,
+            coding_workspace_auto_approve_enabled: true,
+            coding_full_access_enabled: true,
+            coding_context_budget_enabled: true,
+            coding_execution_detail_enabled: true,
+            coding_worktree_enabled: true,
         }
     }
 }
@@ -729,6 +801,44 @@ fn parse_config_content(content: &str) -> LoadedConfig {
             cfg.http_workflow_enabled = v.eq_ignore_ascii_case("true");
         } else if let Some(v) = line.strip_prefix("PA_AGENT_SQL_READONLY_WORKFLOW_ENABLED=") {
             cfg.sql_readonly_workflow_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUNS_API_ENABLED=") {
+            cfg.agent_runs_api_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_PROJECT_BOUND_RUNS_ENABLED=") {
+            cfg.project_bound_runs_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_PLAN_ENABLED=") {
+            cfg.agent_run_plan_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_EVENT_STREAM_ENABLED=") {
+            cfg.agent_run_event_stream_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=") {
+            cfg.agent_run_read_only_tools_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_PATCH_WORKFLOW_ENABLED=") {
+            cfg.agent_patch_workflow_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_CONTEXT_BUILDER_ENABLED=") {
+            cfg.agent_context_builder_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=") {
+            cfg.agent_output_verification_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_AGENT_COMMAND_WORKFLOW_ENABLED=") {
+            cfg.agent_command_workflow_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_PATCHSET_ENABLED=") {
+            cfg.coding_patchset_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_COMMAND_PROFILES_ENABLED=") {
+            cfg.coding_command_profiles_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_ARTIFACTS_ENABLED=") {
+            cfg.coding_artifacts_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_PERMISSION_MODELS_ENABLED=") {
+            cfg.coding_permission_models_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_AGENT_UI_ENABLED=") {
+            cfg.coding_agent_ui_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED=") {
+            cfg.coding_workspace_auto_approve_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_FULL_ACCESS_ENABLED=") {
+            cfg.coding_full_access_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_CONTEXT_BUDGET_ENABLED=") {
+            cfg.coding_context_budget_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_EXECUTION_DETAIL_ENABLED=") {
+            cfg.coding_execution_detail_enabled = v.eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("PA_CODING_WORKTREE_ENABLED=") {
+            cfg.coding_worktree_enabled = v.eq_ignore_ascii_case("true");
         }
     }
     LoadedConfig {
@@ -804,7 +914,7 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         ""
     };
     Ok(format!(
-        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\n",
+        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\nPA_AGENT_HTTP_WORKFLOW_ENABLED={}\nPA_AGENT_SQL_READONLY_WORKFLOW_ENABLED={}\nPA_AGENT_RUNS_API_ENABLED={}\nPA_PROJECT_BOUND_RUNS_ENABLED={}\nPA_AGENT_RUN_PLAN_ENABLED={}\nPA_AGENT_RUN_EVENT_STREAM_ENABLED={}\nPA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED={}\nPA_AGENT_PATCH_WORKFLOW_ENABLED={}\nPA_AGENT_CONTEXT_BUILDER_ENABLED={}\nPA_AGENT_OUTPUT_VERIFICATION_ENABLED={}\nPA_AGENT_COMMAND_WORKFLOW_ENABLED={}\nPA_CODING_PATCHSET_ENABLED={}\nPA_CODING_COMMAND_PROFILES_ENABLED={}\nPA_CODING_ARTIFACTS_ENABLED={}\nPA_CODING_PERMISSION_MODELS_ENABLED={}\nPA_CODING_AGENT_UI_ENABLED={}\nPA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED={}\nPA_CODING_FULL_ACCESS_ENABLED={}\nPA_CODING_CONTEXT_BUDGET_ENABLED={}\nPA_CODING_EXECUTION_DETAIL_ENABLED={}\nPA_CODING_WORKTREE_ENABLED={}\n",
         cfg.db_host,
         cfg.db_port,
         cfg.db_user,
@@ -815,7 +925,30 @@ fn render_config(cfg: &ConfigData) -> Result<String, String> {
         cfg.embed_model,
         cfg.mcp_enabled,
         cfg.chat_agent_runtime_enabled,
-        cfg.conversation_summary_worker_enabled
+        cfg.conversation_summary_worker_enabled,
+        cfg.http_workflow_enabled,
+        cfg.sql_readonly_workflow_enabled,
+        // v0.9.0 H1-C（计划 §1.3/§5.7）：能力位显式落盘，升级/回退可解释；
+        // legacy .env 无这些行时默认 true（产品默认切换），显式 false 即回退。
+        cfg.agent_runs_api_enabled,
+        cfg.project_bound_runs_enabled,
+        cfg.agent_run_plan_enabled,
+        cfg.agent_run_event_stream_enabled,
+        cfg.agent_run_read_only_tools_enabled,
+        cfg.agent_patch_workflow_enabled,
+        cfg.agent_context_builder_enabled,
+        cfg.agent_output_verification_enabled,
+        cfg.agent_command_workflow_enabled,
+        cfg.coding_patchset_enabled,
+        cfg.coding_command_profiles_enabled,
+        cfg.coding_artifacts_enabled,
+        cfg.coding_permission_models_enabled,
+        cfg.coding_agent_ui_enabled,
+        cfg.coding_workspace_auto_approve_enabled,
+        cfg.coding_full_access_enabled,
+        cfg.coding_context_budget_enabled,
+        cfg.coding_execution_detail_enabled,
+        cfg.coding_worktree_enabled
     ))
 }
 
@@ -1389,6 +1522,85 @@ async fn start_sidecar(
                 "PA_CONVERSATION_SUMMARY_WORKER_ENABLED",
                 loaded.public.conversation_summary_worker_enabled.to_string(),
             )
+            // v0.9.0 H1-C（计划 §5.7）：安装版能力位注入——“替我批准/完全访问/
+            // 上下文用量”真实可用的前提；与 .env 落盘值一致，发布门禁通过后的
+            // 产品默认值（可显式回退）。能力可用性声明不是权限授予。
+            .env(
+                "PA_AGENT_RUNS_API_ENABLED",
+                loaded.public.agent_runs_api_enabled.to_string(),
+            )
+            .env(
+                "PA_PROJECT_BOUND_RUNS_ENABLED",
+                loaded.public.project_bound_runs_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_RUN_PLAN_ENABLED",
+                loaded.public.agent_run_plan_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_RUN_EVENT_STREAM_ENABLED",
+                loaded.public.agent_run_event_stream_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED",
+                loaded.public.agent_run_read_only_tools_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_PATCH_WORKFLOW_ENABLED",
+                loaded.public.agent_patch_workflow_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_CONTEXT_BUILDER_ENABLED",
+                loaded.public.agent_context_builder_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_OUTPUT_VERIFICATION_ENABLED",
+                loaded.public.agent_output_verification_enabled.to_string(),
+            )
+            .env(
+                "PA_AGENT_COMMAND_WORKFLOW_ENABLED",
+                loaded.public.agent_command_workflow_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_PATCHSET_ENABLED",
+                loaded.public.coding_patchset_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_COMMAND_PROFILES_ENABLED",
+                loaded.public.coding_command_profiles_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_ARTIFACTS_ENABLED",
+                loaded.public.coding_artifacts_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_PERMISSION_MODELS_ENABLED",
+                loaded.public.coding_permission_models_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_AGENT_UI_ENABLED",
+                loaded.public.coding_agent_ui_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED",
+                loaded.public.coding_workspace_auto_approve_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_FULL_ACCESS_ENABLED",
+                loaded.public.coding_full_access_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_CONTEXT_BUDGET_ENABLED",
+                loaded.public.coding_context_budget_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_EXECUTION_DETAIL_ENABLED",
+                loaded.public.coding_execution_detail_enabled.to_string(),
+            )
+            .env(
+                "PA_CODING_WORKTREE_ENABLED",
+                loaded.public.coding_worktree_enabled.to_string(),
+            )
             .spawn()
         {
             Ok((mut rx, child)) => {
@@ -1643,6 +1855,53 @@ mod tests {
             parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
         assert!(!summary_only.public.chat_agent_runtime_enabled);
         assert!(summary_only.public.conversation_summary_worker_enabled);
+    }
+
+    #[test]
+    fn v090_capability_flags_default_true_for_legacy_configs() {
+        // v0.9.0 H1-C（计划 §1.3/§5.7）：发布门禁通过后的产品默认切换——
+        // 旧 .env（无能力位行）解析与重写都默认开启，安装版“替我批准/完全
+        // 访问/上下文用量”真实可用；能力可用性声明不是权限授予。
+        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
+        assert!(loaded.public.agent_runs_api_enabled);
+        assert!(loaded.public.coding_agent_ui_enabled);
+        assert!(loaded.public.coding_workspace_auto_approve_enabled);
+        assert!(loaded.public.coding_full_access_enabled);
+        assert!(loaded.public.coding_context_budget_enabled);
+        assert!(loaded.public.agent_run_read_only_tools_enabled);
+        assert!(loaded.public.agent_patch_workflow_enabled);
+        assert!(loaded.public.agent_context_builder_enabled);
+        assert!(loaded.public.agent_output_verification_enabled);
+        assert!(loaded.public.agent_command_workflow_enabled);
+        let rendered = render_config(&loaded.public).unwrap();
+        assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=true"));
+        assert!(rendered.contains("PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED=true"));
+        assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=true"));
+        assert!(rendered.contains("PA_CODING_CONTEXT_BUDGET_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=true"));
+        assert!(rendered.contains("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=true"));
+    }
+
+    #[test]
+    fn v090_capability_flags_support_explicit_false_rollback() {
+        // 精确回退（计划 §3.3）：显式置 false 必须被尊重并落盘。
+        let loaded = parse_config_content(
+            "PA_AGENT_RUNS_API_ENABLED=false\nPA_CODING_FULL_ACCESS_ENABLED=false\nPA_AGENT_COMMAND_WORKFLOW_ENABLED=false\nPA_AGENT_PATCH_WORKFLOW_ENABLED=false\nPA_AGENT_CONTEXT_BUILDER_ENABLED=false\n",
+        );
+        assert!(!loaded.public.agent_runs_api_enabled);
+        assert!(!loaded.public.coding_full_access_enabled);
+        assert!(!loaded.public.agent_command_workflow_enabled);
+        assert!(!loaded.public.agent_patch_workflow_enabled);
+        assert!(!loaded.public.agent_context_builder_enabled);
+        assert!(loaded.public.coding_workspace_auto_approve_enabled);
+        let rendered = render_config(&loaded.public).unwrap();
+        assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=false"));
+        assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=false"));
+        assert!(rendered.contains("PA_AGENT_COMMAND_WORKFLOW_ENABLED=false"));
+        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=false"));
+        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=false"));
     }
 
     #[test]

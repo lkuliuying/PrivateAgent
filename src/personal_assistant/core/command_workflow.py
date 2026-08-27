@@ -44,9 +44,14 @@ from ..agents.tools import (
 from ..agents.workflow_contracts import WORKFLOW_CONTRACT_BY_NAME
 from .code_tools import (
     COMMAND_TIMEOUT,
+    NON_WHITELISTED_COMMAND_ERROR,
     is_whitelisted_command,
     parse_command,
     whitelisted_prefix_length,
+)
+from .diagnostic_profiles import (
+    BUILTIN_DIAGNOSTIC_PROFILES,
+    diagnostic_profiles_description,
 )
 from .patch_sets import _profile_to_args
 from .permissions import PermissionError_
@@ -596,7 +601,27 @@ async def _resolve_command(
             matched_prefix_len = len(profile_args)
             best_rank = rank
     if matched_profile is None and not is_whitelisted_command(args):
-        raise PermissionError_("非白名单命令，已拒绝执行")
+        # v0.9.0 H1-B（计划 §5.6）：内置只读诊断 profile——项目 profile 与
+        # 全局白名单均未命中时，按最长前缀匹配内置固定 argv 诊断命令；
+        # 命中后与项目 safe profile 同口径参与后续复核（精确 argv 规则仍生效）。
+        best = None
+        best_len = 0
+        for builtin in BUILTIN_DIAGNOSTIC_PROFILES:
+            try:
+                builtin_args = _profile_to_args(builtin.command_json)
+            except ValueError:
+                continue
+            lowered = [a.lower() for a in builtin_args]
+            if lowered and [a.lower() for a in args[: len(lowered)]] == lowered:
+                if best is None or len(builtin_args) > best_len:
+                    best = builtin
+                    best_len = len(builtin_args)
+        if best is not None:
+            matched_profile = best
+            matched_prefix_len = best_len
+            best_rank = _RISK_RANK.get(best.risk_level or "confirm", 2)
+    if matched_profile is None and not is_whitelisted_command(args):
+        raise PermissionError_(NON_WHITELISTED_COMMAND_ERROR)
     # 第五轮（P0-1）：workspace 模式只允许「匹配项目 profile」的命令自动
     # 执行——SAFE 是工具注册级 risk，未匹配 profile 的全局白名单命令不得
     # 因此免确认（E0 §4.1：workspace 自动允许「匹配项目命令 profile」）。
@@ -620,11 +645,15 @@ async def _resolve_command(
         permission_mode == "workspace"
         and command_risk == ToolRiskLevel.SAFE
         and matched_profile is not None
+        and not getattr(matched_profile, "builtin", False)
         and (
             (matched_profile.risk_level or "confirm") != "safe"
             or not matched_profile.allow_network
         )
     ):
+        # 内置诊断 profile 豁免说明：其 argv 为代码冻结的精确固定参数，
+        # 未知工具精确 argv 规则保证前缀后零追加参数，网络入口结构性不存在，
+        # allow_network=False 语义天然成立；数据库项目 profile 才有 TOCTOU 复核。
         raise PermissionError_(
             "workspace 自动允许的命令在执行时不再是 safe 且 allow_network=True"
             " 的 profile（项目命令 profile 已变化），已拒绝；重新发起后按审批"
@@ -1043,7 +1072,13 @@ def _build_command_tool_spec(
     return ToolSpec(
         name=_COMMAND_CONTRACT.name,
         version=_COMMAND_CONTRACT.version,
-        description=_COMMAND_CONTRACT.description,
+        # v0.9.0 H1-B（计划 §5.6）：向模型公开内置诊断固定 argv，使可执行请求
+        # 能力就绪时能真实调用命令收集证据，不退化为纯文字教程。
+        description=(
+            _COMMAND_CONTRACT.description
+            + "\n"
+            + diagnostic_profiles_description()
+        ),
         input_schema=_COMMAND_CONTRACT.input_schema,
         output_schema=_COMMAND_CONTRACT.output_schema,
         risk_level=command_risk or _COMMAND_CONTRACT.risk_level,

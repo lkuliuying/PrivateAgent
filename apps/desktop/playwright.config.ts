@@ -10,7 +10,9 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 20_000 },
   fullyParallel: false,
-  retries: 0,
+  // 应用首屏初始化存在低频竞态（白屏/首请求失败）：单次重试吸收启动抖动，
+  // 连续两次同位失败仍计为真实回归失败。
+  retries: 1,
   workers: 1,
   use: {
     baseURL,

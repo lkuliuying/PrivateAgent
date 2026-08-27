@@ -33,6 +33,7 @@ def test_capabilities_fields_frozen():
 
     v0.5.0 B0 additive 扩展：新增四个可信工作流开关字段（默认 False），
     既有字段不变。见 docs/releases/v0.5.0/v0.5.0-b0-contracts-20260809.md §2。
+    v0.9.0 H0 additive 扩展：见 v0.9.0-h0-contracts-20260823.md §3。
     """
     assert set(RuntimeCapabilities.model_fields) == {
         "chat_execution_mode",
@@ -43,6 +44,20 @@ def test_capabilities_fields_frozen():
         "command_workflow_enabled",
         "http_workflow_enabled",
         "sql_readonly_workflow_enabled",
+        # v0.9.0 H0 additive
+        "agent_runs_api_enabled",
+        "coding_agent_ui_enabled",
+        "project_bound_runs_enabled",
+        "coding_workspace_auto_approve",
+        "coding_full_access_supported",
+        "coding_context_budget_enabled",
+        "coding_execution_detail_enabled",
+        "coding_worktree_enabled",
+        "product_timezone",
+        # v0.9.0 H1-C additive（计划 §5.3/§5.7）：审计/撤销独立声明 + 诊断命令面
+        "coding_full_access_audit",
+        "coding_full_access_revoke",
+        "coding_diagnostic_commands_enabled",
     }
     mode = RuntimeCapabilities.model_fields["chat_execution_mode"]
     assert mode.annotation.__args__ == ("agent_runtime", "legacy")
@@ -110,6 +125,12 @@ def test_run_event_types_frozen():
         "patch_set.rolled_back",
         "patch_set.failed",
         "patch_set.unknown",
+        # v0.9.0 H0 §7.2/§8：公开决策摘要与上下文压缩事件（additive）
+        "decision.summary",
+        "context.compaction_started",
+        "context.compaction_completed",
+        "context.compaction_failed",
+        "permission.downgraded",
     }
 
 
@@ -241,6 +262,19 @@ def test_compatibility_telemetry_labels_frozen():
         "run_plan_update",
         "run_event_stream",
         "workspace_resolve",
+        # v0.9.0 H0 §9 additive
+        "legacy_session_bind",
+        "full_access_grant",
+        "permission_downgrade",
+        "context_budget_poll",
+        "unbound_run_create",
+        "coding_ui_fallback",
+        # v0.9.0 H2：unknown 执行人工处置计数（不含备注/输出正文）
+        "manual_execution_resolution",
+        # v0.9.0 H1-B（§5.6）：可执行意图路由计数（低基数，无消息正文）
+        "executable_intent",
+        # v1.0 CT1-04（专项计划 F-002）：写入预检门禁计数（低基数，无消息正文）
+        "tool_preflight",
     }
     assert _LABELS["/chat/stream"]["modes"] == {
         "agent_runtime",
@@ -260,6 +294,8 @@ def test_compatibility_telemetry_labels_frozen():
         "created",
         "replayed",
         "rejected",
+        # v0.9.0 H1-D additive（§5.8）：无默认 profile 的低基数计数
+        "profile_default_missing",
     }
     assert _LABELS["run_event_stream"]["outcomes"] == {
         "connected",
@@ -273,6 +309,11 @@ def test_compatibility_telemetry_labels_frozen():
         "missing",
         "mismatch",
         "untrusted",
+    }
+    # v1.0 CT1-04（专项计划 F-002）：预检门禁只计数，不记录消息/路径正文。
+    assert _LABELS["tool_preflight"] == {
+        "modes": {"coding"},
+        "outcomes": {"blocked", "allowed"},
     }
 
 

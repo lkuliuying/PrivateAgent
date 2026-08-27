@@ -1,0 +1,9 @@
+# Release and signing controls require maintainer review.
+/.github/workflows/ @lkuliuying
+/CODE_SIGNING_POLICY.md @lkuliuying
+/PRIVACY.md @lkuliuying
+/LICENSE @lkuliuying
+/NOTICE @lkuliuying
+/apps/desktop/src-tauri/tauri.conf.json @lkuliuying
+/scripts/sign_installer.py @lkuliuying
+/.signpath/ @lkuliuying

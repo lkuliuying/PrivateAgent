@@ -25,6 +25,10 @@ from .timeutil import utcnow
 
 logger = get_logger(__name__)
 
+# v0.9.0 H1（H0 §4.2 第 3 条）：内置「当前用户目录」项目候选名称。
+# 该默认值只解决归属与起始目录，不自动授权整个用户目录。
+USER_HOME_PROJECT_NAME = "当前用户目录"
+
 # 默认忽略目录（docs/archive/phases/phase3-requirements.md §4.1）
 IGNORED_DIRS: set[str] = {
     ".git",
@@ -323,6 +327,59 @@ class ProjectService:
         if project is None:
             raise ProjectNotFound(f"项目不存在: {project_id}")
         return project
+
+    async def get_user_home_project(self) -> Project | None:
+        """查询「当前用户目录」候选项目（不创建）。"""
+        home = str(Path.home().resolve())
+        return await self.repo.get_by_path(home)
+
+    async def ensure_user_home_project(self) -> tuple[Project, bool]:
+        """幂等创建「当前用户目录」候选项目；返回 (project, created)。
+
+        H0 §4.2 第 3 条：只解决归属与起始目录——**不写 trusted_paths**，
+        不自动授权整个用户目录的写入或命令执行；首次副作用仍遵守
+        confirm 与 trusted-path 建立流程（``authorize_scope`` 显式确认）。
+        创建失败不留半绑定项目：project + root workspace 同事务提交。
+        """
+        home = str(Path.home().resolve())
+        existing = await self.repo.get_by_path(home)
+        if existing is not None:
+            if self._workspace_enabled:
+                await self._ensure_workspace(existing)
+            return existing, False
+        language, framework = await asyncio.to_thread(_infer_project, Path(home))
+        project = await self.repo.create(
+            name=USER_HOME_PROJECT_NAME,
+            root_path=home,
+            language=language,
+            framework=framework,
+        )
+        if self._workspace_enabled:
+            await self._ensure_workspace(project)
+        logger.info(
+            "user home candidate project created", project_id=project.id
+        )
+        return project, True
+
+    async def authorize_scope(self, project_id: int) -> Project:
+        """显式授权项目范围（写入 trusted_paths）。
+
+        对应前端「首次使用前确认授权范围」动作（计划 §3.1/§5.1）：
+        候选项目本身不带信任，只有用户显式确认后才建立 trusted path。
+        """
+        project = await self.get(project_id)
+        await TrustedPathRepository(self.db).authorize(
+            project.root_path, "directory"
+        )
+        logger.info("project scope authorized", project_id=project.id)
+        return project
+
+    async def is_scope_authorized(self, project_id: int) -> bool:
+        """项目范围是否已建立 trusted path（候选态/已授权态区分）。"""
+        project = await self.get(project_id)
+        return (
+            await TrustedPathRepository(self.db).get_by_path(project.root_path)
+        ) is not None
 
     async def list(self) -> list[Project]:
         return await self.repo.list()

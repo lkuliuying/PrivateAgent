@@ -489,7 +489,7 @@ def test_v060_flag_order_validation_rejects_plan_without_project_bound():
     from personal_assistant.config import Settings
 
     with pytest.raises(ValueError, match="PA_AGENT_RUN_PLAN_ENABLED"):
-        Settings(agent_run_plan_enabled=True)
+        Settings(_env_file=None, agent_run_plan_enabled=True)  # type: ignore[call-arg]
 
 
 def test_v060_flag_order_validation_rejects_stream_without_plan():
@@ -497,18 +497,20 @@ def test_v060_flag_order_validation_rejects_stream_without_plan():
 
     with pytest.raises(ValueError, match="PA_AGENT_RUN_EVENT_STREAM_ENABLED"):
         Settings(
+            _env_file=None,
             project_bound_runs_enabled=True,
             agent_run_event_stream_enabled=True,
-        )
+        )  # type: ignore[call-arg]
 
 
 def test_v060_flag_order_validation_accepts_valid_order():
     from personal_assistant.config import Settings
 
     s = Settings(
+        _env_file=None,
         project_bound_runs_enabled=True,
         agent_run_plan_enabled=True,
         agent_run_event_stream_enabled=True,
-    )
+    )  # type: ignore[call-arg]
     assert s.project_bound_runs_enabled is True
     assert s.agent_run_event_stream_enabled is True

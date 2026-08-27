@@ -155,6 +155,65 @@ class Settings(BaseSettings):
     coding_artifacts_enabled: bool = False
     coding_permission_models_enabled: bool = False
 
+    # === v0.9.0 Coding Agent 默认切换与可靠性（全部默认关闭） ===
+    # H0 契约：docs/releases/v0.9.0/v0.9.0-h0-contracts-20260823.md §2。
+    # coding_agent_ui_enabled：capabilities 声明位，前端默认切换依据；
+    # 安装版经发布门禁后可置 true，显式回退保持短期可用（计划 §3.3）。
+    coding_agent_ui_enabled: bool = False
+    # workspace 档真实自动批准能力位（依赖 project-bound + 命令 profile）。
+    coding_workspace_auto_approve_enabled: bool = False
+    # 独立 full_access capability：授予/撤销/到期/审计（不是 workspace 别名）。
+    coding_full_access_enabled: bool = False
+    # full_access 授予有效期（分钟）；到期/退出应用/切换项目自动失效。
+    coding_full_access_ttl_minutes: int = Field(default=240, ge=60, le=1440)
+    # 上下文 budget/compaction 公开端点与事件。
+    coding_context_budget_enabled: bool = False
+    # 自动压缩阈值（usage_percent）；达到后下一轮执行前压缩旧上下文。
+    coding_context_compaction_threshold: int = Field(default=80, ge=50, le=99)
+    # 保留输出预算（tokens）：上下文窗口中为模型输出预留的额度（H0 §7.1）。
+    coding_context_reserved_output_tokens: int = Field(
+        default=1024, ge=128, le=131_072
+    )
+    # 压缩时保留的最近消息条数（最新用户请求与近期事实不被丢弃）。
+    coding_context_keep_recent_messages: int = Field(default=8, ge=2, le=200)
+    # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
+    coding_execution_detail_enabled: bool = False
+    # v1.0 CT-3（专项计划 §8.2）：模型配置保存后自动执行工具能力探测并持久化
+    # 快照；快照进入预检与工具面门禁（无有效快照失败关闭到最小工具面）。
+    agent_v2_model_probe_enabled: bool = True
+    # v1.0 CT-9（专项计划 §14.2/§20）：工具快照诊断 API（observe-only，
+    # 脱敏视图；不改变任何执行语义）。默认关闭，灰度按专项计划 §20 顺序。
+    agent_v2_tool_snapshot_enabled: bool = False
+    # ---- v1.0 专项计划 §20 Feature Flags（owner：Agent 架构；退出/删除：
+    # RC 冻结默认值，v1.1 评估移除；灰度顺序见 §20）----
+    # v2 Tool Engine 主链接入（CT-4 交付物在应用层，接入主链的灰度开关）；
+    # 关闭时执行面维持 v0.9 dispatcher（§24 回退：同一 Turn 不切换执行器）。
+    agent_v2_tool_engine_enabled: bool = False
+    # 写入预检门禁（CT1-04/F-002）。当前阶段=enforce（默认开）；关闭回落
+    # v0.9 无预检形态（§24 按 Thread/source 回退），不得用于绕过完成门禁。
+    agent_v2_tool_preflight_enabled: bool = True
+    # 副作用完成证据门禁（CT1-05/ADR-007）。当前阶段=enforce（默认开）；
+    # 关闭时回落 v0.9 条件族求值（同样非 fail-open）；一旦进入 enforce，
+    # 不得对副作用任务 fail-open（§20 规则）。
+    agent_v2_completion_evidence_enabled: bool = True
+    # Rust Exec Host 接入（CT-6）。默认关闭；开启仅意味着允许 Python Core
+    # 拉起 exec-host，通用命令能力仍受沙箱门禁（ADR-004）失败关闭约束。
+    agent_v2_exec_host_enabled: bool = False
+    # Deferred Tool Search 接入模型面（CT-7，P1）；应用层实现已就绪，
+    # 接入 Runtime 前保持关闭（§20：不阻断 P0）。
+    agent_v2_deferred_tool_search_enabled: bool = False
+    # 只读工具安全并发（AD-T07）；默认关闭（恒串行），开启需 §19.3 延迟/
+    # replay 一致性基准通过。
+    agent_v2_safe_parallel_tools_enabled: bool = False
+    # native apply-patch 自由格式适配器（§20 明确默认关闭，不进普通用户设置）；
+    # 仅当模型 probe 证明稳定后由 ADR 重新决策（adoption manifest §3.1.1 Defer）。
+    agent_v2_native_apply_patch_enabled: bool = False
+    # Codex App Server 隔离 Spike（CT-8，dev-only；§20 明确默认关闭，
+    # 不进普通用户设置；当前结论 Defer，见 adr/evidence/ct8-*）。
+    codex_app_server_spike_enabled: bool = False
+    # 可选 Git worktree（H3）：显式创建/清理，模型无 Git 管理权限。
+    coding_worktree_enabled: bool = False
+
     @model_validator(mode="after")
     def validate_v060_flag_order(self) -> Settings:
         """C0 §10：flag 开启顺序固定 project-bound → plan → stream。"""
@@ -186,6 +245,41 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"{env_name} requires PA_PROJECT_BOUND_RUNS_ENABLED"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def validate_v090_coding_flag_order(self) -> Settings:
+        """H0 §2.3：v0.9.0 flag 依赖 project-bound；auto_approve 额外要求命令 profile。"""
+        v090_flags = (
+            ("PA_CODING_FULL_ACCESS_ENABLED", self.coding_full_access_enabled),
+            ("PA_CODING_CONTEXT_BUDGET_ENABLED", self.coding_context_budget_enabled),
+            (
+                "PA_CODING_EXECUTION_DETAIL_ENABLED",
+                self.coding_execution_detail_enabled,
+            ),
+            ("PA_CODING_WORKTREE_ENABLED", self.coding_worktree_enabled),
+        )
+        for env_name, enabled in v090_flags:
+            if enabled and not self.project_bound_runs_enabled:
+                raise ValueError(
+                    f"{env_name} requires PA_PROJECT_BOUND_RUNS_ENABLED"
+                )
+        if (
+            self.coding_workspace_auto_approve_enabled
+            and not self.project_bound_runs_enabled
+        ):
+            raise ValueError(
+                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED requires "
+                "PA_PROJECT_BOUND_RUNS_ENABLED"
+            )
+        if (
+            self.coding_workspace_auto_approve_enabled
+            and not self.coding_command_profiles_enabled
+        ):
+            raise ValueError(
+                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED requires "
+                "PA_CODING_COMMAND_PROFILES_ENABLED"
+            )
         return self
 
     @model_validator(mode="after")

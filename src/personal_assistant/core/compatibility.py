@@ -52,7 +52,11 @@ _LABELS = {
     # 不得记录 message、路径、branch、SHA、命令、模型输出或权限快照正文。
     "agent_run_create": {
         "modes": frozenset({"legacy", "project_bound"}),
-        "outcomes": frozenset({"created", "replayed", "rejected"}),
+        # v0.9.0 H1-D：profile_default_missing = coding run 未选且无默认 profile
+        # （保持旧兼容路由的低基数计数，非拒绝）。
+        "outcomes": frozenset(
+            {"created", "replayed", "rejected", "profile_default_missing"}
+        ),
     },
     "coding_session_create": {
         "modes": frozenset({"project_bound"}),
@@ -87,6 +91,58 @@ _LABELS = {
     "/tool-calls/:id": {
         "modes": frozenset({"legacy_tool_call"}),
         "outcomes": frozenset({"found", "not_found"}),
+    },
+    # v0.9.0 H0 §9（additive）：只保存低基数计数，不记录会话/项目/路径正文。
+    "legacy_session_bind": {
+        "modes": frozenset({"explicit"}),
+        "outcomes": frozenset({"bound", "rejected"}),
+    },
+    "full_access_grant": {
+        "modes": frozenset({"session"}),
+        "outcomes": frozenset(
+            {"granted", "expired", "revoked", "denied", "downgraded"}
+        ),
+    },
+    "permission_downgrade": {
+        "modes": frozenset({"workspace", "full_access"}),
+        "outcomes": frozenset(
+            {
+                "capability_missing",
+                "audit_unavailable",
+                "grant_invalid",
+                "version_mismatch",
+            }
+        ),
+    },
+    # v0.9.0 H1-B（计划 §5.6）：可执行意图路由计数（低基数，无消息正文）。
+    "executable_intent": {
+        "modes": frozenset({"coding"}),
+        "outcomes": frozenset({"routed"}),
+    },
+    # v1.0 CT1-04（专项计划 F-002）：写入预检门禁计数（低基数，无消息正文）。
+    "tool_preflight": {
+        "modes": frozenset({"coding"}),
+        "outcomes": frozenset({"blocked", "allowed"}),
+    },
+    "context_budget_poll": {
+        "modes": frozenset({"coding"}),
+        "outcomes": frozenset({"available", "unavailable", "error"}),
+    },
+    # 计划 §7 兼容归零观测：无 project/workspace 的 run 创建与 UI 显式回退。
+    "unbound_run_create": {
+        "modes": frozenset({"legacy"}),
+        "outcomes": frozenset({"created", "rejected"}),
+    },
+    "coding_ui_fallback": {
+        "modes": frozenset({"explicit", "capability_disabled", "error"}),
+        "outcomes": frozenset({"fallback"}),
+    },
+    # v0.9.0 H2：unknown 执行人工处置（不自动重试；处置动作低基数计数）。
+    "manual_execution_resolution": {
+        "modes": frozenset({"unknown"}),
+        "outcomes": frozenset(
+            {"succeeded", "failed", "not_executed", "revalidated", "rejected"}
+        ),
     },
 }
 

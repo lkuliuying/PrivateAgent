@@ -14,9 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncSession
 from personal_assistant.core.db import async_session_factory, engine
 from personal_assistant.core.models import AgentRun as AgentRunRecord
 from personal_assistant.core.models import AgentToolExecution as ExecutionRecord
+from personal_assistant.logging_setup import get_logger
 
 from .contracts import AgentEvent, AgentEventType
 from .repository import AgentRunRepository
+
+logger = get_logger(__name__)
 
 _MINIMUM_RECOVERY_SCHEMA_REVISION = 16
 
@@ -217,8 +220,22 @@ class AgentRuntimeProcessGuard:
                 raise
 
         try:
+            # v0.9.0 H2（任务 5）：恢复耗时观测——启动 reconcile 时长入日志，
+            # 供恢复时间与错误率追踪（低基数，不含正文）。
+            import time
+
+            started = time.perf_counter()
             async with async_session_factory() as db:
-                return await reconcile_orphaned_agent_runs(db)
+                result = await reconcile_orphaned_agent_runs(db)
+            logger.info(
+                "agent run recovery reconciled",
+                duration_ms=round((time.perf_counter() - started) * 1000, 1),
+                failed_runs=result.failed_runs,
+                cancelled_runs=result.cancelled_runs,
+                failed_executions=result.failed_executions,
+                unknown_executions=result.unknown_executions,
+            )
+            return result
         except Exception:
             await self.release()
             raise

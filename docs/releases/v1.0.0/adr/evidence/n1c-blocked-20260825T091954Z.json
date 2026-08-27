@@ -1,0 +1,8 @@
+{
+  "evidence": "N1c-blocked",
+  "at": "2026-08-25T09:19:54.689312+00:00",
+  "probe": {
+    "host_child_spawn_ok": false
+  },
+  "reason": "会话安全策略禁止 exec-host 派生子进程（N1b 环境阻断）；判别式断言已固化于三套件，解除即自动验证"
+}
