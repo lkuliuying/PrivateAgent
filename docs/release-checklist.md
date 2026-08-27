@@ -18,7 +18,7 @@
 | 发布 manifest | `uv run python scripts\generate_release_manifest.py --write`（在完整检查**之后**执行；checklist 由报告步骤生成） | `dist\release-manifest-<version>.md` 与报告同一 commit 且摘要一致 |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | `0021 (head)`（与代码模型一致） |
+| 迁移 head | `uv run alembic current` | `0035 (head)`（与代码模型一致） |
 
 > `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
 > 完整 release check 的顺序固定：先跑 `release-check-full.bat`，再刷新 manifest，避免 manifest 固化旧报告。sidecar 未构建时 `sidecar_smoke` 如实标记 skipped，不伪装通过。
@@ -32,7 +32,11 @@
 - 扩展注册表：`GET /extensions`（command/diagnostic/maintenance 三类可见）。
 - 本地集成：`POST /integrations/preview` + `/integrations/import` + `DELETE /integrations/imports/{id}`（可撤销）。
 
-## 2. 构建 NSIS 安装包
+## 2. 构建和 SignPath 签名 NSIS 安装包
+
+正式公开发布使用 `.github/workflows/signpath-release.yml`：先在主仓库创建与应用版本一致的 Release/tag，再触发工作流。工作流在 GitHub 托管 Windows runner 构建未签名安装包，固化 GitHub Actions artifact，提交 SignPath 并等待人工批准；签名返回后验证 Authenticode、重新生成 updater `.sig` / `latest.json`，最后上传 Release 资产。
+
+SignPath 尚未批准或 CI 变量未配置时，可执行以下本地构建做候选验证，但不得把 unsigned 候选标记为已签名：
 
 ```bash
 # 首次 tauri build 需从 GitHub 下载 NSIS 工具链；不可达时先设代理：
@@ -66,7 +70,8 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
    - `PrivateAgent_<version>_x64-setup.exe`
    - `PrivateAgent_<version>_x64-setup.exe.sig`
    - `latest.json`
-3. Release 说明写入 changelog 与 SmartScreen 风险提示（未代码签名时）。
+3. Release 说明写入 changelog、[Code signing policy](../CODE_SIGNING_POLICY.md) 与签名状态；未代码签名时必须保留 SmartScreen 风险提示。
+4. SignPath 路径额外上传 `codesign-status-<version>.json` 和 `release-manifest-<version>.md`，并保留 signing request URL/审批记录。
 
 > updater endpoint（`tauri.conf.json`）指向 `.../releases/latest/download/latest.json`，所以**最新** Release 的 `latest.json` 即生效版本。发布新版只需让新 Release 成为 latest；回滚只需让旧 Release 重新成为 latest 或覆盖 `latest.json`。
 

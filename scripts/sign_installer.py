@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """第八阶段 M4：Windows 代码签名（Authenticode）编排。
 
-签名顺序（docs/signing-and-keys.md §2.3，必须遵守，否则 updater 拒绝更新）：
+签名顺序（docs/signing-and-keys.md §2.4，必须遵守，否则 updater 拒绝更新）：
 1. tauri build -> NSIS exe + .sig（.sig 覆盖未签名字节）
 2. signtool sign（Authenticode，改写字节）
 3. signtool verify /pa /v
@@ -15,6 +15,10 @@
 
 无证书：不阻塞构建，写 dist/unsigned-note-<version>.md（SmartScreen 风险说明）+
 dist/codesign-status-<version>.json（code_signed: false），供 release manifest 读取。
+
+SignPath / 外部签名：CI 将 SignPath 返回的安装包复制回标准产物目录后，调用
+``--verify-existing --provider SignPath``。脚本使用 Windows Authenticode API 验证
+签名并记录状态，但不会接触或导出代码签名私钥。
 
 私钥/证书不入库：.gitignore 已覆盖 *.pfx *.p12 *.key *.pem 等（见 test_phase8_signing）。
 """
@@ -112,6 +116,49 @@ def build_signtool_verify_command(installer) -> list[str]:
     return ["signtool", "verify", "/pa", "/v", str(installer)]
 
 
+def build_powershell_signature_command(installer) -> list[str]:
+    """构造只读 Authenticode 验证命令，兼容没有 signtool PATH 的 CI。"""
+    script = (
+        "$OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new(); "
+        "$signature = Get-AuthenticodeSignature -LiteralPath $args[0]; "
+        "$result = [ordered]@{ "
+        "Status = [string]$signature.Status; "
+        "StatusMessage = [string]$signature.StatusMessage; "
+        "Subject = [string]$signature.SignerCertificate.Subject; "
+        "Thumbprint = [string]$signature.SignerCertificate.Thumbprint }; "
+        "$result | ConvertTo-Json -Compress; "
+        "if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) { exit 2 }"
+    )
+    return [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+        str(installer),
+    ]
+
+
+def verify_existing_signature(installer: Path) -> dict:
+    """验证 SignPath 等外部服务返回的 Authenticode 签名并返回非秘密元数据。"""
+    result = subprocess.run(
+        build_powershell_signature_command(installer),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    output = result.stdout.strip()
+    try:
+        details = json.loads(output.splitlines()[-1]) if output else {}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("could not parse Authenticode verification output") from exc
+    if result.returncode != 0 or details.get("Status") != "Valid":
+        status = details.get("Status") or "Unknown"
+        raise RuntimeError(f"Authenticode verification failed: {status}")
+    return details
+
+
 def unsigned_release_notes(version: str) -> str:
     """无证书时的 SmartScreen 风险说明（写入 release notes / 安装说明）。"""
     return (
@@ -124,7 +171,12 @@ def unsigned_release_notes(version: str) -> str:
     )
 
 
-def write_status(version: str, code_signed: bool, cert_subject: str | None = None) -> Path:
+def write_status(
+    version: str,
+    code_signed: bool,
+    cert_subject: str | None = None,
+    provider: str | None = None,
+) -> Path:
     """写 dist/codesign-status-<version>.json，供 generate_release_manifest.py 读取。"""
     DIST.mkdir(parents=True, exist_ok=True)
     path = DIST / f"codesign-status-{version}.json"
@@ -134,7 +186,10 @@ def write_status(version: str, code_signed: bool, cert_subject: str | None = Non
                 "version": version,
                 "code_signed": code_signed,
                 "cert_subject": cert_subject,
-                "timestamp_server": DEFAULT_TIMESTAMP,
+                "provider": provider,
+                "timestamp_server": (
+                    DEFAULT_TIMESTAMP if provider in (None, "local") else None
+                ),
             },
             ensure_ascii=False,
             indent=2,
@@ -157,15 +212,47 @@ def main() -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--installer", help="installer path (default: auto-detect by version)")
+    ap.add_argument(
+        "--verify-existing",
+        action="store_true",
+        help="verify an installer already signed by SignPath or another external service",
+    )
+    ap.add_argument(
+        "--provider",
+        default="external",
+        help="signing provider recorded with --verify-existing (default: external)",
+    )
     args = ap.parse_args()
 
     version = read_version()
     config = resolve_signing_config()
     installer = Path(args.installer) if args.installer else find_installer(version)
 
+    if args.verify_existing:
+        try:
+            details = verify_existing_signature(installer)
+        except RuntimeError as exc:
+            print(f"[sign] {exc}")
+            write_status(
+                version,
+                code_signed=False,
+                cert_subject="(external signature verification failed)",
+                provider=args.provider,
+            )
+            return 1
+        status = write_status(
+            version,
+            code_signed=True,
+            cert_subject=details.get("Subject") or "(subject unavailable)",
+            provider=args.provider,
+        )
+        print(f"[sign] existing Authenticode signature verified ({args.provider})")
+        print(f"[sign] status: {status}")
+        return 0
+
     if not config["has_cert"]:
         note = write_unsigned_note(version)
-        status = write_status(version, code_signed=False)
+        status = write_status(version, code_signed=False, provider=None)
         print("[sign] no certificate (PA_CODESIGN_PFX not set/missing); installer left UNSIGNED")
         print(f"[sign] SmartScreen note: {note}")
         print(f"[sign] status: {status}")
@@ -176,12 +263,12 @@ def main() -> int:
     r = subprocess.run(build_signtool_sign_command(installer, config))
     if r.returncode != 0:
         print("[sign] signtool sign FAILED")
-        write_status(version, code_signed=False, cert_subject="(sign failed)")
+        write_status(version, code_signed=False, cert_subject="(sign failed)", provider="local")
         return 1
     r = subprocess.run(build_signtool_verify_command(installer))
     if r.returncode != 0:
         print("[sign] signtool verify FAILED")
-        write_status(version, code_signed=False, cert_subject="(verify failed)")
+        write_status(version, code_signed=False, cert_subject="(verify failed)", provider="local")
         return 1
     # 重新生成 .sig（覆盖已签名字节）。updater 私钥由 build-release.bat 注入 env
     # （TAURI_SIGNING_PRIVATE_KEY / _PASSWORD），tauri signer sign 自动读取。
@@ -193,7 +280,7 @@ def main() -> int:
     if r.returncode != 0:
         print("[sign] tauri signer sign (.sig regeneration) FAILED")
         return 1
-    write_status(version, code_signed=True, cert_subject="(signed)")
+    write_status(version, code_signed=True, cert_subject="(signed)", provider="local")
     print(f"[sign] OK; .sig regenerated over signed bytes: {sig}")
     return 0
 

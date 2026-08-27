@@ -4,7 +4,7 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 
 项目强调“可控”而不是无边界自动化：文件访问受授权路径约束，写入和命令执行必须经过审批，高风险任务保留计划、状态、输出和证据；远程 Provider 默认关闭，诊断包和发布流程包含脱敏、签名与完整性检查。
 
-> 当前版本：`0.3.0-alpha.2`（内部 Runtime 检查点）· 源码数据库迁移：`0022 (head)` · 主交付平台：Windows 10/11 x64
+> 当前版本：`1.0.0` · 源码数据库迁移：`0035 (head)` · 主交付平台：Windows 10/11 x64
 
 ## 目录
 
@@ -20,6 +20,7 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 - [构建与发布](#构建与发布)
 - [安全与隐私](#安全与隐私)
 - [当前交付边界](#当前交付边界)
+- [开源许可与代码签名政策](#开源许可与代码签名政策)
 - [文档导航](#文档导航)
 
 ## 项目概览
@@ -184,7 +185,7 @@ Agent/
 │   ├── workers/               # 导入、OCR、项目扫描等后台任务
 │   ├── main_api.py            # FastAPI 应用入口
 │   └── server_entry.py        # sidecar 启动与迁移入口
-├── alembic/                   # MySQL 数据库迁移（当前 head: 0021）
+├── alembic/                   # MySQL 数据库迁移（当前 head: 0035）
 ├── tests/                     # 后端、RAG、治理、发布和升级测试
 ├── scripts/                   # 开发、构建、签名、发布检查与 smoke 脚本
 ├── docs/                      # 需求、阶段计划、使用和发布文档
@@ -262,7 +263,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-预期输出包含 `0021 (head)`。
+预期输出包含 `0035 (head)`。
 
 ### 4. 启动本地 API
 
@@ -431,6 +432,10 @@ dist/latest.json
 - `docs/signing-and-keys.md`
 - `docs/cross-platform.md`
 
+### Windows 卸载
+
+在 Windows“设置 → 应用 → 已安装的应用”中选择 `PrivateAgent` 并点击“卸载”，或从开始菜单运行卸载程序。默认卸载会移除应用程序文件，但保留 `%APPDATA%\personal-assistant` 中的配置和用户数据，防止误删知识库；如需完全清除，请先备份，再由用户手动删除该数据目录。
+
 ## 安全与隐私
 
 - 本地 API 默认只监听 loopback，不应直接暴露到公网。
@@ -453,6 +458,16 @@ dist/latest.json
 - Authenticode 签名逻辑已接入，但正式证书实签需要在发布环境执行；当前如实标记 `unsigned`，SmartScreen 可能显示未知发布者。
 - macOS/Linux 的数据目录适配、构建脚本和发布清单结构已准备，尚未完成实机构建与 smoke，因此当前不宣称正式跨平台交付。
 - `externalBin` 变化后，同版本覆盖安装应先完成真实验证；未验证前建议卸载旧版本再安装新包。
+
+## 开源许可与代码签名政策
+
+PrivateAgent 采用 [Apache License 2.0](LICENSE) 发布。隐私与可选网络访问边界见 [隐私政策](PRIVACY.md)。
+
+### Code signing policy
+
+Free code signing is provided by [SignPath.io](https://signpath.io/), with a certificate provided by the [SignPath Foundation](https://signpath.org/). 代码签名仅覆盖从本公开仓库、由 GitHub 托管执行器按入库工作流构建的 PrivateAgent 发布产物；每个签名请求均需人工批准。团队角色、可信构建、密钥隔离和事件处置规则见 [Code signing policy](CODE_SIGNING_POLICY.md)。
+
+应用更新清单和安装包统一发布在本仓库的 [GitHub Releases](https://github.com/lkuliuying/PrivateAgent/releases)。旧的独立更新仓库不再作为更新源。
 
 ## 常见问题
 

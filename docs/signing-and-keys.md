@@ -6,7 +6,7 @@
 | 层 | 作用 | 当前状态 | 失败后果 |
 |---|---|---|---|
 | **Tauri updater 签名**（`.sig`） | 校验自动更新下载的安装包完整性与来源 | 已接入（私钥本地持有，公钥写入 `tauri.conf.json`） | updater 拒绝更新；用户无法应用内升级 |
-| **Windows 代码签名**（Authenticode） | 消除 SmartScreen 警告，显示发布者身份 | 未接入（无证书） | 首次运行 SmartScreen 拦截，需手动"仍要运行" |
+| **Windows 代码签名**（Authenticode） | 消除 SmartScreen 警告，显示发布者身份 | SignPath 可信构建已入库；等待 OSS 订阅审批与首次实签 | 未获批前仍按 unsigned 策略发布 |
 
 这两层互不替代：updater 签名防"更新被篡改"，代码签名防"安装包被 Windows 拦截"。
 
@@ -75,21 +75,47 @@ python -c "import json,pathlib; \
 
 ---
 
-## 2. Windows 代码签名（Authenticode，未接入）
+## 2. Windows 代码签名（Authenticode）
 
-当前安装包**未代码签名**，首次运行会触发 Windows SmartScreen："Windows 已保护你的电脑"。用户需点"更多信息 -> 仍要运行"。这是个人/开源项目可接受的过渡状态，但应在发布说明中透明提示。
+本地候选安装包当前尚未代码签名。仓库已接入 SignPath Foundation 免费 OSS 签名所需的公开许可证、代码签名政策和 GitHub 托管可信构建；在申请获批、项目变量和密钥配置完成之前，构建仍如实执行 unsigned 透明策略。
 
 ### 2.1 证书选型
 
 | 类型 | 成本（年） | SmartScreen | 特点 |
 |---|---|---|---|
+| SignPath Foundation OSS | 0 | 公开信任证书；仍受 SmartScreen 信誉机制影响 | 推荐；私钥位于 SignPath HSM，要求公开 OSS、可信构建和人工批准 |
 | 自签名 | 0 | 仍拦截 | 仅消除"未知发布者"字样，不解决 SmartScreen |
 | OV（组织验证） | ~$200–400 | 需积累信誉后才不拦截 | 个人项目门槛较高（需组织身份） |
 | EV（扩展验证） | ~$300–700 | 立即不拦截 | 需硬件 token/USB，最贵但最稳 |
 
-> SmartScreen 信誉：OV 证书签名的应用随下载量积累信誉后，SmartScreen 拦截会逐步消失；EV 证书即时通过。对个人项目，可先用 OV 积累，或接受自签名 + 文档说明。
+> SmartScreen 信誉由 Microsoft 独立判定。Authenticode 有效签名可以显示可信发布者和保持文件完整性，但不能承诺所有设备立即不再提示。
 
-### 2.2 signtool 接入方式
+### 2.2 SignPath OSS 可信构建
+
+工作流：`.github/workflows/signpath-release.yml`。
+
+1. GitHub 托管的 `windows-latest` 执行器从发布 tag 构建 NSIS 安装包。
+2. `actions/upload-artifact` 先把未签名安装包固化为 GitHub Actions artifact。
+3. `signpath/github-action-submit-signing-request@v2` 按 artifact ID 提交签名请求；SignPath 验证工作流来源并等待人工批准。
+4. 工作流下载签名结果，用 Windows Authenticode API 验证 `Valid` 状态并记录 provider/证书主题。
+5. 对最终签名后的安装包重新生成 Tauri updater `.sig` 和 `latest.json`。
+6. 仅在上述步骤全部成功后，将安装包、`.sig`、`latest.json` 与发布证据上传到主仓库 Release。
+
+SignPath 订阅建立后需要配置：
+
+| GitHub 配置 | 类型 | 说明 |
+|---|---|---|
+| `SIGNPATH_API_TOKEN` | Actions secret | 仅具备对应项目/策略的 submitter 权限 |
+| `SIGNPATH_ORGANIZATION_ID` | Actions variable | SignPath 组织 ID |
+| `SIGNPATH_PROJECT_SLUG` | Actions variable | 建议值 `PrivateAgent`，以 SignPath 实际生成值为准 |
+| `SIGNPATH_SIGNING_POLICY_SLUG` | Actions variable | 建议值 `release-signing`，以 SignPath 实际生成值为准 |
+| `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` | Actions variable | Windows installer artifact configuration 的实际 slug |
+| `TAURI_SIGNING_PRIVATE_KEY` | Actions secret | Tauri updater 私钥，与 Authenticode 证书无关 |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Actions secret | updater 私钥密码（如有） |
+
+仓库主页的 [Code signing policy](../CODE_SIGNING_POLICY.md) 定义团队角色、隐私声明、发布控制与事件处置。申请准备和待人工步骤见 [SignPath OSS 申请清单](signpath-application.md)。
+
+### 2.3 本地证书 / signtool 回退方式
 
 购买证书后（通常为 `.pfx`/`.p12`），用 Windows SDK 的 `signtool` 签名：
 
@@ -102,7 +128,7 @@ signtool verify /pa /v <installer.exe>
 - `/fd SHA256` / `/td SHA256`：签名与时间戳摘要算法。
 - 证书私钥的 `.pfx`/`.p12` **严禁入库**（`.gitignore` 已覆盖）。
 
-### 2.3 签名顺序（关键）
+### 2.4 签名顺序（关键）
 
 Tauri updater 的 `.sig` 是对**安装包字节**的签名。代码签名（Authenticode）会**修改安装包字节**（追加签名块）。因此顺序必须是：
 
@@ -124,11 +150,11 @@ npx tauri signer sign -k "%USERPROFILE%\.tauri\personal-assistant.key" \
 # 生成 <installer.exe>.sig
 ```
 
-### 2.4 接入后的发布清单增量
+### 2.5 接入后的发布清单增量
 
 代码签名接入后，`scripts/build-release.bat` 与 `docs/release-checklist.md` 需新增：
 
-- [ ] `signtool sign` 步骤（在 tauri build 之后、`generate-latest-json.py` 之前）。
+- [ ] SignPath 返回签名产物，或本地 `signtool sign` 步骤完成（均在 tauri build 之后、`generate-latest-json.py` 之前）。
 - [ ] `signtool verify /pa /v` 通过。
 - [ ] 重新 `tauri signer sign` 生成最终 `.sig`，再生成 `latest.json`。
 - [ ] 发布说明删除"未签名 SmartScreen 风险"提示。
@@ -142,6 +168,8 @@ npx tauri signer sign -k "%USERPROFILE%\.tauri\personal-assistant.key" \
 - ✅ updater 私钥本地持有，公钥与 `tauri.conf.json` 一致，`.gitignore` 覆盖密钥与证书，仓库不含私钥。
 - ✅ 构建自动生成 `.sig`；`generate-latest-json.py` 自动产出与 `.sig` 一致的 `latest.json`（第八阶段 M5 起支持多平台）。
 - ✅ `UpdateChecker.vue` 区分网络/清单/签名/无更新错误。
-- ✅ 第八阶段 M4：`scripts/sign_installer.py` 接入 signtool sign/verify + 重新生成 `.sig`（遵循 §2.3 签名顺序）；`build-release.bat` 在 tauri build 与 manifest 之间调用。
+- ✅ 第八阶段 M4：`scripts/sign_installer.py` 接入 signtool sign/verify + 重新生成 `.sig`（遵循 §2.4 签名顺序）；`build-release.bat` 在 tauri build 与 manifest 之间调用。
 - ✅ 无证书透明策略：未设 `PA_CODESIGN_PFX` 时不阻塞构建，写 `dist/unsigned-note-<version>.md`（SmartScreen 说明）+ `dist/codesign-status-<version>.json`（`code_signed: false`），release manifest 标记 `code_signed: no`。
-- ⏳ 真实代码签名：证书采购到位后设 `PA_CODESIGN_PFX` / `PA_CODESIGN_PASSWORD[_FILE]` / `PA_CODESIGN_TIMESTAMP` 即自动走 signtool 实签流程；当前本机无证书，按 unsigned 透明策略发布。
+- ✅ SignPath OSS 前置：Apache-2.0、隐私政策、Code signing policy、主仓库 updater 地址和 GitHub 托管可信构建工作流已就绪。
+- ⏳ SignPath 外部步骤：等待基金会审核、SignPath 项目/策略创建、GitHub App 授权和首次人工批准签名。
+- ✅ 本地证书回退：如以后自备证书，设置 `PA_CODESIGN_PFX` / `PA_CODESIGN_PASSWORD[_FILE]` / `PA_CODESIGN_TIMESTAMP` 仍可自动走 signtool 实签流程。
