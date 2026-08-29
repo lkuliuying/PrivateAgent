@@ -202,3 +202,40 @@ async def test_provider_list_migrates_legacy_deepseek_32k_to_catalog(db):
         if await ModelProfileService(db).get(profile_id):
             await ModelProfileService(db).delete(profile_id)
         await settings.update({"model_provider_configs": before})
+
+
+@pytest.mark.asyncio
+async def test_provider_list_tolerates_missing_profile_reference(db):
+    provider_id = f"stale-{uuid4().hex[:12]}"
+    settings = SettingsService(db)
+    before = await settings.get("model_provider_configs")
+    try:
+        await settings.update(
+            {
+                "model_provider_configs": json.dumps(
+                    [
+                        {
+                            "id": provider_id,
+                            "name": "旧配置",
+                            "protocol": "openai",
+                            "base_url": "https://api.example.com/v1",
+                            "api_format": "chat_completions",
+                            "enabled": True,
+                            "models": [
+                                {
+                                    "profile_id": f"missing-{uuid4().hex}",
+                                    "model_id": "missing-model",
+                                    "context_tokens": 32768,
+                                }
+                            ],
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            }
+        )
+
+        providers = await ModelProviderService(db).list(ensure_legacy=False)
+        assert providers[0]["id"] == provider_id
+    finally:
+        await settings.update({"model_provider_configs": before})

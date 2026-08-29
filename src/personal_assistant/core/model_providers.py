@@ -179,6 +179,19 @@ class ModelProviderService:
         ]
         if not enabled_profile_ids:
             return
+        existing_profile_ids = {
+            profile.id
+            for profile in await ModelProfileService(self.db).list(enabled_only=True)
+        }
+        enabled_profile_ids = [
+            profile_id
+            for profile_id in enabled_profile_ids
+            if profile_id in existing_profile_ids
+        ]
+        # 配置恢复、旧备份或测试库可能留下已不存在的 profile 引用。供应商
+        # 列表仍应可读，让“当前模型”回落到基础设置，而不是整个接口返回 500。
+        if not enabled_profile_ids:
+            return
         default = await ModelProfileService(self.db).get_default()
         if default is None or default.id not in enabled_profile_ids:
             await ModelProfileService(self.db).set_default(enabled_profile_ids[0])
@@ -416,19 +429,7 @@ class ModelProviderService:
             await self.db.commit()
         remaining = [item for item in providers if item.get("id") != provider_id]
         await self._write(remaining)
-        if await ModelProfileService(self.db).get_default() is None:
-            first = next(
-                (
-                    model["profile_id"]
-                    for provider in remaining
-                    if provider.get("enabled")
-                    for model in provider.get("models", [])
-                    if model.get("profile_id")
-                ),
-                None,
-            )
-            if first:
-                await ModelProfileService(self.db).set_default(first)
+        await self._reconcile_default_profile(remaining)
 
     async def _write(self, providers: list[dict[str, Any]]) -> None:
         await self.settings.update(
