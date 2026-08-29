@@ -4,7 +4,7 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 
 项目强调“可控”而不是无边界自动化：文件访问受授权路径约束，写入和命令执行必须经过审批，高风险任务保留计划、状态、输出和证据；远程 Provider 默认关闭，诊断包和发布流程包含脱敏、签名与完整性检查。
 
-> 当前版本：`1.0.0` · 源码数据库迁移：`0035 (head)` · 主交付平台：Windows 10/11 x64
+> 当前版本：`1.0.0` · 源码数据库迁移：`0038 (head)` · 主交付平台：Windows 10/11 x64
 
 ## 目录
 
@@ -27,7 +27,7 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 
 PrivateAgent 将日常信息管理、知识检索和 Agent 执行整合到同一个桌面工作台中：
 
-- 对用户：提供对话、知识库、项目、学习、任务、记忆、今日、集成、诊断、扩展和备份等工作区。
+- 对用户：提供邮箱验证码注册、用户名/邮箱登录，以及对话、知识库、项目、学习、任务、记忆、今日、集成、诊断、扩展和备份等工作区。
 - 对 Agent：提供可编辑计划、工具审批、授权目录、白名单命令、多文件补丁、失败重试、回滚和执行证据。
 - 对数据：业务数据存储在 MySQL，文档向量存储在本地 ChromaDB，配置、日志和备份位于本机数据目录。
 - 对交付：提供 Python sidecar、Tauri/NSIS 安装包、应用内更新、发布检查、升级演练和可选代码签名。
@@ -36,12 +36,12 @@ PrivateAgent 将日常信息管理、知识检索和 Agent 执行整合到同一
 
 | 指标 | 当前规模 |
 |---|---:|
-| FastAPI 路由模块 | 36 |
-| API 接口定义 | 257 |
-| SQLAlchemy ORM 模型 | 62 |
-| Alembic 迁移 | 20 |
-| Python 测试函数 | 493 |
-| Vitest / Playwright 用例定义 | 43 |
+| FastAPI 路由模块 | 48 |
+| API 接口定义 | 304 |
+| SQLAlchemy ORM 模型 | 79 |
+| Alembic 迁移 | 38 |
+| Python 测试函数 | 1159 |
+| Vitest / Playwright 用例定义 | 508 |
 
 ## 核心能力
 
@@ -57,6 +57,8 @@ PrivateAgent 将日常信息管理、知识检索和 Agent 执行整合到同一
 ### 2. 对话与模型 Provider
 
 - 基于 SSE 的流式对话，支持多轮上下文、停止生成、会话历史、首轮自动标题和消息持久化。
+- 多用户认证支持邮箱验证码注册、用户名或邮箱登录、会话撤销和账号停用；首个注册账号成为管理员，管理端可创建、检索和更新用户并查询审计日志。
+- 注册验证码只持久化加盐摘要，具备有效期、重发间隔和失败次数限制；邮件通过可独立配置的 `smtp.env` / `PA_SMTP_*` 发送，SMTP 凭据不进入前端载荷。
 - 默认关闭的持久化 Agent 聊天路径已接入 Ollama 原生 NDJSON delta；首个增量后不自动重试，工具回合先隔离中间草稿，最终完整回答仍持久化并可重连恢复。首次投影与并发重连通过 run 行锁和 `chat.output_persisted` 事件绑定同一 message，避免重复插入回答。
 - 可信工作流启用 JSON Schema 或 RAG 引用验证时，统一模型契约会把同一固定 Schema 下发为 OpenAI Chat Completions `response_format`、Claude `output_config.format` 或 Ollama `format`；Provider 约束后仍由 Runtime 本地复核，能力不支持时在发起网络请求前失败关闭。
 - 默认使用本地 Ollama；可显式启用 OpenAI-compatible 或 Claude Provider，并在远程调用前展示隐私范围。
@@ -185,7 +187,7 @@ Agent/
 │   ├── workers/               # 导入、OCR、项目扫描等后台任务
 │   ├── main_api.py            # FastAPI 应用入口
 │   └── server_entry.py        # sidecar 启动与迁移入口
-├── alembic/                   # MySQL 数据库迁移（当前 head: 0037）
+├── alembic/                   # MySQL 数据库迁移（当前 head: 0038）
 ├── tests/                     # 后端、RAG、治理、发布和升级测试
 ├── scripts/                   # 开发、构建、签名、发布检查与 smoke 脚本
 ├── docs/                      # 需求、阶段计划、使用和发布文档
@@ -263,7 +265,7 @@ uv run alembic upgrade head
 uv run alembic current
 ```
 
-预期输出包含 `0035 (head)`。
+预期输出包含 `0038 (head)`。
 
 ### 4. 启动本地 API
 
@@ -304,6 +306,9 @@ npm run dev
 | `PA_API_PORT` | `8000` | 开发模式 API 端口 |
 | `PA_API_ALLOW_NON_LOOPBACK_BIND` | `false` | 仅允许经过认证的容器在自身网络命名空间绑定 unspecified wildcard；桌面/源码模式保持关闭 |
 | `PA_API_TOKEN_FILE` | 空 | 可选容器 secret file；不能与 `PA_API_TOKEN` 同时配置 |
+| `PA_ALLOW_PUBLIC_REGISTRATION` | `true` | 是否开放邮箱验证码注册；首个成功注册账号成为管理员，完成初始化后可关闭 |
+| `PA_AUTH_SESSION_TTL_HOURS` | `168` | 登录会话有效期（小时） |
+| `PA_CLAIM_LEGACY_DATA_ON_FIRST_USER` | `false` | 是否让首个管理员认领 owner 为空的旧数据；仅在可信迁移时开启 |
 | `PA_DB_URL` | 无可用密码默认值 | 仅源码开发/测试使用的 MySQL async 连接字符串；安装版由 Rust 进程注入 |
 | `PA_DB_PASSWORD_FILE` | 空 | 可选容器数据库密码文件；启用时 `PA_DB_URL` 不得再包含密码 |
 | `PA_OLLAMA_BASE_URL` | `http://127.0.0.1:11434` | Ollama 地址 |
@@ -321,12 +326,23 @@ npm run dev
 | `PA_CHAT_AGENT_RUNTIME_ENABLED` | `false` | 让普通聊天进入持久化 AgentRuntime；RAG 工具与输出验证也开启时接管知识库请求 |
 | `PA_CONVERSATION_SUMMARY_WORKER_ENABLED` | `false` | 在 schema 0017+ 上启动可追溯会话摘要 worker；保留原消息与来源哈希 |
 | `PA_CONVERSATION_SUMMARY_ALLOW_REMOTE_PROVIDER` | `false` | 单独允许自动摘要把受预算约束的消息发送给已启用的远程 provider；本地 Ollama 不需要 |
-| `PA_MCP_ENABLED` | `false` | 开启 MCP 注册表与客户端 API；每个服务器仍需显式信任、启用和工具 allowlist |
+| `PA_MCP_ENABLED` | `true` | MCP 注册表与客户端 API 默认开启；每个服务器仍需显式信任、启用和工具 allowlist |
 | `PA_VERSIONED_RAG_INDEXING_ENABLED` | `false` | 在 schema 0021+ 使用带来源追溯的旁路版本构建；先于 retrieval 开启 |
 | `PA_VERSIONED_RAG_RETRIEVAL_ENABLED` | `false` | 有 active head 的文档读取版本化索引，无 head 文档回退 legacy |
 | `PA_VERSIONED_RAG_RETENTION_DAYS` | `14` | retired 索引版本的最短保留天数 |
 | `PA_VERSIONED_RAG_MIN_RETIRED_VERSIONS` | `1` | 每文档至少保留的 retired 回滚版本数 |
+| `PA_SMTP_HOST` | 空 | 注册验证码 SMTP 主机；为空时发送接口失败关闭 |
+| `PA_SMTP_PORT` | `465` | SMTP 端口 |
+| `PA_SMTP_USE_SSL` | `true` | 是否使用隐式 TLS；不能与 `PA_SMTP_STARTTLS` 同时开启 |
+| `PA_SMTP_STARTTLS` | `false` | 是否在普通连接上升级 STARTTLS |
+| `PA_SMTP_USERNAME` | 空 | SMTP 登录账号 |
+| `PA_SMTP_PASSWORD` | 空 | SMTP 密码或授权码；应只写入不提交的 `smtp.env` 或进程环境 |
+| `PA_SMTP_FROM_EMAIL` | 空 | 验证码邮件发件地址 |
+| `PA_SMTP_FROM_NAME` | `PrivateAgent` | 验证码邮件发件人名称 |
+| `PA_SMTP_TIMEOUT_SECONDS` | `15` | SMTP 连接和发送超时（秒） |
 | `PA_LOG_LEVEL` | `INFO` | 日志级别 |
+
+注册邮件建议从 `smtp.env.example` 复制生成本地 `smtp.env`，并仅填写真实 SMTP 配置；该文件已被 Git 忽略，不应提交授权码。服务器部署也可直接注入同名 `PA_SMTP_*` 环境变量。
 
 运行时数据位置：
 
@@ -406,7 +422,7 @@ scripts\build-release.bat
 
 ### 可选容器后端
 
-容器模式可作为远程多用户服务端：它使用 Compose secret files、非 root/只读 API 容器、宿主 loopback 端口、MySQL/Chroma 持久卷和可选的 NVIDIA Ollama profile。公网入口由同机 HTTPS 反向代理提供；桌面客户端可在登录页填写服务器地址，也可用 `VITE_API_BASE_URL` 提供构建时默认值：
+容器模式可作为远程多用户服务端：它使用 Compose secret files、非 root/只读 API 容器、宿主 loopback 端口、MySQL/Chroma 持久卷和可选的 NVIDIA Ollama profile。公网入口由同机 HTTPS 反向代理提供；桌面客户端未配置时默认连接本地 sidecar，服务器版安装包用 `VITE_API_BASE_URL` 固定服务地址：
 
 ```powershell
 Copy-Item .env.container.example .env.container
@@ -445,6 +461,7 @@ dist/latest.json
 - 写文件、运行命令、应用补丁和高风险任务步骤必须经过审批。
 - 补丁写入前校验旧内容哈希，降低并发修改和过期补丁覆盖风险。
 - 远程 Provider 默认关闭；启用后记录发送范围、耗时、结果和失败原因。
+- 注册验证码仅保存加盐摘要；登录会话仅保存 token 摘要，注销或账号停用后拒绝继续访问。
 - 敏感记忆不会注入远程上下文，设置接口不回显原始 API key。
 - Windows 安装版使用系统原生凭据窗口和凭据管理器；数据库、HTTP、备份及 Vue/Tauri 调用载荷都不持有明文秘密。
 - Tauri CSP 默认拒绝外部脚本、对象和非本地连接，只开放动态 loopback sidecar 与必要的本地资源协议。
