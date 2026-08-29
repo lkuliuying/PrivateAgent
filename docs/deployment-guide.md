@@ -172,15 +172,15 @@ PA_AUDIT_LOG_RETENTION_DAYS=90
 
 执行 `alembic upgrade head`（Compose 启动入口会自动执行）后，访问客户端注册首个账号；首个账号成为管理员。管理员注册完成后，如不再允许自助注册，把 `PA_ALLOW_PUBLIC_REGISTRATION=false` 并重启 API。不要在公开服务长期保留一个无人管理的“等待首个管理员注册”窗口。
 
-桌面端可直接在登录/注册页填写远程 API 地址。该地址作为非敏感本地偏好保存，切换地址会清除旧服务器会话，因此更换域名不需要重新构建客户端。
-
-如需为安装包提供默认地址，可在 `apps/desktop/.env.production.local` 中写入：
+登录/注册页不再提供服务器地址输入。未配置时客户端默认启动本地 sidecar；部署服务器版时，在 `apps/desktop/.env.production.local` 中固定远程地址并重新构建安装包：
 
 ```dotenv
 VITE_API_BASE_URL=https://agent.example.com
 ```
 
 生产构建拒绝非 loopback 的明文 HTTP。配置远程 URL 后，客户端会跳过本地 sidecar；数据库、Chroma、模型调用和业务逻辑都留在服务器，客户端只向当前配置的 API 域名发送 Bearer 会话。每个业务行由 `owner_user_id` 隔离；旧库中 owner 为空的数据默认不会暴露给新账号。仅在可信迁移前设置 `PA_CLAIM_LEGACY_DATA_ON_FIRST_USER=true`，才会由首个管理员认领旧数据。
+
+注册验证码使用 SMTP 发送。复制仓库根目录的 `smtp.env.example` 为 `smtp.env`，填写 SMTP 主机、邮箱与服务商授权码；源码/服务器进程会在主 `.env` 后读取该文件。Windows 安装版应将同样的 `smtp.env` 放到 `%APPDATA%\personal-assistant\smtp.env` 并重启应用。验证码为 6 位字母数字组合，5 分钟有效。
 
 所有 HTTP 操作都会写入 `audit_logs`（不保存请求正文、密码、token、聊天全文或密钥），管理员端可查看用户统计、健康状态和审计记录。数据库审计按 `PA_AUDIT_LOG_RETENTION_DAYS` 清理，文件日志每日轮转并按 `PA_LOG_RETENTION_DAYS` 清理。
 
