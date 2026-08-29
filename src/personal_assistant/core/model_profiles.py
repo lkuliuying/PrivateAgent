@@ -64,7 +64,9 @@ def _validate_fields(fields: Mapping[str, Any]) -> None:
             raise ModelProfileError(f"{name} 必须是布尔值")
     if "context_tokens" in fields:
         value = fields["context_tokens"]
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 1
+        ):
             raise ModelProfileError("context_tokens 必须是 ≥1 的整数")
     if "reasoning_efforts" in fields and fields["reasoning_efforts"] is not None:
         value = fields["reasoning_efforts"]
@@ -123,7 +125,11 @@ class ModelProfileService:
                     fields.get("supports_structured_output", False)
                 ),
                 supports_vision=bool(fields.get("supports_vision", False)),
-                context_tokens=int(fields.get("context_tokens", 8192)),
+                context_tokens=(
+                    int(fields["context_tokens"])
+                    if "context_tokens" in fields and fields["context_tokens"] is not None
+                    else None if "context_tokens" in fields else 8192
+                ),
                 reasoning_efforts_json=fields.get("reasoning_efforts"),
                 usage_reporting=bool(fields.get("usage_reporting", False)),
                 enabled=bool(fields.get("enabled", True)),
@@ -144,7 +150,11 @@ class ModelProfileService:
             if name in fields:
                 setattr(existing, name, bool(fields[name]))
         if "context_tokens" in fields:
-            existing.context_tokens = int(fields["context_tokens"])
+            existing.context_tokens = (
+                int(fields["context_tokens"])
+                if fields["context_tokens"] is not None
+                else None
+            )
         if "reasoning_efforts" in fields:
             existing.reasoning_efforts_json = fields["reasoning_efforts"]
         await self.db.commit()

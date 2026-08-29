@@ -29,6 +29,7 @@ from ..core.model_profiles import (
     ModelProfileNotFound,
     ModelProfileService,
 )
+from ..core.settings import SettingsService
 
 router = APIRouter(prefix="/agent-model-profiles", tags=["agent-model-profiles"])
 
@@ -62,7 +63,7 @@ class ModelProfileUpsertRequest(BaseModel):
     supports_streaming: bool = False
     supports_structured_output: bool = False
     supports_vision: bool = False
-    context_tokens: int = Field(default=8192, ge=1)
+    context_tokens: int | None = Field(default=8192, ge=1)
     reasoning_efforts: list[str] | None = Field(default=None, max_length=16)
     usage_reporting: bool = False
     enabled: bool = True
@@ -75,6 +76,8 @@ class ModelProfileOut(BaseModel):
 
     id: str
     provider: str
+    provider_id: str | None = None
+    provider_name: str | None = None
     display_name: str
     model_name: str | None = None
     is_default: bool = False
@@ -83,7 +86,7 @@ class ModelProfileOut(BaseModel):
     supports_streaming: bool
     supports_structured_output: bool
     supports_vision: bool
-    context_tokens: int
+    context_tokens: int | None
     reasoning_efforts: list | None = None
     usage_reporting: bool
     enabled: bool
@@ -91,10 +94,37 @@ class ModelProfileOut(BaseModel):
     updated_at: object
 
 
-def _profile_out(profile) -> ModelProfileOut:
+def _profile_out(profile, provider_settings: dict[str, str] | None = None) -> ModelProfileOut:
     out = ModelProfileOut.model_validate(profile)
     out.reasoning_efforts = profile.reasoning_efforts_json
+    if provider_settings is not None:
+        from ..core.model_providers import provider_for_profile
+
+        provider = provider_for_profile(provider_settings, profile.id)
+        if provider is not None:
+            out.provider_id = str(provider.get("id") or "") or None
+            out.provider_name = str(provider.get("name") or "") or None
     return out
+
+
+async def _sync_default_project_model(db: AsyncSession, profile) -> None:
+    """Keep Agent/chat and Coding on the same project-wide default model."""
+    model_name = (profile.model_name or "").strip()
+    if not profile.is_default or not model_name:
+        return
+    model_key = {
+        "ollama": "llm_model",
+        "openai": "openai_model",
+        "claude": "claude_model",
+    }.get(profile.provider)
+    if model_key is None:
+        return
+    await SettingsService(db).update(
+        {
+            "provider_type": profile.provider,
+            model_key: model_name,
+        }
+    )
 
 
 @router.get("", response_model=None)
@@ -106,7 +136,8 @@ async def list_model_profiles(
     if blocked is not None:
         return blocked
     profiles = await ModelProfileService(db).list(enabled_only=enabled_only)
-    return [_profile_out(p) for p in profiles]
+    settings = await SettingsService(db).get_all()
+    return [_profile_out(p, settings) for p in profiles]
 
 
 @router.get("/import-status", response_model=None)
@@ -168,7 +199,7 @@ async def get_model_profile(
             "model_profile_not_found",
             f"Model profile not found: {profile_id}",
         )
-    return _profile_out(profile)
+    return _profile_out(profile, await SettingsService(db).get_all())
 
 
 @router.put("/{profile_id}", response_model=None)
@@ -186,6 +217,7 @@ async def upsert_model_profile(
         )
     except ModelProfileError as exc:
         return _error(422, "model_profile_invalid", str(exc))
+    await _sync_default_project_model(db, profile)
     # v1.0 CT-3（专项计划 §8.2；三次验收修复）：配置保存后调度**后台**探测，
     # 保存请求不再同步等待模型（本地大模型可达分钟级）；进度/结果经
     # GET /{id}/tool-probe 查询，重试入口 POST /{id}/tool-probe。
@@ -193,7 +225,7 @@ async def upsert_model_profile(
         from ..core.model_probe_service import auto_probe_profile
 
         await auto_probe_profile(db, profile, cfg=cfg)
-    return _profile_out(profile)
+    return _profile_out(profile, await SettingsService(db).get_all())
 
 
 class ModelToolProbeOut(BaseModel):
@@ -330,4 +362,5 @@ async def set_default_model_profile(
         profile = await ModelProfileService(db).set_default(profile_id)
     except ModelProfileNotFound as exc:
         return _error(404, "model_profile_not_found", str(exc))
-    return _profile_out(profile)
+    await _sync_default_project_model(db, profile)
+    return _profile_out(profile, await SettingsService(db).get_all())

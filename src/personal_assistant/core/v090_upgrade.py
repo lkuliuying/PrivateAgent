@@ -109,6 +109,11 @@ async def reconcile_v090_upgrade(
                     )
             if settings.coding_permission_models_enabled:
                 await reconcile_model_profiles(db)
+                # 统一供应商配置可能来自旧版本；启动时幂等补齐可信的官方
+                # 上下文元数据（例如曾被默认成 32K 的 DeepSeek V4）。
+                from .model_providers import ModelProviderService
+
+                await ModelProviderService(db).list()
     except Exception:  # noqa: BLE001 - reconcile 失败不阻断启动
         logger.exception("v0.9.0 upgrade reconcile failed")
 

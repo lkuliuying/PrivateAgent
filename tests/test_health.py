@@ -28,12 +28,18 @@ async def test_mysql_health_uses_injected_session_without_global_engine(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_health_returns_four_components(client):
+async def test_health_returns_only_core_components(client, monkeypatch):
+    async def fail_if_ollama_is_probed(*_args, **_kwargs):
+        raise AssertionError("Ollama must not participate in periodic health checks")
+
+    from personal_assistant.core.provider import OllamaProvider
+
+    monkeypatch.setattr(OllamaProvider, "health", fail_if_ollama_is_probed)
     r = await client.get("/health")
     assert r.status_code == 200
     data = r.json()
-    assert set(data.keys()) == {"api", "ollama", "mysql", "chroma"}
-    for key in ("api", "ollama", "mysql", "chroma"):
+    assert set(data.keys()) == {"api", "mysql", "chroma"}
+    for key in ("api", "mysql", "chroma"):
         assert "ok" in data[key]
 
 

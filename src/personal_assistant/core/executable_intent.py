@@ -48,6 +48,8 @@ _FILE_MUTATION_ACTION_RE = re.compile(
 )
 _FILE_TARGET_RE = re.compile(
     r"文件|文档|代码|源码|脚本|配置|README|readme|"
+    r"(?:一个|1个)\s*(?:python|javascript|typescript|java|go|rust|c\+\+|c#)"
+    r"(?:程序|脚本|文件)?(?!\s*(?:项目|工程))|"
     r"[\w.-]+\.(?:txt|md|py|js|jsx|ts|tsx|vue|json|ya?ml|toml|ini|cfg|"
     r"rs|go|java|kt|kts|c|cc|cpp|h|hpp|cs|sh|ps1|bat|cmd|html?|css|scss|sql)",
     re.IGNORECASE,
@@ -64,6 +66,11 @@ _MULTI_FILE_MARKER_RE = re.compile(
 )
 _PREVIEW_ONLY_MARKER_RE = re.compile(
     "只预览|仅预览|先预览|预览一下|不要写入|不写入|只看补丁|仅看补丁"
+)
+_IMPLICIT_SINGLE_SOURCE_FILE_RE = re.compile(
+    r"(?:一个|1个)\s*(?:python|javascript|typescript|java|go|rust|c\+\+|c#)"
+    r"(?:程序|脚本|文件)?(?!\s*(?:项目|工程))",
+    re.IGNORECASE,
 )
 
 
@@ -102,8 +109,9 @@ def detect_file_mutation_intent(message: str) -> bool:
 def detect_direct_single_file_write_intent(message: str) -> bool:
     """识别可直接进入单文件审批写入的明确请求。
 
-    只有请求明确给出一个文件名、没有多文件或仅预览口径时才返回 ``True``。
-    该结果只缩小模型可见工具面，不改变审批、能力或工作区边界。
+    请求明确给出一个文件名，或以“创建一个 Python/Java ……”表达单文件
+    产物，且没有多文件或仅预览口径时返回 ``True``。该结果只缩小模型可见
+    工具面，不改变审批、能力或工作区边界。
     """
     text = (message or "").strip()
     if not detect_file_mutation_intent(text):
@@ -111,7 +119,10 @@ def detect_direct_single_file_write_intent(message: str) -> bool:
     if _MULTI_FILE_MARKER_RE.search(text) or _PREVIEW_ONLY_MARKER_RE.search(text):
         return False
     names = {match.group(0).lower() for match in _EXPLICIT_FILE_NAME_RE.finditer(text)}
-    return len(names) == 1
+    if names:
+        return len(names) == 1
+    implicit_files = list(_IMPLICIT_SINGLE_SOURCE_FILE_RE.finditer(text))
+    return len(implicit_files) == 1
 
 
 def has_preview_only_marker(message: str) -> bool:

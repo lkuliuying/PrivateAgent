@@ -490,6 +490,8 @@ async def test_create_run_blocked_without_any_write_tool(client, monkeypatch, tm
     """F-002：明确文件写入意图 + 无任何写工具入口 → 409 结构化预检失败。"""
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", False)
+    monkeypatch.setattr(routes_agent_runs.cfg, "coding_patchset_enabled", False)
     env = await _create_coding_env(client, tmp_path)
     resp = await _post_coding_run(
         client,

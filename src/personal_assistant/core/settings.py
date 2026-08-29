@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import os
 
 from sqlalchemy import select
@@ -26,18 +27,117 @@ PROVIDER_SECRET_KEYS: dict[str, str] = {
     "claude": "claude_api_key",
 }
 
+# 运行中由已认证的本地桌面 API 热更新。键存在但值为空表示显式清除，
+# 不能再回落到 sidecar 启动时注入的旧环境变量。
+_PROVIDER_RUNTIME_SECRETS: dict[str, str] = {}
+
+# 自定义模型供应商的非秘密配置保存在 settings 表中；API Key 仍只存系统
+# 凭据库引用。进程启动时桌面壳注入引用 -> 明文映射，保存新 Key 后则通过
+# 已认证的 loopback API 热更新这一内存映射，因此无需重启 sidecar。
+_MODEL_PROVIDER_RUNTIME_SECRETS: dict[str, str] = {}
+
+
+def model_provider_secret_reference(provider_id: str) -> str:
+    return f"secret://os-keyring/model-provider/{provider_id}"
+
+
+def _startup_model_provider_secrets() -> dict[str, str]:
+    raw = os.environ.get("PA_MODEL_PROVIDER_SECRETS_JSON", "")
+    if not raw:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        str(reference): str(secret)
+        for reference, secret in payload.items()
+        if isinstance(reference, str) and isinstance(secret, str)
+    }
+
+
+_MODEL_PROVIDER_STARTUP_SECRETS = _startup_model_provider_secrets()
+
+
+def resolve_model_provider_secret(
+    provider_id: str,
+    credential_reference: str | None,
+    *,
+    legacy_settings: dict[str, str] | None = None,
+) -> str:
+    """Resolve a provider-specific key without exposing or persisting plaintext."""
+    reference = (credential_reference or "").strip()
+    if not reference:
+        return ""
+    if reference in _MODEL_PROVIDER_RUNTIME_SECRETS:
+        return _MODEL_PROVIDER_RUNTIME_SECRETS[reference]
+    if reference in _MODEL_PROVIDER_STARTUP_SECRETS:
+        return _MODEL_PROVIDER_STARTUP_SECRETS[reference]
+    # 兼容升级前固定 OpenAI / Claude 凭据引用。
+    values = legacy_settings or {}
+    if reference == PROVIDER_SECRET_REFS["openai_api_key"]:
+        return values.get("openai_api_key", "")
+    if reference == PROVIDER_SECRET_REFS["claude_api_key"]:
+        return values.get("claude_api_key", "")
+    expected = model_provider_secret_reference(provider_id)
+    if reference != expected:
+        return ""
+    return ""
+
+
+def set_model_provider_runtime_secret(provider_id: str, secret: str) -> None:
+    normalized = secret.strip()
+    if not normalized:
+        raise ValueError("provider secret must not be empty")
+    if len(normalized) > 16_384:
+        raise ValueError("provider secret is too long")
+    _MODEL_PROVIDER_RUNTIME_SECRETS[
+        model_provider_secret_reference(provider_id)
+    ] = normalized
+
+
+def clear_model_provider_runtime_secret(provider_id: str) -> None:
+    _MODEL_PROVIDER_RUNTIME_SECRETS[
+        model_provider_secret_reference(provider_id)
+    ] = ""
+
 
 def is_provider_secret_reference(key: str, value: str | None) -> bool:
     return bool(value) and value == PROVIDER_SECRET_REFS.get(key)
 
 
 def resolve_provider_secret(key: str, stored_value: str | None) -> str:
-    """Resolve a fixed OS-keyring reference from process-only startup injection."""
+    """Resolve a fixed OS-keyring reference from the latest process-local value."""
     if is_provider_secret_reference(key, stored_value):
+        if key in _PROVIDER_RUNTIME_SECRETS:
+            return _PROVIDER_RUNTIME_SECRETS[key]
         return os.environ.get(PROVIDER_SECRET_ENVS[key], "")
     # Read-only compatibility for legacy rows. Public APIs never expose this value
     # and all new writes are restricted to a fixed reference or deletion.
     return stored_value or ""
+
+
+def set_provider_runtime_secret(provider: str, secret: str) -> None:
+    """Hot-update one provider secret in sidecar memory without persisting it."""
+    key = PROVIDER_SECRET_KEYS.get(provider)
+    if key is None:
+        raise ValueError("unsupported provider")
+    normalized = secret.strip()
+    if not normalized:
+        raise ValueError("provider secret must not be empty")
+    if len(normalized) > 16_384:
+        raise ValueError("provider secret is too long")
+    _PROVIDER_RUNTIME_SECRETS[key] = normalized
+
+
+def clear_provider_runtime_secret(provider: str) -> None:
+    """Explicitly mask both the hot value and any stale startup injection."""
+    key = PROVIDER_SECRET_KEYS.get(provider)
+    if key is None:
+        raise ValueError("unsupported provider")
+    _PROVIDER_RUNTIME_SECRETS[key] = ""
 
 # 可调参数 key -> 默认值（来自 .env/config）
 DEFAULTS: dict[str, str] = {
@@ -50,6 +150,7 @@ DEFAULTS: dict[str, str] = {
     "provider_type": "ollama",
     "remote_provider_enabled": "false",
     "openai_api_key": "",
+    "openai_config_name": "OpenAI 兼容 API",
     "openai_base_url": "",
     "openai_model": "gpt-4o-mini",
     "claude_api_key": "",
@@ -62,6 +163,8 @@ DEFAULTS: dict[str, str] = {
     # 词汇：pending（未评估）/ auto_imported（升级自动导入）/
     # imported（用户显式导入）/ dismissed（用户关闭一次性向导）/ not_needed。
     "coding_profile_import_state": "pending",
+    # 统一模型供应商配置（仅非秘密元数据和 keyring 引用）。
+    "model_provider_configs": "[]",
 }
 
 
@@ -103,6 +206,8 @@ class SettingsService:
         key = PROVIDER_SECRET_KEYS.get(provider)
         if key is None:
             raise ValueError("unsupported provider")
+        if not configured:
+            clear_provider_runtime_secret(provider)
         value = PROVIDER_SECRET_REFS[key] if configured else ""
         await self.update({key: value})
         return await self.get_provider_secret_status(provider)

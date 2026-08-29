@@ -49,6 +49,31 @@ class _ModelOutputSinkError(Exception):
     pass
 
 
+def _safe_http_error_detail(response: httpx.Response) -> str:
+    """Extract a bounded provider code/message without retaining response bodies."""
+    try:
+        payload = response.json()
+    except (TypeError, ValueError):
+        return f"HTTP {response.status_code}"
+    if not isinstance(payload, dict):
+        return f"HTTP {response.status_code}"
+    error = payload.get("error")
+    source = error if isinstance(error, dict) else payload
+    code = str(source.get("code") or "").strip().replace("\r", " ").replace("\n", " ")
+    message = (
+        str(source.get("message") or source.get("detail") or "")
+        .strip()
+        .replace("\r", " ")
+        .replace("\n", " ")
+    )
+    parts = [f"HTTP {response.status_code}"]
+    if code:
+        parts.append(code[:64])
+    if message:
+        parts.append(message[:300])
+    return " · ".join(parts)
+
+
 def _normalize_error(exc: Exception, provider: str) -> ModelGatewayError:
     if isinstance(exc, ModelGatewayError):
         return exc
@@ -72,8 +97,16 @@ def _normalize_error(exc: Exception, provider: str) -> ModelGatewayError:
         code = "invalid_response"
     else:
         code = "provider_error"
+    detail = (
+        _safe_http_error_detail(exc.response)
+        if isinstance(exc, httpx.HTTPStatusError)
+        else None
+    )
+    message = f"模型调用失败（{code}）"
+    if detail:
+        message = f"{message}：{detail}"
     return ModelGatewayError(
-        f"模型调用失败（{code}）",
+        message,
         code=code,
         provider=provider,
     )

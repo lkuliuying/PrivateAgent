@@ -82,6 +82,35 @@ async def test_openai_missing_api_key():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_code", "expected_ok", "expected_error"),
+    [
+        (200, True, None),
+        (401, False, "unauthorized"),
+        (403, False, "unauthorized"),
+    ],
+)
+async def test_openai_health_does_not_treat_auth_failures_as_success(
+    status_code, expected_ok, expected_error
+):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == "Bearer secret"
+        return httpx.Response(status_code, request=request, json={"data": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleProvider(
+            base_url="https://api.openai.com/v1",
+            api_key="secret",
+            model="gpt-test",
+            client=client,
+        )
+        result = await provider.health()
+
+    assert result["ok"] is expected_ok
+    assert result.get("error_code") == expected_error
+
+
+@pytest.mark.asyncio
 async def test_claude_missing_api_key():
     p = ClaudeProvider(api_key="", model="claude-3-5-sonnet-latest")
     with pytest.raises(ProviderError) as ei:

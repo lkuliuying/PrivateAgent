@@ -418,14 +418,34 @@ class OpenAICompatibleProvider:
             "privacy_scope": "chat messages and selected context",
         }
         if not self.api_key:
+            result["error_code"] = "missing_api_key"
             result["error"] = "未配置 API key"
             return result
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                r = await client.get(f"{self.base_url}/models", headers=self._headers())
-                result["ok"] = r.status_code < 500
-                result["status_code"] = r.status_code
+            if self._client is not None:
+                response = await self._client.get(
+                    f"{self.base_url}/models", headers=self._headers()
+                )
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    response = await client.get(
+                        f"{self.base_url}/models", headers=self._headers()
+                    )
+            result["status_code"] = response.status_code
+            result["ok"] = response.is_success
+            if response.status_code in (401, 403):
+                result["error_code"] = "unauthorized"
+                result["error"] = "API Key 鉴权失败"
+            elif response.status_code == 429:
+                result["error_code"] = "rate_limited"
+                result["error"] = "模型服务请求频率受限"
+            elif not response.is_success:
+                result["error_code"] = "provider_error"
+                result["error"] = f"模型服务返回 HTTP {response.status_code}"
         except Exception as e:  # noqa: BLE001
+            result["error_code"] = classify_error(
+                e, provider_type="openai", api_key=self.api_key
+            )
             result["error"] = f"无法连接 OpenAI-compatible Provider: {e}"
         return result
 

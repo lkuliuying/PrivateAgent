@@ -35,6 +35,9 @@ class ContextBudget(BaseModel):
     used_tokens: int = Field(ge=0)
     max_context_tokens: int = Field(ge=0)
     reserved_output_tokens: int = Field(ge=0)
+    # 会话内所有模型请求按 input token 加权的缓存命中率；Provider 未报告
+    # 或尚无可计量输入时为 None，前端显示“--”，不伪造为 0%。
+    cache_hit_percent: float | None = Field(default=None, ge=0, le=100)
     source: UsageSource
     compaction_state: str
     last_compacted_at: datetime | None = None
@@ -65,6 +68,7 @@ class ContextBudget(BaseModel):
             "used_tokens": self.used_tokens,
             "max_context_tokens": self.max_context_tokens,
             "reserved_output_tokens": self.reserved_output_tokens,
+            "cache_hit_percent": self.cache_hit_percent,
             "usage_percent": self.usage_percent,
             "source": str(self.source.value),
             "compaction_state": self.compaction_state,

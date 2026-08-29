@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from personal_assistant.core import settings as settings_module
 from personal_assistant.core.backup import BackupService
 from personal_assistant.core.models import Setting
 from personal_assistant.core.settings import PROVIDER_SECRET_REFS, SettingsService
@@ -18,6 +19,7 @@ async def test_settings_has_defaults(db):
     assert "llm_model" in values
     assert "llm_temperature" in values
     assert "kb_enabled_by_default" in values
+    assert values["openai_config_name"]
 
 
 @pytest.mark.asyncio
@@ -97,6 +99,40 @@ async def test_secret_reference_endpoint_never_accepts_arbitrary_reference(clien
         json={"configured": True, "reference": "secret://attacker/value"},
     )
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_provider_runtime_secret_hot_updates_without_persistence(
+    client, db, monkeypatch
+):
+    monkeypatch.setattr(settings_module, "_PROVIDER_RUNTIME_SECRETS", {})
+    service = SettingsService(db)
+    row = await db.get(Setting, "openai_api_key")
+    original = row.value if row else None
+    try:
+        await service.set_provider_secret_reference("openai", configured=True)
+
+        updated = await client.put(
+            "/providers/openai/runtime-secret",
+            json={"secret": "sk-hot-value"},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.json() == {"provider": "openai", "available": True}
+        assert "sk-hot-value" not in updated.text
+        assert (await service.get_all())["openai_api_key"] == "sk-hot-value"
+        stored = await db.get(Setting, "openai_api_key")
+        assert stored is not None
+        assert stored.value == PROVIDER_SECRET_REFS["openai_api_key"]
+
+        cleared = await client.delete("/providers/openai/runtime-secret")
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json() == {"provider": "openai", "available": False}
+        assert (await service.get_all())["openai_api_key"] == ""
+    finally:
+        row = await db.get(Setting, "openai_api_key")
+        if row is not None:
+            row.value = original or ""
+            await db.commit()
 
 
 @pytest.mark.asyncio

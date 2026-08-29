@@ -23,6 +23,7 @@ class SettingsOut(BaseModel):
     provider_type: str
     remote_provider_enabled: bool
     openai_api_key_configured: bool
+    openai_config_name: str
     openai_base_url: str
     openai_model: str
     claude_api_key_configured: bool
@@ -42,6 +43,7 @@ class SettingsUpdate(BaseModel):
     kb_enabled_by_default: bool | None = None
     provider_type: str | None = None
     remote_provider_enabled: bool | None = None
+    openai_config_name: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
     claude_model: str | None = None
@@ -63,6 +65,7 @@ def _to_out(
         remote_provider_enabled=d.get("remote_provider_enabled", "false").lower()
         == "true",
         openai_api_key_configured=bool(secret_statuses["openai"]["configured"]),
+        openai_config_name=d.get("openai_config_name", "OpenAI 兼容 API"),
         openai_base_url=d.get("openai_base_url", ""),
         openai_model=d.get("openai_model", "gpt-4o-mini"),
         claude_api_key_configured=bool(secret_statuses["claude"]["configured"]),

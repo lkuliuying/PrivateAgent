@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from ..config import settings
+from ..core.auth import Principal
 from ..core.health import HealthService
 from ..logging_setup import get_logger
 
@@ -55,18 +56,20 @@ class RuntimeCapabilities(BaseModel):
 
 @router.get("/health")
 async def health() -> dict:
-    """返回 API、Ollama、MySQL、ChromaDB 四项状态。"""
+    """返回 API、MySQL、ChromaDB 状态；本地模型不参与周期探测。"""
     result = await HealthService().check_all()
     logger.info("health check", **{k: v.get("ok") for k, v in result.items()})
     return result
 
 
 @router.get("/capabilities", response_model=RuntimeCapabilities)
-async def capabilities() -> RuntimeCapabilities:
+async def capabilities(request: Request) -> RuntimeCapabilities:
     """Return lightweight execution-mode gates without probing dependencies."""
     from ..core.timeutil import PRODUCT_TIMEZONE
 
     agent_runtime = settings.chat_agent_runtime_enabled
+    principal = getattr(request.state, "principal", None)
+    privileged = isinstance(principal, Principal) and principal.is_admin
     return RuntimeCapabilities(
         chat_execution_mode="agent_runtime" if agent_runtime else "legacy",
         legacy_tool_planner_enabled=not agent_runtime,
@@ -76,27 +79,37 @@ async def capabilities() -> RuntimeCapabilities:
             and settings.agent_rag_tools_enabled
             and settings.agent_output_verification_enabled
         ),
-        patch_workflow_enabled=settings.agent_patch_workflow_enabled,
-        command_workflow_enabled=settings.agent_command_workflow_enabled,
-        http_workflow_enabled=settings.agent_http_workflow_enabled,
-        sql_readonly_workflow_enabled=settings.agent_sql_readonly_workflow_enabled,
+        patch_workflow_enabled=privileged and settings.agent_patch_workflow_enabled,
+        command_workflow_enabled=privileged and settings.agent_command_workflow_enabled,
+        http_workflow_enabled=privileged and settings.agent_http_workflow_enabled,
+        sql_readonly_workflow_enabled=(
+            privileged and settings.agent_sql_readonly_workflow_enabled
+        ),
         # v0.9.0 H0 §3：能力位只反映 flag 事实；UI 据此启用选项，
         # workspace_auto_approve 额外要求命令 profile 子系统可用。
-        agent_runs_api_enabled=settings.agent_runs_api_enabled,
-        coding_agent_ui_enabled=settings.coding_agent_ui_enabled,
-        project_bound_runs_enabled=settings.project_bound_runs_enabled,
+        agent_runs_api_enabled=privileged and settings.agent_runs_api_enabled,
+        coding_agent_ui_enabled=privileged and settings.coding_agent_ui_enabled,
+        project_bound_runs_enabled=privileged and settings.project_bound_runs_enabled,
         coding_workspace_auto_approve=(
+            privileged
+            and
             settings.coding_workspace_auto_approve_enabled
             and settings.coding_command_profiles_enabled
         ),
-        coding_full_access_supported=settings.coding_full_access_enabled,
-        coding_context_budget_enabled=settings.coding_context_budget_enabled,
-        coding_execution_detail_enabled=settings.coding_execution_detail_enabled,
-        coding_worktree_enabled=settings.coding_worktree_enabled,
+        coding_full_access_supported=privileged and settings.coding_full_access_enabled,
+        coding_context_budget_enabled=(
+            privileged and settings.coding_context_budget_enabled
+        ),
+        coding_execution_detail_enabled=(
+            privileged and settings.coding_execution_detail_enabled
+        ),
+        coding_worktree_enabled=privileged and settings.coding_worktree_enabled,
         product_timezone=PRODUCT_TIMEZONE,
         # v0.9.0 H1-C（§5.3）：审计/撤销随 full_access 能力位声明（服务层内置）。
-        coding_full_access_audit=settings.coding_full_access_enabled,
-        coding_full_access_revoke=settings.coding_full_access_enabled,
+        coding_full_access_audit=privileged and settings.coding_full_access_enabled,
+        coding_full_access_revoke=privileged and settings.coding_full_access_enabled,
         # v0.9.0 H1-B（§5.6）：内置只读诊断命令依赖命令工作流子系统。
-        coding_diagnostic_commands_enabled=settings.agent_command_workflow_enabled,
+        coding_diagnostic_commands_enabled=(
+            privileged and settings.agent_command_workflow_enabled
+        ),
     )

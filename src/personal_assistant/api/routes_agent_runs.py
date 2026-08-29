@@ -590,13 +590,26 @@ async def _model_gateway_for_run(
             f"模型 profile {run.model_profile_id} 缺少具体模型路由字段"
             "（model_name）；请在设置页补全并验证该 profile"
         )
+    from ..core.model_providers import provider_for_profile
+    from ..core.settings import resolve_model_provider_secret
+
+    provider_config = provider_for_profile(provider_settings, profile.id)
     remote_enabled = (
-        provider_settings.get("remote_provider_enabled", "false").lower() == "true"
+        bool(provider_config and provider_config.get("enabled"))
+        if provider_config is not None
+        else provider_settings.get("remote_provider_enabled", "false").lower()
+        == "true"
     )
     temperature = float(
         provider_settings.get("llm_temperature", cfg.llm_temperature)
     )
-    provider = (profile.provider or "").strip().lower()
+    provider = str(
+        (provider_config or {}).get("protocol") or profile.provider or ""
+    ).strip().lower()
+    if provider_config is not None and not provider_config.get("enabled"):
+        raise ModelProfileUnsupported(
+            f"模型 profile {run.model_profile_id} 所属供应商已停用"
+        )
     if profile.is_local or provider == "ollama":
         # P0-2 第二轮验收修复：本地 profile 强制 loopback 主机——OllamaChatAdapter
         # 接受任意 HTTP(S) 地址，若全局 ollama_base_url 指向远程主机（如
@@ -606,16 +619,19 @@ async def _model_gateway_for_run(
 
         from ..llm import ModelGateway, OllamaChatAdapter
 
-        parsed_host = (urlsplit(cfg.ollama_base_url).hostname or "").lower()
+        ollama_base_url = str(
+            (provider_config or {}).get("base_url") or cfg.ollama_base_url
+        ).rstrip("/")
+        parsed_host = (urlsplit(ollama_base_url).hostname or "").lower()
         if parsed_host not in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}:
             raise ModelProfileUnsupported(
                 f"模型 profile {run.model_profile_id} 是本地 profile，但全局"
-                f" ollama_base_url 指向非本地主机（{parsed_host or '(空)'}），"
+                f" Ollama 地址指向非本地主机（{parsed_host or '(空)'}），"
                 "拒绝路由（本地 profile 不得发送远程）"
             )
         return ModelGateway(
             OllamaChatAdapter(
-                base_url=cfg.ollama_base_url,
+                base_url=ollama_base_url,
                 # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
                 model=routed_model_name,
                 temperature=temperature,
@@ -641,9 +657,20 @@ async def _model_gateway_for_run(
 
         return ModelGateway(
             OpenAIChatAdapter(
-                base_url=provider_settings.get("openai_base_url")
-                or "https://api.openai.com/v1",
-                api_key=provider_settings.get("openai_api_key") or "",
+                base_url=str(
+                    (provider_config or {}).get("base_url")
+                    or provider_settings.get("openai_base_url")
+                    or "https://api.openai.com/v1"
+                ),
+                api_key=(
+                    resolve_model_provider_secret(
+                        str(provider_config.get("id")),
+                        str(provider_config.get("credential_reference") or "") or None,
+                        legacy_settings=provider_settings,
+                    )
+                    if provider_config is not None
+                    else provider_settings.get("openai_api_key") or ""
+                ),
                 # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
                 model=routed_model_name,
                 temperature=temperature,
@@ -659,7 +686,19 @@ async def _model_gateway_for_run(
 
         return ModelGateway(
             ClaudeMessagesAdapter(
-                api_key=provider_settings.get("claude_api_key") or "",
+                base_url=str(
+                    (provider_config or {}).get("base_url")
+                    or "https://api.anthropic.com/v1"
+                ),
+                api_key=(
+                    resolve_model_provider_secret(
+                        str(provider_config.get("id")),
+                        str(provider_config.get("credential_reference") or "") or None,
+                        legacy_settings=provider_settings,
+                    )
+                    if provider_config is not None
+                    else provider_settings.get("claude_api_key") or ""
+                ),
                 # v0.9.0 H1-D：具体模型取 profile 路由字段，不回落全局。
                 model=routed_model_name,
                 temperature=temperature,
@@ -786,22 +825,17 @@ async def get_agent_tool_bundle(
         run_record = await run_db.get(AgentRunRecord, run_id)
         if run_record is not None:
             permission_mode = run_record.permission_mode
-        # v1.0 CT-3（专项计划 §8.2；三次验收修复）：工具面门禁失败关闭——
-        # 绑定 profile 已删除/查不到、或无有效探测快照时，副作用工具不注册；
-        # 仅未绑定 profile 的历史/非 coding run 保持既有行为。未知能力不猜测（AD-T04）。
-        probe_ok = True
-        if run_record is not None and run_record.model_profile_id:
-            from ..core.model_probe_service import probe_gate_for_run
-
-            probe_ok = await probe_gate_for_run(
-                run_db, run_record.model_profile_id
-            )
+        # 模型探测快照用于配置诊断，不再决定内建工具是否注册。探测可能因
+        # Provider 限流、瞬时网络或兼容网关响应差异产生假阴性；以它隐藏
+        # apply/command 会让已通过 native_tool_calls 校验的 Coding run 退化为
+        # “只能预览”。真实副作用仍由 feature flag、权限能力、逐次审批、
+        # workspace 边界和结果验证器共同把关，模型不能借此扩大权限。
         registry = VersionedToolRegistry()
         result_verifier: ToolResultVerifier | None = None
         if cfg.agent_run_read_only_tools_enabled:
             for spec in build_read_only_tool_registry(run_db).list():
                 registry.register(spec)
-        if cfg.agent_patch_workflow_enabled and probe_ok:
+        if cfg.agent_patch_workflow_enabled:
             for spec in build_patch_tool_registry(run_db).list():
                 registry.register(spec)
         if cfg.agent_run_read_only_tools_enabled or cfg.agent_patch_workflow_enabled:
@@ -819,7 +853,6 @@ async def get_agent_tool_bundle(
         if (
             cfg.agent_command_workflow_enabled
             and permission_mode != "readonly"
-            and probe_ok
         ):
             # workspace 模式：项目 enabled 命令 profile 全部 safe → 工具自动
             # 允许；存在 confirm/restricted → 整体审批把关（restricted 永不因
@@ -864,7 +897,7 @@ async def get_agent_tool_bundle(
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, command_verifier])
             )
-        if cfg.coding_patchset_enabled and probe_ok:
+        if cfg.coding_patchset_enabled:
             # E1：PatchSet 多文件工具（E0 契约 §2）——safe 预览 + confirm 原子
             # 应用；验证器按 DB 持久化 SHA 复核磁盘事实（T2/T3），模型不能绕过。
             # E4：readonly 只注册只读预览（propose_patch_set），带写能力工具
@@ -888,7 +921,7 @@ async def get_agent_tool_bundle(
                 if result_verifier is None
                 else CompositeToolResultVerifier([result_verifier, patchset_verifier])
             )
-        if cfg.agent_http_workflow_enabled and probe_ok:
+        if cfg.agent_http_workflow_enabled:
             # rc.2：未配置任何已启用 endpoint profile 时工具不注册（模型不可见）。
             if has_http_profiles:
                 for spec in build_http_tool_registry(run_db).list():
@@ -907,7 +940,7 @@ async def get_agent_tool_bundle(
                     if result_verifier is None
                     else CompositeToolResultVerifier([result_verifier, http_verifier])
                 )
-        if cfg.agent_sql_readonly_workflow_enabled and probe_ok:
+        if cfg.agent_sql_readonly_workflow_enabled:
             # rc.2：未配置任何已启用只读连接 profile 时工具不注册（模型不可见）。
             if has_sql_profiles:
                 for spec in build_sql_tool_registry(run_db).list():
@@ -1397,11 +1430,30 @@ async def create_agent_run(
                     422, "model_profile_unsupported", str(exc)
                 )
             provider_settings = await SettingsService(db).get_all()
+            from ..core.model_providers import provider_for_profile
+
+            provider_config = provider_for_profile(
+                provider_settings, coding_profile.id
+            )
             remote_enabled = (
-                provider_settings.get("remote_provider_enabled", "false").lower()
+                bool(provider_config and provider_config.get("enabled"))
+                if provider_config is not None
+                else provider_settings.get(
+                    "remote_provider_enabled", "false"
+                ).lower()
                 == "true"
             )
-            profile_provider = (coding_profile.provider or "").strip().lower()
+            profile_provider = str(
+                (provider_config or {}).get("protocol")
+                or coding_profile.provider
+                or ""
+            ).strip().lower()
+            if provider_config is not None and not provider_config.get("enabled"):
+                return _coding_error(
+                    422,
+                    "model_profile_unsupported",
+                    f"模型 profile {effective_profile_id} 所属供应商已停用",
+                )
             if (
                 not coding_profile.is_local
                 and profile_provider in {"openai", "claude"}
@@ -1565,15 +1617,12 @@ async def create_agent_run(
         and requires_file_write
         and cfg.agent_v2_tool_preflight_enabled
     ):
-        # v1.0 CT-3（§8.2/AD-T04）：模型工具协议有效性进入预检——
-        # profile 无有效探测快照时文件写入意图即失败关闭（未知能力不猜测）。
-        model_supports_tools = True
-        if coding_profile is not None:
-            from ..core.model_probe_service import profile_tool_protocol_valid
-    
-            model_supports_tools = bool(
-                coding_profile.native_tool_calls
-            ) and await profile_tool_protocol_valid(db, coding_profile)
+        # 内建工具可用性以 profile 的显式 native_tool_calls 声明为准；自动
+        # 探测仅作诊断，避免一次限流/兼容响应把真实写工具永久隐藏。执行安全
+        # 仍由预检后的权限、审批、工作区边界与写后回读校验失败关闭。
+        model_supports_tools = bool(
+            coding_profile is None or coding_profile.native_tool_calls
+        )
         preflight = assess_workspace_file_write(
             patch_workflow_enabled=cfg.agent_patch_workflow_enabled,
             patchset_enabled=cfg.coding_patchset_enabled,

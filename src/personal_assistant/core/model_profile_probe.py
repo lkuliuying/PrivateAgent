@@ -81,8 +81,10 @@ def _ollama_model_in_tags(model_name: str, names: list[str]) -> bool:
     return False
 
 
-async def _probe_ollama(model_name: str) -> ModelProfileProbeResult:
-    url = f"{cfg.ollama_base_url.rstrip('/')}/api/tags"
+async def _probe_ollama(
+    model_name: str, base_url: str | None = None
+) -> ModelProfileProbeResult:
+    url = f"{(base_url or cfg.ollama_base_url).rstrip('/')}/api/tags"
     try:
         async with httpx.AsyncClient(
             timeout=_OLLAMA_TIMEOUT_SECONDS, trust_env=False
@@ -196,11 +198,42 @@ async def probe_model_profile(db, profile_id: str) -> ModelProfileProbeResult:
             detail="profile 缺少具体模型路由字段（model_name）",
         )
     settings = await SettingsService(db).get_all()
-    provider = (profile.provider or "").strip().lower()
+    from .model_providers import provider_for_profile
+    from .settings import resolve_model_provider_secret
+
+    provider_config = provider_for_profile(settings, profile.id)
+    if provider_config is not None:
+        if not provider_config.get("enabled"):
+            return ModelProfileProbeResult(
+                status="feature_disabled", detail="模型供应商已停用"
+            )
+        settings = dict(settings)
+        settings["remote_provider_enabled"] = "true"
+        protocol = str(provider_config.get("protocol") or profile.provider)
+        secret = resolve_model_provider_secret(
+            str(provider_config.get("id")),
+            str(provider_config.get("credential_reference") or "") or None,
+            legacy_settings=settings,
+        )
+        if protocol == "openai":
+            settings["openai_base_url"] = str(provider_config.get("base_url") or "")
+            settings["openai_api_key"] = secret
+        elif protocol == "claude":
+            settings["claude_api_key"] = secret
+    provider = str(
+        (provider_config or {}).get("protocol") or profile.provider or ""
+    ).strip().lower()
     model_name = profile.model_name.strip()
     try:
         if profile.is_local or provider == "ollama":
-            result = await _probe_ollama(model_name)
+            if provider_config is None:
+                # 保持既有单参数探测契约，便于测试/扩展注入。
+                result = await _probe_ollama(model_name)
+            else:
+                result = await _probe_ollama(
+                    model_name,
+                    str(provider_config.get("base_url") or "") or None,
+                )
         elif provider == "openai":
             result = await _probe_openai(model_name, settings)
         elif provider == "claude":

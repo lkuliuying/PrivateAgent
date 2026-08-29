@@ -19,7 +19,9 @@ def _enable_budget(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "coding_context_budget_enabled", True)
 
 
-async def _create_session_with_run(client, monkeypatch, tmp_path, input_tokens: int):
+async def _create_session_with_run(
+    client, monkeypatch, tmp_path, input_tokens: int, cached_tokens: int = 0
+):
     from personal_assistant.api import routes_agent_runs
     from personal_assistant.core.db import async_session_factory
     from personal_assistant.core.models import AgentRun as AgentRunRecord
@@ -40,6 +42,7 @@ async def _create_session_with_run(client, monkeypatch, tmp_path, input_tokens: 
     async with async_session_factory() as db:
         run = await db.get(AgentRunRecord, run_id)
         run.input_tokens = input_tokens
+        run.cached_tokens = cached_tokens
         await db.commit()
         # 模拟真实已启动的 run：记录 run.started（压缩事件才能挂载）
         from personal_assistant.agents.contracts import (
@@ -91,6 +94,24 @@ async def test_budget_real_usage_percent(client, monkeypatch, tmp_path):
     assert body["max_context_tokens"] == cfg.llm_context_length
     expected = round(1000 * 100 / cfg.llm_context_length)
     assert body["usage_percent"] == min(expected, 100)
+    assert body["cache_hit_percent"] == 0.0
+
+
+async def test_budget_reports_weighted_cache_hit_percent(
+    client, monkeypatch, tmp_path
+):
+    """缓存命中率来自 durable Provider usage，不按消息内容估算。"""
+    _enable_budget(monkeypatch)
+    env, _ = await _create_session_with_run(
+        client,
+        monkeypatch,
+        tmp_path,
+        input_tokens=10_000,
+        cached_tokens=9_790,
+    )
+    resp = await client.get(f"/sessions/{env['session_id']}/context-budget")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["cache_hit_percent"] == 97.9
 
 
 async def test_budget_caps_at_100_with_error_code(client, monkeypatch, tmp_path):

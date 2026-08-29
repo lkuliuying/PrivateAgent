@@ -95,6 +95,16 @@ class Settings(BaseSettings):
         "http://localhost:1420,http://127.0.0.1:1420,"
         "http://tauri.localhost,https://tauri.localhost,tauri://localhost"
     )
+    # 多用户认证：注册端点可按部署策略关闭；首个成功注册账号成为管理员。
+    allow_public_registration: bool = True
+    auth_session_ttl_hours: int = Field(default=168, ge=1, le=24 * 365)
+    # 升级后的旧本地数据默认不归属任何新账号；仅在可信首次迁移时显式开启。
+    claim_legacy_data_on_first_user: bool = False
+    audit_log_retention_days: int = Field(default=90, ge=1, le=3650)
+    log_retention_days: int = Field(default=30, ge=1, le=3650)
+    security_cleanup_interval_seconds: int = Field(
+        default=3600, ge=60, le=86_400
+    )
     agent_runs_api_enabled: bool = False
     agent_run_read_only_tools_enabled: bool = False
     agent_rag_tools_enabled: bool = False
@@ -179,7 +189,7 @@ class Settings(BaseSettings):
     # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
     coding_execution_detail_enabled: bool = False
     # v1.0 CT-3（专项计划 §8.2）：模型配置保存后自动执行工具能力探测并持久化
-    # 快照；快照进入预检与工具面门禁（无有效快照失败关闭到最小工具面）。
+    # 快照；用于能力诊断与设置页反馈，不授予或撤销内建工具执行权限。
     agent_v2_model_probe_enabled: bool = True
     # v1.0 CT-9（专项计划 §14.2/§20）：工具快照诊断 API（observe-only，
     # 脱敏视图；不改变任何执行语义）。默认关闭，灰度按专项计划 §20 顺序。
