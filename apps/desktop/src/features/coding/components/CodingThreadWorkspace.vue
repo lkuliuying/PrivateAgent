@@ -10,6 +10,7 @@
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { PhChatsCircle, PhWarningCircle } from "@phosphor-icons/vue";
+import { pickFile } from "../../../api";
 import type { View } from "../../../types";
 import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
@@ -35,6 +36,7 @@ import {
   rejectRunApproval,
 } from "../api/runs";
 import {
+  attachCodingProjectFile,
   fetchCodingWorkspacePath,
   searchCodingProjectFiles,
 } from "../api/projects";
@@ -517,6 +519,19 @@ function searchFiles(query: string) {
   return searchCodingProjectFiles(projectId, query);
 }
 
+async function pickAttachment() {
+  const sourcePath = await pickFile();
+  if (!sourcePath) return null;
+  const currentThread = thread.value;
+  const projectId = props.store.selectedProjectId.value ?? currentThread?.projectId ?? null;
+  const workspaceId =
+    props.store.selectedWorkspaceId.value ?? currentThread?.workspaceId ?? null;
+  if (projectId === null || workspaceId === null) {
+    throw new Error("当前任务尚未绑定可用工作区");
+  }
+  return attachCodingProjectFile(projectId, workspaceId, sourcePath);
+}
+
 async function cancelRun(): Promise<void> {
   cancelling.value = true;
   try {
@@ -642,6 +657,7 @@ function toggleContext(): void {
               :running="runActive"
               :preview-mode="previewMode"
               :search-files="searchFiles"
+              :pick-attachment="pickAttachment"
               :before-send="guardFullAccess"
               :input-history="composerInputHistory"
               :restore-request="restoreRequest"

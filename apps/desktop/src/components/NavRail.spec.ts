@@ -10,7 +10,9 @@ describe("NavRail", () => {
   });
 
   it("更多工具可展开且保留高级入口", async () => {
-    const wrapper = shallowMount(NavRail, { props: { active: "today" } });
+    const wrapper = shallowMount(NavRail, {
+      props: { active: "today", isAdmin: true },
+    });
     await wrapper.get(".utility-toggle").trigger("click");
     expect(wrapper.find(".advanced-items").exists()).toBe(true);
     expect(wrapper.text()).toContain("诊断");
@@ -18,12 +20,24 @@ describe("NavRail", () => {
   });
 
   it("设置仍是直接可达入口", async () => {
-    const wrapper = shallowMount(NavRail, { props: { active: "today" } });
+    const wrapper = shallowMount(NavRail, {
+      props: { active: "today", isAdmin: true },
+    });
     const settings = wrapper
       .findAll("button")
       .find((button) => button.text().includes("设置"));
     expect(settings).toBeDefined();
     await settings!.trigger("click");
     expect(wrapper.emitted("navigate")).toEqual([["settings"]]);
+  });
+
+  it("普通用户不展示服务器管理入口", async () => {
+    const wrapper = shallowMount(NavRail, { props: { active: "today" } });
+    await wrapper.get(".utility-toggle").trigger("click");
+
+    expect(wrapper.text()).not.toContain("设置");
+    expect(wrapper.text()).not.toContain("项目");
+    expect(wrapper.text()).not.toContain("诊断");
+    expect(wrapper.text()).not.toContain("备份");
   });
 });

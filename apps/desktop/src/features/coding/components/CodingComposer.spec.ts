@@ -23,7 +23,10 @@ function profilesStore() {
           id: "local-coder",
           provider: "ollama",
           displayName: "Qwen3 Coder",
+          modelName: "qwen3-coder:30b",
+          isDefault: true,
           isLocal: true,
+          contextTokens: 32768,
           reasoningEfforts: ["low", "medium", "high"],
         },
       ],
@@ -61,12 +64,21 @@ describe("CodingComposer", () => {
           id: "local-coder",
           provider: "ollama",
           displayName: "Qwen3 Coder",
+          modelName: "qwen3-coder:30b",
+          isDefault: true,
           isLocal: true,
+          contextTokens: 32768,
           reasoningEfforts: ["low", "medium", "high"],
         },
       ],
     };
     const { wrapper } = mountComposer({ store });
+    const modelOptions = wrapper.findAll('[data-testid="composer-model"] option');
+    expect(modelOptions[1].text()).toBe("qwen3-coder:30b");
+    expect(modelOptions[1].text()).not.toContain("Qwen3 Coder");
+    expect(
+      wrapper.findAll('[data-testid="composer-effort"] option').map((option) => option.text())
+    ).toEqual(["默认强度", "低", "中", "高"]);
     await setInputValue(wrapper, "修复侧栏遮挡");
     await wrapper.find('[data-testid="composer-permission"]').setValue("confirm");
     await wrapper.find('[data-testid="composer-model"]').setValue("local-coder");
@@ -142,6 +154,50 @@ describe("CodingComposer", () => {
     expect((input.element as HTMLTextAreaElement).value).toBe("@");
     expect(wrapper.find('[data-testid="composer-at-pop"]').exists()).toBe(true);
     expect(searchFiles).toHaveBeenCalledWith("");
+  });
+
+  it("桌面附件选择成功后直接加入上下文 chip", async () => {
+    const pickAttachment = vi.fn().mockResolvedValue({
+      relPath: ".privateagent/attachments/a1-report.pdf",
+      name: "report.pdf",
+      language: null,
+    });
+    const { wrapper } = mountComposer({ pickAttachment });
+    await wrapper.find('[data-testid="composer-add-context"]').trigger("click");
+    await nextTick();
+    expect(pickAttachment).toHaveBeenCalledOnce();
+    expect(wrapper.find('[data-testid="composer-chips"]').text()).toContain("report.pdf");
+  });
+
+  it("默认模型显示模型 ID 与推理强度，页面不单独展示上下文上限", async () => {
+    const store = profilesStore();
+    store.modelProfiles.value = {
+      status: "ok",
+      profiles: [
+        {
+          id: "local-coder",
+          provider: "ollama",
+          displayName: "Qwen3 Coder",
+          modelName: "qwen3-coder:30b",
+          isDefault: true,
+          isLocal: true,
+          contextTokens: 32768,
+          reasoningEfforts: ["low", "medium", "high"],
+        },
+      ],
+    };
+    const { wrapper } = mountComposer({ store });
+    await nextTick();
+    expect(wrapper.find('[data-testid="composer-model"] option').text()).toContain(
+      "qwen3-coder:30b"
+    );
+    expect(wrapper.find('[data-testid="composer-effort"]').attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="composer-context-limit"]').exists()).toBe(false);
+    await setInputValue(wrapper, "使用默认模型");
+    await wrapper.find('[data-testid="coding-composer-send"]').trigger("click");
+    expect(wrapper.emitted("send")?.[0]?.[0]).toMatchObject({
+      modelProfileId: "local-coder",
+    });
   });
 
   it("running 时显示停止按钮并发出 stop", async () => {

@@ -19,6 +19,10 @@ import { useNotifications } from "../stores/notifications";
 import type { View } from "../types";
 import { VIEW_REGISTRY } from "../models/viewRegistry";
 
+const props = withDefaults(defineProps<{ codingOnly?: boolean }>(), {
+  codingOnly: false,
+});
+
 const emit = defineEmits<{
   navigate: [view: View];
   "open-search": [];
@@ -40,17 +44,31 @@ interface Command {
 }
 
 /** 视图注册表驱动的一级导航命令（D2：统一命令面板入口） */
-const viewCommands: Command[] = Object.values(VIEW_REGISTRY).map((meta) => ({
-  id: `view-${meta.key}`,
-  label: `打开${meta.label}`,
-  hint: meta.group === "system" ? "系统" : undefined,
-  icon: meta.icon,
-  keywords: meta.keywords.join(" "),
-  run: () => emit("navigate", meta.key),
-}));
+const CODING_VIEW_KEYS = new Set<View>([
+  "coding",
+  "projects",
+  "tasks",
+  "extensions",
+  "settings",
+  "diagnostics",
+]);
 
-const commands = computed<Command[]>(() => [
-  ...viewCommands,
+const viewCommands = computed<Command[]>(() =>
+  Object.values(VIEW_REGISTRY)
+    .filter((meta) => !props.codingOnly || CODING_VIEW_KEYS.has(meta.key))
+    .map((meta) => ({
+      id: `view-${meta.key}`,
+      label: `打开${meta.label}`,
+      hint: meta.group === "system" ? "系统" : undefined,
+      icon: meta.icon,
+      keywords: meta.keywords.join(" "),
+      run: () => emit("navigate", meta.key),
+    }))
+);
+
+const commands = computed<Command[]>(() => {
+  const items: Command[] = [
+  ...viewCommands.value,
   {
     id: "search",
     label: "全局搜索",
@@ -129,7 +147,10 @@ const commands = computed<Command[]>(() => [
       }
     },
   },
-]);
+  ];
+  if (!props.codingOnly) return items;
+  return items.filter((item) => item.id === "search" || item.id.startsWith("view-"));
+});
 
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();

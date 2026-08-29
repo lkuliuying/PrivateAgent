@@ -11,7 +11,10 @@ import ModelProfilesPanel from "./ModelProfilesPanel.vue";
 
 const confirmMock = vi.hoisted(() => vi.fn());
 
-vi.mock("../api", () => ({ updateSettings: vi.fn() }));
+vi.mock("../api", () => ({
+  listProviderModels: vi.fn().mockResolvedValue(["qwen-local"]),
+  updateSettings: vi.fn(),
+}));
 vi.mock("../stores/notifications", () => ({
   useNotifications: () => ({
     confirm: confirmMock,
@@ -81,22 +84,16 @@ describe("ModelProfilesPanel", () => {
     const wrapper = mount(ModelProfilesPanel);
     await flushPromises();
     await wrapper.get('[data-testid="model-profile-create"]').trigger("click");
-    const displayName = document.querySelector<HTMLInputElement>(
-      'input[placeholder="例如：本地编码模型"]'
-    );
-    const modelName = document.querySelector<HTMLInputElement>(
+    const modelName = document.querySelector<HTMLSelectElement>(
       '[data-testid="model-profile-editor-model-name"]'
     );
     const save = document.querySelector<HTMLButtonElement>(
       '[data-testid="model-profile-save"]'
     );
-    expect(displayName).not.toBeNull();
     expect(modelName).not.toBeNull();
     expect(save).not.toBeNull();
-    displayName!.value = "本地编码模型";
-    displayName!.dispatchEvent(new Event("input", { bubbles: true }));
     modelName!.value = "qwen-local";
-    modelName!.dispatchEvent(new Event("input", { bubbles: true }));
+    modelName!.dispatchEvent(new Event("change", { bubbles: true }));
     save!.click();
     await flushPromises();
 

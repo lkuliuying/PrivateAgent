@@ -84,6 +84,27 @@ export async function searchCodingProjectFiles(
   }));
 }
 
+/** Copy a file chosen by the desktop dialog into the current workspace. */
+export async function attachCodingProjectFile(
+  projectId: number,
+  workspaceId: number,
+  sourcePath: string
+): Promise<CodingFileHint> {
+  const item = await codingFetchJson<{
+    rel_path: string;
+    name: string;
+    language: string | null;
+  }>(
+    `/projects/${projectId}/workspaces/${workspaceId}/attachments`,
+    codingJsonInit("POST", { source_path: sourcePath })
+  );
+  return {
+    relPath: item.rel_path,
+    name: item.name,
+    language: item.language,
+  };
+}
+
 // ============================================================================
 // v0.9.0 H1：新建项目（选目录+授权）与「当前用户目录」候选（不隐式扩大授权）
 // ============================================================================

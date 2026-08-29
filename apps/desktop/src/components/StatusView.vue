@@ -33,14 +33,6 @@ const components = computed(() => {
   if (!h) return [];
   return [
     { key: "api", label: "本地后端 API", ok: h.api.ok, detail: "" },
-    {
-      key: "ollama",
-      label: "Ollama · LLM / Embedding",
-      ok: h.ollama.ok,
-      detail: h.ollama.ok
-        ? `LLM ${h.ollama.llm_model_available ? "✓" : "✗"} · Embed ${h.ollama.embed_model_available ? "✓" : "✗"}`
-        : h.ollama.error ?? "",
-    },
     { key: "mysql", label: "MySQL · 业务库", ok: h.mysql.ok, detail: h.mysql.error ?? "" },
     {
       key: "chroma",
@@ -55,7 +47,7 @@ const components = computed(() => {
 <template>
   <section class="content">
     <h1>运行状态</h1>
-    <p class="subtitle">确认 Ollama、MySQL、向量库、本地后端是否正常。</p>
+    <p class="subtitle">确认 MySQL、向量库与本地后端是否正常。</p>
 
     <div v-if="refreshing && !connected" class="banner neutral">正在检查本地服务…</div>
     <div v-else-if="!connected" class="banner error">

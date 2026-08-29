@@ -6,20 +6,17 @@
  * - 数值只来自后端 typed budget（GET /sessions/{id}/context-budget），
  *   绝不按字符数/消息数伪造；不可用 → 「不可用 + 原因」，无虚假百分比；
  * - 颜色/进度之外提供文本替代、aria-label 与非颜色状态标记；
- * - hover 与键盘 focus 弹层显示 used/limit、百分比、保留输出预算、
- *   压缩阈值与最近压缩结果；
+ * - hover 与键盘 focus 弹层只显示上下文容量、进度与平均缓存命中率；
  * - 切换会话即重新读取（不显示上一会话旧值）；卸载清理轮询定时器。
  */
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { getContextBudget } from "../../api";
-import { formatDateTime } from "../../services/timeDisplay";
 import {
-  CONTEXT_RING_NEAR_THRESHOLD,
   contextRingAriaLabel,
   contextRingLoading,
-  contextRingSourceLabel,
   contextRingUnavailable,
   deriveContextRing,
+  formatCompactTokens,
   type ContextRingFacts,
 } from "./model/contextRing";
 
@@ -121,40 +118,22 @@ const stateBadge = computed(() => {
   }
 });
 
-const popoverLines = computed(() => {
+const preciseUsagePercent = computed(() => {
   const f = facts.value;
-  if (f.state === "unavailable") {
-    return [
-      `不可用：${f.reason ?? "无法准确计量"}`,
-      "恢复：完成模型/Provider 配置或更新 Runtime 后回到本页自动重新探测",
-    ];
-  }
-  const lines = [
-    `已用 / 上限：${f.usedTokens.toLocaleString()} / ${f.limitTokens.toLocaleString()} tokens`,
-    `用量：${f.percent ?? 0}% · 压缩阈值：${CONTEXT_RING_NEAR_THRESHOLD}%`,
-    `保留输出预算：${f.reservedTokens.toLocaleString()} tokens`,
-  ];
-  switch (f.compactionState) {
-    case "compacting":
-      lines.push("自动压缩：进行中");
-      break;
-    case "compacted":
-      lines.push(
-        `自动压缩：已完成${f.lastCompactedAt ? `（${formatDateTime(f.lastCompactedAt)}）` : ""}`
-      );
-      break;
-    case "failed":
-      lines.push(`自动压缩：失败${f.reason ? ` · ${f.reason}` : ""}`);
-      break;
-    default:
-      lines.push("自动压缩：待触发");
-  }
-  // §5.7：详情显示数据来源与最近更新时间（可对账的真实事实）
-  lines.push(`数据来源：${contextRingSourceLabel(f.source)}`);
-  if (f.updatedAt !== null) {
-    lines.push(`最近更新：${formatDateTime(new Date(f.updatedAt).toISOString())}`);
-  }
-  return lines;
+  if (f.percent === null || f.limitTokens <= 0) return null;
+  return Math.min(100, Math.max(0, f.usedTokens * 100 / f.limitTokens));
+});
+
+const capacityLabel = computed(() => {
+  const f = facts.value;
+  const percent = preciseUsagePercent.value;
+  if (percent === null) return "不可用";
+  return `${formatCompactTokens(f.usedTokens)}/${formatCompactTokens(f.limitTokens)}（${percent.toFixed(1)}%）`;
+});
+
+const cacheHitLabel = computed(() => {
+  const value = facts.value.cacheHitPercent;
+  return value === null ? "--" : `${value.toFixed(1)}%`;
 });
 </script>
 
@@ -187,10 +166,31 @@ const popoverLines = computed(() => {
     <span v-if="stateBadge" class="ring-badge" aria-hidden="true">{{ stateBadge }}</span>
     <span class="visually-hidden">{{ ariaLabel }}</span>
 
-    <!-- hover / 键盘 focus 弹层：真实数值与压缩事实 -->
+    <!-- hover / 键盘 focus 弹层：按产品口径仅呈现容量与缓存命中率 -->
     <div class="ring-popover" role="tooltip" data-testid="context-ring-popover">
-      <p v-for="line in popoverLines" :key="line" class="popover-line">
-        {{ line }}
+      <template v-if="facts.state !== 'unavailable' && preciseUsagePercent !== null">
+        <div class="capacity-row">
+          <span class="capacity-title">上下文容量</span>
+          <span class="capacity-value" data-testid="context-capacity-value">{{ capacityLabel }}</span>
+        </div>
+        <div
+          class="capacity-track"
+          role="progressbar"
+          aria-label="上下文容量"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          :aria-valuenow="preciseUsagePercent"
+        >
+          <span class="capacity-progress" :style="{ width: `${preciseUsagePercent}%` }" />
+        </div>
+        <div class="popover-divider" />
+        <div class="cache-row">
+          <span>平均缓存命中率</span>
+          <strong data-testid="context-cache-hit">{{ cacheHitLabel }}</strong>
+        </div>
+      </template>
+      <p v-else class="unavailable-copy">
+        上下文容量不可用：{{ facts.reason ?? "无法准确计量" }}
       </p>
     </div>
   </div>
@@ -277,9 +277,8 @@ const popoverLines = computed(() => {
   bottom: calc(100% + 8px);
   right: -6px;
   z-index: 40;
-  min-width: 220px;
-  max-width: 300px;
-  padding: 8px 10px;
+  width: 300px;
+  padding: 14px 16px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: var(--color-panel);
@@ -292,9 +291,50 @@ const popoverLines = computed(() => {
 .context-ring:focus-within .ring-popover {
   display: block;
 }
-.popover-line {
+.capacity-row,
+.cache-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  color: var(--color-fg);
+  font-size: var(--pa-text-meta, 12px);
+}
+.capacity-title {
+  font-weight: 600;
+}
+.capacity-value {
+  color: var(--color-fg-muted);
+  white-space: nowrap;
+}
+.capacity-track {
+  height: 8px;
+  margin-top: 12px;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-sunken);
+}
+.capacity-progress {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  border-radius: inherit;
+  background: var(--color-fg);
+}
+.popover-divider {
+  height: 1px;
+  margin: 14px 0 10px;
+  background: var(--color-border);
+}
+.cache-row {
+  color: var(--color-fg-muted);
+}
+.cache-row strong {
+  color: var(--color-fg);
+  font-weight: 600;
+}
+.unavailable-copy {
   margin: 0;
-  padding: 1px 0;
   color: var(--color-fg-muted);
   font-size: var(--pa-text-meta, 12px);
   line-height: 1.5;

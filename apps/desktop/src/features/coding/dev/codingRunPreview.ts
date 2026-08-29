@@ -61,6 +61,26 @@ const CONTEXT_PREPARED: RunStreamFrame = {
   },
 };
 
+const DECISION_START: RunStreamFrame = {
+  sequence: 3,
+  type: "decision.summary",
+  payload: {
+    goal: "我会先检查侧栏布局、窄屏断点和现有测试，再确定需要调整的组件范围。",
+    method: "这次只改动当前工作区的布局与可访问性，不改变项目导航和数据流。",
+    next_steps: ["读取目标组件", "修改布局", "运行相关测试"],
+  },
+};
+
+const DECISION_AFTER_READ: RunStreamFrame = {
+  sequence: 10,
+  type: "decision.summary",
+  payload: {
+    goal: "已经确认遮挡来自折叠宽度与窄窗口抽屉共用同一组尺寸约束。",
+    method: "我正在把两种状态拆开处理，并保留现有 aria-label 和键盘路径。",
+    next_steps: ["应用文件修改", "验证窄屏状态"],
+  },
+};
+
 const MODEL_STARTED: RunStreamFrame = {
   sequence: 3,
   type: "model.started",
@@ -144,7 +164,7 @@ const RUN_COMPLETED: RunStreamFrame = {
   sequence: 21,
   type: "run.completed",
   payload: {
-    output: "已完成侧栏布局修复：\n1. 调整折叠态宽度 72px 并保留 aria-label\n2. 窄窗口抽屉模式自包含\n3. 相关测试全部通过（12 passed）",
+    output: "已完成侧栏布局修复。\n\n- 折叠态宽度调整为 72px，并保留 aria-label。\n- 窄窗口抽屉改为自包含布局。\n- 相关测试全部通过（12 passed）。",
     error: null,
     error_code: null,
     tool_call_count: 3,
@@ -179,10 +199,12 @@ function frames(key: CodingRunPreviewKey): RunStreamFrame[] {
       return [
         RUN_STARTED,
         CONTEXT_PREPARED,
+        DECISION_START,
         MODEL_STARTED,
         PLAN_CREATED,
         MODEL_COMPLETED,
         ...TOOL_READ,
+        DECISION_AFTER_READ,
         PLAN_ITEM_MOVED,
         TOOL_WRITE_APPROVAL,
         PATCH_PREVIEW,
@@ -398,6 +420,10 @@ export function createStaticProjection(key: CodingRunPreviewKey): CodingRunPrevi
   const projection = createRunProjection("run-preview", "修复侧栏在窄窗口下的布局遮挡问题");
   for (const frame of frames(key)) {
     applyRunFrame(projection, frame);
+  }
+  if (key === "completed") {
+    projection.startedAt = "2026-08-28T12:00:00.000Z";
+    projection.completedAt = "2026-08-28T12:38:58.000Z";
   }
   if (key === "command-output") {
     return {

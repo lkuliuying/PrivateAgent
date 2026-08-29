@@ -1,59 +1,43 @@
-**Comparison Target**
+# Run transcript design QA
 
-- Source visual truth: `C:\Users\LIKECA~1\AppData\Local\Temp\codex-clipboard-8f748534-55ee-40bf-a560-74e7e36c5078.png`
-- Browser-rendered implementation: `F:\Program\Agent\.tmp\design-qa\composer-full-final.png`
-- Normalized implementation crop: `F:\Program\Agent\.tmp\design-qa\composer-implementation.png`
-- Side-by-side evidence: `F:\Program\Agent\.tmp\design-qa\composer-comparison.png`
-- Local route: `http://127.0.0.1:1420/?ui-lab=1#composer`, direct to UI Lab → 任务输入器
-- Viewport: 1280 × 720 CSS px, light theme, idle/unfocused state
-- Source pixels: 1014 × 158. Implementation viewport pixels: 1280 × 720. Normalized implementation crop: 1014 × 158.
-- Density normalization: both artifacts were compared at 1:1 pixel dimensions; no scaling was applied to the focused comparison. The implementation component is 922 × 124 CSS px inside the normalized crop.
+## Comparison target
 
-**Findings**
+- Process source of truth: `C:\Users\LIKECA~1\AppData\Local\Temp\codex-clipboard-edf9351d-8230-487b-84da-14074db94998.png`
+- Result source of truth: `C:\Users\LIKECA~1\AppData\Local\Temp\codex-clipboard-e66636c9-54ab-4940-87c1-036586b06d1e.png`
+- Expanded-process implementation: `F:\Program\Agent\design-qa-run-process.jpg`
+- Collapsed-result implementation: `F:\Program\Agent\design-qa-run-result.jpg`
+- Local route: `http://127.0.0.1:1420/?ui=v2&coding=1&coding-preview=ready&coding-run-preview=completed`
+- State: light theme, completed Coding run, process expanded and collapsed result variants.
+- Process comparison density: source and implementation are both 1160 × 920 physical pixels.
+- Result comparison density: source is an 845 × 934 focused reference crop; implementation is a 1160 × 920 full desktop shell capture, so transcript structure and content density were compared independently from the existing shell chrome.
+
+## Findings
 
 - No actionable P0/P1/P2 differences remain.
-- Fonts and typography: the implementation uses the product's existing Windows UI font stack and matches the source hierarchy, placeholder scale, compact toolbar text, and single-line truncation behavior.
-- Spacing and layout rhythm: the 922 × 124 card, large rounded corners, top input area, bottom-aligned toolbar, edge padding, and 36 px circular primary action match the source composition.
-- Colors and visual tokens: the card is white with a neutral low-contrast border, restrained shadow, dark primary action, and existing product focus token. The surrounding UI Lab canvas is intentionally the application's background token rather than part of the component.
-- Image quality and asset fidelity: the source contains no raster product imagery. All visible controls use the project's existing Phosphor icon library; no placeholder glyphs, CSS drawings, or approximate inline SVG assets were introduced.
-- Copy and content: `随心输入` matches the source. Permission/model/effort labels remain driven by real application configuration, and the existing context-usage ring is retained because it is a product requirement from the current implementation rather than decorative source content.
+- The old technical event list and bordered `输出总结` card were removed from the primary presentation.
+- Completed runs now default to a standalone result document. Clicking the Chinese duration row expands or collapses the public execution process.
+- Process narration uses public durable decision summaries, plan state, tool activity, approvals, file changes and verification facts. It does not expose hidden chain-of-thought.
+- Resolved approvals are compact activity rows; only pending approvals remain actionable cards.
+- Final Markdown output is rendered without a status-card border, followed by distinct file-change and artifact result cards.
+- Duration, activity and state labels use Chinese wording while exact tool identifiers remain secondary audit details.
 
-**Open Questions**
+## Comparison history
 
-- None blocking. Voice input remains visibly represented but disabled with an explanatory tooltip because no voice capture runtime exists in the current product scope.
+1. Baseline showed dense telemetry rows, a bordered terminal summary card and result content nested inside the audit panel.
+2. First pass introduced a document-style duration header, natural-language process messages, lightweight activity rows and standalone result content.
+3. Final pass compacted resolved approvals, hid the preview-only tag, preserved patch file counts and added result artifact cards.
+4. Post-fix captures were compared side-by-side with both supplied references at the dimensions above.
 
-**Full-view Comparison Evidence**
+## Primary interactions tested
 
-- The full browser capture confirms the component is centered in the available desktop workspace, does not overflow, and preserves the existing application hierarchy.
-- The normalized side-by-side image confirms the card silhouette, internal vertical rhythm, left/right control grouping, and primary action placement against the reference.
+- Opened the completed preview directly from its URL and verified it selects the sample task.
+- Expanded and collapsed the process through the `用时 38 分钟 58 秒` control.
+- Opened and closed the plan detail panel.
+- Verified the collapsed state retains the final Markdown and result cards only.
+- Verified no browser console warnings or errors were emitted.
 
-**Focused Region Comparison Evidence**
+## Follow-up polish
 
-- The normalized 1014 × 158 component crop was compared directly with the 1014 × 158 source. This focused region is sufficient because the supplied visual target contains only the composer component and no surrounding application chrome.
-
-**Primary Interactions Tested**
-
-- Clicking the plus button opens the project-file reference entry and invokes file search.
-- Typing text changes the circular primary action from the idle waveform to the send state.
-- The placeholder returns to `随心输入` after clearing the field.
-- Browser console checked after a fresh reload: 0 error/assert entries.
-
-**Comparison History**
-
-1. Initial comparison found three visible differences: the QA fixture was 960 px rather than the source's 922 px card width (P2), the screenshot represented a focused state while the source was unfocused (P2), and the disabled microphone had lower contrast than the source (P3).
-2. Fixes applied: constrained the QA fixture to 922 px, captured an unfocused idle state, changed the base border to neutral gray, and restored full microphone icon contrast.
-3. Post-fix evidence: `F:\Program\Agent\.tmp\design-qa\composer-comparison.png`. The repeated comparison has no remaining actionable P0/P1/P2 mismatch.
-
-**Implementation Checklist**
-
-- [x] Match the source card dimensions, radius, border, shadow, and vertical rhythm.
-- [x] Preserve functional permission, model, reasoning, context, file-reference, input, send, and stop behavior.
-- [x] Verify the real component in the in-app browser.
-- [x] Run component and full frontend regression tests.
-- [x] Run the production frontend build.
-
-**Follow-up Polish**
-
-- P3: when a voice-input runtime is added, replace the explanatory disabled state with an active capture/recording interaction while preserving the current placement.
+- P3: the implementation retains the product's existing desktop header, composer and status bar around the transcript; the supplied references show focused content from a different shell.
 
 final result: passed

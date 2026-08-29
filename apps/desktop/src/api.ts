@@ -1,4 +1,5 @@
 import { apiFetch as fetch, ensureApiBase } from "./api/http";
+export { hasConfiguredRemoteApi } from "./api/http";
 import type {
   AgentTask,
   Activity,
@@ -95,14 +96,17 @@ export {
   cmdCheckForUpdates,
   cmdCheckDependencies,
   cmdClearMcpSecret,
+  cmdClearModelProviderSecret,
   cmdConfigExists,
   cmdClearProviderSecret,
   cmdDownloadAndInstallUpdate,
   cmdPromptDatabasePassword,
   cmdPromptMcpSecret,
-  cmdPromptProviderSecret,
   cmdMcpSecretStatus,
+  cmdModelProviderSecretStatus,
   cmdProviderSecretStatus,
+  cmdSetProviderSecret,
+  cmdSetModelProviderSecret,
   cmdReadConfig,
   cmdRelaunchApp,
   cmdStartSidecar,
@@ -191,6 +195,23 @@ export type {
   IntegrationSource,
 } from "./api/integrations";
 export { getMigrationRunbook, restoreDrillBackup } from "./api/backup";
+export {
+  clearModelProviderRuntimeSecret,
+  deleteModelProvider,
+  discoverModelProviderModels,
+  listModelProviders,
+  saveModelProvider,
+  updateModelProviderRuntimeSecret,
+} from "./api/modelProviders";
+export type {
+  DiscoveredModel,
+  ModelMetadataSource,
+  ModelProvider,
+  ModelProviderApiFormat,
+  ModelProviderModel,
+  ModelProviderProtocol,
+  ModelProviderSaveInput,
+} from "./api/modelProviders";
 export { listTestRuns, listUpgradeSmokeRuns } from "./api/testing";
 export {
   getRuntimeCapabilities,
@@ -228,6 +249,7 @@ export interface ContextBudgetResponse {
   used_tokens: number;
   max_context_tokens: number;
   reserved_output_tokens: number;
+  cache_hit_percent: number | null;
   usage_percent: number | null;
   source: "provider_usage" | "tokenizer" | "runtime_count" | "unavailable";
   compaction_state: "idle" | "compacting" | "compacted" | "failed";
@@ -1654,6 +1676,7 @@ export async function listProviders(): Promise<ProviderStatus> {
 export async function updateProviders(data: {
   provider_type?: "ollama" | "openai" | "claude";
   remote_provider_enabled?: boolean;
+  openai_config_name?: string;
   openai_base_url?: string;
   openai_model?: string;
   claude_model?: string;
@@ -1671,6 +1694,27 @@ export async function updateProviders(data: {
   return r.json();
 }
 
+export async function listProviderModels(data: {
+  provider_type: "ollama" | "openai" | "claude";
+  remote_provider_enabled: boolean;
+  base_url?: string;
+  api_key?: string;
+}): Promise<string[]> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers/models`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  const body = (await r.json()) as { models?: unknown };
+  if (!Array.isArray(body.models)) throw new Error("模型列表响应格式异常");
+  return body.models.filter((item): item is string => typeof item === "string");
+}
+
 export async function updateProviderSecretReference(
   provider: "openai" | "claude",
   configured: boolean
@@ -1684,6 +1728,39 @@ export async function updateProviderSecretReference(
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ configured }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+/** Hot-update the authenticated local sidecar; the secret is never persisted by HTTP. */
+export async function updateProviderRuntimeSecret(
+  provider: "openai" | "claude",
+  secret: string
+): Promise<{ provider: "openai" | "claude"; available: boolean }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers/${provider}/runtime-secret`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ secret }),
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    throw new Error(d.detail || `HTTP ${r.status}`);
+  }
+  return r.json();
+}
+
+/** Clear the current sidecar copy immediately so subsequent requests cannot use a stale key. */
+export async function clearProviderRuntimeSecret(
+  provider: "openai" | "claude"
+): Promise<{ provider: "openai" | "claude"; available: boolean }> {
+  const base = await ensureApiBase();
+  const r = await fetch(`${base}/providers/${provider}/runtime-secret`, {
+    method: "DELETE",
   });
   if (!r.ok) {
     const d = await r.json().catch(() => ({}));
@@ -2096,6 +2173,7 @@ export interface AppSettings {
   provider_type: "ollama" | "openai" | "claude";
   remote_provider_enabled: boolean;
   openai_api_key_configured: boolean;
+  openai_config_name: string;
   openai_base_url: string;
   openai_model: string;
   claude_api_key_configured: boolean;

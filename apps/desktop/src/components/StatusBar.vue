@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
-import { PhCpu, PhActivity, PhBell } from "@phosphor-icons/vue";
-import { getSettings, type AppSettings } from "../api";
+import { PhActivity, PhBell } from "@phosphor-icons/vue";
 import { useNotifications } from "../stores/notifications";
 import { useHealth, type HealthSnapshot } from "../stores/health";
 
 /**
- * 底部状态栏。通过共享 store 轮询 /health（5s）并读取 /settings 显示当前模型。
- * 展示 API/Ollama/MySQL/Chroma 四服务状态点 + 当前模型 + 任务状态。
+ * 底部状态栏。通过共享 store 轮询 /health（5s）。
+ * 展示 API/MySQL/Chroma 三项基础服务状态 + 任务状态；模型由输入器选择器呈现。
  * 任务状态由父组件通过 taskLabel 传入（M0：生成中/空闲；M4 接入活动流后扩展）。
  */
 defineProps<{ taskLabel?: string }>();
@@ -19,11 +18,9 @@ type DotState = "ok" | "bad" | "idle";
 
 const services = ref<Record<string, DotState>>({
   api: "idle",
-  ollama: "idle",
   mysql: "idle",
   chroma: "idle",
 });
-const settings = ref<AppSettings | null>(null);
 let timer: number | null = null;
 let notifyTimer: number | null = null;
 
@@ -36,27 +33,17 @@ async function refresh() {
   if (h) {
     services.value = {
       api: okOf(h, "api") ? "ok" : "bad",
-      ollama: okOf(h, "ollama") ? "ok" : "bad",
       mysql: okOf(h, "mysql") ? "ok" : "bad",
       chroma: okOf(h, "chroma") ? "ok" : "bad",
     };
   } else {
     // 首次连接尚未成功时置 idle；已有快照由 store 保留，不因瞬时失败闪灰。
-    services.value = { api: "idle", ollama: "idle", mysql: "idle", chroma: "idle" };
-  }
-}
-
-async function loadSettings() {
-  try {
-    settings.value = await getSettings();
-  } catch {
-    settings.value = null;
+    services.value = { api: "idle", mysql: "idle", chroma: "idle" };
   }
 }
 
 onMounted(() => {
   refresh();
-  loadSettings();
   timer = window.setInterval(refresh, 5000);
   // 拉取持久化通知，让铃铛角标反映后端未读（导入/备份等异步结果）
   void notify.loadPersisted();
@@ -69,7 +56,6 @@ onUnmounted(() => {
 
 const serviceList: { key: string; label: string }[] = [
   { key: "api", label: "API" },
-  { key: "ollama", label: "Ollama" },
   { key: "mysql", label: "MySQL" },
   { key: "chroma", label: "Chroma" },
 ];
@@ -102,12 +88,6 @@ const serviceList: { key: string; label: string }[] = [
           notify.unreadCount.value
         }}</span>
       </button>
-      <div class="sb-item" :title="`当前模型：${settings?.llm_model || '—'}`">
-        <PhCpu :size="12" weight="regular" />
-        <span class="sb-value pa-ellipsis">{{
-          settings?.llm_model || "—"
-        }}</span>
-      </div>
       <div class="sb-item">
         <PhActivity :size="12" weight="regular" />
         <span class="sb-value">{{ taskLabel || "空闲" }}</span>

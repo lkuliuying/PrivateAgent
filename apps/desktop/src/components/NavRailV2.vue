@@ -4,7 +4,7 @@
  * 工作入口 5 组（日常/执行/工作/知识/连接）+ 底部系统组；
  * 最近任务、折叠、命令入口保留。
  */
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import {
   PhArrowRight,
   PhCommand,
@@ -21,17 +21,19 @@ import {
   VIEW_GROUP_META,
   groupViews,
   type ViewGroup,
+  ADMIN_ONLY_VIEWS,
 } from "../models/viewRegistry";
 import PaTooltip from "../design/PaTooltip.vue";
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     active: View;
     sessions?: Session[];
     currentId?: number | null;
     collapsed?: boolean;
+    isAdmin?: boolean;
   }>(),
-  { sessions: () => [], currentId: null, collapsed: false }
+  { sessions: () => [], currentId: null, collapsed: false, isAdmin: false }
 );
 
 const emit = defineEmits<{
@@ -60,6 +62,16 @@ function toggleGroup(group: ViewGroup) {
 function groupLabel(group: ViewGroup): string {
   return VIEW_GROUP_META[group].label;
 }
+
+function visibleGroupViews(group: ViewGroup) {
+  return groupViews(group).filter(
+    (item) => props.isAdmin || !ADMIN_ONLY_VIEWS.has(item.key)
+  );
+}
+
+const visibleNavGroups = computed(() =>
+  NAV_GROUPS.filter((group) => visibleGroupViews(group).length > 0)
+);
 
 function formatRelative(value: string): string {
   const date = new Date(value);
@@ -93,7 +105,7 @@ function formatRelative(value: string): string {
 
     <div class="rail-scroll">
       <section
-        v-for="group in NAV_GROUPS"
+        v-for="group in visibleNavGroups"
         :key="group"
         class="rail-group"
         :class="{ 'is-open': groupOpen[group] }"
@@ -107,7 +119,7 @@ function formatRelative(value: string): string {
           <span>{{ groupLabel(group) }}</span>
         </button>
         <ul v-if="groupOpen[group]" class="rail-items" :aria-label="groupLabel(group)">
-          <li v-for="item in groupViews(group)" :key="item.key">
+          <li v-for="item in visibleGroupViews(group)" :key="item.key">
             <button
               class="rail-item"
               :data-testid="`nav-${item.key}`"
@@ -166,10 +178,14 @@ function formatRelative(value: string): string {
         </div>
       </section>
 
-      <section class="rail-group system-group" aria-label="系统">
+      <section
+        v-if="visibleGroupViews(SYSTEM_GROUP).length > 0"
+        class="rail-group system-group"
+        aria-label="系统"
+      >
         <span class="system-heading">系统</span>
         <ul class="rail-items">
-          <li v-for="item in groupViews(SYSTEM_GROUP)" :key="item.key">
+          <li v-for="item in visibleGroupViews(SYSTEM_GROUP)" :key="item.key">
             <button
               class="rail-item"
               :data-testid="`nav-${item.key}`"
@@ -187,11 +203,11 @@ function formatRelative(value: string): string {
     </div>
 
     <div class="rail-footer">
-      <button class="profile-entry" title="本地用户设置" @click="emit('navigate', 'settings')">
+      <button v-if="isAdmin" class="profile-entry" title="管理员设置" @click="emit('navigate', 'settings')">
         <PhUserCircle :size="30" weight="fill" />
         <span>
-          <strong>本地用户</strong>
-          <small>数据仅存储在此设备</small>
+          <strong>管理员</strong>
+          <small>服务器设置</small>
         </span>
       </button>
       <div class="footer-actions">

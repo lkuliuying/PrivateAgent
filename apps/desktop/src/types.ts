@@ -1029,6 +1029,7 @@ export interface ProviderConfig {
   remote_provider_enabled: boolean;
   ollama: { model: string; embed_model: string };
   openai: {
+    name: string;
     base_url: string;
     model: string;
     configured: boolean;

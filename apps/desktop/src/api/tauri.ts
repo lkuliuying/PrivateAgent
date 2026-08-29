@@ -91,12 +91,13 @@ export interface ProviderSecretStatus {
   claude_configured: boolean;
 }
 
-export interface DatabaseSecretPromptResult {
+export interface ModelProviderSecretStatus {
+  reference: string;
   configured: boolean;
-  cancelled: boolean;
 }
 
-export interface ProviderSecretPromptResult extends ProviderSecretStatus {
+export interface DatabaseSecretPromptResult {
+  configured: boolean;
   cancelled: boolean;
 }
 
@@ -140,11 +141,12 @@ export async function cmdProviderSecretStatus(): Promise<ProviderSecretStatus> {
   return invoke<ProviderSecretStatus>("provider_secret_status");
 }
 
-/** Ask Windows for a Provider secret; the renderer never receives the value. */
-export async function cmdPromptProviderSecret(
-  provider: ProviderSecretName
-): Promise<ProviderSecretPromptResult> {
-  return invoke<ProviderSecretPromptResult>("prompt_provider_secret", { provider });
+/** Store a Provider API key in the OS credential store without a native prompt. */
+export async function cmdSetProviderSecret(
+  provider: ProviderSecretName,
+  secret: string
+): Promise<ProviderSecretStatus> {
+  return invoke<ProviderSecretStatus>("set_provider_secret", { provider, secret });
 }
 
 /** Remove a Provider secret from the OS credential store. */
@@ -152,6 +154,31 @@ export async function cmdClearProviderSecret(
   provider: ProviderSecretName
 ): Promise<ProviderSecretStatus> {
   return invoke<ProviderSecretStatus>("clear_provider_secret", { provider });
+}
+
+/** Query a custom model provider credential without exposing its value. */
+export async function cmdModelProviderSecretStatus(
+  alias: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("model_provider_secret_status", { alias });
+}
+
+/** Store a custom model provider API key in the OS credential store. */
+export async function cmdSetModelProviderSecret(
+  alias: string,
+  secret: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("set_model_provider_secret", {
+    alias,
+    secret,
+  });
+}
+
+/** Remove one custom model provider API key from the OS credential store. */
+export async function cmdClearModelProviderSecret(
+  alias: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("clear_model_provider_secret", { alias });
 }
 
 /** Return only whether an MCP credential alias exists in the OS credential store. */

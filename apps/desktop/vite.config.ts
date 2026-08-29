@@ -18,6 +18,8 @@ export default defineConfig(async () => ({
       output: {
         manualChunks: {
           vendor: ["vue", "@phosphor-icons/vue"],
+          framework: ["pinia", "vue-router"],
+          antd: ["ant-design-vue", "@ant-design/icons-vue"],
           tauri: ["@tauri-apps/api", "@tauri-apps/plugin-dialog", "@tauri-apps/plugin-opener"],
         },
       },

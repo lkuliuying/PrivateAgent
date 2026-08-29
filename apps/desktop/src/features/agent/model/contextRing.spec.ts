@@ -7,6 +7,7 @@ import {
   contextRingSourceLabel,
   contextRingUnavailable,
   deriveContextRing,
+  formatCompactTokens,
 } from "./contextRing";
 
 function budget(overrides: Partial<ContextBudgetResponse> = {}): ContextBudgetResponse {
@@ -14,6 +15,7 @@ function budget(overrides: Partial<ContextBudgetResponse> = {}): ContextBudgetRe
     used_tokens: 100,
     max_context_tokens: 1000,
     reserved_output_tokens: 256,
+    cache_hit_percent: 97.9,
     usage_percent: 10,
     source: "provider_usage",
     compaction_state: "idle",
@@ -32,6 +34,16 @@ describe("contextRing（v0.9.0 H0 §7：真实计量，不伪造）", () => {
     expect(facts.usedTokens).toBe(100);
     expect(facts.limitTokens).toBe(1000);
     expect(facts.reservedTokens).toBe(256);
+    expect(facts.cacheHitPercent).toBe(97.9);
+  });
+
+  it("容量数字使用中文紧凑格式，缓存命中率不伪造", () => {
+    expect(formatCompactTokens(195_000)).toBe("19.5万");
+    expect(formatCompactTokens(1_000_000)).toBe("100万");
+    expect(formatCompactTokens(8_499)).toBe("8,499");
+    expect(
+      deriveContextRing(budget({ cache_hit_percent: null })).cacheHitPercent
+    ).toBeNull();
   });
 
   it("source=unavailable → 不可用 + 原因，无百分比", () => {

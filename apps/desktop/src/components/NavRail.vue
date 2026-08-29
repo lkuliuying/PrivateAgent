@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import {
   PhActivity,
   PhBooks,
@@ -21,18 +21,21 @@ import {
   PhUserCircle,
 } from "@phosphor-icons/vue";
 import type { Session, View } from "../types";
+import { ADMIN_ONLY_VIEWS } from "../models/viewRegistry";
 
-withDefaults(
+const props = withDefaults(
   defineProps<{
     active: View;
     sessions?: Session[];
     currentId?: number | null;
     collapsed?: boolean;
+    isAdmin?: boolean;
   }>(),
   {
     sessions: () => [],
     currentId: null,
     collapsed: false,
+    isAdmin: false,
   }
 );
 const emit = defineEmits<{
@@ -61,6 +64,12 @@ const utilityItems: { key: View; label: string; icon: typeof PhChatsCircle }[] =
   { key: "extensions", label: "扩展", icon: PhPuzzlePiece },
   { key: "backup", label: "备份", icon: PhDatabase },
 ];
+const visiblePrimaryItems = computed(() =>
+  primaryItems.filter((item) => props.isAdmin || !ADMIN_ONLY_VIEWS.has(item.key))
+);
+const visibleUtilityItems = computed(() =>
+  utilityItems.filter((item) => props.isAdmin || !ADMIN_ONLY_VIEWS.has(item.key))
+);
 
 function formatRelative(value: string): string {
   const date = new Date(value);
@@ -93,7 +102,7 @@ function formatRelative(value: string): string {
     <div class="rail-scroll">
       <span class="nav-section-label">工作台</span>
       <ul class="navrail-items" aria-label="主要功能">
-        <li v-for="item in primaryItems" :key="item.key">
+        <li v-for="item in visiblePrimaryItems" :key="item.key">
           <button
             class="nav-item"
             :data-testid="`nav-${item.key}`"
@@ -111,7 +120,7 @@ function formatRelative(value: string): string {
       <button
         class="nav-item utility-toggle"
         data-testid="nav-utilities-toggle"
-        :class="{ active: utilitiesOpen || utilityItems.some((item) => item.key === active) }"
+        :class="{ active: utilitiesOpen || visibleUtilityItems.some((item) => item.key === active) }"
         :aria-expanded="utilitiesOpen"
         title="更多工作区"
         @click="utilitiesOpen = !utilitiesOpen"
@@ -121,7 +130,7 @@ function formatRelative(value: string): string {
       </button>
       <Transition name="rail-more">
         <ul v-if="utilitiesOpen" class="navrail-items utility-items advanced-items" aria-label="更多工作区">
-          <li v-for="item in utilityItems" :key="item.key">
+          <li v-for="item in visibleUtilityItems" :key="item.key">
             <button
               class="nav-item nav-item--compact"
               :data-testid="`nav-${item.key}`"
@@ -166,11 +175,11 @@ function formatRelative(value: string): string {
     </div>
 
     <div class="navrail-footer">
-      <button class="profile-entry" title="本地用户设置" @click="emit('navigate', 'settings')">
+      <button v-if="isAdmin" class="profile-entry" title="管理员设置" @click="emit('navigate', 'settings')">
         <PhUserCircle :size="30" weight="fill" />
         <span>
-          <strong>本地用户</strong>
-          <small>数据仅存储在此设备</small>
+          <strong>管理员</strong>
+          <small>服务器设置</small>
         </span>
       </button>
       <div class="footer-actions">

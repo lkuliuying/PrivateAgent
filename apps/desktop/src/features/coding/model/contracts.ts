@@ -49,8 +49,14 @@ export interface CodingThreadSummary {
 export interface CodingModelProfileSummary {
   id: string;
   provider: "ollama" | "openai" | "claude";
+  providerId?: string | null;
+  providerName?: string | null;
   displayName: string;
+  /** 实际发送给模型服务的模型 ID；输入器必须优先展示此字段。 */
+  modelName?: string | null;
+  isDefault?: boolean;
   isLocal: boolean;
+  contextTokens?: number | null;
   reasoningEfforts: string[] | null;
 }
 
@@ -81,6 +87,8 @@ export type CodingModelProfilesResult =
 export interface CodingModelProfileDetail {
   id: string;
   provider: "ollama" | "openai" | "claude";
+  providerId?: string | null;
+  providerName?: string | null;
   displayName: string;
   modelName: string | null;
   isDefault: boolean;
@@ -89,7 +97,7 @@ export interface CodingModelProfileDetail {
   supportsStreaming: boolean;
   supportsStructuredOutput: boolean;
   supportsVision: boolean;
-  contextTokens: number;
+  contextTokens: number | null;
   reasoningEfforts: string[] | null;
   usageReporting: boolean;
   enabled: boolean;
@@ -105,7 +113,7 @@ export interface CodingModelProfileUpsert {
   supportsStreaming: boolean;
   supportsStructuredOutput: boolean;
   supportsVision: boolean;
-  contextTokens: number;
+  contextTokens: number | null;
   reasoningEfforts: string[] | null;
   usageReporting: boolean;
   enabled: boolean;

@@ -232,7 +232,7 @@
   --duration-slow: var(--pa-m-240);
 
   /* 布局尺寸 */
-  --rail-w: 240px;
+  --rail-w: 272px;
   --rail-collapsed-w: 72px;
   --list-w: 0px;
   --inspector-w: 360px;

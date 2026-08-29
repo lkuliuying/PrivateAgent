@@ -1,31 +1,29 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import {
-  cmdClearProviderSecret,
-  cmdPromptProviderSecret,
-  cmdProviderSecretStatus,
-  cmdRelaunchApp,
   exportBackup,
   getSettings,
-  isDesktopRuntime,
+  listModelProviders,
   listBackups,
-  listProviders,
   previewRestoreBackup,
-  testProvider,
-  updateProviders,
-  updateProviderSecretReference,
   updateSettings,
   type AppSettings,
-  type ProviderSecretStatus,
+  type ModelProvider,
 } from "../api";
-import type { BackupExportResult, BackupRestorePreview, ProviderStatus } from "../types";
+import type { BackupExportResult, BackupRestorePreview } from "../types";
 import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import HttpProfilesPanel from "./HttpProfilesPanel.vue";
 import SqlProfilesPanel from "./SqlProfilesPanel.vue";
-import ModelProfilesPanel from "./ModelProfilesPanel.vue";
+import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import { useHealth } from "../stores/health";
-import { useNotifications } from "../stores/notifications";
+import {
+  settingsSectionMeta,
+  type SettingsSection,
+} from "../models/settingsSections";
+import { useCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
+import { fetchCodingModelProfiles } from "../features/coding/api/modelProfiles";
+import type { CodingModelProfileSummary } from "../features/coding/model/contracts";
 
 /**
  * v0.9.0 H1-D（计划 §5.8）：配置闭环往返——PrivateAgent 入口与 Coding 首页
@@ -34,40 +32,58 @@ import { useNotifications } from "../stores/notifications";
  */
 const props = withDefaults(
   defineProps<{
-    focusSection?: string | null;
+    activeSection?: SettingsSection;
+    focusSection?: SettingsSection | null;
     returnTo?: string | null;
   }>(),
-  { focusSection: null, returnTo: null }
+  { activeSection: "status", focusSection: null, returnTo: null }
 );
-const emit = defineEmits<{ (e: "reconfigure"): void; (e: "return"): void }>();
-const modelProfilesCard = ref<HTMLElement | null>(null);
+const emit = defineEmits<{
+  (e: "reconfigure"): void;
+  (e: "return"): void;
+  (e: "select-section", section: SettingsSection): void;
+}>();
+const currentSectionMeta = computed(() => settingsSectionMeta(props.activeSection));
+const sectionSubtitle = computed(() =>
+  props.activeSection === "provider"
+    ? currentSectionMeta.value.description
+    : `${currentSectionMeta.value.description}。每次只显示当前模块，配置更聚焦。`
+);
 
-function onModelProfilesSaved(): void {
+async function onModelProfilesSaved(): Promise<void> {
+  await Promise.all([useCodingWorkspace().refresh(), loadCurrentModel()]);
   if (props.returnTo) emit("return");
 }
-const notify = useNotifications();
-const desktopRuntime = isDesktopRuntime();
-
 const settings = ref<AppSettings | null>(null);
+const modelProviders = ref<ModelProvider[]>([]);
+const modelProfiles = ref<CodingModelProfileSummary[]>([]);
 const {
   health,
   refreshing: healthLoading,
   error: healthError,
   refresh: refreshHealth,
 } = useHealth();
-const providers = ref<ProviderStatus | null>(null);
 const backups = ref<BackupExportResult[]>([]);
 const backupPreview = ref<BackupRestorePreview | null>(null);
 const backupPath = ref("");
 const saving = ref(false);
 const msg = ref("");
-const providerMsg = ref("");
-const providerSecrets = ref<ProviderSecretStatus | null>(null);
-const providerPrompting = ref<"openai" | "claude" | null>(null);
-const providerRestartRequired = ref(false);
 const backupMsg = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
 let msgTimer: ReturnType<typeof setTimeout> | undefined;
+
+async function loadCurrentModel(): Promise<void> {
+  try {
+    // 供应商列表读取会先完成后端的统一默认 Profile 校正；随后再读取
+    // Profile，保证当前模型卡片与实际请求使用同一份事实。
+    modelProviders.value = await listModelProviders();
+    const result = await fetchCodingModelProfiles();
+    modelProfiles.value = result.status === "ok" ? result.profiles : [];
+  } catch {
+    modelProviders.value = [];
+    modelProfiles.value = [];
+  }
+}
 
 async function load() {
   try {
@@ -75,19 +91,8 @@ async function load() {
   } catch {
     settings.value = null;
   }
+  await loadCurrentModel();
   await refreshHealth();
-  try {
-    providers.value = await listProviders();
-  } catch {
-    providers.value = null;
-  }
-  if (desktopRuntime) {
-    try {
-      providerSecrets.value = await cmdProviderSecretStatus();
-    } catch {
-      providerSecrets.value = null;
-    }
-  }
   try {
     backups.value = (await listBackups()).items;
     if (!backupPath.value && backups.value.length) backupPath.value = backups.value[0].path;
@@ -99,9 +104,9 @@ onMounted(() => {
   load();
   // 只轮询健康状态；重复加载整张设置表单会覆盖用户尚未保存的输入。
   timer = setInterval(() => void refreshHealth(), 5000);
-  // H1-D：定位到模型管理区（同一配置区闭环）
-  if (props.focusSection === "model-profiles") {
-    setTimeout(() => modelProfilesCard.value?.scrollIntoView({ block: "start" }), 60);
+  // H1-D：由父级模块导航定位到模型管理区，不再依赖长页面滚动。
+  if (props.focusSection === "provider") {
+    emit("select-section", "provider");
   }
 });
 onUnmounted(() => {
@@ -126,107 +131,6 @@ async function save() {
     saving.value = false;
     if (msgTimer) clearTimeout(msgTimer);
     msgTimer = setTimeout(() => (msg.value = ""), 3000);
-  }
-}
-
-async function saveProvider() {
-  if (!settings.value) return;
-  saving.value = true;
-  providerMsg.value = "";
-  try {
-    await updateProviders({
-      provider_type: settings.value.provider_type,
-      remote_provider_enabled: settings.value.remote_provider_enabled,
-      openai_base_url: settings.value.openai_base_url,
-      openai_model: settings.value.openai_model,
-      claude_model: settings.value.claude_model,
-    });
-
-    let associatedSecret = false;
-    if (providerSecrets.value?.openai_configured && providers.value?.config.openai.storage !== "os_keyring") {
-      const result = await updateProviderSecretReference("openai", true);
-      providerRestartRequired.value ||= result.restart_required;
-      associatedSecret = true;
-    }
-    if (providerSecrets.value?.claude_configured && providers.value?.config.claude.storage !== "os_keyring") {
-      const result = await updateProviderSecretReference("claude", true);
-      providerRestartRequired.value ||= result.restart_required;
-      associatedSecret = true;
-    }
-    providers.value = await listProviders();
-    settings.value = await getSettings();
-    providerMsg.value = associatedSecret
-      ? "Provider 已保存并关联系统凭据；重启后注入本地后端"
-      : "Provider 已保存";
-  } catch (e) {
-    providerMsg.value = "Provider 保存失败：" + String(e);
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function configureProviderSecret(provider: "openai" | "claude") {
-  providerPrompting.value = provider;
-  providerMsg.value = "";
-  try {
-    const result = await cmdPromptProviderSecret(provider);
-    providerSecrets.value = {
-      openai_configured: result.openai_configured,
-      claude_configured: result.claude_configured,
-    };
-    if (result.cancelled) return;
-
-    const reference = await updateProviderSecretReference(provider, true);
-    providerRestartRequired.value ||= reference.restart_required;
-    providers.value = await listProviders();
-    settings.value = await getSettings();
-    providerMsg.value = `${provider === "openai" ? "OpenAI" : "Claude"} 凭据已保存到 Windows 凭据管理器并完成关联`;
-  } catch (e) {
-    providerMsg.value = "Provider 凭据保存失败：" + String(e);
-  } finally {
-    providerPrompting.value = null;
-  }
-}
-
-async function clearProviderSecret(provider: "openai" | "claude") {
-  const confirmed = await notify.confirm({
-    title: `清除 ${provider === "openai" ? "OpenAI" : "Claude"} 凭据？`,
-    danger: true,
-    impact: "将从系统凭据库删除密钥，并停用对应的凭据引用。",
-  });
-  if (!confirmed) return;
-
-  saving.value = true;
-  providerMsg.value = "";
-  try {
-    providerSecrets.value = await cmdClearProviderSecret(provider);
-    await updateProviderSecretReference(provider, false);
-    providers.value = await listProviders();
-    settings.value = await getSettings();
-    providerRestartRequired.value = true;
-    providerMsg.value = "凭据已清除；请重启应用以清理 sidecar 进程环境";
-  } catch (e) {
-    providerMsg.value = "凭据清除失败：" + String(e);
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function restartForProviderSecrets() {
-  const confirmed = await notify.confirm({
-    title: "立即重启以应用 Provider 凭据？",
-    impact: "当前本地后端会停止并由桌面应用重新启动。",
-  });
-  if (confirmed) await cmdRelaunchApp();
-}
-
-async function runProviderTest() {
-  providerMsg.value = "";
-  try {
-    const res = await testProvider();
-    providerMsg.value = JSON.stringify(res, null, 2);
-  } catch (e) {
-    providerMsg.value = "Provider 测试失败：" + String(e);
   }
 }
 
@@ -257,10 +161,56 @@ const statusItems = computed(() => {
   if (!h) return [];
   return [
     { label: "本地后端 API", ok: h.api.ok },
-    { label: "Ollama", ok: h.ollama.ok },
     { label: "MySQL", ok: h.mysql.ok },
     { label: "ChromaDB", ok: h.chroma.ok },
   ];
+});
+
+const activeModelProfile = computed(
+  () =>
+    modelProfiles.value.find((profile) => profile.isDefault) ??
+    modelProfiles.value[0] ??
+    null
+);
+
+const activeModelProvider = computed(() => {
+  const profile = activeModelProfile.value;
+  if (!profile) return null;
+  return (
+    modelProviders.value.find((provider) => provider.id === profile.providerId) ??
+    modelProviders.value.find(
+      (provider) => provider.enabled && provider.protocol === profile.provider
+    ) ??
+    null
+  );
+});
+
+const activeModelName = computed(() => {
+  const profile = activeModelProfile.value;
+  if (profile) return profile.modelName?.trim() || profile.id;
+  if (!settings.value) return "—";
+  if (settings.value.provider_type === "openai") return settings.value.openai_model || "—";
+  if (settings.value.provider_type === "claude") return settings.value.claude_model || "—";
+  return settings.value.llm_model || "—";
+});
+
+const activeServiceName = computed(() => {
+  if (activeModelProvider.value) return activeModelProvider.value.name;
+  if (activeModelProfile.value?.providerName) return activeModelProfile.value.providerName;
+  if (!settings.value) return "—";
+  if (settings.value.provider_type === "openai") {
+    return settings.value.openai_config_name || "OpenAI 兼容 API";
+  }
+  if (settings.value.provider_type === "claude") return "Claude 原生协议";
+  return "Ollama（本地）";
+});
+
+const activeEndpoint = computed(() => {
+  if (activeModelProvider.value) return activeModelProvider.value.baseUrl || "—";
+  if (!settings.value) return "—";
+  if (settings.value.provider_type === "openai") return settings.value.openai_base_url || "—";
+  if (settings.value.provider_type === "claude") return "https://api.anthropic.com/v1";
+  return "本地模型配置";
 });
 </script>
 
@@ -269,22 +219,22 @@ const statusItems = computed(() => {
     <header class="settings-hero">
       <div>
         <span class="eyebrow">LOCAL CONTROL CENTER</span>
-        <h1>设置与状态</h1>
-        <p class="subtitle">管理本地模型、隐私边界与数据安全。</p>
+        <h1>{{ currentSectionMeta.label }}</h1>
+        <p class="subtitle">{{ sectionSubtitle }}</p>
       </div>
       <span class="privacy-badge">数据默认留在本机</span>
     </header>
 
     <!-- v0.9.0 H1-D：配置往返返回栏（从 Coding/Agent 入口进入时可见） -->
     <div v-if="returnTo" class="settings-return-bar" data-testid="settings-return-bar">
-      <span>正在配置 Agent / Coding 模型；保存后将自动返回原页面（项目与会话保留）。</span>
+      <span>正在配置项目模型；保存后将自动返回原页面（项目与会话保留）。</span>
       <button class="return-btn" data-testid="settings-return" @click="emit('return')">返回</button>
     </div>
 
     <div class="settings-grid">
 
     <!-- 状态 -->
-    <section class="setting-card wide status-card">
+    <section v-if="activeSection === 'status'" class="setting-card wide status-card">
       <div class="card-heading"><span>01</span><div><h2>运行状态</h2><p>关键依赖与本地服务连通性</p></div></div>
       <div class="status-row">
         <div v-for="s in statusItems" :key="s.label" class="status-pill" :class="s.ok ? 'ok' : 'bad'">
@@ -296,17 +246,18 @@ const statusItems = computed(() => {
     </section>
 
     <!-- 模型信息（只读） -->
-    <section class="setting-card wide">
+    <section v-if="activeSection === 'current-model'" class="setting-card wide">
       <div class="card-heading"><span>02</span><div><h2>当前模型</h2><p>正在使用的推理与向量模型</p></div></div>
       <div class="info-grid">
-        <div><span class="k">LLM 模型</span><span class="v">{{ settings?.llm_model || "—" }}</span></div>
+        <div><span class="k">模型服务</span><span class="v">{{ activeServiceName }}</span></div>
+        <div><span class="k">LLM 模型 ID</span><span class="v">{{ activeModelName }}</span></div>
         <div><span class="k">嵌入模型</span><span class="v">{{ settings?.embed_model || "—" }}</span></div>
-        <div><span class="k">Ollama 地址</span><span class="v">{{ health?.ollama?.base_url || "—" }}</span></div>
+        <div><span class="k">请求地址</span><span class="v">{{ activeEndpoint }}</span></div>
       </div>
     </section>
 
     <!-- 可调参数 -->
-    <section class="setting-card">
+    <section v-if="activeSection === 'model-parameters'" class="setting-card wide">
       <div class="card-heading"><span>03</span><div><h2>模型参数</h2><p>控制回答发散度与上下文窗口</p></div></div>
       <div class="form" v-if="settings">
       <div class="field">
@@ -332,153 +283,32 @@ const statusItems = computed(() => {
       </div>
     </section>
 
-    <!-- Provider -->
-    <section class="setting-card">
-      <div class="card-heading"><span>04</span><div><h2>Provider 与隐私</h2><p>远程模型仅在明确开启后接收上下文</p></div></div>
-      <div class="form provider-form" v-if="settings">
-      <div class="field">
-        <label>当前 Provider</label>
-        <select v-model="settings.provider_type">
-          <option value="ollama">Ollama（本地默认）</option>
-          <option value="openai">OpenAI-compatible</option>
-          <option value="claude">Claude</option>
-        </select>
-      </div>
-      <div class="field field-check">
-        <label>
-          <input type="checkbox" v-model="settings.remote_provider_enabled" />
-          允许远程 Provider 发送上下文
-        </label>
-      </div>
-      <div class="field">
-        <label>OpenAI Base URL</label>
-        <input v-model="settings.openai_base_url" placeholder="https://api.openai.com/v1" />
-      </div>
-      <div class="field">
-        <label>OpenAI Model</label>
-        <input v-model="settings.openai_model" placeholder="gpt-4o-mini" />
-      </div>
-      <div class="field">
-        <label>OpenAI API Key</label>
-        <button
-          type="button"
-          class="save-btn secondary secret-configure"
-          :disabled="!desktopRuntime || providerPrompting !== null"
-          @click="configureProviderSecret('openai')"
-        >
-          {{ providerPrompting === "openai" ? "等待系统凭据窗口…" : "输入或更新 OpenAI 密钥…" }}
-        </button>
-        <small class="secret-status">
-          {{
-            providers?.config.openai.storage === "legacy"
-              ? "检测到旧明文配置：请重新输入并保存以迁移"
-              : providers?.config.openai.storage === "os_keyring"
-                ? "已使用系统凭据库"
-                : providerSecrets?.openai_configured
-                  ? "系统凭据已存在"
-                  : desktopRuntime
-                    ? "尚未配置"
-                    : "仅桌面应用可写入系统凭据库"
-          }}
-        </small>
-        <button
-          v-if="providers?.config.openai.configured || providerSecrets?.openai_configured"
-          type="button"
-          class="secret-clear"
-          :disabled="saving || !desktopRuntime"
-          @click="clearProviderSecret('openai')"
-        >
-          清除凭据
-        </button>
-      </div>
-      <div class="field">
-        <label>Claude Model</label>
-        <input v-model="settings.claude_model" placeholder="claude-3-5-sonnet-latest" />
-      </div>
-      <div class="field">
-        <label>Claude API Key</label>
-        <button
-          type="button"
-          class="save-btn secondary secret-configure"
-          :disabled="!desktopRuntime || providerPrompting !== null"
-          @click="configureProviderSecret('claude')"
-        >
-          {{ providerPrompting === "claude" ? "等待系统凭据窗口…" : "输入或更新 Claude 密钥…" }}
-        </button>
-        <small class="secret-status">
-          {{
-            providers?.config.claude.storage === "legacy"
-              ? "检测到旧明文配置：请重新输入并保存以迁移"
-              : providers?.config.claude.storage === "os_keyring"
-                ? "已使用系统凭据库"
-                : providerSecrets?.claude_configured
-                  ? "系统凭据已存在"
-                  : desktopRuntime
-                    ? "尚未配置"
-                    : "仅桌面应用可写入系统凭据库"
-          }}
-        </small>
-        <button
-          v-if="providers?.config.claude.configured || providerSecrets?.claude_configured"
-          type="button"
-          class="secret-clear"
-          :disabled="saving || !desktopRuntime"
-          @click="clearProviderSecret('claude')"
-        >
-          清除凭据
-        </button>
-      </div>
-      <div class="provider-scope">
-        <span class="k">远程发送范围</span>
-        <span class="v">
-          {{
-            providers?.privacy?.sends?.length
-              ? providers.privacy.sends.join(" / ")
-              : "本地 Ollama 或远程关闭，不发送"
-          }}
-        </span>
-      </div>
-      <div class="form-actions">
-        <button class="save-btn" @click="saveProvider" :disabled="saving">保存 Provider</button>
-        <button class="save-btn secondary" @click="runProviderTest" :disabled="saving">
-          测试 Provider
-        </button>
-      </div>
-      <div v-if="providerRestartRequired" class="provider-restart">
-        <span>Provider 凭据状态已变化，需要重启本地后端后完全生效。</span>
-        <button class="save-btn secondary" @click="restartForProviderSecrets">立即重启</button>
-      </div>
-      <pre v-if="providerMsg" class="small-pre">{{ providerMsg }}</pre>
-      </div>
-    </section>
-
-    <!-- v0.9.0 H1-D（§5.8）：Agent / Coding 模型管理（全局 Provider 与 profile 闭环） -->
-    <section id="model-profiles" ref="modelProfilesCard" class="setting-card wide" data-testid="settings-model-profiles">
-      <div class="card-heading"><span>05</span><div><h2>Agent / Coding 模型</h2><p>创建、验证与选择 Coding 执行使用的具体模型（不含任何密钥）</p></div></div>
-      <ModelProfilesPanel @saved="onModelProfilesSaved" />
+    <!-- 统一模型供应商：保存后的启用模型直接进入对话/Coding 选择器。 -->
+    <section v-if="activeSection === 'provider'" class="model-provider-section">
+      <ModelProvidersPanel @saved="onModelProfilesSaved" />
     </section>
 
     <!-- MCP -->
-    <section class="setting-card wide">
-      <div class="card-heading"><span>06</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
+    <section v-if="activeSection === 'mcp'" class="setting-card wide">
+      <div class="card-heading"><span>05</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
       <McpServersPanel />
     </section>
 
     <!-- v0.5.0 B3：HTTP 端点 -->
-    <section class="setting-card wide">
-      <div class="card-heading"><span>07</span><div><h2>HTTP 端点</h2><p>固定目标与方法的可信 API 调用配置</p></div></div>
+    <section v-if="activeSection === 'http'" class="setting-card wide">
+      <div class="card-heading"><span>06</span><div><h2>HTTP 端点</h2><p>固定目标与方法的可信 API 调用配置</p></div></div>
       <HttpProfilesPanel />
     </section>
 
     <!-- v0.5.0 B4：只读数据库 -->
-    <section class="setting-card wide">
-      <div class="card-heading"><span>08</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
+    <section v-if="activeSection === 'sql'" class="setting-card wide">
+      <div class="card-heading"><span>07</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
       <SqlProfilesPanel />
     </section>
 
     <!-- 备份 -->
-    <section class="setting-card">
-      <div class="card-heading"><span>09</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+    <section v-if="activeSection === 'backup'" class="setting-card wide">
+      <div class="card-heading"><span>08</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
       <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
@@ -507,15 +337,15 @@ const statusItems = computed(() => {
     </section>
 
     <!-- 连接配置 -->
-    <section class="setting-card compact-card">
-      <div class="card-heading"><span>10</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
+    <section v-if="activeSection === 'connection'" class="setting-card wide compact-card">
+      <div class="card-heading"><span>09</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
       <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
       <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
     </section>
 
     <!-- 关于 / 更新 -->
-    <section class="setting-card compact-card">
-      <div class="card-heading"><span>11</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+    <section v-if="activeSection === 'about'" class="setting-card wide compact-card">
+      <div class="card-heading"><span>10</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>
@@ -530,6 +360,23 @@ const statusItems = computed(() => {
   background:
     radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 24%),
     var(--color-bg);
+}
+.provider-subheading {
+  margin: 0 0 var(--space-3);
+  font-size: var(--pa-text-body);
+}
+.model-config-divider {
+  margin: var(--space-5) 0 var(--space-3);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+.model-config-divider .provider-subheading {
+  margin-bottom: var(--space-1);
+}
+.model-config-divider p {
+  margin: 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
 }
 .settings-hero {
   max-width: 1120px;
@@ -569,6 +416,10 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
+}
+.model-provider-section {
+  min-width: 0;
+  grid-column: 1 / -1;
 }
 .settings-return-bar {
   display: flex;
@@ -745,43 +596,106 @@ h1 {
 }
 .provider-form {
   max-width: none;
+  gap: 10px;
+}
+.provider-card {
+  padding: 16px 18px;
+  border-radius: 14px;
+}
+.provider-card .card-heading {
+  margin-bottom: 12px;
+}
+.provider-card .field {
+  gap: 4px;
+}
+.provider-card .field input,
+.provider-card .field select {
+  box-sizing: border-box;
+  min-height: 36px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+.provider-consent {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+}
+.provider-consent label {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-fg-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.provider-consent input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--color-accent);
+}
+.provider-protocol-note {
+  padding: 7px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  border-radius: 7px;
+  background: var(--color-accent-soft);
+  color: var(--color-fg-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.provider-protocol-note code {
+  color: var(--color-accent-soft-fg);
+  font-family: var(--font-mono);
 }
 .provider-scope {
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: 7px;
   background: var(--color-surface);
-  padding: 10px 12px;
+  padding: 7px 10px;
 }
 .secret-status {
   color: var(--color-fg-muted);
   font-size: 11px;
 }
-.secret-configure {
-  align-self: flex-start;
-  text-align: left;
+.secret-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.secret-input-row input {
+  min-width: 0;
 }
 .secret-clear {
-  align-self: flex-start;
-  border: 0;
-  background: transparent;
+  flex: 0 0 auto;
+  height: 34px;
+  padding: 0 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-sunken);
   color: var(--color-danger-fg);
   cursor: pointer;
-  padding: 0;
   font-size: 12px;
 }
 .secret-clear:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
-.provider-restart {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border: 1px solid var(--color-warning-soft);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 12px;
+.provider-card .form-actions {
+  gap: 8px;
+}
+.provider-card .save-btn {
+  min-height: 34px;
+  padding: 7px 14px;
+  font-size: 13px;
+}
+.provider-card .small-pre {
+  max-height: 140px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 11px;
 }
 .backup-list {
   display: grid;
