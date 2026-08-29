@@ -44,6 +44,7 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": ["SimpChinese", "English"],
+        "template": "nsis/installer-template.nsi",
         "installerHooks": "nsis/installer-hooks.nsh"
       }
     }

@@ -6,6 +6,7 @@ pub const DATABASE_PASSWORD_ACCOUNT: &str = "database.password";
 pub const OPENAI_API_KEY_ACCOUNT: &str = "provider.openai.api-key";
 pub const CLAUDE_API_KEY_ACCOUNT: &str = "provider.claude.api-key";
 const MCP_ACCOUNT_PREFIX: &str = "mcp.";
+const MODEL_PROVIDER_ACCOUNT_PREFIX: &str = "model-provider.";
 const HTTP_PROFILE_ACCOUNT_PREFIX: &str = "http.";
 const SQL_PROFILE_ACCOUNT_PREFIX: &str = "sql.";
 
@@ -82,6 +83,16 @@ pub fn mcp_reference(alias: &str) -> Result<String, String> {
     Ok(format!("secret://os-keyring/mcp/{alias}"))
 }
 
+pub fn model_provider_account(alias: &str) -> Result<String, String> {
+    validate_mcp_secret_alias(alias)?;
+    Ok(format!("{MODEL_PROVIDER_ACCOUNT_PREFIX}{alias}.api-key"))
+}
+
+pub fn model_provider_reference(alias: &str) -> Result<String, String> {
+    validate_mcp_secret_alias(alias)?;
+    Ok(format!("secret://os-keyring/model-provider/{alias}"))
+}
+
 pub fn validate_http_profile_secret_slot(slot: &str) -> Result<(), String> {
     if slot.is_empty()
         || slot.len() > 64
@@ -141,6 +152,19 @@ mod tests {
                 "accepted unsafe alias: {value:?}"
             );
         }
+    }
+
+    #[test]
+    fn model_provider_credentials_are_namespaced_by_safe_alias() {
+        assert_eq!(
+            model_provider_account("zhipu-prod").unwrap(),
+            "model-provider.zhipu-prod.api-key"
+        );
+        assert_eq!(
+            model_provider_reference("zhipu-prod").unwrap(),
+            "secret://os-keyring/model-provider/zhipu-prod"
+        );
+        assert!(model_provider_account("bad/name").is_err());
     }
 
     #[test]

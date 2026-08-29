@@ -35,8 +35,9 @@ use tauri_plugin_updater::UpdaterExt;
 
 use credential_prompt::PromptOutcome;
 use credentials::{
-    mcp_account, mcp_reference, provider_account, validate_mcp_secret_alias,
-    CLAUDE_API_KEY_ACCOUNT, DATABASE_PASSWORD_ACCOUNT, OPENAI_API_KEY_ACCOUNT,
+    mcp_account, mcp_reference, model_provider_account, model_provider_reference, provider_account,
+    validate_mcp_secret_alias, CLAUDE_API_KEY_ACCOUNT, DATABASE_PASSWORD_ACCOUNT,
+    OPENAI_API_KEY_ACCOUNT,
 };
 use zeroize::{Zeroize, Zeroizing};
 
@@ -200,13 +201,6 @@ struct DatabaseSecretPromptResult {
 }
 
 #[derive(Serialize)]
-struct ProviderSecretPromptResult {
-    openai_configured: bool,
-    claude_configured: bool,
-    cancelled: bool,
-}
-
-#[derive(Serialize)]
 struct McpSecretStatus {
     reference: String,
     configured: bool,
@@ -217,6 +211,17 @@ struct McpSecretPromptResult {
     reference: String,
     configured: bool,
     cancelled: bool,
+}
+
+#[derive(Serialize)]
+struct ModelProviderSecretStatus {
+    reference: String,
+    configured: bool,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct ModelProviderSecretIndex {
+    aliases: Vec<String>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -393,6 +398,64 @@ fn collect_mcp_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
     Ok(Zeroizing::new(encoded))
 }
 
+fn model_provider_secret_index_path() -> PathBuf {
+    config_dir().join("model-provider-secret-index.json")
+}
+
+fn read_model_provider_secret_aliases() -> Result<BTreeSet<String>, String> {
+    let path = model_provider_secret_index_path();
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let raw =
+        fs::read_to_string(path).map_err(|_| "model provider credential index read failed")?;
+    let index: ModelProviderSecretIndex =
+        serde_json::from_str(&raw).map_err(|_| "model provider credential index is invalid")?;
+    if index.aliases.len() > 64 {
+        return Err("too many model provider credentials".to_string());
+    }
+    let mut aliases = BTreeSet::new();
+    for alias in index.aliases {
+        validate_mcp_secret_alias(&alias)?;
+        aliases.insert(alias);
+    }
+    Ok(aliases)
+}
+
+fn write_model_provider_secret_aliases(aliases: &BTreeSet<String>) -> Result<(), String> {
+    if aliases.len() > 64 {
+        return Err("too many model provider credentials".to_string());
+    }
+    fs::create_dir_all(config_dir())
+        .map_err(|_| "model provider credential index directory failed")?;
+    let encoded = serde_json::to_vec(&ModelProviderSecretIndex {
+        aliases: aliases.iter().cloned().collect(),
+    })
+    .map_err(|_| "model provider credential index serialization failed")?;
+    fs::write(model_provider_secret_index_path(), encoded)
+        .map_err(|_| "model provider credential index write failed".to_string())
+}
+
+fn collect_model_provider_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
+    let mut values = BTreeMap::new();
+    for alias in read_model_provider_secret_aliases()? {
+        let account = model_provider_account(&alias)?;
+        if let Some(secret) = credentials::get(&account)? {
+            values.insert(model_provider_reference(&alias)?, secret);
+        }
+    }
+    let mut encoded = serde_json::to_string(&values)
+        .map_err(|_| "model provider credential injection serialization failed")?;
+    for secret in values.values_mut() {
+        secret.zeroize();
+    }
+    if encoded.len() > 64 * 1024 {
+        encoded.zeroize();
+        return Err("model provider credential injection exceeds the process limit".to_string());
+    }
+    Ok(Zeroizing::new(encoded))
+}
+
 // ============ v0.5.0 B3：HTTP endpoint profile 凭据通道 ============
 // 与 MCP 同构：DB 只存 keyring 引用；桌面壳把引用→明文 map 注入
 // PA_HTTP_PROFILES_SECRETS_JSON，sidecar 进程内存一次性消费。
@@ -406,8 +469,7 @@ fn read_http_profile_secret_entries() -> Result<BTreeSet<HttpProfileSecretEntry>
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "HTTP profile credential index read failed")?;
+    let raw = fs::read_to_string(path).map_err(|_| "HTTP profile credential index read failed")?;
     let index: HttpProfileSecretIndex =
         serde_json::from_str(&raw).map_err(|_| "HTTP profile credential index is invalid")?;
     if index.entries.len() > 32 {
@@ -477,12 +539,19 @@ fn read_http_profile_secret_status(
 }
 
 #[tauri::command]
-fn http_profile_secret_status(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+fn http_profile_secret_status(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretStatus, String> {
     read_http_profile_secret_status(&name, &slot)
 }
 
 #[tauri::command]
-fn set_http_profile_secret(name: String, slot: String, secret: String) -> Result<HttpProfileSecretStatus, String> {
+fn set_http_profile_secret(
+    name: String,
+    slot: String,
+    secret: String,
+) -> Result<HttpProfileSecretStatus, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     credentials::set(&account, &secret)?;
     let mut entries = read_http_profile_secret_entries()?;
@@ -495,7 +564,10 @@ fn set_http_profile_secret(name: String, slot: String, secret: String) -> Result
 }
 
 #[tauri::command]
-fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+fn clear_http_profile_secret(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretStatus, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     credentials::delete(&account)?;
     let mut entries = read_http_profile_secret_entries()?;
@@ -508,7 +580,10 @@ fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSe
 }
 
 #[tauri::command]
-fn prompt_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretPromptResult, String> {
+fn prompt_http_profile_secret(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretPromptResult, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     let outcome = credential_prompt::prompt_and_store(
         &account,
@@ -558,8 +633,7 @@ fn read_sql_profile_secret_names() -> Result<BTreeSet<String>, String> {
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "SQL profile credential index read failed")?;
+    let raw = fs::read_to_string(path).map_err(|_| "SQL profile credential index read failed")?;
     let index: SqlProfileSecretIndex =
         serde_json::from_str(&raw).map_err(|_| "SQL profile credential index is invalid")?;
     if index.names.len() > 32 {
@@ -1269,32 +1343,65 @@ fn provider_secret_status() -> Result<ProviderSecretStatus, String> {
 }
 
 #[tauri::command]
-fn prompt_provider_secret(provider: String) -> Result<ProviderSecretPromptResult, String> {
-    let account = provider_account(&provider)?;
-    let provider_label = match provider.as_str() {
-        "openai" => "OpenAI",
-        "claude" => "Claude",
-        _ => return Err("unsupported provider secret".to_string()),
-    };
-    let outcome = credential_prompt::prompt_and_store(
-        account,
-        &format!("PrivateAgent {provider_label} credential"),
-        &format!(
-            "Enter the {provider_label} API key. It will be stored in Windows Credential Manager."
-        ),
-    )?;
-    let status = read_provider_secret_status()?;
-    Ok(ProviderSecretPromptResult {
-        openai_configured: status.openai_configured,
-        claude_configured: status.claude_configured,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
+fn set_provider_secret(provider: String, secret: String) -> Result<ProviderSecretStatus, String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err("provider API key must not be empty".to_string());
+    }
+    if secret.len() > 16_384 {
+        return Err("provider API key is too long".to_string());
+    }
+    credentials::set(provider_account(&provider)?, secret)?;
+    read_provider_secret_status()
 }
 
 #[tauri::command]
 fn clear_provider_secret(provider: String) -> Result<ProviderSecretStatus, String> {
     credentials::delete(provider_account(&provider)?)?;
     read_provider_secret_status()
+}
+
+fn read_model_provider_secret_status(alias: &str) -> Result<ModelProviderSecretStatus, String> {
+    let account = model_provider_account(alias)?;
+    let aliases = read_model_provider_secret_aliases()?;
+    Ok(ModelProviderSecretStatus {
+        reference: model_provider_reference(alias)?,
+        configured: aliases.contains(alias) && credentials::exists(&account)?,
+    })
+}
+
+#[tauri::command]
+fn model_provider_secret_status(alias: String) -> Result<ModelProviderSecretStatus, String> {
+    read_model_provider_secret_status(&alias)
+}
+
+#[tauri::command]
+fn set_model_provider_secret(
+    alias: String,
+    secret: String,
+) -> Result<ModelProviderSecretStatus, String> {
+    let normalized = secret.trim();
+    if normalized.is_empty() {
+        return Err("model provider API key must not be empty".to_string());
+    }
+    if normalized.len() > 16_384 {
+        return Err("model provider API key is too long".to_string());
+    }
+    let account = model_provider_account(&alias)?;
+    credentials::set(&account, normalized)?;
+    let mut aliases = read_model_provider_secret_aliases()?;
+    aliases.insert(alias.clone());
+    write_model_provider_secret_aliases(&aliases)?;
+    read_model_provider_secret_status(&alias)
+}
+
+#[tauri::command]
+fn clear_model_provider_secret(alias: String) -> Result<ModelProviderSecretStatus, String> {
+    credentials::delete(&model_provider_account(&alias)?)?;
+    let mut aliases = read_model_provider_secret_aliases()?;
+    aliases.remove(&alias);
+    write_model_provider_secret_aliases(&aliases)?;
+    read_model_provider_secret_status(&alias)
 }
 
 fn read_mcp_secret_status(alias: &str) -> Result<McpSecretStatus, String> {
@@ -1449,6 +1556,7 @@ async fn start_sidecar(
     } else {
         Zeroizing::new("{}".to_string())
     };
+    let model_provider_secrets_json = collect_model_provider_secrets_for_sidecar()?;
     let http_profile_secrets_json = if loaded.public.http_workflow_enabled {
         collect_http_profile_secrets_for_sidecar()?
     } else {
@@ -1510,8 +1618,18 @@ async fn start_sidecar(
             .env("PA_OPENAI_API_KEY", openai_api_key)
             .env("PA_CLAUDE_API_KEY", claude_api_key)
             .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
-            .env("PA_HTTP_PROFILES_SECRETS_JSON", http_profile_secrets_json.as_str())
-            .env("PA_SQL_PROFILES_SECRETS_JSON", sql_profile_secrets_json.as_str())
+            .env(
+                "PA_MODEL_PROVIDER_SECRETS_JSON",
+                model_provider_secrets_json.as_str(),
+            )
+            .env(
+                "PA_HTTP_PROFILES_SECRETS_JSON",
+                http_profile_secrets_json.as_str(),
+            )
+            .env(
+                "PA_SQL_PROFILES_SECRETS_JSON",
+                sql_profile_secrets_json.as_str(),
+            )
             // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
             // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
             .env(
@@ -1520,7 +1638,10 @@ async fn start_sidecar(
             )
             .env(
                 "PA_CONVERSATION_SUMMARY_WORKER_ENABLED",
-                loaded.public.conversation_summary_worker_enabled.to_string(),
+                loaded
+                    .public
+                    .conversation_summary_worker_enabled
+                    .to_string(),
             )
             // v0.9.0 H1-C（计划 §5.7）：安装版能力位注入——“替我批准/完全访问/
             // 上下文用量”真实可用的前提；与 .env 落盘值一致，发布门禁通过后的
@@ -1583,7 +1704,10 @@ async fn start_sidecar(
             )
             .env(
                 "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED",
-                loaded.public.coding_workspace_auto_approve_enabled.to_string(),
+                loaded
+                    .public
+                    .coding_workspace_auto_approve_enabled
+                    .to_string(),
             )
             .env(
                 "PA_CODING_FULL_ACCESS_ENABLED",
@@ -1730,8 +1854,11 @@ pub fn run() {
             write_config,
             prompt_database_password,
             provider_secret_status,
-            prompt_provider_secret,
+            set_provider_secret,
             clear_provider_secret,
+            model_provider_secret_status,
+            set_model_provider_secret,
+            clear_model_provider_secret,
             mcp_secret_status,
             prompt_mcp_secret,
             clear_mcp_secret,
@@ -1847,12 +1974,10 @@ mod tests {
 
     #[test]
     fn agent_runtime_flags_are_independent_of_each_other() {
-        let chat_only =
-            parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
+        let chat_only = parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
         assert!(chat_only.public.chat_agent_runtime_enabled);
         assert!(!chat_only.public.conversation_summary_worker_enabled);
-        let summary_only =
-            parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
+        let summary_only = parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
         assert!(!summary_only.public.chat_agent_runtime_enabled);
         assert!(summary_only.public.conversation_summary_worker_enabled);
     }
