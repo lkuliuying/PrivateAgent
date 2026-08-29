@@ -11,7 +11,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from ..config import settings
 from ..core.auth import Principal
-from ..core.models import AuditLog, AuthSession
+from ..core.models import AuditLog, AuthSession, EmailVerificationCode
 from ..core.timeutil import utcnow
 from ..logging_setup import get_logger
 
@@ -104,7 +104,7 @@ class RequestAuditMiddleware:
 
 
 async def purge_expired_security_records() -> dict[str, int]:
-    """清理超过保留期的审计记录和已经失效的登录会话。"""
+    """清理超过保留期的审计、登录会话和邮箱验证码。"""
     from ..core import db as db_module
 
     now = utcnow()
@@ -123,10 +123,16 @@ async def purge_expired_security_records() -> dict[str, int]:
                 )
             )
         )
+        verification_result = await db.execute(
+            delete(EmailVerificationCode).where(
+                EmailVerificationCode.expires_at < session_cutoff
+            )
+        )
         await db.commit()
     return {
         "audit_logs": int(audit_result.rowcount or 0),
         "auth_sessions": int(session_result.rowcount or 0),
+        "email_verification_codes": int(verification_result.rowcount or 0),
     }
 
 

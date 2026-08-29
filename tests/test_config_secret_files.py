@@ -10,6 +10,11 @@ from sqlalchemy.engine import make_url
 from personal_assistant.config import Settings
 
 
+def test_mcp_is_enabled_by_default(monkeypatch):
+    monkeypatch.delenv("PA_MCP_ENABLED", raising=False)
+    assert Settings(_env_file=None).mcp_enabled is True
+
+
 def _secret(tmp_path: Path, name: str, value: str) -> Path:
     path = tmp_path / name
     path.write_text(value, encoding="utf-8")
@@ -43,6 +48,30 @@ def test_settings_reject_ambiguous_direct_and_file_api_token(tmp_path):
             api_token="b" * 64,
             api_token_file=token_file,
         )
+
+
+def test_settings_load_smtp_credentials_from_dedicated_env_file(tmp_path):
+    smtp_env = tmp_path / "smtp.env"
+    smtp_env.write_text(
+        "\n".join(
+            (
+                "PA_SMTP_HOST=smtp.example.com",
+                "PA_SMTP_PORT=465",
+                "PA_SMTP_USERNAME=sender@example.com",
+                "PA_SMTP_PASSWORD=authorization-code",
+                "PA_SMTP_FROM_EMAIL=sender@example.com",
+                "PA_SMTP_USE_SSL=true",
+            )
+        ),
+        encoding="utf-8",
+    )
+
+    configured = Settings(_env_file=smtp_env)
+
+    assert configured.smtp_host == "smtp.example.com"
+    assert configured.smtp_username == "sender@example.com"
+    assert configured.smtp_password is not None
+    assert configured.smtp_password.get_secret_value() == "authorization-code"
 
 
 @pytest.mark.parametrize("value", ["", "line-one\nline-two", "bad\x00value"])

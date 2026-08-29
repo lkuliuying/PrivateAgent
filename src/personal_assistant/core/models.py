@@ -3230,6 +3230,8 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(VARCHAR(320), nullable=False, unique=True)
+    username: Mapped[str] = mapped_column(VARCHAR(100), nullable=False, unique=True)
+    # 兼容 0037 及旧 API 数据；新界面和登录统一使用 username。
     display_name: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
     password_hash: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
     role: Mapped[str] = mapped_column(
@@ -3258,6 +3260,41 @@ class User(Base):
     __table_args__ = (
         Index("idx_users_role_status", "role", "status"),
         Index("idx_users_created_at", "created_at"),
+    )
+
+
+class EmailVerificationCode(Base):
+    """注册邮箱验证码；仅保存加盐摘要，原始验证码只进入邮件。"""
+
+    __tenant_scoped__ = False
+    __tablename__ = "email_verification_codes"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(VARCHAR(320), nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="registration", server_default="registration"
+    )
+    code_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    code_salt: Mapped[str] = mapped_column(CHAR(32), nullable=False)
+    attempts: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_email_verification_lookup",
+            "email",
+            "purpose",
+            "created_at",
+        ),
+        Index("idx_email_verification_expiry", "expires_at", "consumed_at"),
     )
 
 

@@ -61,18 +61,18 @@ def _default_data_dir() -> Path:
     return Path("./data")
 
 
-def _default_env_file() -> str | None:
-    """env 文件路径：打包模式读用户数据目录下的 ``.env``（不存在则返回 None），开发模式读项目根 ``.env``。"""
+def _default_env_files() -> tuple[str, str]:
+    """依次读取主配置和独立 SMTP 配置；后者仅承载邮件服务参数。"""
     if getattr(sys, "frozen", False):
-        p = _default_data_dir() / ".env"
-        return str(p) if p.exists() else None
-    return ".env"
+        data_dir = _default_data_dir()
+        return str(data_dir / ".env"), str(data_dir / "smtp.env")
+    return ".env", "smtp.env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PA_",
-        env_file=_default_env_file(),
+        env_file=_default_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -105,6 +105,17 @@ class Settings(BaseSettings):
     security_cleanup_interval_seconds: int = Field(
         default=3600, ge=60, le=86_400
     )
+
+    # === 注册邮箱验证码（smtp.env / PA_SMTP_*） ===
+    smtp_host: str = ""
+    smtp_port: int = Field(default=465, ge=1, le=65_535)
+    smtp_username: str = ""
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str = ""
+    smtp_from_name: str = "PrivateAgent"
+    smtp_use_ssl: bool = True
+    smtp_starttls: bool = False
+    smtp_timeout_seconds: int = Field(default=15, ge=3, le=60)
     agent_runs_api_enabled: bool = False
     agent_run_read_only_tools_enabled: bool = False
     agent_rag_tools_enabled: bool = False
@@ -124,7 +135,7 @@ class Settings(BaseSettings):
         ge=1_000,
         le=500_000,
     )
-    mcp_enabled: bool = False
+    mcp_enabled: bool = True
 
     # === v0.5.0 可信工作流独立开关（B0 冻结，全部默认关闭） ===
     # 四类高风险工作流各有独立 flag；不存在同时开启多类工作流的总开关。
@@ -363,6 +374,10 @@ class Settings(BaseSettings):
             )
             self.db_url = parsed.set(password=password).render_as_string(
                 hide_password=False
+            )
+        if self.smtp_use_ssl and self.smtp_starttls:
+            raise ValueError(
+                "configure only one of PA_SMTP_USE_SSL or PA_SMTP_STARTTLS"
             )
         return self
 

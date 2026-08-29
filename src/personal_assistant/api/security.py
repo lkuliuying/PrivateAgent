@@ -13,30 +13,23 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from ..core.auth import Principal, principal_for_token
 from ..core.tenant import enter_tenant, exit_tenant
 
-_PUBLIC_PATHS = frozenset({"/auth/login", "/auth/register"})
+_PUBLIC_PATHS = frozenset(
+    {"/auth/login", "/auth/register", "/auth/email-verification/send"}
+)
 _ADMIN_PATH_PREFIXES = (
     "/admin",
-    "/agent-runs",
-    "/agent-tasks",
-    "/agent-task-steps",
     "/backup",
     "/commands",
     "/coding",
     "/diagnostics",
-    "/extensions",
     "/files",
     "/full-access",
     "/http-profiles",
     "/internal",
     "/integrations",
     "/maintenance",
-    "/mcp",
-    "/model-profiles",
-    "/model-providers",
     "/patch-sets",
     "/providers",
-    "/projects",
-    "/settings",
     "/sql-profiles",
     "/testing",
     "/tools",
