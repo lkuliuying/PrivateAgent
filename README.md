@@ -185,7 +185,7 @@ Agent/
 │   ├── workers/               # 导入、OCR、项目扫描等后台任务
 │   ├── main_api.py            # FastAPI 应用入口
 │   └── server_entry.py        # sidecar 启动与迁移入口
-├── alembic/                   # MySQL 数据库迁移（当前 head: 0035）
+├── alembic/                   # MySQL 数据库迁移（当前 head: 0037）
 ├── tests/                     # 后端、RAG、治理、发布和升级测试
 ├── scripts/                   # 开发、构建、签名、发布检查与 smoke 脚本
 ├── docs/                      # 需求、阶段计划、使用和发布文档
@@ -406,7 +406,7 @@ scripts\build-release.bat
 
 ### 可选容器后端
 
-容器模式是独立的单机部署面，不替代 Tauri 默认 sidecar，也不会连接现有桌面主库。它使用 Compose secret files、非 root/只读 API 容器、宿主 loopback 端口、MySQL/Chroma 持久卷和可选的 NVIDIA Ollama profile：
+容器模式可作为远程多用户服务端：它使用 Compose secret files、非 root/只读 API 容器、宿主 loopback 端口、MySQL/Chroma 持久卷和可选的 NVIDIA Ollama profile。公网入口由同机 HTTPS 反向代理提供；桌面客户端可在登录页填写服务器地址，也可用 `VITE_API_BASE_URL` 提供构建时默认值：
 
 ```powershell
 Copy-Item .env.container.example .env.container
@@ -415,7 +415,9 @@ docker compose --env-file .env.container --profile ollama-gpu config --quiet
 docker compose --env-file .env.container up --detach --build
 ```
 
-需要容器化 Ollama 时，将 `.env.container` 中的地址改为 `http://ollama:11434`，并在启动命令加入 `--profile ollama-gpu`。完整安全边界、模型拉取、备份和停止方式见 `docs/deployment-guide.md` §8。
+需要容器化 Ollama 时，将 `.env.container` 中的地址改为 `http://ollama:11434`，并在启动命令加入 `--profile ollama-gpu`。完整的 TLS 反向代理、首个管理员注册、客户端远程 URL、日志保留、备份和停止方式见 `docs/deployment-guide.md` §8。
+
+CentOS Stream 9 裸机部署（Uvicorn + Supervisor + Nginx，公网 HTTPS 端口 `6000`）见 [`docs/centos-stream9-deployment.md`](docs/centos-stream9-deployment.md)。项目是 FastAPI/ASGI 应用，不能直接由 uWSGI 的 WSGI 加载器托管。
 
 构建流程包含 sidecar 打包、MSVC 检测、Tauri/NSIS 构建、可选 Authenticode 签名、updater 签名和发布清单生成。主要产物：
 
@@ -454,7 +456,7 @@ dist/latest.json
 
 - Windows NSIS、Python sidecar、动态端口、发布清单、updater、无证书透明策略和自动化检查已实现。
 - Windows 真实 `v0.1.2 → v0.2.0` 安装升级、数据保留、卸载/重装回滚和 updater 签名负面验证已完成（2026-08-05，升级 smoke run #26）。GitHub Release 真实远程 updater 交付仍需仓库发布权限后以真实远程资产补一次 smoke；当前本地镜像证据不代表已部署生产 Release。
-- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷与配置门禁；它是独立单机拓扑，不代表公网或多租户支持。容器 GPU profile 的真实 GPU healthcheck 尚未完成（见 `docs/archive/planning/remaining-work-plan-20260806.md` §5.2）。
+- 可选容器后端已有锁定镜像、Compose secrets、loopback 发布、持久卷、多用户会话与审计；公网仍必须由外部 HTTPS 反向代理终止 TLS，当前不包含代理容器或证书自动化。容器 GPU profile 的真实 GPU healthcheck 尚未完成（见 `docs/archive/planning/remaining-work-plan-20260806.md` §5.2）。
 - Authenticode 签名逻辑已接入，但正式证书实签需要在发布环境执行；当前如实标记 `unsigned`，SmartScreen 可能显示未知发布者。
 - macOS/Linux 的数据目录适配、构建脚本和发布清单结构已准备，尚未完成实机构建与 smoke，因此当前不宣称正式跨平台交付。
 - `externalBin` 变化后，同版本覆盖安装应先完成真实验证；未验证前建议卸载旧版本再安装新包。
