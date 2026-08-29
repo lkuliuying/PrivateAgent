@@ -7,7 +7,7 @@
 // 3. 配置命令：config_exists / read_config / write_config —— 读写 %APPDATA%/personal-assistant/.env（PA_ 前缀）。
 // 4. 依赖检测：check_dependencies（默认端口探测）/ test_connections（按配置探测 MySQL + Ollama）。
 // 5. 更新命令：check_for_updates / download_and_install_update / relaunch_app（基于 tauri-plugin-updater + process）。
-// 6. 应用退出时终止 sidecar 子进程。
+// 6. 关闭按钮可退出或隐藏到系统托盘；真正退出时终止 sidecar 子进程。
 //
 // .env 字段（与 src/personal_assistant/config.py 的 PA_ 前缀对齐）：
 //   PA_DB_HOST / PA_DB_PORT / PA_DB_USER / PA_DB_NAME / PA_DB_SECRET_REF
@@ -28,6 +28,8 @@ use std::time::Duration;
 use std::{collections::BTreeMap, collections::BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -43,6 +45,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 /// sidecar 二进制名（对应 tauri.conf.json 的 externalBin，去掉平台后缀）。
 const SIDECAR_BIN: &str = "personal-assistant-server";
+const TRAY_SHOW_ID: &str = "tray-show";
+const TRAY_EXIT_ID: &str = "tray-exit";
 
 /// sidecar 状态：协商端口与子进程句柄。
 /// port 为 None 表示未启动 sidecar（dev 模式手动起后端，或尚未调用 start_sidecar）。
@@ -50,6 +54,18 @@ struct SidecarState {
     port: Mutex<Option<u16>>,
     token: Mutex<Option<String>>,
     child: Mutex<Option<CommandChild>>,
+    startup_error: Mutex<Option<String>>,
+    generation: Mutex<u64>,
+}
+
+fn classify_sidecar_startup_error(line: &str) -> Option<&'static str> {
+    if line.contains("Another Agent-enabled API process already owns this database") {
+        return Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。");
+    }
+    if line.contains("Agent runtime requires database schema revision") {
+        return Some("数据库版本过旧，请先完成数据库升级后重试。");
+    }
+    None
 }
 
 /// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
@@ -70,7 +86,7 @@ struct ConfigData {
     ollama_base_url: String,
     llm_model: String,
     embed_model: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     mcp_enabled: bool,
     #[serde(default)]
     chat_agent_runtime_enabled: bool,
@@ -142,7 +158,7 @@ impl Default for ConfigData {
             ollama_base_url: "http://127.0.0.1:11434".into(),
             llm_model: "qwen2.5:14b-instruct-q4_K_M".into(),
             embed_model: "bge-m3".into(),
-            mcp_enabled: false,
+            mcp_enabled: true,
             chat_agent_runtime_enabled: false,
             conversation_summary_worker_enabled: false,
             http_workflow_enabled: false,
@@ -1568,6 +1584,13 @@ async fn start_sidecar(
         Zeroizing::new("{}".to_string())
     };
 
+    let generation = {
+        let mut current = state.generation.lock().unwrap();
+        *current = current.wrapping_add(1);
+        *current
+    };
+    *state.startup_error.lock().unwrap() = None;
+
     // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
     // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
     // 优雅停机同时让旧进程写入遥测 ended_at（M0 门槛）。
@@ -1729,17 +1752,33 @@ async fn start_sidecar(
         {
             Ok((mut rx, child)) => {
                 // 转发 sidecar 输出到主进程日志
+                let event_app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    let mut detected_error: Option<String> = None;
                     while let Some(event) = rx.recv().await {
                         match event {
                             CommandEvent::Stdout(line) => {
                                 println!("[sidecar] {}", String::from_utf8_lossy(&line))
                             }
                             CommandEvent::Stderr(line) => {
-                                eprintln!("[sidecar] {}", String::from_utf8_lossy(&line))
+                                let rendered = String::from_utf8_lossy(&line);
+                                if let Some(error) = classify_sidecar_startup_error(&rendered) {
+                                    detected_error = Some(error.to_string());
+                                }
+                                eprintln!("[sidecar] {}", rendered)
                             }
                             CommandEvent::Terminated(status) => {
                                 eprintln!("[sidecar] 进程结束: {:?}", status);
+                                let state = event_app.state::<SidecarState>();
+                                if *state.generation.lock().unwrap() == generation {
+                                    *state.port.lock().unwrap() = None;
+                                    *state.token.lock().unwrap() = None;
+                                    *state.startup_error.lock().unwrap() =
+                                        Some(detected_error.unwrap_or_else(|| {
+                                            "本地后端进程意外退出，请检查数据库配置后重试。"
+                                                .to_string()
+                                        }));
+                                }
                                 break;
                             }
                             _ => {}
@@ -1794,6 +1833,12 @@ fn get_api_connection(state: State<SidecarState>) -> Option<ApiConnection> {
     }
 }
 
+/// Return only a sanitized startup failure; raw sidecar output stays in host logs.
+#[tauri::command]
+fn get_sidecar_startup_error(state: State<SidecarState>) -> Option<String> {
+    state.startup_error.lock().unwrap().clone()
+}
+
 // ============ 更新 ============
 
 #[tauri::command]
@@ -1839,9 +1884,77 @@ fn relaunch_app(app: AppHandle) {
     app.request_restart();
 }
 
+fn show_main_window(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?
+        .hide()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn exit_app(app: AppHandle) {
+    request_app_exit(&app);
+}
+
+/// 先隐藏主窗口，再触发退出事件。sidecar 仍在 RunEvent::Exit 中优雅停止，
+/// 但用户不会在清理期间继续看到已经选择退出的窗口。
+fn request_app_exit(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    app.exit(0);
+}
+
+fn install_system_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "打开 PrivateAgent", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(app, TRAY_EXIT_ID, "退出 PrivateAgent", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &exit_item])?;
+
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("PrivateAgent")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => {
+                let _ = show_main_window(app);
+            }
+            TRAY_EXIT_ID => request_app_exit(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first so a duplicate process cannot spawn another sidecar.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1875,9 +1988,12 @@ pub fn run() {
             start_sidecar,
             get_api_port,
             get_api_connection,
+            get_sidecar_startup_error,
             check_for_updates,
             download_and_install_update,
             relaunch_app,
+            hide_main_window,
+            exit_app,
         ])
         .setup(|app| {
             // 仅注册状态；sidecar 由前端引导流程按需 start_sidecar。
@@ -1885,7 +2001,10 @@ pub fn run() {
                 port: Mutex::new(None),
                 token: Mutex::new(None),
                 child: Mutex::new(None),
+                startup_error: Mutex::new(None),
+                generation: Mutex::new(0),
             });
+            install_system_tray(app)?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1909,6 +2028,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sidecar_ownership_error_is_mapped_to_a_safe_actionable_message() {
+        let rendered = classify_sidecar_startup_error(
+            "personal_assistant.agents.recovery.AgentRuntimeOwnershipError: Another Agent-enabled API process already owns this database",
+        );
+        assert_eq!(
+            rendered,
+            Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。")
+        );
+    }
+
+    #[test]
     fn legacy_config_is_parsed_without_serializing_the_password() {
         let loaded = parse_config_content(
             "PA_DB_URL=mysql+aiomysql://user:p%40ss@127.0.0.1:3307/app?charset=utf8mb4\n",
@@ -1929,7 +2059,7 @@ mod tests {
         };
         let rendered = render_config(&cfg).unwrap();
         assert!(rendered.contains("PA_DB_SECRET_REF=secret://os-keyring/database/password"));
-        assert!(rendered.contains("PA_MCP_ENABLED=false"));
+        assert!(rendered.contains("PA_MCP_ENABLED=true"));
         assert!(!rendered.contains("PA_DB_URL="));
     }
 
@@ -1940,6 +2070,15 @@ mod tests {
         assert!(render_config(&loaded.public)
             .unwrap()
             .contains("PA_MCP_ENABLED=true"));
+    }
+
+    #[test]
+    fn explicit_mcp_disablement_survives_desktop_config_roundtrip() {
+        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
+        assert!(!loaded.public.mcp_enabled);
+        assert!(render_config(&loaded.public)
+            .unwrap()
+            .contains("PA_MCP_ENABLED=false"));
     }
 
     #[test]

@@ -1,6 +1,8 @@
 export interface AuthUser {
   id: number;
   email: string;
+  username: string;
+  /** @deprecated 旧服务兼容字段；界面统一展示 username。 */
   display_name: string;
   role: "admin" | "user";
   status: "active" | "disabled";
@@ -15,11 +17,17 @@ export interface AuthResponse {
   user: AuthUser;
 }
 
+export interface EmailVerificationSent {
+  expires_in_seconds: number;
+  retry_after_seconds: number;
+}
+
 export interface AdminOverview {
   users_total: number;
   users_active: number;
   admins_total: number;
   sessions_total: number;
+  projects_total: number;
   operations_24h: number;
   errors_24h: number;
   health: Record<string, { ok?: boolean; [key: string]: unknown }>;
@@ -31,6 +39,18 @@ export interface AdminUserRow extends AuthUser {
   project_count: number;
   document_count: number;
   operation_count: number;
+}
+
+export interface AdminUserCreateInput {
+  email: string;
+  username: string;
+  password: string;
+  role: "admin" | "user";
+}
+
+export interface AdminUserUpdateInput {
+  role?: "admin" | "user";
+  status?: "active" | "disabled";
 }
 
 export interface AuditLogRow {

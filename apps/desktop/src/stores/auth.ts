@@ -35,7 +35,10 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   /** 登录成功后设置 token，再把用户作为 store 的唯一身份源。 */
-  async function login(payload: { email: string; password: string }): Promise<void> {
+  async function login(payload: {
+    identifier: string;
+    password: string;
+  }): Promise<void> {
     loading.value = true;
     try {
       const response = await loginAccount(payload);
@@ -50,7 +53,8 @@ export const useAuthStore = defineStore("auth", () => {
   async function register(payload: {
     email: string;
     password: string;
-    display_name: string;
+    username: string;
+    verification_code: string;
   }): Promise<void> {
     loading.value = true;
     try {

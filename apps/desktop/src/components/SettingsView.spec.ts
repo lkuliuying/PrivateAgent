@@ -3,8 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   cmdSetModelProviderSecret,
   discoverModelProviderModels,
+  getSettings,
   listModelProviders,
   saveModelProvider,
+  updateSettings,
   updateModelProviderRuntimeSecret,
 } from "../api";
 import {
@@ -77,6 +79,7 @@ const sampleProvider = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(getSettings).mockRejectedValue(new Error("not needed"));
   vi.mocked(listModelProviders).mockResolvedValue([sampleProvider]);
   vi.mocked(fetchCodingModelProfiles).mockResolvedValue({
     status: "ok",
@@ -122,6 +125,41 @@ describe("SettingsView 统一模型设置", () => {
     expect(wrapper.find('[data-testid="model-provider-manager"]').exists()).toBe(true);
     expect(wrapper.text()).toContain("智谱 GLM");
     expect(wrapper.text()).not.toContain("项目模型");
+    wrapper.unmount();
+  });
+
+  it("Ollama 本地配置中合并显示并保存模型参数", async () => {
+    vi.mocked(listModelProviders).mockResolvedValue([
+      {
+        ...sampleProvider,
+        id: "ollama-local",
+        name: "Ollama（本地）",
+        protocol: "ollama",
+        baseUrl: "http://127.0.0.1:11434",
+        apiFormat: "ollama_chat",
+        isBuiltin: true,
+        apiKeyConfigured: false,
+      },
+    ]);
+    const { getSettings } = await import("../api");
+    vi.mocked(getSettings).mockResolvedValue({
+      llm_temperature: 0.3,
+      llm_context_length: 4096,
+      kb_enabled_by_default: true,
+    } as Awaited<ReturnType<typeof getSettings>>);
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="ollama-model-parameters"]').exists()).toBe(true);
+    expect(wrapper.get('[data-testid="ollama-temperature"]').element).toHaveProperty("value", "0.3");
+    await wrapper.get('[data-testid="ollama-temperature"]').setValue("0.5");
+    await wrapper.get(".detail-actions .primary-button").trigger("click");
+    await flushPromises();
+    expect(updateSettings).toHaveBeenCalledWith({
+      llm_temperature: 0.5,
+      llm_context_length: 4096,
+      kb_enabled_by_default: true,
+    });
     wrapper.unmount();
   });
 
@@ -196,6 +234,26 @@ describe("SettingsView 统一模型设置", () => {
     expect(wrapper.text()).toContain("deepseek-v4-flash");
     expect(wrapper.text()).toContain("https://api.deepseek.com");
     expect(wrapper.text()).not.toContain("glm-5.3-flash");
+    wrapper.unmount();
+  });
+
+  it("供应商列表暂时失败时仍显示已加载的当前模型", async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      provider_type: "openai",
+      openai_config_name: "OpenAI 兼容 API",
+      openai_model: "fallback-model",
+      openai_base_url: "https://api.example.com/v1",
+      embed_model: "bge-m3",
+    } as Awaited<ReturnType<typeof getSettings>>);
+    vi.mocked(listModelProviders).mockRejectedValue(new Error("temporary failure"));
+
+    const wrapper = mount(SettingsView, { props: { activeSection: "current-model" } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("glm-5");
+    expect(wrapper.text()).toContain("智谱 GLM");
+    expect(wrapper.text()).toContain("https://api.example.com/v1");
+    expect(wrapper.text()).toContain("bge-m3");
     wrapper.unmount();
   });
 

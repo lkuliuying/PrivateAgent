@@ -1,6 +1,18 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
-import { PhArrowLeft, PhGearSix, PhSidebarSimple, PhSparkle, PhX } from "@phosphor-icons/vue";
+import { computed, ref, watch, type Component } from "vue";
+import {
+  PhActivity,
+  PhArchive,
+  PhArrowLeft,
+  PhBrain,
+  PhInfo,
+  PhMagnifyingGlass,
+  PhPlugs,
+  PhPuzzlePiece,
+  PhSidebarSimple,
+  PhUserCircle,
+  PhX,
+} from "@phosphor-icons/vue";
 import {
   SETTINGS_SECTION_GROUPS,
   SETTINGS_SECTIONS,
@@ -17,11 +29,33 @@ const emit = defineEmits<{
   exit: [];
 }>();
 
-function sectionsFor(group: SettingsSectionGroup) {
-  return SETTINGS_SECTIONS.filter((item) => item.group === group);
-}
+const sectionIcons: Record<SettingsSection, Component> = {
+  status: PhActivity,
+  "current-model": PhBrain,
+  provider: PhPlugs,
+  mcp: PhPuzzlePiece,
+  profile: PhUserCircle,
+  backup: PhArchive,
+  about: PhInfo,
+};
 
 const drawerOpen = ref(false);
+const query = ref("");
+
+const normalizedQuery = computed(() => query.value.trim().toLocaleLowerCase());
+
+function sectionsFor(group: SettingsSectionGroup) {
+  const keyword = normalizedQuery.value;
+  return SETTINGS_SECTIONS.filter((item) => {
+    if (item.group !== group) return false;
+    if (!keyword) return true;
+    return `${item.label} ${item.description}`.toLocaleLowerCase().includes(keyword);
+  });
+}
+
+const visibleGroups = computed(() =>
+  SETTINGS_SECTION_GROUPS.filter((group) => sectionsFor(group.key).length > 0)
+);
 
 watch(
   () => props.narrow,
@@ -62,65 +96,69 @@ function exitSettings(): void {
   </Teleport>
 
   <Teleport to="body" :disabled="!narrow">
-  <nav
-    v-if="!narrow || drawerOpen"
-    class="settings-nav"
-    :class="{ 'is-drawer': narrow }"
-    aria-label="设置模块"
-    data-testid="settings-module-nav"
-  >
-    <header class="settings-nav__brand">
-      <span class="settings-nav__mark"><PhGearSix :size="19" weight="fill" /></span>
-      <span class="settings-nav__brand-copy">
-        <strong>设置</strong>
-        <small>LOCAL CONTROL CENTER</small>
-      </span>
-      <button
-        v-if="narrow"
-        type="button"
-        class="settings-nav__close"
-        aria-label="收起设置模块"
-        data-testid="settings-drawer-close"
-        @click="drawerOpen = false"
-      >
-        <PhX :size="17" />
-      </button>
-    </header>
+    <nav
+      v-if="!narrow || drawerOpen"
+      class="settings-nav"
+      :class="{ 'is-drawer': narrow }"
+      aria-label="设置模块"
+      data-testid="settings-module-nav"
+    >
+      <header class="settings-nav__header">
+        <div class="settings-nav__topline">
+          <button type="button" class="settings-nav__exit" @click="exitSettings">
+            <PhArrowLeft :size="15" aria-hidden="true" />
+            <span>返回应用</span>
+          </button>
+          <button
+            v-if="narrow"
+            type="button"
+            class="settings-nav__close"
+            aria-label="收起设置模块"
+            data-testid="settings-drawer-close"
+            @click="drawerOpen = false"
+          >
+            <PhX :size="17" />
+          </button>
+        </div>
+        <label class="settings-nav__search">
+          <PhMagnifyingGlass :size="15" aria-hidden="true" />
+          <input
+            v-model="query"
+            type="search"
+            placeholder="搜索设置…"
+            aria-label="搜索设置"
+            data-testid="settings-search"
+          />
+        </label>
+      </header>
 
-    <div class="settings-nav__scroll">
-      <section
-        v-for="group in SETTINGS_SECTION_GROUPS"
-        :key="group.key"
-        class="settings-nav__group"
-      >
-        <h2>{{ group.label }}</h2>
-        <button
-          v-for="item in sectionsFor(group.key)"
-          :key="item.key"
-          type="button"
-          class="settings-nav__item"
-          :class="{ active: active === item.key }"
-          :aria-current="active === item.key ? 'page' : undefined"
-          :data-testid="`settings-section-${item.key}`"
-          @click="selectSection(item.key)"
+      <div class="settings-nav__scroll">
+        <section
+          v-for="group in visibleGroups"
+          :key="group.key"
+          class="settings-nav__group"
         >
-          <span class="settings-nav__index">{{ item.index }}</span>
-          <span class="settings-nav__copy">
-            <strong>{{ item.label }}</strong>
-            <small>{{ item.description }}</small>
-          </span>
-        </button>
-      </section>
-    </div>
+          <h2>{{ group.label }}</h2>
+          <button
+            v-for="item in sectionsFor(group.key)"
+            :key="item.key"
+            type="button"
+            class="settings-nav__item"
+            :class="{ active: active === item.key }"
+            :aria-current="active === item.key ? 'page' : undefined"
+            :data-testid="`settings-section-${item.key}`"
+            @click="selectSection(item.key)"
+          >
+            <component :is="sectionIcons[item.key]" :size="17" aria-hidden="true" />
+            <span>{{ item.label }}</span>
+          </button>
+        </section>
 
-    <footer class="settings-nav__footer">
-      <button type="button" class="settings-nav__exit" @click="exitSettings">
-        <PhArrowLeft :size="15" />
-        <span>返回工作台</span>
-      </button>
-      <span class="settings-nav__local"><PhSparkle :size="13" /> 数据默认留在本机</span>
-    </footer>
-  </nav>
+        <p v-if="visibleGroups.length === 0" class="settings-nav__empty">
+          没有匹配的设置
+        </p>
+      </div>
+    </nav>
   </Teleport>
 </template>
 
@@ -133,15 +171,17 @@ function exitSettings(): void {
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--color-border);
-  background: var(--color-panel);
+  background: color-mix(in srgb, var(--color-panel) 80%, var(--color-surface-muted));
 }
+
 .settings-nav.is-drawer {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: var(--z-overlay);
-  width: min(var(--rail-w), calc(100vw - 48px));
+  width: min(276px, calc(100vw - 48px));
   box-shadow: var(--shadow-lg);
 }
+
 .settings-nav__drawer-tab {
   position: fixed;
   top: var(--space-4);
@@ -158,108 +198,141 @@ function exitSettings(): void {
   box-shadow: var(--shadow-sm);
   cursor: pointer;
 }
-.settings-nav__drawer-tab:hover,
-.settings-nav__close:hover {
-  background: var(--color-surface-muted);
-  color: var(--color-fg);
-}
+
 .settings-nav__backdrop {
   position: fixed;
   inset: 0;
   z-index: var(--z-overlay);
   background: color-mix(in srgb, var(--color-fg) 22%, transparent);
 }
+
+.settings-nav__header {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 10px 12px;
+}
+
+.settings-nav__topline {
+  display: flex;
+  min-height: 30px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.settings-nav__exit,
 .settings-nav__close {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  margin-left: auto;
-  flex: 0 0 30px;
-  place-items: center;
   border: 0;
-  border-radius: var(--radius-md);
   background: transparent;
   color: var(--color-fg-muted);
   cursor: pointer;
 }
-.settings-nav__brand {
-  display: flex;
-  flex-shrink: 0;
+
+.settings-nav__exit {
+  display: inline-flex;
+  height: 30px;
   align-items: center;
-  gap: var(--space-3);
-  min-height: 72px;
-  padding: var(--space-3);
-  border-bottom: 1px solid var(--color-border);
+  gap: 7px;
+  padding: 0 8px;
+  border-radius: 8px;
+  font-size: var(--text-xs);
 }
-.settings-nav__mark {
+
+.settings-nav__close {
   display: grid;
-  width: 34px;
-  height: 34px;
-  flex: 0 0 34px;
+  width: 30px;
+  height: 30px;
   place-items: center;
-  border-radius: var(--radius-md);
-  background: var(--color-accent-soft);
-  color: var(--color-accent-soft-fg);
+  border-radius: 8px;
 }
-.settings-nav__brand-copy,
-.settings-nav__copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-}
-.settings-nav__brand-copy strong {
+
+.settings-nav__exit:hover,
+.settings-nav__close:hover,
+.settings-nav__drawer-tab:hover {
+  background: var(--color-surface-hover);
   color: var(--color-fg);
-  font-size: var(--text-sm);
 }
-.settings-nav__brand-copy small {
-  margin-top: 2px;
-  color: var(--color-accent);
-  font-size: 9px;
-  font-weight: var(--font-semibold);
-  letter-spacing: .12em;
+
+.settings-nav__search {
+  display: flex;
+  height: 34px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-surface-muted) 88%, var(--color-border));
+  color: var(--color-fg-subtle);
 }
+
+.settings-nav__search:focus-within {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  background: var(--color-surface);
+}
+
+.settings-nav__search input {
+  min-width: 0;
+  flex: 1;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: var(--text-xs);
+}
+
+.settings-nav__search input::placeholder {
+  color: var(--color-fg-faint);
+}
+
 .settings-nav__scroll {
   min-height: 0;
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: var(--space-3) var(--space-2);
+  padding: 3px 8px 16px;
 }
+
 .settings-nav__group + .settings-nav__group {
-  margin-top: var(--space-3);
+  margin-top: 18px;
 }
+
 .settings-nav__group h2 {
-  margin: 0 0 var(--space-1);
-  padding: 0 var(--space-2);
-  color: var(--color-fg-subtle);
+  margin: 0 0 5px;
+  padding: 0 9px;
+  color: var(--color-fg-faint);
   font-size: var(--pa-text-meta);
-  font-weight: var(--font-semibold);
-  letter-spacing: .08em;
+  font-weight: var(--font-medium);
 }
+
 .settings-nav__item {
   display: flex;
   width: 100%;
-  min-width: 0;
+  height: 34px;
   align-items: center;
-  gap: var(--space-2);
-  min-height: 44px;
-  padding: var(--space-1) var(--space-2);
+  gap: 9px;
+  padding: 0 9px;
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: 9px;
   background: transparent;
   color: var(--color-fg-muted);
+  font-size: var(--text-xs);
   text-align: left;
   cursor: pointer;
 }
+
 .settings-nav__item:hover {
-  background: var(--color-surface-muted);
+  background: var(--color-surface-hover);
   color: var(--color-fg);
 }
+
 .settings-nav__item.active {
-  background: var(--color-accent-soft);
-  color: var(--color-accent-soft-fg);
-  box-shadow: inset 2px 0 0 var(--color-accent);
+  background: color-mix(in srgb, var(--color-fg) 8%, var(--color-surface));
+  color: var(--color-fg);
+  font-weight: var(--font-medium);
 }
+
 .settings-nav__item:focus-visible,
 .settings-nav__exit:focus-visible,
 .settings-nav__close:focus-visible,
@@ -267,63 +340,17 @@ function exitSettings(): void {
   outline: var(--focus-ring);
   outline-offset: -2px;
 }
-.settings-nav__index {
-  flex: 0 0 24px;
-  color: var(--color-accent);
-  font: 700 10px/1 var(--font-mono);
+
+.settings-nav__empty {
+  margin: 18px 8px;
+  color: var(--color-fg-faint);
+  font-size: var(--text-xs);
   text-align: center;
 }
-.settings-nav__copy strong {
-  overflow: hidden;
-  font-size: var(--text-xs);
-  font-weight: var(--font-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.settings-nav__copy small {
-  overflow: hidden;
-  margin-top: 2px;
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-text-meta);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.settings-nav__footer {
-  display: flex;
-  flex-shrink: 0;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border-top: 1px solid var(--color-border);
-}
-.settings-nav__exit {
-  display: flex;
-  height: 32px;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-3);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-fg-muted);
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-.settings-nav__exit:hover {
-  background: var(--color-surface-muted);
-  color: var(--color-fg);
-}
-.settings-nav__local {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 0 var(--space-3) var(--space-1);
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-text-meta);
-}
+
 @media (max-height: 680px) {
-  .settings-nav__brand { min-height: 58px; }
-  .settings-nav__item { min-height: 38px; }
-  .settings-nav__copy small { display: none; }
+  .settings-nav__header { padding-top: 10px; }
+  .settings-nav__group + .settings-nav__group { margin-top: 10px; }
+  .settings-nav__item { height: 31px; }
 }
 </style>

@@ -22,6 +22,12 @@ export async function getApiConnection(): Promise<ApiConnection | null> {
   return invoke<ApiConnection | null>("get_api_connection");
 }
 
+/** Read a sanitized sidecar startup failure captured by the Rust host. */
+export async function getSidecarStartupError(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("get_sidecar_startup_error");
+}
+
 /** Tauri directory picker; browser/dev mode returns null so callers can fall back to text input. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri()) return null;
@@ -224,4 +230,26 @@ export async function cmdDownloadAndInstallUpdate(): Promise<void> {
 /** Relaunch the desktop app after config or updater changes. */
 export async function cmdRelaunchApp(): Promise<void> {
   return invoke<void>("relaunch_app");
+}
+
+/** Intercept the native close button before Tauri destroys the main window. */
+export async function listenForMainWindowClose(
+  handler: () => void | Promise<void>
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().onCloseRequested((event) => {
+    event.preventDefault();
+    return handler();
+  });
+}
+
+/** Hide the window while leaving the desktop process and sidecar running. */
+export async function cmdHideMainWindow(): Promise<void> {
+  return invoke<void>("hide_main_window");
+}
+
+/** Exit the desktop process; RunEvent::Exit performs the existing sidecar cleanup. */
+export async function cmdExitApp(): Promise<void> {
+  return invoke<void>("exit_app");
 }

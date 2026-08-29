@@ -112,6 +112,7 @@ export {
   cmdStartSidecar,
   cmdTestConnections,
   cmdWriteConfig,
+  getApiConnection,
   isDesktopRuntime,
   pickDirectory,
   pickFile,

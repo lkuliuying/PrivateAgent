@@ -2,8 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   apiFetch,
-  configureRemoteApi,
-  getConfiguredRemoteApi,
   resetApiBase,
   setApiBase,
 } from "./http";
@@ -11,7 +9,6 @@ import { clearAccessToken, setAccessToken } from "../auth/session";
 
 describe("local API authentication", () => {
   afterEach(() => {
-    configureRemoteApi("");
     resetApiBase();
     clearAccessToken();
     vi.unstubAllGlobals();
@@ -56,24 +53,6 @@ describe("local API authentication", () => {
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(new Headers(init.headers).get("Authorization")).toBe(
       "Bearer explicit-secret"
-    );
-  });
-
-  it("persists a runtime remote API address and uses it for authenticated calls", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    expect(configureRemoteApi("https://api.example.test/")).toBe(
-      "https://api.example.test"
-    );
-    expect(getConfiguredRemoteApi()).toBe("https://api.example.test");
-    setAccessToken("user-session-secret");
-
-    await apiFetch("https://api.example.test/auth/me");
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("Authorization")).toBe(
-      "Bearer user-session-secret"
     );
   });
 

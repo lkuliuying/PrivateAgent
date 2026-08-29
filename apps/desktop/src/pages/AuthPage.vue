@@ -1,23 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { message } from "ant-design-vue";
 import {
-  CloudServerOutlined,
   LockOutlined,
   MailOutlined,
   RobotOutlined,
+  SafetyCertificateOutlined,
   UserOutlined,
 } from "@ant-design/icons-vue";
 
+import { sendRegistrationVerificationCode } from "../services/auth";
+import { ensureDesktopBackendReady } from "../services/backendStartup";
 import { useAuthStore } from "../stores/auth";
-import { configureRemoteApi, getConfiguredRemoteApi } from "../api/http";
 
 type AuthMode = "login" | "register";
 interface AuthForm {
-  server_url: string;
-  display_name: string;
+  identifier: string;
+  username: string;
   email: string;
+  verification_code: string;
   password: string;
   confirm_password: string;
 }
@@ -27,40 +29,81 @@ const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
 const error = ref("");
+const backendStarting = ref(true);
+const sendingCode = ref(false);
+const codeCountdown = ref(0);
 const form = ref<AuthForm>({
-  server_url: getConfiguredRemoteApi(),
-  display_name: "",
+  identifier: "",
+  username: "",
   email: "",
+  verification_code: "",
   password: "",
   confirm_password: "",
 });
+let countdownTimer: ReturnType<typeof setInterval> | undefined;
 
 const isRegister = computed(() => props.mode === "register");
 const title = computed(() => (isRegister.value ? "创建账号" : "欢迎回来"));
 const subtitle = computed(() =>
   isRegister.value
-    ? "注册后，所有数据都由服务器按账号隔离保存"
-    : "登录以连接你的 PrivateAgent 服务"
+    ? "验证邮箱后，数据将按账号隔离保存"
+    : "使用邮箱或用户名登录 PrivateAgent"
 );
 
+function stopCountdown(): void {
+  if (countdownTimer) clearInterval(countdownTimer);
+  countdownTimer = undefined;
+  codeCountdown.value = 0;
+}
+
+function startCountdown(seconds: number): void {
+  stopCountdown();
+  codeCountdown.value = Math.max(1, seconds);
+  countdownTimer = setInterval(() => {
+    codeCountdown.value -= 1;
+    if (codeCountdown.value <= 0) stopCountdown();
+  }, 1_000);
+}
+
+async function handleSendCode(): Promise<void> {
+  if (backendStarting.value) return;
+  const email = form.value.email.trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    error.value = "请先输入有效邮箱地址";
+    return;
+  }
+  error.value = "";
+  sendingCode.value = true;
+  try {
+    const result = await sendRegistrationVerificationCode(email);
+    startCountdown(result.retry_after_seconds);
+    message.success("验证码已发送，5 分钟内有效");
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : "验证码发送失败";
+  } finally {
+    sendingCode.value = false;
+  }
+}
+
 async function handleSubmit(): Promise<void> {
+  if (backendStarting.value) return;
   error.value = "";
   if (isRegister.value && form.value.password !== form.value.confirm_password) {
     error.value = "两次输入的密码不一致";
     return;
   }
   try {
-    configureRemoteApi(form.value.server_url);
     if (isRegister.value) {
       await auth.register({
-        display_name: form.value.display_name.trim(),
+        username: form.value.username.trim(),
         email: form.value.email.trim(),
+        verification_code: form.value.verification_code.trim().toUpperCase(),
         password: form.value.password,
       });
       message.success("注册成功");
     } else {
       await auth.login({
-        email: form.value.email.trim(),
+        identifier: form.value.identifier.trim(),
         password: form.value.password,
       });
       message.success("登录成功");
@@ -74,6 +117,22 @@ async function handleSubmit(): Promise<void> {
     error.value = reason instanceof Error ? reason.message : "操作失败，请稍后重试";
   }
 }
+
+watch(isRegister, (registering) => {
+  error.value = "";
+  if (!registering) stopCountdown();
+});
+onBeforeUnmount(stopCountdown);
+onMounted(async () => {
+  try {
+    await ensureDesktopBackendReady();
+  } catch (reason) {
+    error.value =
+      reason instanceof Error ? reason.message : "无法启动本地后端，请重启应用后重试";
+  } finally {
+    backendStarting.value = false;
+  }
+});
 </script>
 
 <template>
@@ -84,9 +143,9 @@ async function handleSubmit(): Promise<void> {
         <span>PrivateAgent</span>
       </div>
       <div class="auth-visual__copy">
-        <span class="auth-eyebrow">SERVER WORKSPACE</span>
-        <h1>你的智能工作台，<br />现在可以跨设备使用。</h1>
-        <p>客户端只负责交互，数据库、模型调用和业务服务统一运行在你的服务器上。</p>
+        <span class="auth-eyebrow">LOCAL-FIRST WORKSPACE</span>
+        <h1>你的智能工作台，<br />数据始终由你掌控。</h1>
+        <p>当前版本默认连接本机服务；客户端、模型与个人数据在你的设备上协同工作。</p>
       </div>
       <div class="auth-signal" aria-hidden="true">
         <span />
@@ -103,7 +162,14 @@ async function handleSubmit(): Promise<void> {
         </div>
 
         <a-alert
-          v-if="error"
+          v-if="backendStarting"
+          class="auth-alert"
+          type="info"
+          show-icon
+          message="正在连接本地服务…"
+        />
+        <a-alert
+          v-else-if="error"
           class="auth-alert"
           type="error"
           show-icon
@@ -111,37 +177,28 @@ async function handleSubmit(): Promise<void> {
         />
 
         <a-form layout="vertical" :model="form" @finish="handleSubmit">
-          <a-form-item label="服务器地址" name="server_url">
-            <a-input
-              v-model:value="form.server_url"
-              size="large"
-              autocomplete="url"
-              placeholder="https://agent.example.com"
-            >
-              <template #prefix><CloudServerOutlined /></template>
-            </a-input>
-            <span class="auth-server-hint">
-              远程部署填写 HTTPS 地址；留空时使用构建配置或本地服务。
-            </span>
-          </a-form-item>
-
           <a-form-item
             v-if="isRegister"
-            label="显示名称"
-            name="display_name"
-            :rules="[{ required: true, message: '请输入显示名称' }]"
+            label="用户名"
+            name="username"
+            :rules="[
+              { required: true, message: '请输入用户名' },
+              { min: 2, max: 50, message: '用户名长度需为 2–50 个字符' },
+              { pattern: /^[^\s@]+$/, message: '用户名不能包含 @ 或空白' },
+            ]"
           >
             <a-input
-              v-model:value="form.display_name"
+              v-model:value="form.username"
               size="large"
-              autocomplete="name"
-              placeholder="你希望显示的名称"
+              autocomplete="username"
+              placeholder="请输入唯一用户名"
             >
               <template #prefix><UserOutlined /></template>
             </a-input>
           </a-form-item>
 
           <a-form-item
+            v-if="isRegister"
             label="邮箱"
             name="email"
             :rules="[
@@ -156,6 +213,56 @@ async function handleSubmit(): Promise<void> {
               placeholder="name@example.com"
             >
               <template #prefix><MailOutlined /></template>
+            </a-input>
+          </a-form-item>
+
+          <a-form-item
+            v-if="isRegister"
+            label="邮箱验证码"
+            name="verification_code"
+            :rules="[
+              { required: true, message: '请输入邮箱验证码' },
+              { pattern: /^[A-Za-z0-9]{6}$/, message: '验证码为 6 位字母或数字' },
+            ]"
+          >
+            <div class="auth-code-row">
+              <a-input
+                v-model:value="form.verification_code"
+                class="auth-code-input"
+                size="large"
+                :maxlength="6"
+                autocomplete="one-time-code"
+                placeholder="6 位验证码"
+              >
+                <template #prefix><SafetyCertificateOutlined /></template>
+              </a-input>
+              <a-button
+                class="auth-code-button"
+                size="large"
+                html-type="button"
+                :loading="sendingCode"
+                :disabled="backendStarting || codeCountdown > 0 || !form.email.trim()"
+                @click="handleSendCode"
+              >
+                {{ codeCountdown > 0 ? `${codeCountdown}s 后重发` : "获取验证码" }}
+              </a-button>
+            </div>
+            <span class="auth-field-hint">验证码由字母和数字组成，5 分钟内有效。</span>
+          </a-form-item>
+
+          <a-form-item
+            v-if="!isRegister"
+            label="邮箱或用户名"
+            name="identifier"
+            :rules="[{ required: true, message: '请输入邮箱或用户名' }]"
+          >
+            <a-input
+              v-model:value="form.identifier"
+              size="large"
+              autocomplete="username"
+              placeholder="name@example.com / username"
+            >
+              <template #prefix><UserOutlined /></template>
             </a-input>
           </a-form-item>
 
@@ -199,6 +306,7 @@ async function handleSubmit(): Promise<void> {
             html-type="submit"
             size="large"
             :loading="auth.loading"
+            :disabled="backendStarting || sendingCode"
           >
             {{ isRegister ? "注册并进入" : "登录" }}
           </a-button>
@@ -324,6 +432,8 @@ async function handleSubmit(): Promise<void> {
 }
 
 .auth-panel {
+  max-height: 100vh;
+  overflow-y: auto;
   display: grid;
   place-items: center;
   padding: 36px;
@@ -364,7 +474,22 @@ async function handleSubmit(): Promise<void> {
   margin-bottom: 20px;
 }
 
-.auth-server-hint {
+.auth-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 10px;
+}
+
+.auth-code-input :deep(input) {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.auth-code-button {
+  padding-inline: 12px;
+}
+
+.auth-field-hint {
   display: block;
   margin-top: 6px;
   color: #8a95a8;
@@ -410,6 +535,10 @@ async function handleSubmit(): Promise<void> {
   .auth-signal {
     display: none;
   }
+
+  .auth-panel {
+    max-height: none;
+  }
 }
 
 @media (max-width: 540px) {
@@ -420,6 +549,10 @@ async function handleSubmit(): Promise<void> {
   .auth-card {
     padding: 28px 22px;
     border-radius: 16px;
+  }
+
+  .auth-code-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>

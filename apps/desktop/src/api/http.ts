@@ -3,7 +3,6 @@ import { clearAccessToken, getAccessToken } from "../auth/session";
 
 let API_BASE: string | null = null;
 let API_TOKEN: string | null = null;
-const API_BASE_STORAGE_KEY = "pa_api_base_url";
 
 function normalizeRemoteApi(value: string): string {
   if (!value) throw new Error("服务器地址不能为空");
@@ -29,43 +28,12 @@ function normalizeRemoteApi(value: string): string {
   return value.replace(/\/+$/, "");
 }
 
-function storedRemoteApi(): string {
-  if (typeof window === "undefined") return "";
-  return window.localStorage.getItem(API_BASE_STORAGE_KEY)?.trim() || "";
-}
-
 function configuredRemoteApi(): string | null {
-  const value = storedRemoteApi() || String(import.meta.env.VITE_API_BASE_URL || "").trim();
+  const value = String(import.meta.env.VITE_API_BASE_URL || "").trim();
   return value ? normalizeRemoteApi(value) : null;
 }
 
-/** 返回登录页可编辑的远程服务地址。 */
-export function getConfiguredRemoteApi(): string {
-  return configuredRemoteApi() || "";
-}
-
-/**
- * 保存运行时远程服务地址。地址不是凭据，可以跨窗口保存；切换服务时清除旧会话。
- * 传入空字符串会恢复构建时配置或本地 sidecar。
- */
-export function configureRemoteApi(value: string): string | null {
-  const previous = API_BASE || configuredRemoteApi();
-  const trimmed = value.trim();
-  if (typeof window !== "undefined") {
-    if (trimmed) {
-      window.localStorage.setItem(API_BASE_STORAGE_KEY, normalizeRemoteApi(trimmed));
-    } else {
-      window.localStorage.removeItem(API_BASE_STORAGE_KEY);
-    }
-  }
-  const next = configuredRemoteApi();
-  if (previous !== next) clearAccessToken();
-  API_BASE = next;
-  API_TOKEN = null;
-  return next;
-}
-
-/** 客户端配置了远程服务时，不再启动或探测本地 sidecar。 */
+/** 构建时配置了远程服务时，不再启动或探测本地 sidecar。 */
 export function hasConfiguredRemoteApi(): boolean {
   return configuredRemoteApi() !== null;
 }

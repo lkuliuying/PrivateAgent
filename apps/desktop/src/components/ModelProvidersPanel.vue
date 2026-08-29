@@ -19,15 +19,18 @@ import {
   cmdSetModelProviderSecret,
   deleteModelProvider,
   discoverModelProviderModels,
+  getSettings,
   isDesktopRuntime,
   listModelProviders,
   saveModelProvider,
+  updateSettings,
   updateModelProviderRuntimeSecret,
   type ModelProvider,
   type ModelProviderApiFormat,
   type ModelProviderModel,
   type ModelProviderProtocol,
   type DiscoveredModel,
+  type AppSettings,
   type ModelMetadataSource,
 } from "../api";
 import { probeCodingModelProfile } from "../features/coding/api/modelProfiles";
@@ -68,6 +71,14 @@ const modelToAdd = ref("");
 const editingContextModelId = ref("");
 const message = ref("");
 const messageKind = ref<"ok" | "error" | "info">("info");
+const modelParameters = ref<Pick<
+  AppSettings,
+  "llm_temperature" | "llm_context_length" | "kb_enabled_by_default"
+>>({
+  llm_temperature: 0.7,
+  llm_context_length: 8192,
+  kb_enabled_by_default: false,
+});
 
 function safeId(): string {
   const random = typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -176,6 +187,20 @@ async function load(preferredId?: string): Promise<void> {
   }
 }
 
+async function loadModelParameters(): Promise<void> {
+  if (previewMode) return;
+  try {
+    const settings = await getSettings();
+    modelParameters.value = {
+      llm_temperature: settings.llm_temperature,
+      llm_context_length: settings.llm_context_length,
+      kb_enabled_by_default: settings.kb_enabled_by_default,
+    };
+  } catch {
+    // 供应商配置仍可独立使用；参数保存时会呈现真实 API 错误。
+  }
+}
+
 function selectProvider(providerId: string): void {
   const provider = providers.value.find((item) => item.id === providerId);
   if (!provider) return;
@@ -266,6 +291,21 @@ async function save(): Promise<void> {
   if (!name) return setMessage("请填写供应商名称", "error");
   if (!baseUrl) return setMessage("请填写 Base URL", "error");
   if (!draft.value.models.length) return setMessage("请至少从模型列表中选择一个模型", "error");
+  if (
+    draft.value.protocol === "ollama" &&
+    (!Number.isFinite(modelParameters.value.llm_temperature) ||
+      modelParameters.value.llm_temperature < 0 ||
+      modelParameters.value.llm_temperature > 1)
+  ) {
+    return setMessage("温度必须在 0 到 1 之间", "error");
+  }
+  if (
+    draft.value.protocol === "ollama" &&
+    (!Number.isInteger(modelParameters.value.llm_context_length) ||
+      modelParameters.value.llm_context_length < 512)
+  ) {
+    return setMessage("上下文长度必须是大于等于 512 的整数", "error");
+  }
   saving.value = true;
   message.value = "";
   try {
@@ -298,6 +338,9 @@ async function save(): Promise<void> {
           metadataSource: model.metadataSource,
         })),
       });
+      if (draft.value.protocol === "ollama") {
+        await updateSettings({ ...modelParameters.value });
+      }
       await load(draft.value.id);
     } else {
       const provider: ModelProvider = {
@@ -418,7 +461,9 @@ function setContextOverride(model: ModelProviderModel, event: Event): void {
   model.metadataSource = "user_override";
 }
 
-onMounted(() => void load());
+onMounted(() => {
+  void Promise.all([load(), loadModelParameters()]);
+});
 </script>
 
 <template>
@@ -534,6 +579,45 @@ onMounted(() => void load());
           </div>
         </label>
       </div>
+
+      <section
+        v-if="draft.protocol === 'ollama'"
+        class="ollama-parameters"
+        aria-labelledby="ollama-parameters-title"
+        data-testid="ollama-model-parameters"
+      >
+        <div class="parameters-heading">
+          <h3 id="ollama-parameters-title">本地模型参数</h3>
+          <p>这些参数仅在 Ollama 本地配置中集中管理。</p>
+        </div>
+        <div class="parameters-grid">
+          <label class="field">
+            <span>温度（0～1）</span>
+            <input
+              v-model.number="modelParameters.llm_temperature"
+              type="number"
+              min="0"
+              max="1"
+              step="0.1"
+              data-testid="ollama-temperature"
+            />
+          </label>
+          <label class="field">
+            <span>上下文长度</span>
+            <input
+              v-model.number="modelParameters.llm_context_length"
+              type="number"
+              min="512"
+              step="512"
+              data-testid="ollama-context-length"
+            />
+          </label>
+          <label class="parameter-check">
+            <input v-model="modelParameters.kb_enabled_by_default" type="checkbox" />
+            <span>默认启用知识库</span>
+          </label>
+        </div>
+      </section>
 
       <div class="models-heading-row">
         <div>
@@ -798,6 +882,38 @@ onMounted(() => void load());
 }
 .detail-intro { margin: var(--space-2) 0 0; color: var(--color-fg-subtle); }
 .provider-form-grid { display: grid; gap: var(--space-3); margin-top: var(--space-5); }
+.ollama-parameters {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+}
+.parameters-heading h3 {
+  margin: 0;
+  color: var(--color-fg);
+  font-size: var(--pa-text-body);
+}
+.parameters-heading p {
+  margin: 3px 0 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.parameters-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+}
+.parameter-check {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-body);
+}
+.parameter-check input { width: 16px; height: 16px; }
 .field { display: flex; min-width: 0; flex-direction: column; gap: var(--space-1); }
 .field > span, .models-heading-row h3 { color: var(--color-fg-muted); font-size: var(--pa-text-body); }
 .field input,
@@ -884,5 +1000,6 @@ onMounted(() => void load());
   .sidebar-heading { display: none; }
   .provider-item { width: auto; min-width: 150px; }
   .provider-detail { padding: var(--space-4); }
+  .parameters-grid { grid-template-columns: 1fr; }
 }
 </style>

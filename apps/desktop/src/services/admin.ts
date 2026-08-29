@@ -1,7 +1,10 @@
 import { apiFetch, ensureApiBase } from "../api/http";
 import type {
   AdminOverview,
+  AdminUserCreateInput,
   AdminUserRow,
+  AdminUserUpdateInput,
+  AuthUser,
   AuditLogRow,
   PagedResult,
 } from "../types/auth";
@@ -23,6 +26,8 @@ export async function getAdminUsers(params: {
   page: number;
   size: number;
   search?: string;
+  role?: "admin" | "user";
+  status?: "active" | "disabled";
 }): Promise<PagedResult<AdminUserRow>> {
   const base = await ensureApiBase();
   const query = new URLSearchParams({
@@ -30,8 +35,39 @@ export async function getAdminUsers(params: {
     size: String(params.size),
   });
   if (params.search) query.set("search", params.search);
+  if (params.role) query.set("role", params.role);
+  if (params.status) query.set("status", params.status);
   return responseJson<PagedResult<AdminUserRow>>(
     await apiFetch(`${base}/admin/users?${query}`)
+  );
+}
+
+/** 由管理员创建一个无需邮箱验证、立即生效的账号。 */
+export async function createAdminUser(
+  payload: AdminUserCreateInput
+): Promise<AuthUser> {
+  const base = await ensureApiBase();
+  return responseJson<AuthUser>(
+    await apiFetch(`${base}/admin/users`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
+  );
+}
+
+/** 修改指定用户的角色或启用状态。 */
+export async function updateAdminUser(
+  userId: number,
+  payload: AdminUserUpdateInput
+): Promise<AuthUser> {
+  const base = await ensureApiBase();
+  return responseJson<AuthUser>(
+    await apiFetch(`${base}/admin/users/${encodeURIComponent(userId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    })
   );
 }
 

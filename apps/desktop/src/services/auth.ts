@@ -1,5 +1,9 @@
 import { apiFetch, ensureApiBase } from "../api/http";
-import type { AuthResponse, AuthUser } from "../types/auth";
+import type {
+  AuthResponse,
+  AuthUser,
+  EmailVerificationSent,
+} from "../types/auth";
 
 async function responseJson<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>;
@@ -9,9 +13,9 @@ async function responseJson<T>(response: Response): Promise<T> {
   );
 }
 
-/** 使用邮箱和密码登录，密码只通过 HTTPS 请求发送给服务端。 */
+/** 使用邮箱或用户名登录；远程构建中凭据只通过 HTTPS 发送。 */
 export async function loginAccount(payload: {
-  email: string;
+  identifier: string;
   password: string;
 }): Promise<AuthResponse> {
   const base = await ensureApiBase();
@@ -27,7 +31,8 @@ export async function loginAccount(payload: {
 export async function registerAccount(payload: {
   email: string;
   password: string;
-  display_name: string;
+  username: string;
+  verification_code: string;
 }): Promise<AuthResponse> {
   const base = await ensureApiBase();
   const response = await apiFetch(`${base}/auth/register`, {
@@ -36,6 +41,19 @@ export async function registerAccount(payload: {
     body: JSON.stringify(payload),
   });
   return responseJson<AuthResponse>(response);
+}
+
+/** 请求注册验证码；SMTP 凭据仅存在于 sidecar 配置中。 */
+export async function sendRegistrationVerificationCode(
+  email: string
+): Promise<EmailVerificationSent> {
+  const base = await ensureApiBase();
+  const response = await apiFetch(`${base}/auth/email-verification/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  return responseJson<EmailVerificationSent>(response);
 }
 
 export async function getCurrentAccount(): Promise<AuthUser> {

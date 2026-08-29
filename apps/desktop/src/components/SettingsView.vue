@@ -6,16 +6,14 @@ import {
   listModelProviders,
   listBackups,
   previewRestoreBackup,
-  updateSettings,
   type AppSettings,
   type ModelProvider,
 } from "../api";
 import type { BackupExportResult, BackupRestorePreview } from "../types";
 import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
-import HttpProfilesPanel from "./HttpProfilesPanel.vue";
-import SqlProfilesPanel from "./SqlProfilesPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
+import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
 import { useHealth } from "../stores/health";
 import {
   settingsSectionMeta,
@@ -66,21 +64,21 @@ const {
 const backups = ref<BackupExportResult[]>([]);
 const backupPreview = ref<BackupRestorePreview | null>(null);
 const backupPath = ref("");
-const saving = ref(false);
-const msg = ref("");
 const backupMsg = ref("");
 let timer: ReturnType<typeof setInterval> | undefined;
-let msgTimer: ReturnType<typeof setTimeout> | undefined;
 
 async function loadCurrentModel(): Promise<void> {
   try {
     // 供应商列表读取会先完成后端的统一默认 Profile 校正；随后再读取
     // Profile，保证当前模型卡片与实际请求使用同一份事实。
     modelProviders.value = await listModelProviders();
+  } catch {
+    modelProviders.value = [];
+  }
+  try {
     const result = await fetchCodingModelProfiles();
     modelProfiles.value = result.status === "ok" ? result.profiles : [];
   } catch {
-    modelProviders.value = [];
     modelProfiles.value = [];
   }
 }
@@ -111,28 +109,7 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
-  if (msgTimer) clearTimeout(msgTimer);
 });
-
-async function save() {
-  if (!settings.value) return;
-  saving.value = true;
-  msg.value = "";
-  try {
-    await updateSettings({
-      llm_temperature: settings.value.llm_temperature,
-      llm_context_length: settings.value.llm_context_length,
-      kb_enabled_by_default: settings.value.kb_enabled_by_default,
-    });
-    msg.value = "✓ 已保存";
-  } catch (e) {
-    msg.value = "保存失败：" + String(e);
-  } finally {
-    saving.value = false;
-    if (msgTimer) clearTimeout(msgTimer);
-    msgTimer = setTimeout(() => (msg.value = ""), 3000);
-  }
-}
 
 async function doBackup() {
   backupMsg.value = "";
@@ -218,11 +195,9 @@ const activeEndpoint = computed(() => {
   <section class="content">
     <header class="settings-hero">
       <div>
-        <span class="eyebrow">LOCAL CONTROL CENTER</span>
         <h1>{{ currentSectionMeta.label }}</h1>
         <p class="subtitle">{{ sectionSubtitle }}</p>
       </div>
-      <span class="privacy-badge">数据默认留在本机</span>
     </header>
 
     <!-- v0.9.0 H1-D：配置往返返回栏（从 Coding/Agent 入口进入时可见） -->
@@ -256,33 +231,6 @@ const activeEndpoint = computed(() => {
       </div>
     </section>
 
-    <!-- 可调参数 -->
-    <section v-if="activeSection === 'model-parameters'" class="setting-card wide">
-      <div class="card-heading"><span>03</span><div><h2>模型参数</h2><p>控制回答发散度与上下文窗口</p></div></div>
-      <div class="form" v-if="settings">
-      <div class="field">
-        <label>温度（0~1）</label>
-        <input type="number" step="0.1" min="0" max="1" v-model.number="settings.llm_temperature" :disabled="!settings" />
-      </div>
-      <div class="field">
-        <label>上下文长度</label>
-        <input type="number" step="512" min="512" v-model.number="settings.llm_context_length" :disabled="!settings" />
-      </div>
-      <div class="field field-check">
-        <label>
-          <input type="checkbox" v-model="settings.kb_enabled_by_default" :disabled="!settings" />
-          默认启用知识库
-        </label>
-      </div>
-      <div class="form-actions">
-        <button class="save-btn" @click="save" :disabled="saving || !settings">
-          {{ saving ? "保存中…" : "保存" }}
-        </button>
-        <span class="msg">{{ msg }}</span>
-      </div>
-      </div>
-    </section>
-
     <!-- 统一模型供应商：保存后的启用模型直接进入对话/Coding 选择器。 -->
     <section v-if="activeSection === 'provider'" class="model-provider-section">
       <ModelProvidersPanel @saved="onModelProfilesSaved" />
@@ -290,25 +238,19 @@ const activeEndpoint = computed(() => {
 
     <!-- MCP -->
     <section v-if="activeSection === 'mcp'" class="setting-card wide">
-      <div class="card-heading"><span>05</span><div><h2>MCP 外部能力</h2><p>登记、发现并按白名单授权跨进程工具</p></div></div>
+      <div class="card-heading"><span>04</span><div><h2>MCP 外部能力</h2><p>登记联网服务，并按信任与工具白名单授权模型使用</p></div></div>
       <McpServersPanel />
     </section>
 
-    <!-- v0.5.0 B3：HTTP 端点 -->
-    <section v-if="activeSection === 'http'" class="setting-card wide">
-      <div class="card-heading"><span>06</span><div><h2>HTTP 端点</h2><p>固定目标与方法的可信 API 调用配置</p></div></div>
-      <HttpProfilesPanel />
-    </section>
-
-    <!-- v0.5.0 B4：只读数据库 -->
-    <section v-if="activeSection === 'sql'" class="setting-card wide">
-      <div class="card-heading"><span>07</span><div><h2>只读数据库</h2><p>固定连接上的只读查询配置</p></div></div>
-      <SqlProfilesPanel />
+    <!-- 个人资料：首版头像和个性资料保存在当前设备。 -->
+    <section v-if="activeSection === 'profile'" class="setting-card wide profile-card">
+      <div class="card-heading"><span>05</span><div><h2>个人资料</h2><p>设置头像，并查看当前账号的基本信息</p></div></div>
+      <ProfileSettingsPanel />
     </section>
 
     <!-- 备份 -->
     <section v-if="activeSection === 'backup'" class="setting-card wide">
-      <div class="card-heading"><span>08</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
+      <div class="card-heading"><span>06</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
       <div class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
@@ -336,16 +278,9 @@ const activeEndpoint = computed(() => {
       </div>
     </section>
 
-    <!-- 连接配置 -->
-    <section v-if="activeSection === 'connection'" class="setting-card wide compact-card">
-      <div class="card-heading"><span>09</span><div><h2>连接配置</h2><p>MySQL 与 Ollama 的本机连接</p></div></div>
-      <p class="hint">修改连接信息后，应用会重启并加载新配置。</p>
-      <button class="save-btn secondary" @click="emit('reconfigure')">重新配置连接</button>
-    </section>
-
     <!-- 关于 / 更新 -->
     <section v-if="activeSection === 'about'" class="setting-card wide compact-card">
-      <div class="card-heading"><span>10</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <div class="card-heading"><span>07</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>
@@ -354,12 +289,10 @@ const activeEndpoint = computed(() => {
 
 <style scoped>
 .content {
-  padding: 34px clamp(28px, 4vw, 64px) 54px;
+  padding: 80px clamp(36px, 6vw, 96px) 72px;
   overflow: auto;
   flex: 1;
-  background:
-    radial-gradient(circle at 94% 0%, color-mix(in srgb, var(--color-accent) 7%, transparent), transparent 24%),
-    var(--color-bg);
+  background: var(--color-surface);
 }
 .provider-subheading {
   margin: 0 0 var(--space-3);
@@ -379,42 +312,27 @@ const activeEndpoint = computed(() => {
   font-size: var(--pa-text-meta);
 }
 .settings-hero {
-  max-width: 1120px;
-  margin: 0 auto 26px;
+  max-width: 1060px;
+  margin: 0 auto 34px;
   display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 24px;
-}
-.eyebrow {
-  color: var(--color-accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .16em;
+  align-items: flex-start;
 }
 h1 {
-  margin: 4px 0 5px;
-  font-size: 32px;
-  letter-spacing: -.045em;
+  margin: 0 0 8px;
+  font-size: 25px;
+  font-weight: var(--font-semibold);
+  letter-spacing: -.035em;
 }
 .subtitle {
   margin: 0;
-  color: var(--color-fg-muted);
-  font-size: 14px;
-}
-.privacy-badge {
-  padding: 8px 12px;
-  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
-  border-radius: 999px;
-  color: var(--color-accent);
-  background: var(--color-accent-soft);
-  font-size: 12px;
+  color: var(--color-fg-subtle);
+  font-size: 13px;
 }
 .settings-grid {
-  max-width: 1120px;
+  max-width: 1060px;
   margin: 0 auto;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .model-provider-section {
@@ -426,7 +344,7 @@ h1 {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
-  max-width: 1120px;
+  max-width: 1060px;
   margin: 0 auto 12px;
   padding: 8px 14px;
   border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--color-border));
@@ -445,11 +363,11 @@ h1 {
   cursor: pointer;
 }
 .setting-card {
-  padding: 20px;
+  padding: 22px 20px;
   border: 1px solid var(--color-border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--color-surface) 94%, transparent);
-  box-shadow: var(--shadow-xs);
+  border-radius: 14px;
+  background: var(--color-surface);
+  box-shadow: none;
 }
 .setting-card.wide { grid-column: 1 / -1; }
 .card-heading {
@@ -459,9 +377,7 @@ h1 {
   margin-bottom: 16px;
 }
 .card-heading > span {
-  padding-top: 3px;
-  color: var(--color-accent);
-  font: 700 10px/1 var(--font-mono);
+  display: none;
 }
 .card-heading h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
 .card-heading p { margin: 3px 0 0; color: var(--color-fg-faint); font-size: 12px; }
