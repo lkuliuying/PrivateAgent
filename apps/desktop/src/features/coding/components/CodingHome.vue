@@ -9,7 +9,7 @@
  */
 import { computed, ref, watch } from "vue";
 import {
-  PhArrowRight,
+  PhChatsCircle,
   PhDownloadSimple,
   PhFolderPlus,
   PhFolderSimple,
@@ -34,6 +34,7 @@ import {
   fetchCodingProfileImportStatus,
   importCodingModelProfile,
 } from "../api/modelProfiles";
+import CodingComposer, { type CodingComposerSendPayload } from "./CodingComposer.vue";
 // v0.9.0 H1：新建项目对话框（选目录+授权；空态与侧栏共用）
 import NewProjectDialog from "./NewProjectDialog.vue";
 
@@ -160,10 +161,11 @@ function onWorkspaceChange(value: string | number): void {
   props.store.selectWorkspace(Number(value));
 }
 
-// 主任务输入：Enter 提交（Shift+Enter 换行）；W1 只创建线程
-const taskInput = ref("");
+// 新对话保持草稿态；用户首次发送时才创建 durable 会话并进入任务页。
 const creating = ref(false);
 const createError = ref<CodingApiError | null>(null);
+const restoreRequest = ref<{ message: string; seq: number } | null>(null);
+let restoreSeq = 0;
 
 // v0.9.0 H1：空态新建项目对话框；创建成功后刷新并选中新项目。
 const newProjectOpen = ref(false);
@@ -174,38 +176,20 @@ async function onProjectCreated(projectId: number): Promise<void> {
   if (projectId > 0) props.store.selectProject(projectId);
 }
 
-async function submitTask(): Promise<void> {
-  if (creating.value || !taskInput.value.trim()) return;
+async function submitFirstTurn(payload: CodingComposerSendPayload): Promise<void> {
+  if (creating.value || !payload.message.trim()) return;
   creating.value = true;
   createError.value = null;
   try {
-    const thread = await props.store.createThreadFromInput(taskInput.value);
-    taskInput.value = "";
+    const thread = await props.store.createThreadFromFirstTurn(payload);
     emit("thread-created", thread);
   } catch (cause) {
     createError.value = asCodingApiError(cause);
+    restoreSeq += 1;
+    restoreRequest.value = { message: payload.message, seq: restoreSeq };
   } finally {
     creating.value = false;
   }
-}
-
-function onInputKeydown(event: KeyboardEvent): void {
-  if (event.key === "Enter" && !event.shiftKey) {
-    event.preventDefault();
-    void submitTask();
-  }
-}
-
-/** 推荐任务模板（本地静态；不虚构后端状态，仅作为输入预填） */
-const TASK_TEMPLATES = [
-  "梳理项目结构，总结各模块职责",
-  "找出失败的测试并修复",
-  "审查最近的改动并给出风险提示",
-  "为当前模块补充单元测试",
-];
-
-function applyTemplate(template: string): void {
-  taskInput.value = template;
 }
 
 // 「有项目无 workspace」引导：幂等补建根工作区
@@ -236,8 +220,8 @@ function asCodingApiError(cause: unknown): CodingApiError {
 </script>
 
 <template>
-  <section class="coding-home" data-testid="coding-home">
-    <div class="home-column" :data-testid="`coding-home-${homeState}`">
+  <section class="coding-home" :class="{ 'is-ready': homeState === 'ready' }" data-testid="coding-home">
+    <div class="home-column" :class="{ 'is-ready': homeState === 'ready' }" :data-testid="`coding-home-${homeState}`">
       <PaSkeleton v-if="homeState === 'loading'" :lines="5" />
 
       <PaErrorState
@@ -343,82 +327,57 @@ function asCodingApiError(cause: unknown): CodingApiError {
       </template>
 
       <template v-else>
-        <header class="home-header">
-          <p class="home-kicker">CODING WORKBENCH</p>
-          <!-- v0.9.0 H1：任务不再作为与项目平级的容器，具体任务由对话中的 run 表达 -->
-          <h1>开始一个新对话</h1>
-          <p class="home-sub">选择项目与分支，描述要完成的事情；执行计划与审批都会逐步展示。</p>
-        </header>
+        <div class="draft-stage">
+          <div class="draft-empty" data-testid="coding-home-empty-chat">
+            <PhChatsCircle :size="48" weight="thin" aria-hidden="true" />
+            <h1>你想在 {{ props.store.selectedProject.value?.name ?? "当前项目" }} 中构建什么？</h1>
+            <p>选择项目与分支，然后直接输入第一条指令。</p>
+          </div>
 
-        <div class="home-selectors">
-          <label class="selector">
-            <span>项目</span>
-            <PaSelect
-              :model-value="selectedProjectId ?? ''"
-              :options="projectOptions"
-              data-testid="coding-home-project-select"
-              @update:model-value="onProjectChange"
+          <div class="draft-dock">
+            <div class="draft-selectors">
+              <label class="draft-selector">
+                <PhFolderSimple :size="16" aria-hidden="true" />
+                <span class="visually-hidden">项目</span>
+                <PaSelect
+                  :model-value="selectedProjectId ?? ''"
+                  :options="projectOptions"
+                  size="sm"
+                  data-testid="coding-home-project-select"
+                  aria-label="项目"
+                  @update:model-value="onProjectChange"
+                />
+              </label>
+              <label class="draft-selector">
+                <PhGitBranch :size="16" aria-hidden="true" />
+                <span class="visually-hidden">工作区 / 分支</span>
+                <PaSelect
+                  :model-value="selectedWorkspaceId ?? ''"
+                  :options="workspaceOptions"
+                  size="sm"
+                  data-testid="coding-home-workspace-select"
+                  aria-label="工作区 / 分支"
+                  @update:model-value="onWorkspaceChange"
+                />
+              </label>
+            </div>
+            <CodingComposer
+              :store="store"
+              :thread-id="null"
+              :busy="creating"
+              :restore-request="restoreRequest"
+              @send="submitFirstTurn"
             />
-          </label>
-          <label class="selector">
-            <span>工作区 / 分支</span>
-            <PaSelect
-              :model-value="selectedWorkspaceId ?? ''"
-              :options="workspaceOptions"
-              data-testid="coding-home-workspace-select"
-              @update:model-value="onWorkspaceChange"
-            />
-          </label>
-        </div>
-
-        <div class="home-composer">
-          <textarea
-            v-model="taskInput"
-            class="home-input"
-            data-testid="coding-home-input"
-            rows="3"
-            placeholder="描述要完成的任务，例如：修复登录页在窄屏下的布局问题…"
-            :disabled="creating"
-            @keydown="onInputKeydown"
-          />
-          <div class="composer-row">
-            <span class="composer-hint">Enter 发送 · Shift+Enter 换行</span>
-            <button
-              class="pa-btn pa-btn--primary home-submit"
-              data-testid="coding-home-submit"
-              :disabled="creating || !taskInput.trim()"
-              @click="submitTask()"
+            <PaInlineNotice
+              v-if="createError"
+              tone="danger"
+              title="对话创建失败"
+              class="home-notice"
             >
-              <template v-if="creating">创建中…</template>
-              <template v-else>创建任务</template>
-              <PhArrowRight v-if="!creating" :size="15" />
-            </button>
+              {{ createError.message }}
+            </PaInlineNotice>
           </div>
         </div>
-
-        <PaInlineNotice
-          v-if="createError"
-          tone="danger"
-          title="任务创建失败"
-          class="home-notice"
-        >
-          {{ createError.message }}
-        </PaInlineNotice>
-
-        <section class="home-templates" aria-labelledby="home-templates-title">
-          <h2 id="home-templates-title">推荐任务</h2>
-          <div class="template-list">
-            <button
-              v-for="(template, index) in TASK_TEMPLATES"
-              :key="template"
-              class="template-chip"
-              :data-testid="`coding-home-template-${index}`"
-              @click="applyTemplate(template)"
-            >
-              {{ template }}
-            </button>
-          </div>
-        </section>
       </template>
     </div>
 
@@ -440,6 +399,10 @@ function asCodingApiError(cause: unknown): CodingApiError {
   overflow-y: auto;
   padding: var(--space-8) var(--space-6) var(--space-10);
 }
+.coding-home.is-ready {
+  padding: 0;
+  overflow: hidden;
+}
 .home-column {
   display: flex;
   width: 100%;
@@ -447,131 +410,88 @@ function asCodingApiError(cause: unknown): CodingApiError {
   flex-direction: column;
   gap: var(--space-4);
 }
-
-.home-header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-.home-kicker {
-  margin: 0;
-  color: var(--color-accent-soft-fg);
-  font-size: var(--pa-text-meta);
-  font-weight: var(--font-semibold);
-  letter-spacing: 0.12em;
-}
-.home-header h1 {
-  margin: 0;
-  color: var(--color-fg);
-  font-size: var(--text-2xl);
-  font-weight: var(--font-semibold);
-}
-.home-sub {
-  margin: 0;
-  color: var(--color-fg-subtle);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
-}
-
-.home-selectors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-}
-.selector {
-  display: flex;
-  min-width: 220px;
-  flex: 1;
-  flex-direction: column;
-  gap: var(--space-1);
-  color: var(--color-fg-muted);
-  font-size: var(--text-xs);
-}
-
-.home-composer {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-}
-.home-input {
-  width: 100%;
-  resize: vertical;
-  min-height: 72px;
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-bg);
-  color: var(--color-fg);
-  font-size: var(--text-sm);
-  font-family: inherit;
-  line-height: var(--leading-normal);
-}
-.home-input:focus-visible {
-  outline: var(--focus-ring);
-  outline-offset: 0;
-}
-.composer-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-.composer-hint {
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-text-meta);
-}
-.home-submit {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
+.home-column.is-ready {
+  max-width: none;
+  gap: 0;
 }
 
 .home-notice {
-  margin-top: var(--space-1);
+  margin: 0 var(--space-2) var(--space-2);
 }
-
-.home-templates {
+.draft-stage {
   display: flex;
+  min-height: 0;
+  flex: 1;
   flex-direction: column;
-  gap: var(--space-2);
-  margin-top: var(--space-2);
 }
-.home-templates h2 {
-  margin: 0;
-  color: var(--color-fg-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-}
-.template-list {
+.draft-empty {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
+  min-height: 240px;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-8);
+  color: var(--color-fg-faint);
+  text-align: center;
 }
-.template-chip {
-  padding: var(--space-1) var(--space-3);
+.draft-empty h1 {
+  margin: 0;
+  color: var(--color-fg);
+  font-size: var(--text-xl);
+  font-weight: var(--font-medium);
+}
+.draft-empty p {
+  margin: 0;
+  color: var(--color-fg-subtle);
+  font-size: var(--text-sm);
+}
+.draft-dock {
+  width: min(820px, calc(100% - 32px));
+  margin: 0 auto var(--space-4);
+  overflow: hidden;
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
-  color: var(--color-fg-muted);
-  font-size: var(--text-xs);
-  cursor: pointer;
+  box-shadow: var(--shadow-sm);
 }
-.template-chip:hover {
-  border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
-  color: var(--color-accent-soft-fg);
+.draft-selectors {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3) 0;
+}
+.draft-selector {
+  display: inline-flex;
+  min-width: 190px;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-fg-muted);
+}
+.draft-selector:nth-child(2) { min-width: 250px; }
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
 }
 
 @media (max-width: 600px) {
-  .coding-home {
+  .coding-home:not(.is-ready) {
     padding: var(--space-5) var(--space-4);
   }
-  .home-selectors {
+  .draft-dock {
+    width: calc(100% - 20px);
+    margin-bottom: var(--space-2);
+  }
+  .draft-selectors {
+    align-items: stretch;
     flex-direction: column;
+    gap: var(--space-1);
   }
 }
 </style>

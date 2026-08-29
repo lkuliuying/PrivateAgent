@@ -98,20 +98,21 @@ async function mountPreview(key: Parameters<typeof createCodingWorkspacePreviewS
 }
 
 describe("CodingHome", () => {
-  it("就绪态：选择器 + 主输入 + 推荐模板齐备", async () => {
+  it("就绪态：直接进入空白对话，项目与分支选择器位于输入区", async () => {
     const { wrapper } = await mountHome(readyFetchers());
+    expect(wrapper.find('[data-testid="coding-home-empty-chat"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="coding-home-project-select"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="coding-home-workspace-select"]').exists()).toBe(true);
-    expect(wrapper.find('[data-testid="coding-home-input"]').exists()).toBe(true);
-    expect(wrapper.findAll(".template-chip").length).toBe(4);
+    expect(wrapper.find('[data-testid="coding-composer-input"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("推荐任务");
   });
 
-  it("输入任务并提交：创建线程、清空输入、发出 thread-created", async () => {
+  it("首次发送：提取标题创建线程，并暂存完整首轮指令等待任务页执行", async () => {
     const createThread = vi.fn(readyFetchers().createThread);
     const { wrapper, store } = await mountHome(readyFetchers({ createThread }));
-    const input = wrapper.find('[data-testid="coding-home-input"]');
-    await input.setValue("修复窄屏侧栏遮挡问题");
-    await wrapper.find('[data-testid="coding-home-submit"]').trigger("click");
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
+    await input.setValue("修复窄屏侧栏遮挡问题。并补充对应的回归测试与说明");
+    await wrapper.find('[data-testid="coding-composer-send"]').trigger("click");
     await flushPromises();
     expect(createThread).toHaveBeenCalledWith({
       projectId: 1,
@@ -120,13 +121,19 @@ describe("CodingHome", () => {
     });
     expect((input.element as HTMLTextAreaElement).value).toBe("");
     expect(store.selectedThreadId.value).toBe(99);
+    expect(store.pendingFirstTurn.value).toMatchObject({
+      threadId: 99,
+      message: "修复窄屏侧栏遮挡问题。并补充对应的回归测试与说明",
+      permissionMode: "confirm",
+      modelProfileId: "local-coder",
+    });
     expect(wrapper.emitted("thread-created")?.[0]?.[0]).toMatchObject({ id: 99 });
   });
 
   it("Enter 提交、Shift+Enter 换行不提交", async () => {
     const createThread = vi.fn(readyFetchers().createThread);
     const { wrapper } = await mountHome(readyFetchers({ createThread }));
-    const input = wrapper.find('[data-testid="coding-home-input"]');
+    const input = wrapper.find('[data-testid="coding-composer-input"]');
     await input.setValue("任务 A");
     await input.trigger("keydown", { key: "Enter", shiftKey: true });
     expect(createThread).not.toHaveBeenCalled();
@@ -143,19 +150,12 @@ describe("CodingHome", () => {
         },
       })
     );
-    await wrapper.find('[data-testid="coding-home-input"]').setValue("任务 A");
-    await wrapper.find('[data-testid="coding-home-submit"]').trigger("click");
+    await wrapper.find('[data-testid="coding-composer-input"]').setValue("任务 A");
+    await wrapper.find('[data-testid="coding-composer-send"]').trigger("click");
     await flushPromises();
-    expect(wrapper.text()).toContain("任务创建失败");
+    expect(wrapper.text()).toContain("对话创建失败");
     expect(wrapper.text()).toContain("工作区不在授权路径内");
-  });
-
-  it("推荐模板点击预填输入", async () => {
-    const { wrapper } = await mountHome(readyFetchers());
-    await wrapper.find('[data-testid="coding-home-template-1"]').trigger("click");
-    expect((wrapper.find('[data-testid="coding-home-input"]').element as HTMLTextAreaElement).value).toContain(
-      "失败的测试"
-    );
+    expect((wrapper.find('[data-testid="coding-composer-input"]').element as HTMLTextAreaElement).value).toBe("任务 A");
   });
 
   it("无项目：空态提供新建项目与项目页两个动作（v0.9.0 H1 拆分）", async () => {
@@ -186,7 +186,7 @@ describe("CodingHome", () => {
     await wrapper.find("button.pa-button").trigger("click");
     await flushPromises();
     expect(ensureRootWorkspace).toHaveBeenCalledWith(1);
-    expect(wrapper.text()).toContain("开始一个新对话");
+    expect(wrapper.text()).toContain("你想在");
   });
 
   it("能力位关闭（feature_disabled）：呈现更新/重试语义（H1-D 拆分）", async () => {

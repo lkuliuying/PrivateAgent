@@ -2,8 +2,8 @@
 /**
  * Coding Agent 左侧栏。
  *
- * 常规窗口使用紧凑的单层导航与最近对话；项目树按需展开。窄窗口以覆盖抽屉
- * 呈现，避免压缩主工作区。组件只消费 codingWorkspaceStore，不直接读取项目 API。
+ * 常规窗口使用紧凑导航，并把对话归入所属项目。窄窗口以覆盖抽屉呈现，
+ * 避免压缩主工作区。组件只消费 codingWorkspaceStore，不直接读取项目 API。
  */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
@@ -24,7 +24,6 @@ import {
   PhPuzzlePiece,
   PhQuestion,
   PhSidebarSimple,
-  PhUserCircle,
   PhX,
 } from "@phosphor-icons/vue";
 import type { View } from "../../../types";
@@ -34,15 +33,16 @@ import {
   WORKSPACE_STATUS_META,
   type CodingProjectNode,
   type CodingThreadSummary,
+  type CodingWorkspaceSummary,
 } from "../model/contracts";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import {
-  fetchRecentThreads,
   renameThread,
   setThreadArchived,
   setThreadPinned,
 } from "../api/threads";
 import NewProjectDialog from "./NewProjectDialog.vue";
+import UserMenu from "../../../components/UserMenu.vue";
 
 const notify = useNotifications();
 
@@ -70,19 +70,26 @@ const emit = defineEmits<{
 const tree = computed(() => props.store.tree.value);
 const loadPhase = computed(() => props.store.loadPhase.value);
 const selectedProjectId = computed(() => props.store.selectedProjectId.value);
-const selectedWorkspaceId = computed(() => props.store.selectedWorkspaceId.value);
 const selectedThreadId = computed(() => props.store.selectedThreadId.value);
 const onCodingHome = computed(
   () => props.activeView === "coding" && selectedThreadId.value === null
 );
 
-const projectsExpanded = ref(false);
+const projectsExpanded = ref(true);
 const projectOpen = ref<Record<number, boolean>>({});
-const workspaceOpen = ref<Record<string, boolean>>({});
 
-function workspaceKey(projectId: number, workspaceId: number): string {
-  return `${projectId}:${workspaceId}`;
+interface ProjectThreadItem {
+  thread: CodingThreadSummary;
+  workspace: CodingWorkspaceSummary | null;
 }
+
+interface ThreadDetailsState {
+  threadId: number;
+  top: number;
+  left: number;
+}
+
+const activeThreadDetails = ref<ThreadDetailsState | null>(null);
 
 function navigate(view: View): void {
   emit("navigate", view);
@@ -91,16 +98,10 @@ function navigate(view: View): void {
 
 function toggleProjects(): void {
   projectsExpanded.value = !projectsExpanded.value;
-  if (!projectsExpanded.value) return;
-
-  const projectId = selectedProjectId.value ?? tree.value[0]?.project.id ?? null;
-  if (projectId !== null) {
-    projectOpen.value = { ...projectOpen.value, [projectId]: true };
-  }
 }
 
 function toggleProject(node: CodingProjectNode): void {
-  const next = !projectOpen.value[node.project.id];
+  const next = !isProjectOpen(node.project.id);
   projectOpen.value = { ...projectOpen.value, [node.project.id]: next };
   if (next) {
     props.store.selectProject(node.project.id);
@@ -108,9 +109,8 @@ function toggleProject(node: CodingProjectNode): void {
   }
 }
 
-function toggleWorkspace(projectId: number, workspaceId: number): void {
-  const key = workspaceKey(projectId, workspaceId);
-  workspaceOpen.value = { ...workspaceOpen.value, [key]: !workspaceOpen.value[key] };
+function isProjectOpen(projectId: number): boolean {
+  return projectOpen.value[projectId] ?? true;
 }
 
 function openThread(threadId: number): void {
@@ -142,13 +142,35 @@ async function onProjectCreated(projectId: number): Promise<void> {
   }
 }
 
+function projectThreads(node: CodingProjectNode): ProjectThreadItem[] {
+  const items: ProjectThreadItem[] = [];
+  for (const child of node.workspaces) {
+    for (const thread of child.threads) {
+      items.push({ thread, workspace: child.workspace });
+    }
+  }
+  for (const thread of node.orphanThreads) {
+    items.push({ thread, workspace: null });
+  }
+  return items.sort((left, right) => {
+    const pinOrder = Number(Boolean(right.thread.pinnedAt)) - Number(Boolean(left.thread.pinnedAt));
+    return pinOrder || right.thread.updatedAt.localeCompare(left.thread.updatedAt);
+  });
+}
+
+const activeThreadContext = computed(() => {
+  const threadId = activeThreadDetails.value?.threadId;
+  if (threadId === undefined) return null;
+  for (const node of tree.value) {
+    const item = projectThreads(node).find((candidate) => candidate.thread.id === threadId);
+    if (item) return { node, item };
+  }
+  return null;
+});
+
 function branchLabel(node: { workspace: { kind: string; branchName: string | null } }): string {
   if (node.workspace.branchName) return node.workspace.branchName;
   return node.workspace.kind === "root" ? "根工作区" : "工作区";
-}
-
-function workspaceStatusTone(status: keyof typeof WORKSPACE_STATUS_META): string {
-  return WORKSPACE_STATUS_META[status].tone;
 }
 
 function formatRelative(value: string): string {
@@ -156,11 +178,46 @@ function formatRelative(value: string): string {
   return formatted === "—" ? "" : formatted;
 }
 
+function detailBranch(item: ProjectThreadItem): string {
+  return item.workspace ? branchLabel({ workspace: item.workspace }) : "工作区已归档或缺失";
+}
+
+function detailWorkspaceStatus(item: ProjectThreadItem): string {
+  return item.workspace ? WORKSPACE_STATUS_META[item.workspace.status].label : "不可用";
+}
+
+function showThreadDetails(threadId: number, event: Event): void {
+  const row = event.currentTarget as HTMLElement | null;
+  if (!row || typeof window === "undefined") return;
+  const rect = row.getBoundingClientRect();
+  const width = 360;
+  const estimatedHeight = 142;
+  const gap = 8;
+  const viewportPadding = 8;
+  const preferredLeft = rect.right + gap;
+  const left =
+    preferredLeft + width <= window.innerWidth - viewportPadding
+      ? preferredLeft
+      : Math.max(viewportPadding, rect.left - width - gap);
+  const top = Math.min(
+    Math.max(viewportPadding, rect.top - 8),
+    Math.max(viewportPadding, window.innerHeight - estimatedHeight - viewportPadding)
+  );
+  activeThreadDetails.value = { threadId, top, left };
+}
+
+function hideThreadDetails(threadId: number, event?: FocusEvent): void {
+  if (activeThreadDetails.value?.threadId !== threadId) return;
+  const row = event?.currentTarget as HTMLElement | null;
+  const next = event?.relatedTarget as Node | null;
+  if (row && next && row.contains(next)) return;
+  activeThreadDetails.value = null;
+}
+
 const threadActionBusy = ref(false);
 
 async function refreshThreads(): Promise<void> {
   await props.store.refresh();
-  await loadRecentThreads();
 }
 
 async function onTogglePin(thread: CodingThreadSummary): Promise<void> {
@@ -211,50 +268,6 @@ async function onArchiveThread(thread: CodingThreadSummary): Promise<void> {
   }
 }
 
-const recentThreads = ref<CodingThreadSummary[]>([]);
-
-const treeRecentThreads = computed(() => {
-  const deduped = new Map<number, CodingThreadSummary>();
-  for (const node of tree.value) {
-    for (const child of node.workspaces) {
-      for (const thread of child.threads) deduped.set(thread.id, thread);
-    }
-    for (const thread of node.orphanThreads) deduped.set(thread.id, thread);
-  }
-  return [...deduped.values()]
-    .sort((left, right) => {
-      const pinOrder = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
-      return pinOrder || right.updatedAt.localeCompare(left.updatedAt);
-    })
-    .slice(0, 14);
-});
-
-const visibleRecentThreads = computed(() => {
-  const merged = new Map<number, CodingThreadSummary>();
-  for (const thread of recentThreads.value) merged.set(thread.id, thread);
-  for (const thread of treeRecentThreads.value) merged.set(thread.id, thread);
-  return [...merged.values()]
-    .sort((left, right) => {
-      const pinOrder = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
-      return pinOrder || right.updatedAt.localeCompare(left.updatedAt);
-    })
-    .slice(0, 14);
-});
-
-async function loadRecentThreads(): Promise<void> {
-  try {
-    recentThreads.value = await fetchRecentThreads(14);
-  } catch {
-    recentThreads.value = [];
-  }
-}
-
-function openRecentThread(thread: CodingThreadSummary): void {
-  if (thread.projectId) props.store.selectProject(thread.projectId);
-  props.store.selectThread(thread.id);
-  navigate("coding");
-}
-
 function openNotifications(): void {
   notify.openCenter();
   if (isNarrow.value) drawerOpen.value = false;
@@ -271,7 +284,6 @@ function onMediaChange(event: MediaQueryListEvent): void {
 }
 
 onMounted(() => {
-  void loadRecentThreads();
   if (typeof window.matchMedia !== "function") return;
   media = window.matchMedia(DRAWER_MEDIA);
   isNarrow.value = media.matches;
@@ -353,7 +365,7 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <div class="sidebar-scroll-region">
+      <div class="sidebar-scroll-region" @scroll.passive="activeThreadDetails = null">
         <div class="sidebar-actions">
           <button
             type="button"
@@ -439,7 +451,7 @@ onBeforeUnmount(() => {
               aria-label="刷新项目"
               data-testid="coding-refresh"
               :disabled="loadPhase === 'loading'"
-              @click="props.store.refresh(); void loadRecentThreads()"
+              @click="props.store.refresh()"
             >
               <PhArrowClockwise :size="14" :class="{ spin: loadPhase === 'loading' }" />
             </button>
@@ -456,169 +468,120 @@ onBeforeUnmount(() => {
                 class="tree-row project-row"
                 :class="{ active: selectedProjectId === node.project.id && selectedThreadId === null }"
                 :data-testid="`coding-project-${node.project.id}`"
-                :aria-expanded="projectOpen[node.project.id] ?? false"
+                :aria-expanded="isProjectOpen(node.project.id)"
                 role="treeitem"
                 @click="toggleProject(node)"
               >
-                <span class="row-caret" :class="{ open: projectOpen[node.project.id] }" />
+                <span class="row-caret" :class="{ open: isProjectOpen(node.project.id) }" />
                 <PhFolderSimple :size="15" />
                 <span class="row-label">{{ node.project.name }}</span>
               </button>
 
-              <div v-if="projectOpen[node.project.id]" class="tree-children" role="group">
-                <div v-for="child in node.workspaces" :key="child.workspace.id" role="none">
-                  <button
-                    type="button"
-                    class="tree-row workspace-row"
-                    :class="{ active: selectedWorkspaceId === child.workspace.id && selectedThreadId === null }"
-                    :data-testid="`coding-workspace-${child.workspace.id}`"
-                    :data-status="child.workspace.status"
-                    :aria-expanded="workspaceOpen[workspaceKey(node.project.id, child.workspace.id)] ?? false"
-                    role="treeitem"
-                    :title="`分支 ${branchLabel(child)} · ${WORKSPACE_STATUS_META[child.workspace.status].label}`"
-                    @click="toggleWorkspace(node.project.id, child.workspace.id)"
-                  >
-                    <span
-                      class="row-caret"
-                      :class="{ open: workspaceOpen[workspaceKey(node.project.id, child.workspace.id)] }"
-                    />
-                    <PhGitBranch :size="14" />
-                    <span class="row-label">{{ branchLabel(child) }}</span>
-                    <span
-                      class="status-dot"
-                      :class="`tone-${workspaceStatusTone(child.workspace.status)}`"
-                      :aria-label="WORKSPACE_STATUS_META[child.workspace.status].label"
-                    />
-                  </button>
-
+              <div v-if="isProjectOpen(node.project.id)" class="project-threads" role="group">
+                <div
+                  v-for="item in projectThreads(node)"
+                  :key="item.thread.id"
+                  class="thread-node"
+                  role="none"
+                >
                   <div
-                    v-if="workspaceOpen[workspaceKey(node.project.id, child.workspace.id)]"
-                    class="tree-threads"
-                    role="group"
+                    class="tree-row thread-row"
+                    :class="{ active: selectedThreadId === item.thread.id }"
+                    :data-testid="`coding-thread-${item.thread.id}`"
+                    :data-project-id="node.project.id"
+                    :data-workspace-id="item.thread.workspaceId ?? undefined"
+                    role="treeitem"
+                    tabindex="0"
+                    :aria-current="selectedThreadId === item.thread.id ? 'page' : undefined"
+                    :aria-describedby="activeThreadDetails?.threadId === item.thread.id ? `coding-thread-details-${item.thread.id}` : undefined"
+                    @mouseenter="showThreadDetails(item.thread.id, $event)"
+                    @mouseleave="hideThreadDetails(item.thread.id)"
+                    @focusin="showThreadDetails(item.thread.id, $event)"
+                    @focusout="hideThreadDetails(item.thread.id, $event)"
+                    @click="openThread(item.thread.id)"
+                    @keydown.enter.prevent="openThread(item.thread.id)"
                   >
-                    <div
-                      v-for="thread in child.threads"
-                      :key="thread.id"
-                      class="tree-row thread-row"
-                      :class="{ active: selectedThreadId === thread.id }"
-                      :data-testid="`coding-tree-thread-${thread.id}`"
-                      role="treeitem"
-                      tabindex="0"
-                      :aria-current="selectedThreadId === thread.id ? 'page' : undefined"
-                      :title="thread.title"
-                      @click="openThread(thread.id)"
-                      @keydown.enter.prevent="openThread(thread.id)"
-                    >
-                      <PhChatsCircle :size="13" />
-                      <span class="row-label">{{ thread.title }}</span>
-                      <small>{{ formatRelative(thread.updatedAt) }}</small>
-                      <span class="thread-actions" @click.stop>
-                        <button
-                          type="button"
-                          class="thread-action"
-                          :aria-label="thread.pinnedAt ? '取消置顶' : '置顶'"
-                          :title="thread.pinnedAt ? '取消置顶' : '置顶'"
-                          :disabled="threadActionBusy"
-                          :data-testid="`coding-thread-pin-${thread.id}`"
-                          @click="void onTogglePin(thread)"
-                        >
-                          <PhPushPin :size="12" />
-                        </button>
-                        <button
-                          type="button"
-                          class="thread-action"
-                          aria-label="重命名"
-                          title="重命名"
-                          :disabled="threadActionBusy"
-                          :data-testid="`coding-thread-rename-${thread.id}`"
-                          @click="void onRenameThread(thread)"
-                        >
-                          <PhPencil :size="12" />
-                        </button>
-                        <button
-                          type="button"
-                          class="thread-action"
-                          aria-label="归档"
-                          title="归档"
-                          :disabled="threadActionBusy"
-                          :data-testid="`coding-thread-archive-${thread.id}`"
-                          @click="void onArchiveThread(thread)"
-                        >
-                          <PhArchive :size="12" />
-                        </button>
-                      </span>
-                    </div>
-                    <div v-if="child.threads.length === 0" class="thread-empty">暂无对话</div>
+                    <PhPushPin v-if="item.thread.pinnedAt" :size="12" class="thread-pin" />
+                    <PhChatsCircle v-else :size="13" />
+                    <span class="row-label">{{ item.thread.title }}</span>
+                    <PhGitBranch class="thread-branch" :size="13" />
+                    <span class="thread-actions" @click.stop>
+                      <button
+                        type="button"
+                        class="thread-action"
+                        :aria-label="item.thread.pinnedAt ? '取消置顶' : '置顶'"
+                        :title="item.thread.pinnedAt ? '取消置顶' : '置顶'"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-pin-${item.thread.id}`"
+                        @click="void onTogglePin(item.thread)"
+                      >
+                        <PhPushPin :size="12" />
+                      </button>
+                      <button
+                        type="button"
+                        class="thread-action"
+                        aria-label="重命名"
+                        title="重命名"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-rename-${item.thread.id}`"
+                        @click="void onRenameThread(item.thread)"
+                      >
+                        <PhPencil :size="12" />
+                      </button>
+                      <button
+                        type="button"
+                        class="thread-action"
+                        aria-label="归档"
+                        title="归档"
+                        :disabled="threadActionBusy"
+                        :data-testid="`coding-thread-archive-${item.thread.id}`"
+                        @click="void onArchiveThread(item.thread)"
+                      >
+                        <PhArchive :size="12" />
+                      </button>
+                    </span>
                   </div>
+
                 </div>
 
-                <div v-if="node.orphanThreads.length > 0">
-                  <div class="tree-row workspace-row is-static" title="工作区已归档或缺失">
-                    <PhGitBranch :size="14" />
-                    <span class="row-label">其他对话</span>
-                  </div>
-                  <div class="tree-threads" role="group">
-                    <button
-                      v-for="thread in node.orphanThreads"
-                      :key="thread.id"
-                      type="button"
-                      class="tree-row thread-row"
-                      :class="{ active: selectedThreadId === thread.id }"
-                      :data-testid="`coding-tree-thread-${thread.id}`"
-                      role="treeitem"
-                      :aria-current="selectedThreadId === thread.id ? 'page' : undefined"
-                      :title="thread.title"
-                      @click="openThread(thread.id)"
-                    >
-                      <PhChatsCircle :size="13" />
-                      <span class="row-label">{{ thread.title }}</span>
-                    </button>
-                  </div>
+                <div v-if="projectThreads(node).length === 0" class="thread-empty">
+                  暂无对话
                 </div>
-
-                <div v-if="node.workspaces.length === 0" class="tree-empty">暂无工作区</div>
               </div>
             </div>
           </div>
-        </section>
 
-        <section v-if="!collapsed || isNarrow" class="recent-section" data-testid="coding-recent">
-          <div class="section-heading recent-heading"><span>最近</span></div>
-          <div v-if="visibleRecentThreads.length === 0" class="recent-empty">
-            新建对话后会显示在这里
-          </div>
-          <button
-            v-for="thread in visibleRecentThreads"
-            :key="`recent-${thread.id}`"
-            type="button"
-            class="recent-row"
-            :class="{ active: selectedThreadId === thread.id }"
-            :data-testid="`coding-thread-${thread.id}`"
-            :title="thread.title"
-            @click="openRecentThread(thread)"
+          <aside
+            v-if="activeThreadDetails && activeThreadContext"
+            :id="`coding-thread-details-${activeThreadContext.item.thread.id}`"
+            class="thread-details"
+            :style="{ top: `${activeThreadDetails.top}px`, left: `${activeThreadDetails.left}px` }"
+            role="tooltip"
+            :data-testid="`coding-thread-details-${activeThreadContext.item.thread.id}`"
           >
-            <PhPushPin v-if="thread.pinnedAt" :size="13" class="recent-pin" />
-            <span class="row-label">{{ thread.title }}</span>
-            <PhGitBranch class="recent-branch" :size="14" />
-          </button>
+            <div class="thread-details-heading">
+              <strong>{{ activeThreadContext.item.thread.title }}</strong>
+              <span>{{ formatRelative(activeThreadContext.item.thread.updatedAt) }}</span>
+            </div>
+            <div class="thread-detail-row">
+              <PhFolderSimple :size="16" />
+              <span>{{ activeThreadContext.node.project.name }}</span>
+            </div>
+            <div class="thread-detail-row">
+              <PhGitBranch :size="16" />
+              <span>{{ detailBranch(activeThreadContext.item) }}</span>
+              <span class="thread-detail-status">{{ detailWorkspaceStatus(activeThreadContext.item) }}</span>
+            </div>
+          </aside>
         </section>
       </div>
 
       <footer class="sidebar-footer">
-        <button
-          type="button"
-          class="footer-user"
-          :class="{ active: activeView === 'settings' }"
-          aria-label="打开设置"
-          data-testid="coding-nav-settings"
-          @click="navigate('settings')"
-        >
-          <PhUserCircle :size="24" weight="fill" />
-          <span class="user-copy">
-            <strong>本地用户</strong>
-            <small>数据仅存此设备</small>
-          </span>
-        </button>
+        <UserMenu
+          inline
+          :collapsed="collapsed && !isNarrow"
+          @settings="navigate('settings')"
+        />
         <div class="footer-tools">
           <button
             type="button"
@@ -807,8 +770,7 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-full);
 }
 .action-label { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
-.project-section,
-.recent-section { margin-top: var(--space-5); }
+.project-section { margin-top: var(--space-5); }
 .section-heading {
   display: flex;
   min-height: 26px;
@@ -820,7 +782,6 @@ onBeforeUnmount(() => {
   font-weight: var(--font-medium);
 }
 .tree-empty,
-.recent-empty,
 .thread-empty {
   padding: var(--space-2);
   color: var(--color-fg-faint);
@@ -828,10 +789,9 @@ onBeforeUnmount(() => {
   line-height: var(--leading-normal);
 }
 .project-tree,
-.tree-children,
-.tree-threads { display: flex; flex-direction: column; gap: 1px; }
-.tree-children { padding-left: var(--space-3); }
-.tree-threads { padding-left: var(--space-4); }
+.project-threads { display: flex; flex-direction: column; gap: 1px; }
+.project-threads { padding-left: var(--space-4); }
+.thread-node { min-width: 0; }
 .tree-row {
   display: flex;
   width: 100%;
@@ -863,44 +823,72 @@ onBeforeUnmount(() => {
 }
 .row-caret.open { transform: rotate(90deg); }
 .row-label { overflow: hidden; min-width: 0; flex: 1; text-overflow: ellipsis; white-space: nowrap; }
-.thread-row small { flex-shrink: 0; color: var(--color-fg-faint); font-size: var(--pa-text-meta); }
-.status-dot {
-  width: 6px;
-  height: 6px;
+.thread-pin { flex-shrink: 0; color: var(--color-accent); }
+.thread-branch {
   flex-shrink: 0;
-  border-radius: var(--radius-full);
-  background: var(--color-fg-faint);
+  color: color-mix(in srgb, var(--color-accent) 72%, #8d4cff);
 }
-.status-dot.tone-info { background: var(--color-accent); }
-.status-dot.tone-warning { background: var(--color-warning); }
-.status-dot.tone-danger { background: var(--color-danger); }
-.workspace-row.is-static { cursor: default; }
-.workspace-row.is-static:hover { background: transparent; }
 .thread-actions { display: none; flex-shrink: 0; align-items: center; gap: 1px; }
 .thread-row:hover .thread-actions,
 .thread-row:focus-within .thread-actions { display: inline-flex; }
+.thread-row:hover .thread-branch,
+.thread-row:focus-within .thread-branch { display: none; }
 .thread-action { width: 19px; height: 19px; border-radius: var(--radius-sm); }
-.recent-heading { margin-bottom: 2px; }
-.recent-row {
+.thread-details {
+  position: fixed;
+  z-index: calc(var(--z-overlay) + 1);
+  display: grid;
+  width: min(360px, calc(100vw - 16px));
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+  color: var(--color-fg);
+  box-shadow: var(--shadow-lg);
+  cursor: default;
+  pointer-events: none;
+}
+.thread-details-heading {
   display: flex;
-  width: 100%;
   min-width: 0;
-  height: 34px;
+  align-items: center;
+  gap: var(--space-3);
+}
+.thread-details-heading strong {
+  overflow: hidden;
+  min-width: 0;
+  flex: 1;
+  font-size: var(--text-base);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-details-heading > span {
+  flex-shrink: 0;
+  color: var(--color-fg-faint);
+  font-size: var(--text-xs);
+}
+.thread-detail-row {
+  display: flex;
+  min-width: 0;
   align-items: center;
   gap: var(--space-2);
-  padding: 0 var(--space-2);
-  border: 0;
-  border-radius: 9px;
-  background: transparent;
   color: var(--color-fg-muted);
-  font-size: var(--text-base);
-  text-align: left;
-  cursor: pointer;
+  font-size: var(--text-sm);
 }
-.recent-row:hover,
-.recent-row.active { background: var(--color-surface-hover); color: var(--color-fg); }
-.recent-pin { flex-shrink: 0; color: var(--color-accent); }
-.recent-branch { flex-shrink: 0; color: color-mix(in srgb, var(--color-accent) 72%, #8d4cff); }
+.thread-detail-row > svg { flex-shrink: 0; color: var(--color-fg-subtle); }
+.thread-detail-row > span:not(.thread-detail-status) {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-detail-status {
+  flex-shrink: 0;
+  margin-left: auto;
+  color: var(--color-fg-faint);
+  font-size: var(--text-xs);
+}
 .sidebar-footer {
   display: flex;
   min-height: 58px;
@@ -910,25 +898,6 @@ onBeforeUnmount(() => {
   padding: var(--space-2);
   border-top: 1px solid var(--color-border);
 }
-.footer-user {
-  display: flex;
-  min-width: 0;
-  flex: 1;
-  align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-1);
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--color-fg-muted);
-  text-align: left;
-  cursor: pointer;
-}
-.footer-user:hover,
-.footer-user.active { background: var(--color-surface-muted); color: var(--color-fg); }
-.user-copy { display: flex; min-width: 0; flex-direction: column; }
-.user-copy strong { overflow: hidden; color: var(--color-fg); font-size: var(--text-xs); font-weight: var(--font-medium); text-overflow: ellipsis; white-space: nowrap; }
-.user-copy small { overflow: hidden; color: var(--color-fg-faint); font-size: var(--pa-text-meta); text-overflow: ellipsis; white-space: nowrap; }
 .footer-tools { display: flex; align-items: center; }
 .icon-btn.active { background: var(--color-surface-muted); color: var(--color-fg); }
 .spin { animation: sidebar-spin .9s linear infinite; }
@@ -938,11 +907,9 @@ onBeforeUnmount(() => {
 .is-collapsed .brand-caret,
 .is-collapsed .action-label,
 .is-collapsed .row-trailing,
-.is-collapsed .user-copy,
 .is-collapsed .footer-tools { display: none; }
 .is-collapsed .sidebar-brand,
-.is-collapsed .nav-row,
-.is-collapsed .footer-user { justify-content: center; padding-inline: 0; }
+.is-collapsed .nav-row { justify-content: center; padding-inline: 0; }
 .is-collapsed .brand-tools { display: none; }
 .is-collapsed .sidebar-scroll-region { padding-inline: var(--space-2); }
 .is-collapsed .sidebar-footer { justify-content: center; }
@@ -950,8 +917,7 @@ onBeforeUnmount(() => {
 @media (max-height: 620px) {
   .sidebar-brand { min-height: 50px; }
   .nav-row { height: 32px; }
-  .project-section,
-  .recent-section { margin-top: var(--space-3); }
+  .project-section { margin-top: var(--space-3); }
   .sidebar-footer { min-height: 50px; }
 }
 @media (prefers-reduced-motion: reduce) {

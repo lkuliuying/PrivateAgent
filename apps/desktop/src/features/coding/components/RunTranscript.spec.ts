@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import RunTranscript from "./RunTranscript.vue";
 import { applyRunFrame, createRunProjection, type RunProjection } from "../model/runProjector";
 import type { RunApprovalRecord } from "../model/runContracts";
@@ -50,6 +50,32 @@ describe("RunTranscript", () => {
     expect(wrapper.find('[data-testid="transcript-user-message"]').text()).toContain("修复窄屏遮挡");
     expect(wrapper.find('[data-testid="transcript-run-start"]').text()).toContain("任务开始");
     expect(wrapper.find('[data-testid="transcript-context"]').text()).toContain("已整理上下文");
+  });
+
+  it("生成用户指令索引，并按侧栏目标滚动到对应消息", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const wrapper = mountTranscript({
+      history: [
+        { id: 7, session_id: 11, role: "user", content: "先检查布局", created_at: "2026-08-29T00:00:00Z" },
+        { id: 8, session_id: 11, role: "assistant", content: "已经检查", created_at: "2026-08-29T00:01:00Z" },
+      ],
+    });
+    const markerEvents = wrapper.emitted("instruction-markers-change");
+    const markers = markerEvents?.[markerEvents.length - 1]?.[0] as Array<{ id: string; label: string }>;
+    expect(markers).toEqual([
+      { id: "message:7", label: "先检查布局" },
+      { id: "run:run-1", label: "修复窄屏遮挡" },
+    ]);
+
+    await wrapper.setProps({ instructionTarget: { id: "message:7", seq: 1 } });
+    await flushPromises();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    expect(wrapper.find('[data-instruction-id="message:7"]').classes()).toContain("instruction-targeted");
+    wrapper.unmount();
   });
 
   it("审批卡：风险/能力 + 批准/拒绝事件", async () => {

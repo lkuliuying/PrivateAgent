@@ -23,6 +23,7 @@ import {
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { TranscriptEntry, RunProjection } from "../model/runProjector";
+import type { CodingInstructionMarker } from "../model/contracts";
 import type { Message } from "../../../types";
 import type {
   RunApprovalPreviewRecord,
@@ -55,6 +56,7 @@ const props = withDefaults(
     outputPages?: Record<string, RunExecutionOutputPage | null>;
     outputLoading?: string[];
     previewMode?: boolean;
+    instructionTarget?: { id: string; seq: number } | null;
   }>(),
   {
     phase: "idle" as RunConnectionPhase,
@@ -68,6 +70,7 @@ const props = withDefaults(
     outputPages: () => ({}),
     outputLoading: () => [],
     previewMode: false,
+    instructionTarget: null,
   }
 );
 
@@ -77,6 +80,7 @@ const emit = defineEmits<{
   "open-plan": [];
   "retry-stream": [];
   "load-output": [executionId: string];
+  "instruction-markers-change": [markers: CodingInstructionMarker[]];
 }>();
 
 const TOOL_STATE_LABEL: Record<string, { label: string; tone: string }> = {
@@ -136,6 +140,39 @@ const historyEntries = computed(() => {
   if (userIndex >= 0) items.splice(userIndex, 1);
   return items;
 });
+function historyInstructionId(messageId: number): string {
+  return `message:${messageId}`;
+}
+
+const currentInstructionId = computed(() => {
+  const current = props.projection;
+  return current?.userMessage ? `run:${current.runId}` : null;
+});
+
+function instructionLabel(content: string): string {
+  return content.replace(/\s+/g, " ").trim() || "未命名指令";
+}
+
+const instructionMarkers = computed<CodingInstructionMarker[]>(() => {
+  const markers = historyEntries.value
+    .filter((message) => message.role === "user" && message.content.trim().length > 0)
+    .map((message) => ({
+      id: historyInstructionId(message.id),
+      label: instructionLabel(message.content),
+    }));
+  const currentId = currentInstructionId.value;
+  const currentMessage = props.projection?.userMessage;
+  if (currentId && currentMessage) {
+    markers.push({ id: currentId, label: instructionLabel(currentMessage) });
+  }
+  return markers;
+});
+
+watch(
+  instructionMarkers,
+  (markers) => emit("instruction-markers-change", markers),
+  { immediate: true }
+);
 const entryCount = computed(() => entries.value.length);
 const pendingApprovals = computed(() => props.approvals.filter((item) => item.status === "pending"));
 
@@ -172,6 +209,8 @@ watch(
 const scrollEl = ref<HTMLElement | null>(null);
 const anchoredBottom = ref(true);
 const newActivity = ref(false);
+const activeInstructionId = ref<string | null>(null);
+let instructionHighlightTimer: number | null = null;
 
 function onScroll(): void {
   const el = scrollEl.value;
@@ -189,6 +228,31 @@ async function scrollToBottom(): Promise<void> {
   newActivity.value = false;
 }
 
+async function scrollToInstruction(instructionId: string): Promise<void> {
+  await nextTick();
+  const el = scrollEl.value;
+  if (!el) return;
+  const target = Array.from(
+    el.querySelectorAll<HTMLElement>("[data-instruction-id]")
+  ).find((candidate) => candidate.dataset.instructionId === instructionId);
+  if (!target) return;
+  target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  activeInstructionId.value = instructionId;
+  if (instructionHighlightTimer !== null) window.clearTimeout(instructionHighlightTimer);
+  instructionHighlightTimer = window.setTimeout(() => {
+    activeInstructionId.value = null;
+    instructionHighlightTimer = null;
+  }, 1800);
+}
+
+watch(
+  () => props.instructionTarget?.seq,
+  () => {
+    const target = props.instructionTarget;
+    if (target) void scrollToInstruction(target.id);
+  }
+);
+
 watch(entryCount, async () => {
   if (anchoredBottom.value) {
     await nextTick();
@@ -200,7 +264,10 @@ watch(entryCount, async () => {
 
 onMounted(() => void scrollToBottom());
 onBeforeUnmount(() => {
-  // 无定时器/监听器需要拆除（scroll 绑定随 DOM 卸载）
+  if (instructionHighlightTimer !== null) {
+    window.clearTimeout(instructionHighlightTimer);
+    instructionHighlightTimer = null;
+  }
 });
 
 function approvalById(approvalId: string): RunApprovalRecord | undefined {
@@ -392,8 +459,12 @@ const resultArtifactEntries = computed(() =>
             v-for="message in historyEntries"
             :key="`history:${message.id}`"
             class="history-message"
-            :class="`history-${message.role}`"
+            :class="[
+              `history-${message.role}`,
+              { 'instruction-targeted': message.role === 'user' && activeInstructionId === historyInstructionId(message.id) },
+            ]"
             :data-testid="`transcript-history-${message.role}`"
+            :data-instruction-id="message.role === 'user' ? historyInstructionId(message.id) : undefined"
           >
             <div v-if="message.role === 'user'" class="user-avatar">
               <PhUser :size="14" weight="fill" aria-hidden="true" />
@@ -408,7 +479,13 @@ const resultArtifactEntries = computed(() =>
         <template v-if="projection">
         <div v-if="historyEntries.length" class="transcript-divider current"><span>当前执行</span></div>
         <!-- 用户请求 -->
-        <div v-if="projection.userMessage" class="user-bubble" data-testid="transcript-user-message">
+        <div
+          v-if="projection.userMessage"
+          class="user-bubble"
+          :class="{ 'instruction-targeted': activeInstructionId === currentInstructionId }"
+          data-testid="transcript-user-message"
+          :data-instruction-id="currentInstructionId ?? undefined"
+        >
           <div class="user-avatar"><PhUser :size="14" weight="fill" aria-hidden="true" /></div>
           <div class="user-copy">{{ projection.userMessage }}</div>
         </div>
@@ -741,6 +818,11 @@ const resultArtifactEntries = computed(() =>
   flex-direction: column;
   gap: 2px;
 }
+.transcript-scroll > * {
+  box-sizing: border-box;
+  width: min(1120px, 100%);
+  margin-inline: auto;
+}
 .transcript-empty {
   display: flex;
   flex: 1;
@@ -791,6 +873,15 @@ const resultArtifactEntries = computed(() =>
   line-height: var(--leading-normal);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.instruction-targeted .user-copy,
+.history-user.instruction-targeted .history-copy {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.user-bubble[data-instruction-id],
+.history-user[data-instruction-id] {
+  scroll-margin-block: 72px;
 }
 
 .history-message {
@@ -913,6 +1004,10 @@ const resultArtifactEntries = computed(() =>
   color: var(--color-fg-muted);
   font-size: 15px;
   line-height: var(--leading-normal);
+}
+.transcript-scroll > .entry {
+  width: min(1120px, 100%);
+  margin-inline: auto;
 }
 .entry-icon {
   flex-shrink: 0;
@@ -1346,7 +1441,7 @@ const resultArtifactEntries = computed(() =>
   width: min(900px, 100%);
   flex-direction: column;
   gap: var(--space-3);
-  margin: 0;
+  margin: 0 auto;
   padding: var(--space-2) 0 var(--space-8);
   border: 0;
   border-radius: 0;

@@ -20,7 +20,9 @@ import { fetchCodingModelProfiles } from "../api/modelProfiles";
 import type {
   CodingApiError,
   CodingHomeState,
+  CodingFirstTurnPayload,
   CodingModelProfilesResult,
+  CodingPendingFirstTurn,
   CodingProjectNode,
   CodingProjectSummary,
   CodingThreadSummary,
@@ -44,6 +46,7 @@ export interface CodingWorkspaceStore {
   selectedProjectId: Ref<number | null>;
   selectedWorkspaceId: Ref<number | null>;
   selectedThreadId: Ref<number | null>;
+  pendingFirstTurn: Ref<CodingPendingFirstTurn | null>;
   tree: ComputedRef<CodingProjectNode[]>;
   homeState: ComputedRef<CodingHomeState>;
   selectedProject: ComputedRef<CodingProjectSummary | null>;
@@ -57,6 +60,8 @@ export interface CodingWorkspaceStore {
   recordThreadRun: (threadId: number, runId: string, updatedAt?: string) => void;
   startNewTask: () => void;
   createThreadFromInput: (title: string) => Promise<CodingThreadSummary>;
+  createThreadFromFirstTurn: (payload: CodingFirstTurnPayload) => Promise<CodingThreadSummary>;
+  takePendingFirstTurn: (threadId: number) => CodingFirstTurnPayload | null;
   ensureWorkspaceForProject: (projectId: number) => Promise<void>;
 }
 
@@ -106,6 +111,7 @@ export function createCodingWorkspaceStore(
   const selectedProjectId = ref<number | null>(null);
   const selectedWorkspaceId = ref<number | null>(null);
   const selectedThreadId = ref<number | null>(null);
+  const pendingFirstTurn = ref<CodingPendingFirstTurn | null>(null);
 
   // bootstrap/refresh 序号令牌：迟到响应放弃回写
   let loadSeq = 0;
@@ -338,6 +344,14 @@ export function createCodingWorkspaceStore(
     selectedThreadId.value = null;
   }
 
+  /** 从首条指令提取简短、稳定的对话标题，完整指令仍作为首轮消息执行。 */
+  function titleFromFirstInstruction(message: string): string {
+    const normalized = message.replace(/\s+/g, " ").trim();
+    const firstSentence = normalized.split(/[。！？!?]/, 1)[0]?.trim() || normalized;
+    const source = firstSentence.length >= 4 ? firstSentence : normalized;
+    return source.length > 36 ? `${source.slice(0, 36).trimEnd()}…` : source;
+  }
+
   async function createThreadFromInput(title: string): Promise<CodingThreadSummary> {
     const trimmed = title.trim();
     if (!trimmed) {
@@ -372,6 +386,22 @@ export function createCodingWorkspaceStore(
     return thread;
   }
 
+  async function createThreadFromFirstTurn(
+    payload: CodingFirstTurnPayload
+  ): Promise<CodingThreadSummary> {
+    const thread = await createThreadFromInput(titleFromFirstInstruction(payload.message));
+    pendingFirstTurn.value = { threadId: thread.id, ...payload };
+    return thread;
+  }
+
+  function takePendingFirstTurn(threadId: number): CodingFirstTurnPayload | null {
+    const pending = pendingFirstTurn.value;
+    if (!pending || pending.threadId !== threadId) return null;
+    pendingFirstTurn.value = null;
+    const { threadId: _threadId, ...payload } = pending;
+    return payload;
+  }
+
   async function ensureWorkspaceForProject(projectId: number): Promise<void> {
     const workspace = await source.ensureRootWorkspace(projectId);
     const existing = workspacesByProject.value[projectId] ?? [];
@@ -399,6 +429,7 @@ export function createCodingWorkspaceStore(
     selectedProjectId,
     selectedWorkspaceId,
     selectedThreadId,
+    pendingFirstTurn,
     tree,
     homeState,
     selectedProject,
@@ -412,6 +443,8 @@ export function createCodingWorkspaceStore(
     recordThreadRun,
     startNewTask,
     createThreadFromInput,
+    createThreadFromFirstTurn,
+    takePendingFirstTurn,
     ensureWorkspaceForProject,
   };
 }

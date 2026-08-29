@@ -3,7 +3,7 @@
  * NewProjectDialog · v0.9.0 H1（新建项目/新建对话拆分，计划 §5.1）
  *
  * 「新建项目」负责选择并授权工作目录：
- * - 自定义目录：名称 + 绝对路径，提交即授权（后端同事务建 project +
+ * - 自定义目录：名称 + 通过资源管理器选择目录，提交即授权（后端同事务建 project +
  *   root workspace + trusted path，失败不留半绑定项目）；
  * - 「当前用户目录」候选：只解决归属与起始目录，首次使用前需显式确认
  *   授权范围（不自动扩大 trusted path，H0 §4.2 第 3 条）。
@@ -11,6 +11,7 @@
  */
 import { computed, ref, watch } from "vue";
 import { PhFolderSimple, PhHouse, PhWarningCircle } from "@phosphor-icons/vue";
+import { pickDirectory } from "../../../api/tauri";
 import {
   authorizeProjectScope,
   createCodingProject,
@@ -39,15 +40,29 @@ const mode = ref<Mode>("directory");
 const name = ref("");
 const rootPath = ref("");
 const busy = ref(false);
+const directoryPicking = ref(false);
 const errorMessage = ref<string | null>(null);
 // 用户目录候选：创建后若未授权 → 进入范围确认步骤（显式二次确认）
 const pendingHome = ref<UserHomeCandidate | null>(null);
 
 const canSubmit = computed(() => {
-  if (busy.value) return false;
+  if (busy.value || directoryPicking.value) return false;
   if (mode.value === "user-home") return true;
   return name.value.trim().length > 0 && rootPath.value.trim().length > 0;
 });
+
+async function chooseDirectory(): Promise<void> {
+  if (directoryPicking.value || busy.value) return;
+  mode.value = "directory";
+  directoryPicking.value = true;
+  errorMessage.value = null;
+  try {
+    const selected = await pickDirectory();
+    if (selected) rootPath.value = selected;
+  } finally {
+    directoryPicking.value = false;
+  }
+}
 
 watch(mode, () => {
   errorMessage.value = null;
@@ -162,10 +177,11 @@ async function confirmHomeScope(): Promise<void> {
             :class="{ active: mode === 'directory' }"
             :aria-selected="mode === 'directory'"
             data-testid="new-project-mode-directory"
-            @click="mode = 'directory'"
+            :disabled="directoryPicking || busy"
+            @click="void chooseDirectory()"
           >
             <PhFolderSimple :size="14" aria-hidden="true" />
-            选择目录
+            {{ directoryPicking ? "正在打开…" : rootPath ? "更换目录" : "选择目录" }}
           </button>
           <button
             type="button"
@@ -193,19 +209,26 @@ async function confirmHomeScope(): Promise<void> {
               data-testid="new-project-name"
             />
           </label>
-          <label class="field">
-            <span class="field-label">工作目录（绝对路径）</span>
-            <input
-              v-model="rootPath"
-              type="text"
-              class="field-input"
-              placeholder="例如：D:\Projects\my-site"
-              data-testid="new-project-path"
-            />
+          <div class="field">
+            <span class="field-label">工作目录</span>
+            <button
+              type="button"
+              class="directory-field"
+              data-testid="new-project-pick-directory"
+              :disabled="directoryPicking || busy"
+              :title="rootPath || '从资源管理器选择工作目录'"
+              @click="void chooseDirectory()"
+            >
+              <PhFolderSimple :size="17" aria-hidden="true" />
+              <span :class="{ placeholder: !rootPath }">
+                {{ rootPath || "从资源管理器选择目录" }}
+              </span>
+              <strong>{{ rootPath ? "重新选择" : "浏览…" }}</strong>
+            </button>
             <span class="field-hint">
               目录必须存在；创建即授权该目录为可信工作范围。
             </span>
-          </label>
+          </div>
         </div>
 
         <div v-else class="home-note">
@@ -301,6 +324,11 @@ async function confirmHomeScope(): Promise<void> {
   cursor: pointer;
 }
 
+.mode-tab:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
 .mode-tab.active {
   background: var(--color-accent-soft);
   border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
@@ -336,6 +364,57 @@ async function confirmHomeScope(): Promise<void> {
 .field-input:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
   outline-offset: 1px;
+}
+
+.directory-field {
+  display: grid;
+  width: 100%;
+  min-height: 42px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-muted);
+  text-align: left;
+  cursor: pointer;
+}
+
+.directory-field:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--color-border));
+  background: var(--color-surface-hover);
+}
+
+.directory-field:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
+  outline-offset: 1px;
+}
+
+.directory-field:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.directory-field span {
+  overflow: hidden;
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: var(--pa-text-meta, 12px);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.directory-field span.placeholder {
+  color: var(--color-fg-subtle);
+  font-family: inherit;
+}
+
+.directory-field strong {
+  color: var(--color-accent);
+  font-size: var(--pa-text-meta, 12px);
+  font-weight: 600;
 }
 
 .field-hint {

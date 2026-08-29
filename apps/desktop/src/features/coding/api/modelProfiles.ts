@@ -53,7 +53,7 @@ export function toModelProfileDetail(dto: ModelProfileDto): CodingModelProfileDe
     supportsStreaming: dto.supports_streaming ?? false,
     supportsStructuredOutput: dto.supports_structured_output ?? false,
     supportsVision: dto.supports_vision ?? false,
-    contextTokens: dto.context_tokens ?? null,
+    contextTokens: dto.context_tokens ?? 8192,
     reasoningEfforts: dto.reasoning_efforts,
     usageReporting: dto.usage_reporting ?? false,
     enabled: dto.enabled,
@@ -90,7 +90,7 @@ export async function fetchCodingModelProfiles(): Promise<CodingModelProfilesRes
       modelName: dto.model_name ?? null,
       isDefault: dto.is_default ?? false,
       isLocal: dto.is_local,
-      contextTokens: dto.context_tokens ?? null,
+      contextTokens: dto.context_tokens ?? 8192,
       reasoningEfforts: dto.reasoning_efforts,
     }));
   return { status: "ok", profiles };

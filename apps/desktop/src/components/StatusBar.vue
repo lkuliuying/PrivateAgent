@@ -1,80 +1,30 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from "vue";
+import { onMounted, onUnmounted } from "vue";
 import { PhActivity, PhBell } from "@phosphor-icons/vue";
 import { useNotifications } from "../stores/notifications";
-import { useHealth, type HealthSnapshot } from "../stores/health";
 
 /**
- * 底部状态栏。通过共享 store 轮询 /health（5s）。
- * 展示 API/MySQL/Chroma 三项基础服务状态 + 任务状态；模型由输入器选择器呈现。
- * 任务状态由父组件通过 taskLabel 传入（M0：生成中/空闲；M4 接入活动流后扩展）。
+ * 底部状态栏只呈现用户可操作的通知与当前任务状态。
+ * 服务端部署后不在工作台底部暴露 API/MySQL/Chroma 拓扑；详细健康状态
+ * 仍由设置页与诊断页按需展示。
  */
 defineProps<{ taskLabel?: string }>();
 
 const notify = useNotifications();
-const healthStore = useHealth();
-
-type DotState = "ok" | "bad" | "idle";
-
-const services = ref<Record<string, DotState>>({
-  api: "idle",
-  mysql: "idle",
-  chroma: "idle",
-});
-let timer: number | null = null;
 let notifyTimer: number | null = null;
 
-function okOf(h: HealthSnapshot, key: keyof HealthSnapshot): boolean {
-  return h[key].ok;
-}
-
-async function refresh() {
-  const h = await healthStore.refresh();
-  if (h) {
-    services.value = {
-      api: okOf(h, "api") ? "ok" : "bad",
-      mysql: okOf(h, "mysql") ? "ok" : "bad",
-      chroma: okOf(h, "chroma") ? "ok" : "bad",
-    };
-  } else {
-    // 首次连接尚未成功时置 idle；已有快照由 store 保留，不因瞬时失败闪灰。
-    services.value = { api: "idle", mysql: "idle", chroma: "idle" };
-  }
-}
-
 onMounted(() => {
-  refresh();
-  timer = window.setInterval(refresh, 5000);
   // 拉取持久化通知，让铃铛角标反映后端未读（导入/备份等异步结果）
   void notify.loadPersisted();
   notifyTimer = window.setInterval(() => void notify.loadPersisted(), 30000);
 });
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
   if (notifyTimer) window.clearInterval(notifyTimer);
 });
-
-const serviceList: { key: string; label: string }[] = [
-  { key: "api", label: "API" },
-  { key: "mysql", label: "MySQL" },
-  { key: "chroma", label: "Chroma" },
-];
 </script>
 
 <template>
-  <div class="statusbar" role="status" aria-label="服务状态">
-    <div class="sb-services">
-      <div
-        v-for="s in serviceList"
-        :key="s.key"
-        class="sb-service"
-        :title="`${s.label}: ${services[s.key]}`"
-      >
-        <span class="pa-status-dot" :class="`pa-status-dot--${services[s.key]}`" />
-        <span class="sb-label">{{ s.label }}</span>
-      </div>
-    </div>
-
+  <div class="statusbar" role="status" aria-label="任务与通知状态">
     <div class="sb-right">
       <button
         class="sb-bell"
@@ -101,26 +51,11 @@ const serviceList: { key: string; label: string }[] = [
   height: 100%;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   padding: 0 var(--space-3);
   gap: var(--space-3);
   font-size: var(--text-xs);
   color: var(--color-fg-muted);
-}
-.sb-services {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  min-width: 0;
-}
-.sb-service {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  white-space: nowrap;
-}
-.sb-label {
-  color: var(--color-fg-subtle);
 }
 .sb-right {
   display: flex;

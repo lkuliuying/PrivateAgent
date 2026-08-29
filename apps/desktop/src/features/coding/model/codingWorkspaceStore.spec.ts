@@ -197,6 +197,26 @@ describe("codingWorkspaceStore", () => {
     });
   });
 
+  it("createThreadFromFirstTurn 从首句生成短标题，并让首轮指令只消费一次", async () => {
+    const createThread = vi.fn(baseFetchers().createThread);
+    const store = createCodingWorkspaceStore(baseFetchers({ createThread }));
+    await store.bootstrap();
+    const payload = {
+      message: "  修复登录页窄屏遮挡问题。随后补充回归测试  ",
+      permissionMode: "confirm",
+      modelProfileId: "local-coder",
+      reasoningEffort: "high",
+    };
+    const created = await store.createThreadFromFirstTurn(payload);
+    expect(createThread).toHaveBeenCalledWith({
+      projectId: 1,
+      workspaceId: 101,
+      title: "修复登录页窄屏遮挡问题",
+    });
+    expect(store.takePendingFirstTurn(created.id)).toEqual(payload);
+    expect(store.takePendingFirstTurn(created.id)).toBeNull();
+  });
+
   it("createThread 后端拒绝（workspace_outside_trust）原样透传错误码", async () => {
     const store = createCodingWorkspaceStore(
       baseFetchers({

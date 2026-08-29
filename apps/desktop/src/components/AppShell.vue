@@ -132,7 +132,7 @@ const meta = () => viewMeta(props.view);
       </Transition>
     </div>
 
-    <footer v-if="meta().showStatusbar !== false" class="appshell-statusbar">
+    <footer v-if="meta().showStatusbar !== false && $slots.statusbar" class="appshell-statusbar">
       <slot name="statusbar" />
     </footer>
   </div>

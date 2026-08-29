@@ -144,6 +144,11 @@ describe("CodingComposer", () => {
     expect(ring.attributes("aria-label")).toContain("上下文用量");
   });
 
+  it("尚未创建对话时不显示上下文用量状态", () => {
+    const { wrapper } = mountComposer({ threadId: null });
+    expect(wrapper.find('[data-testid="context-usage-ring"]').exists()).toBe(false);
+  });
+
   it("加号按钮打开项目文件引用入口", async () => {
     const searchFiles = vi.fn().mockResolvedValue(HINTS);
     const { wrapper } = mountComposer({ searchFiles });

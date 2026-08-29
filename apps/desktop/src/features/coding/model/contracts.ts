@@ -45,6 +45,12 @@ export interface CodingThreadSummary {
   kind?: string | null;
 }
 
+/** 当前对话内的用户指令索引；id 对应 RunTranscript 中的可滚动锚点。 */
+export interface CodingInstructionMarker {
+  id: string;
+  label: string;
+}
+
 /** 模型 profile 摘要（GET /agent-model-profiles，无任何 secret 字段） */
 export interface CodingModelProfileSummary {
   id: string;
@@ -178,6 +184,18 @@ export interface CodingThreadCreateInput {
   projectId: number;
   workspaceId: number;
   title: string;
+}
+
+/** 新对话首轮输入：先在草稿态选择上下文，首次发送时再创建会话并执行。 */
+export interface CodingFirstTurnPayload {
+  message: string;
+  permissionMode: string;
+  modelProfileId: string | null;
+  reasoningEffort: string | null;
+}
+
+export interface CodingPendingFirstTurn extends CodingFirstTurnPayload {
+  threadId: number;
 }
 
 /** store 数据源注入：生产 = REST 封装，测试/预览夹具 = 领域内伪实现 */

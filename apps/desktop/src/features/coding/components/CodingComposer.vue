@@ -23,18 +23,14 @@ import PaSelect from "../../../design/PaSelect.vue";
 import ContextUsageRing from "../../agent/ContextUsageRing.vue";
 import type { CodingFileHint } from "../model/runContracts";
 import { PERMISSION_MODE_META } from "../model/runContracts";
+import type { CodingFirstTurnPayload } from "../model/contracts";
 import type { CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 // v0.9.0 §5.3：full_access 授予查询/撤销 + 有效期显示（产品时区）
 import { fetchFullAccessGrant, revokeFullAccessGrant } from "../api/fullAccess";
 import { formatDateTime } from "../../../services/timeDisplay";
 import { useNotifications } from "../../../stores/notifications";
 
-export interface CodingComposerSendPayload {
-  message: string;
-  permissionMode: string;
-  modelProfileId: string | null;
-  reasoningEffort: string | null;
-}
+export interface CodingComposerSendPayload extends CodingFirstTurnPayload {}
 
 const notify = useNotifications();
 
@@ -793,6 +789,7 @@ onBeforeUnmount(() => {
           />
         </label>
         <ContextUsageRing
+          v-if="threadId !== null"
           class="composer-context-ring"
           :session-id="threadId"
           :enabled="contextBudgetEnabled"
