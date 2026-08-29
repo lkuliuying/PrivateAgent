@@ -10,7 +10,7 @@
  * - 所有写操作经 typed API（features/coding/api/modelProfiles.ts），
  *   组件不拼 URL、不接触任何 Provider secret。
  */
-import { computed, onMounted, onScopeDispose, ref } from "vue";
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
 import {
   PhCheckCircle,
   PhDownloadSimple,
@@ -39,7 +39,7 @@ import {
   upsertCodingModelProfile,
   type ModelToolProbeStatus,
 } from "../features/coding/api/modelProfiles";
-import { updateSettings } from "../api";
+import { listProviderModels, updateSettings } from "../api";
 import PaBadge from "../design/PaBadge.vue";
 import PaButton from "../design/PaButton.vue";
 import PaDialog from "../design/PaDialog.vue";
@@ -47,6 +47,22 @@ import PaInlineNotice from "../design/PaInlineNotice.vue";
 import PaSpinner from "../design/PaSpinner.vue";
 import { useNotifications } from "../stores/notifications";
 
+const props = withDefaults(
+  defineProps<{
+    activeProvider?: "ollama" | "openai" | "claude";
+    remoteProviderEnabled?: boolean;
+    openaiBaseUrl?: string;
+    openaiApiKey?: string;
+    claudeApiKey?: string;
+  }>(),
+  {
+    activeProvider: "ollama",
+    remoteProviderEnabled: false,
+    openaiBaseUrl: "",
+    openaiApiKey: "",
+    claudeApiKey: "",
+  }
+);
 const emit = defineEmits<{ saved: [] }>();
 const notify = useNotifications();
 
@@ -87,24 +103,96 @@ const editingId = ref<string | null>(null);
 const saving = ref(false);
 const editorError = ref("");
 const form = ref<CodingModelProfileUpsert>(emptyForm());
+const availableModels = ref<string[]>([]);
+const modelsLoading = ref(false);
+const modelsError = ref("");
+let modelsRequestSeq = 0;
+
+const REASONING_EFFORT_OPTIONS = ["minimal", "low", "medium", "high", "max"];
 
 function emptyForm(): CodingModelProfileUpsert {
   return {
-    provider: "ollama",
+    provider: props.activeProvider,
     displayName: "",
     modelName: "",
-    isLocal: true,
+    isLocal: props.activeProvider === "ollama",
     nativeToolCalls: true,
     supportsStreaming: true,
     supportsStructuredOutput: false,
     supportsVision: false,
     contextTokens: 32768,
-    reasoningEfforts: null,
+    reasoningEfforts: ["low", "medium", "high"],
     usageReporting: true,
     enabled: true,
     isDefault: false,
   };
 }
+
+const selectableModels = computed(() => {
+  const current = (form.value.modelName ?? "").trim();
+  return current && !availableModels.value.includes(current)
+    ? [current, ...availableModels.value]
+    : availableModels.value;
+});
+
+const reasoningEffortOptions = computed(() => {
+  const configured = form.value.reasoningEfforts ?? [];
+  return [...new Set([...REASONING_EFFORT_OPTIONS, ...configured])];
+});
+
+function toggleReasoningEffort(value: string, enabled: boolean): void {
+  const current = new Set(form.value.reasoningEfforts ?? []);
+  if (enabled) current.add(value);
+  else current.delete(value);
+  form.value.reasoningEfforts = current.size ? [...current] : null;
+}
+
+async function loadAvailableModels(): Promise<void> {
+  const seq = ++modelsRequestSeq;
+  modelsLoading.value = true;
+  modelsError.value = "";
+  try {
+    const provider = form.value.provider;
+    const key = provider === "openai" ? props.openaiApiKey : props.claudeApiKey;
+    const models = await listProviderModels({
+      provider_type: provider,
+      remote_provider_enabled: props.remoteProviderEnabled,
+      ...(provider === "openai" && props.openaiBaseUrl.trim()
+        ? { base_url: props.openaiBaseUrl.trim() }
+        : {}),
+      ...(provider !== "ollama" && key.trim() ? { api_key: key.trim() } : {}),
+    });
+    if (seq !== modelsRequestSeq) return;
+    availableModels.value = models;
+    if (!form.value.modelName && models.length === 1) {
+      form.value.modelName = models[0];
+      form.value.displayName = models[0];
+    }
+  } catch (error) {
+    if (seq !== modelsRequestSeq) return;
+    availableModels.value = [];
+    modelsError.value = errorText(error);
+  } finally {
+    if (seq === modelsRequestSeq) modelsLoading.value = false;
+  }
+}
+
+function onModelSelected(): void {
+  form.value.displayName = (form.value.modelName ?? "").trim();
+}
+
+watch(
+  () => form.value.provider,
+  (provider, previous) => {
+    form.value.isLocal = provider === "ollama";
+    if (!showEditor.value) return;
+    if (previous && provider !== previous) {
+      form.value.modelName = "";
+      form.value.displayName = "";
+    }
+    void loadAvailableModels();
+  }
+);
 
 function slugify(text: string): string {
   const slug = text
@@ -325,6 +413,7 @@ function openCreate(): void {
   form.value = emptyForm();
   editorError.value = "";
   showEditor.value = true;
+  void loadAvailableModels();
 }
 
 function openEdit(profile: CodingModelProfileDetail): void {
@@ -346,21 +435,24 @@ function openEdit(profile: CodingModelProfileDetail): void {
   };
   editorError.value = "";
   showEditor.value = true;
+  void loadAvailableModels();
 }
 
 async function onSave(): Promise<void> {
   if (saving.value) return;
-  if (!form.value.displayName.trim()) {
-    editorError.value = "显示名称不能为空";
+  const modelName = (form.value.modelName ?? "").trim();
+  if (!modelName) {
+    editorError.value = "请先从模型服务返回的列表中选择模型 ID";
     return;
   }
   saving.value = true;
   editorError.value = "";
-  const id = editingId.value ?? `${slugify(form.value.provider)}-${slugify(form.value.displayName)}-${Date.now().toString(36)}`;
+  const id = editingId.value ?? `${slugify(form.value.provider)}-${slugify(modelName)}-${Date.now().toString(36)}`;
   try {
     await upsertCodingModelProfile(id, {
       ...form.value,
-      modelName: (form.value.modelName ?? "").trim() || null,
+      displayName: modelName,
+      modelName,
     });
     showEditor.value = false;
     await load();
@@ -411,7 +503,7 @@ onMounted(async () => {
     <div v-if="loading" class="load-row"><PaSpinner :size="16" /> 加载模型配置…</div>
     <PaInlineNotice v-else-if="loadError" tone="danger">{{ loadError }}</PaInlineNotice>
     <p v-else-if="!profiles.length" class="empty-hint" data-testid="model-profiles-empty">
-      尚无 Coding 模型 profile。可从上方导入当前配置，或新建一个。
+      尚无项目模型配置。可从上方导入当前配置，或新建一个。
     </p>
     <ul v-else class="profile-list">
       <li
@@ -423,12 +515,12 @@ onMounted(async () => {
         <div class="profile-main">
           <span class="profile-name">
             <PhStar v-if="profile.isDefault" :size="13" weight="fill" class="default-star" aria-label="默认" />
-            {{ profile.displayName }}
+            {{ profile.modelName || profile.displayName }}
           </span>
           <span class="profile-meta">
             {{ profile.provider }} · {{ profile.modelName || "未填写模型标识" }}
             · {{ profile.isLocal ? "本地" : "远程" }}
-            · 上下文 {{ profile.contextTokens.toLocaleString() }}
+            · 上下文 {{ profile.contextTokens?.toLocaleString() ?? "未知" }}
           </span>
           <div class="profile-badges">
             <PaBadge v-if="profile.isDefault" tone="success">默认</PaBadge>
@@ -530,7 +622,7 @@ onMounted(async () => {
 
     <div class="panel-actions">
       <PaButton variant="primary" data-testid="model-profile-create" @click="openCreate">
-        <PhPlus :size="14" /> 新建 Coding 模型
+        <PhPlus :size="14" /> 新建模型配置
       </PaButton>
       <span class="panel-note">
         <PhLightning :size="12" aria-hidden="true" />
@@ -541,7 +633,7 @@ onMounted(async () => {
     <!-- 创建/编辑对话框 -->
     <PaDialog
       :open="showEditor"
-      :title="editingId ? '编辑 Coding 模型' : '新建 Coding 模型'"
+      :title="editingId ? '编辑模型配置' : '新建模型配置'"
       data-testid="model-profile-editor"
       @close="showEditor = false"
     >
@@ -550,27 +642,51 @@ onMounted(async () => {
           <span>Provider</span>
           <select v-model="form.provider">
             <option value="ollama">Ollama（本地）</option>
-            <option value="openai">OpenAI 兼容（远程）</option>
-            <option value="claude">Claude（远程）</option>
+            <option value="openai">OpenAI 兼容 API（任意远程模型）</option>
+            <option value="claude">Claude 原生协议（兼容旧配置）</option>
           </select>
         </label>
         <label class="field">
-          <span>显示名称</span>
-          <input v-model="form.displayName" maxlength="200" placeholder="例如：本地编码模型" />
-        </label>
-        <label class="field">
-          <span>模型标识（实际路由的 model）</span>
-          <input
+          <span>模型 ID</span>
+          <div class="model-picker-row">
+          <select
             v-model="form.modelName"
-            maxlength="200"
             data-testid="model-profile-editor-model-name"
-            placeholder="例如：qwen3-coder（缺失时执行会失败关闭）"
-          />
+            :disabled="modelsLoading || !selectableModels.length"
+            @change="onModelSelected"
+          >
+            <option value="" disabled>
+              {{ modelsLoading ? "正在获取模型列表…" : "请选择模型 ID" }}
+            </option>
+            <option v-for="modelId in selectableModels" :key="modelId" :value="modelId">
+              {{ modelId }}
+            </option>
+          </select>
+          <PaButton size="sm" variant="ghost" :disabled="modelsLoading" @click="void loadAvailableModels()">
+            <PaSpinner v-if="modelsLoading" :size="13" />
+            <template v-else>刷新列表</template>
+          </PaButton>
+          </div>
+          <small v-if="modelsError" class="field-error">{{ modelsError }}</small>
         </label>
+        <PaInlineNotice v-if="form.provider === 'openai'" tone="info">
+          API Key 与请求地址在本页的“服务连接与隐私”维护；模型 ID 来自服务端列表。
+        </PaInlineNotice>
         <label class="field">
           <span>上下文窗口（tokens）</span>
           <input v-model.number="form.contextTokens" type="number" min="1" />
         </label>
+        <fieldset class="effort-field">
+          <legend>可选推理强度</legend>
+          <label v-for="effort in reasoningEffortOptions" :key="effort" class="check">
+            <input
+              type="checkbox"
+              :checked="form.reasoningEfforts?.includes(effort)"
+              @change="toggleReasoningEffort(effort, ($event.target as HTMLInputElement).checked)"
+            />
+            {{ effort }}
+          </label>
+        </fieldset>
         <label class="check"><input v-model="form.isLocal" type="checkbox" /> 本地模型（不发送远程）</label>
         <label class="check">
           <input v-model="form.nativeToolCalls" type="checkbox" data-testid="model-profile-editor-tools" />
@@ -722,6 +838,32 @@ onMounted(async () => {
   border-radius: var(--radius-md);
   background: var(--color-surface);
   color: var(--color-fg);
+}
+.model-picker-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.model-picker-row select {
+  flex: 1;
+  min-width: 0;
+}
+.field-error {
+  color: var(--color-danger);
+}
+.effort-field {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.effort-field legend {
+  padding: 0 var(--space-1);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
 }
 .check {
   display: flex;

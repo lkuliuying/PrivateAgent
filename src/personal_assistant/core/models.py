@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 from datetime import date, datetime
 from decimal import Decimal
+from typing import ClassVar
 from uuid import uuid4
 
 from sqlalchemy import ForeignKey, Index, UniqueConstraint, func
@@ -26,11 +27,27 @@ from sqlalchemy.dialects.mysql import (
     TEXT,
     VARCHAR,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import (
+    DeclarativeBase,
+    Mapped,
+    declared_attr,
+    mapped_column,
+    relationship,
+)
 
 
 class Base(DeclarativeBase):
-    pass
+    """所有业务表的声明基类，并提供统一的租户归属列。
+
+    ``owner_user_id`` 在迁移后加入既有表。系统配置/认证/审计模型通过
+    ``__tenant_scoped__ = False`` 显式退出请求级租户过滤。
+    """
+
+    __tenant_scoped__: ClassVar[bool] = True
+
+    @declared_attr
+    def owner_user_id(cls) -> Mapped[int | None]:
+        return mapped_column(BIGINT, nullable=True, index=True)
 
 
 def _new_memory_stable_key() -> str:
@@ -387,6 +404,7 @@ class DocumentIndexHead(Base):
 
 
 class Setting(Base):
+    __tenant_scoped__ = False
     __tablename__ = "settings"
 
     key: Mapped[str] = mapped_column(VARCHAR(128), primary_key=True)
@@ -1541,8 +1559,10 @@ class ModelProfile(Base):
     supports_vision: Mapped[bool] = mapped_column(
         BOOLEAN, nullable=False, default=False, server_default="0"
     )
-    context_tokens: Mapped[int] = mapped_column(
-        INTEGER, nullable=False, default=8192, server_default="8192"
+    # 模型列表接口未统一上下文窗口字段。无法确认时保持 NULL，避免把未知
+    # 模型伪装成某个通用默认值并据此提前压缩上下文。
+    context_tokens: Mapped[int | None] = mapped_column(
+        INTEGER, nullable=True, default=8192, server_default="8192"
     )
     reasoning_efforts_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     usage_reporting: Mapped[bool] = mapped_column(
@@ -1567,8 +1587,9 @@ class ModelProfile(Base):
 class ModelToolProfileSnapshotRecord(Base):
     """v1.0 CT-3（专项计划 §8.2）：模型工具能力探测快照（持久化事实）。
 
-    每次 probe 一行；工具面门禁取 profile 最新一条有效快照（status=ok
-    且能力映射满足最小工具协议）。无有效快照时失败关闭到最小工具面。
+    每次 probe 一行；诊断读取 profile 最新一条有效快照（status=ok 且能力
+    映射满足最小工具协议）。快照不参与内建工具授权，避免瞬时探测假阴性
+    隐藏受权限与审批保护的真实工具。
     """
 
     __tablename__ = "model_tool_profile_snapshots"
@@ -3194,3 +3215,167 @@ class FullAccessGrant(Base):
         Index("idx_full_access_grant_session", "session_id", "expires_at"),
         Index("idx_full_access_grant_expiry", "expires_at", "revoked_at"),
     )
+
+
+# ============================================================================
+# 多用户认证、会话与全局审计
+# ============================================================================
+
+
+class User(Base):
+    """可登录账号；密码字段只保存版本化 scrypt 哈希。"""
+
+    __tenant_scoped__ = False
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(VARCHAR(320), nullable=False, unique=True)
+    username: Mapped[str] = mapped_column(VARCHAR(100), nullable=False, unique=True)
+    # 兼容 0037 及旧 API 数据；新界面和登录统一使用 username。
+    display_name: Mapped[str] = mapped_column(VARCHAR(100), nullable=False)
+    password_hash: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
+    role: Mapped[str] = mapped_column(
+        VARCHAR(16), nullable=False, default="user", server_default="user"
+    )
+    status: Mapped[str] = mapped_column(
+        VARCHAR(16), nullable=False, default="active", server_default="active"
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3),
+        nullable=False,
+        server_default=func.current_timestamp(3),
+        onupdate=func.current_timestamp(3),
+    )
+
+    auth_sessions: Mapped[list["AuthSession"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+    __table_args__ = (
+        Index("idx_users_role_status", "role", "status"),
+        Index("idx_users_created_at", "created_at"),
+    )
+
+
+class EmailVerificationCode(Base):
+    """注册邮箱验证码；仅保存加盐摘要，原始验证码只进入邮件。"""
+
+    __tenant_scoped__ = False
+    __tablename__ = "email_verification_codes"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(VARCHAR(320), nullable=False)
+    purpose: Mapped[str] = mapped_column(
+        VARCHAR(32), nullable=False, default="registration", server_default="registration"
+    )
+    code_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    code_salt: Mapped[str] = mapped_column(CHAR(32), nullable=False)
+    attempts: Mapped[int] = mapped_column(
+        INTEGER, nullable=False, default=0, server_default="0"
+    )
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_email_verification_lookup",
+            "email",
+            "purpose",
+            "created_at",
+        ),
+        Index("idx_email_verification_expiry", "expires_at", "consumed_at"),
+    )
+
+
+class AuthSession(Base):
+    """登录会话；数据库仅持有随机访问令牌的 SHA-256 摘要。"""
+
+    __tenant_scoped__ = False
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[str] = mapped_column(
+        CHAR(36), primary_key=True, default=lambda: str(uuid4())
+    )
+    user_id: Mapped[int] = mapped_column(
+        BIGINT, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DATETIME(fsp=3), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DATETIME(fsp=3), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    user: Mapped[User] = relationship(back_populates="auth_sessions")
+
+    __table_args__ = (
+        Index("idx_auth_sessions_user_expiry", "user_id", "expires_at"),
+        Index("idx_auth_sessions_expiry", "expires_at", "revoked_at"),
+    )
+
+
+class AuditLog(Base):
+    """不记录请求正文的全局操作审计元数据。"""
+
+    __tenant_scoped__ = False
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(CHAR(36), nullable=False, unique=True)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        VARCHAR(16), nullable=False, default="anonymous", server_default="anonymous"
+    )
+    method: Mapped[str] = mapped_column(VARCHAR(10), nullable=False)
+    path: Mapped[str] = mapped_column(VARCHAR(512), nullable=False)
+    status_code: Mapped[int] = mapped_column(INTEGER, nullable=False)
+    duration_ms: Mapped[int] = mapped_column(BIGINT, nullable=False)
+    client_ip: Mapped[str | None] = mapped_column(VARCHAR(64), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(VARCHAR(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DATETIME(fsp=3), nullable=False, server_default=func.current_timestamp(3)
+    )
+
+    __table_args__ = (
+        Index("idx_audit_logs_created", "created_at"),
+        Index("idx_audit_logs_actor_created", "actor_user_id", "created_at"),
+        Index("idx_audit_logs_status_created", "status_code", "created_at"),
+    )
+
+
+# 这些表是服务端全局配置/运行诊断，不应随当前登录用户被过滤。
+for _global_model in (
+    Setting,
+    ModelProfile,
+    ModelToolProfileSnapshotRecord,
+    DiagnosticRun,
+    DataIntegrityFinding,
+    TestRun,
+    ReleaseArtifact,
+    UpgradeSmokeRun,
+    ExtensionRegistryItem,
+    CompatibilityTelemetryRow,
+    HttpEndpointProfile,
+    SqlReadonlyProfile,
+    McpServer,
+    McpCallLog,
+):
+    _global_model.__tenant_scoped__ = False

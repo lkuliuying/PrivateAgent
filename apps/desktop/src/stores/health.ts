@@ -9,12 +9,6 @@ export interface ComponentHealth {
 
 export interface HealthSnapshot {
   api: ComponentHealth;
-  ollama: ComponentHealth & {
-    base_url?: string;
-    models?: string[];
-    llm_model_available?: boolean;
-    embed_model_available?: boolean;
-  };
   mysql: ComponentHealth;
   chroma: ComponentHealth & { collections?: number };
 }

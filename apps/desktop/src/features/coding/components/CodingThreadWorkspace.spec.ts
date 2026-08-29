@@ -72,6 +72,14 @@ describe("CodingThreadWorkspace（W2 组装）", () => {
         wrapper.find('[data-testid="tool-command"]').exists()
       );
       expect(wrapper.find('[data-testid="transcript-empty"]').exists()).toBe(false);
+      expect(wrapper.find('[data-testid="coding-instruction-index"]').exists()).toBe(true);
+      const instruction = wrapper.find('[data-testid="coding-instruction-0"]');
+      expect(instruction.exists()).toBe(true);
+      expect(instruction.text()).toBe("");
+      expect(instruction.attributes("aria-label")).toContain("定位到用户指令");
+      expect(instruction.find(".instruction-index__tick").exists()).toBe(true);
+      await instruction.trigger("click");
+      expect(instruction.classes()).toContain("active");
       expect(wrapper.find('[data-testid="tool-command"]').exists()).toBe(true);
       // W6-R：命令文本/目录在详情折叠区，展开后呈现。
       await wrapper.find('[data-testid="command-output-toggle"]').trigger("click");

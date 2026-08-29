@@ -251,7 +251,8 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await expect(page.getByTestId("coding-home-project-select")).toBeVisible();
     await expect(page.getByTestId("coding-home-workspace-select")).toBeVisible();
 
-    // 默认选择（项目 1 / root 工作区）在加载后自动展开祖先
+    // 项目树按需展开，默认把空间留给最近对话。
+    await page.getByTestId("coding-toggle-projects").click();
     await expect(page.getByTestId("coding-workspace-101")).toBeVisible();
     await expect(page.getByTestId("coding-workspace-102")).toBeVisible();
     await expect(page.getByTestId("coding-workspace-102")).toHaveAttribute("data-status", "dirty");
@@ -323,7 +324,7 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await openCoding(page, { modelProfiles: 409 });
     await expect(page.getByTestId("coding-home-provider-unconfigured")).toBeVisible();
     await page.getByRole("button", { name: "前往设置" }).click();
-    await expect(page.getByTestId("coding-nav-settings")).toHaveAttribute(
+    await expect(page.getByTestId("settings-section-provider")).toHaveAttribute(
       "aria-current",
       "page"
     );
@@ -347,14 +348,62 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
   test("旧页导航回环：设置 → 返回 coding 首页（不经独立项目页）", async ({ page }) => {
     await openCoding(page);
     await page.getByTestId("coding-nav-settings").click();
-    await expect(page.getByTestId("coding-nav-settings")).toHaveAttribute(
+    await expect(page.getByTestId("settings-module-nav")).toBeVisible();
+    await page.getByRole("button", { name: "返回工作台" }).click();
+    await expect(page.getByTestId("coding-home-ready")).toBeVisible();
+  });
+
+  test("设置按模块切换，主区只显示当前模块", async ({ page }) => {
+    await openCoding(page);
+    await page.getByTestId("coding-nav-settings").click();
+
+    await expect(page.getByTestId("settings-section-status")).toHaveAttribute(
       "aria-current",
       "page"
     );
-    // coding 侧栏仍在，旧页可返回新壳首页
-    await expect(page.getByTestId("coding-sidebar")).toBeVisible();
-    await page.getByTestId("coding-new-task").click();
-    await expect(page.getByTestId("coding-home-ready")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "运行状态" }).first()).toBeVisible();
+
+    await page.getByTestId("settings-section-provider").click();
+    await expect(page.getByTestId("settings-section-provider")).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    await expect(page.getByRole("heading", { name: "模型服务与隐私" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "运行状态" })).toHaveCount(0);
+  });
+
+  test("设置窄窗口：模块栏隐藏为浮动入口，可打开并在选择后自动收起", async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 760 });
+    await openCoding(page, {}, "drawer-tab");
+    await page.getByTestId("coding-drawer-tab").click();
+    await page.getByTestId("coding-nav-settings").click();
+
+    await expect(page.getByTestId("settings-drawer-tab")).toBeVisible();
+    await expect(page.getByTestId("settings-module-nav")).toBeHidden();
+    await page.getByTestId("settings-drawer-tab").click();
+    await expect(page.getByTestId("settings-module-nav")).toBeVisible();
+    await page.getByTestId("settings-section-provider").click();
+    await expect(page.getByTestId("settings-module-nav")).toBeHidden();
+    await expect(page.getByRole("heading", { name: "模型服务与隐私" })).toBeVisible();
+  });
+
+  test("矮窗口侧栏中部滚动，底部入口不与项目内容重叠", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 600 });
+    await openCoding(page);
+
+    const scrollRegion = page.locator(".sidebar-scroll-region");
+    const footer = page.locator(".sidebar-footer");
+    await expect(scrollRegion).toBeVisible();
+    await expect(footer).toBeVisible();
+
+    const scrollBox = await scrollRegion.boundingBox();
+    const footerBox = await footer.boundingBox();
+    expect(scrollBox).not.toBeNull();
+    expect(footerBox).not.toBeNull();
+    expect((scrollBox?.y ?? 0) + (scrollBox?.height ?? 0)).toBeLessThanOrEqual(
+      (footerBox?.y ?? 0) + 1
+    );
+    expect((footerBox?.y ?? 0) + (footerBox?.height ?? 0)).toBeLessThanOrEqual(600);
   });
 
   test("<1280px 抽屉模式：浮标打开、遮罩关闭", async ({ page }) => {
@@ -373,10 +422,7 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     const newTask = page.getByTestId("coding-new-task");
     // v0.9.0 H1：新建任务更名为新建对话（任务由对话中的 run 表达）
     await expect(newTask).toHaveAttribute("aria-label", "新建对话");
-    await expect(page.getByTestId("coding-new-project")).toHaveAttribute(
-      "aria-label",
-      "新建项目"
-    );
+    await expect(page.getByTestId("coding-toggle-projects")).toHaveAttribute("aria-label", "项目");
     await expect(page.getByTestId("coding-tree")).toBeHidden();
   });
 

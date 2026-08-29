@@ -7,9 +7,8 @@
 - :func:`run_probe_for_profile`：执行固定用例集并落快照（成功/失败都落库）；
 - :func:`auto_probe_profile`：模型配置保存后的自动探测入口（尽力而为，
   不阻断配置保存；``PA_AGENT_V2_MODEL_PROBE_ENABLED`` 关闭时跳过）；
-- :func:`profile_tool_protocol_valid`：工具面门禁事实——最新快照
-  status=ok 且 function_calling 能力成立才允许副作用工具面；无有效快照
-  失败关闭（§8.2 末条：只暴露最小 JSON Function 工具集）。
+- :func:`profile_tool_protocol_valid`：工具协议诊断事实——最新快照
+  status=ok 且 function_calling 能力成立；探测结果不参与内建工具授权。
 """
 
 from __future__ import annotations
@@ -126,6 +125,8 @@ def build_gateway_for_profile(
 
         return ModelGateway(
             ClaudeMessagesAdapter(
+                base_url=provider_settings.get("claude_base_url")
+                or "https://api.anthropic.com/v1",
                 api_key=provider_settings.get("claude_api_key") or "",
                 model=routed_model_name,
                 temperature=temperature,
@@ -233,7 +234,7 @@ class ModelProbeSnapshotRepository:
 async def profile_tool_protocol_valid(
     db: AsyncSession, profile: ModelProfile
 ) -> bool:
-    """工具面门禁事实：最新快照 ok 且 function_calling 能力成立。
+    """工具协议诊断事实：最新快照 ok 且 function_calling 能力成立。
 
     与 profile 当前 model_name 的 digest 不一致（换模型后未重新探测）
     同样视为无效——未知能力失败关闭（AD-T04）。
@@ -283,7 +284,7 @@ async def run_probe_for_profile(
         repeats=repeats,
     )
     repository = ModelProbeSnapshotRepository(db)
-    # 门禁语义：status=ok 当且仅当最小工具协议已证（function_calling）；
+    # 诊断语义：status=ok 当且仅当最小工具协议已证（function_calling）；
     # parallel/correction 等附加能力经 results/requirements 如实留痕，
     # 不作为基础工具面的门槛（AD-T04：已证能力才开启，未证不猜测）。
     if snapshot.requirements.function_calling:
@@ -297,11 +298,14 @@ async def run_probe_for_profile(
 
 
 async def probe_gate_for_run(db: AsyncSession, model_profile_id: str | None) -> bool:
-    """工具面门禁裁决（失败关闭，§8.2/AD-T04）。
+    """兼容旧诊断调用的探测裁决（失败关闭，§8.2/AD-T04）。
 
     - 未绑定 profile 的 run（历史/非 coding）：保持既有行为（True）；
     - 绑定的 profile 已删除/查不到：False（不得放行副作用工具）；
-    - profile 存在：仅当有效快照（§8.2 口径）时放行。
+    - profile 存在：仅当有效快照（§8.2 口径）时返回 True。
+
+    运行时内建工具注册不再调用此函数；授权由显式能力、权限模式与审批链
+    决定，避免瞬时探测假阴性隐藏真实写入工具。
     """
     if model_profile_id is None:
         return True
@@ -344,13 +348,49 @@ async def _probe_background(profile_id: str, cfg: Any) -> None:
             repository = ModelProbeSnapshotRepository(db)
             await repository.mark_running(profile)
             provider_settings = await SettingsService(db).get_all()
+            from .model_providers import provider_for_profile
+            from .settings import resolve_model_provider_secret
+
+            provider_config = provider_for_profile(provider_settings, profile.id)
+            ollama_base_url = cfg.ollama_base_url
+            if provider_config is not None:
+                if not provider_config.get("enabled"):
+                    await repository.save_failed(
+                        profile.id,
+                        provider=(profile.provider or "").strip().lower(),
+                        model_name=(profile.model_name or "").strip(),
+                        error_code="provider_disabled",
+                    )
+                    return
+                provider_settings = dict(provider_settings)
+                protocol = str(provider_config.get("protocol") or profile.provider)
+                provider_settings["remote_provider_enabled"] = "true"
+                secret = resolve_model_provider_secret(
+                    str(provider_config.get("id")),
+                    str(provider_config.get("credential_reference") or "") or None,
+                    legacy_settings=provider_settings,
+                )
+                if protocol == "openai":
+                    provider_settings["openai_base_url"] = str(
+                        provider_config.get("base_url") or ""
+                    )
+                    provider_settings["openai_api_key"] = secret
+                elif protocol == "claude":
+                    provider_settings["claude_base_url"] = str(
+                        provider_config.get("base_url") or ""
+                    )
+                    provider_settings["claude_api_key"] = secret
+                elif protocol == "ollama":
+                    ollama_base_url = str(
+                        provider_config.get("base_url") or cfg.ollama_base_url
+                    )
             try:
                 gateway = build_gateway_for_profile(
                     profile,
                     provider_settings,
                     default_temperature=cfg.llm_temperature,
                     default_context_length=cfg.llm_context_length,
-                    ollama_base_url=cfg.ollama_base_url,
+                    ollama_base_url=ollama_base_url,
                 )
                 snapshot = await asyncio.wait_for(
                     run_probe(

@@ -78,7 +78,7 @@ onMounted(load);
       <article class="diag-card">
         <h3>服务健康</h3>
         <div class="health-grid">
-          <div v-for="svc in (['api','ollama','mysql','chroma'] as const)" :key="svc" class="health-item">
+          <div v-for="svc in (['api','mysql','chroma'] as const)" :key="svc" class="health-item">
             <component
               :is="okOf(snap.health[svc]) ? PhCheckCircle : PhXCircle"
               :size="16"

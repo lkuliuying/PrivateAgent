@@ -9,6 +9,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   PhArrowCircleDown,
+  PhCaretDown,
   PhCheckCircle,
   PhCircleNotch,
   PhClipboardText,
@@ -17,12 +18,12 @@ import {
   PhGitDiff,
   PhLightning,
   PhPath,
-  PhProhibit,
   PhShieldWarning,
   PhUser,
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { TranscriptEntry, RunProjection } from "../model/runProjector";
+import type { CodingInstructionMarker } from "../model/contracts";
 import type { Message } from "../../../types";
 import type {
   RunApprovalPreviewRecord,
@@ -55,6 +56,7 @@ const props = withDefaults(
     outputPages?: Record<string, RunExecutionOutputPage | null>;
     outputLoading?: string[];
     previewMode?: boolean;
+    instructionTarget?: { id: string; seq: number } | null;
   }>(),
   {
     phase: "idle" as RunConnectionPhase,
@@ -68,6 +70,7 @@ const props = withDefaults(
     outputPages: () => ({}),
     outputLoading: () => [],
     previewMode: false,
+    instructionTarget: null,
   }
 );
 
@@ -77,6 +80,7 @@ const emit = defineEmits<{
   "open-plan": [];
   "retry-stream": [];
   "load-output": [executionId: string];
+  "instruction-markers-change": [markers: CodingInstructionMarker[]];
 }>();
 
 const TOOL_STATE_LABEL: Record<string, { label: string; tone: string }> = {
@@ -136,6 +140,39 @@ const historyEntries = computed(() => {
   if (userIndex >= 0) items.splice(userIndex, 1);
   return items;
 });
+function historyInstructionId(messageId: number): string {
+  return `message:${messageId}`;
+}
+
+const currentInstructionId = computed(() => {
+  const current = props.projection;
+  return current?.userMessage ? `run:${current.runId}` : null;
+});
+
+function instructionLabel(content: string): string {
+  return content.replace(/\s+/g, " ").trim() || "未命名指令";
+}
+
+const instructionMarkers = computed<CodingInstructionMarker[]>(() => {
+  const markers = historyEntries.value
+    .filter((message) => message.role === "user" && message.content.trim().length > 0)
+    .map((message) => ({
+      id: historyInstructionId(message.id),
+      label: instructionLabel(message.content),
+    }));
+  const currentId = currentInstructionId.value;
+  const currentMessage = props.projection?.userMessage;
+  if (currentId && currentMessage) {
+    markers.push({ id: currentId, label: instructionLabel(currentMessage) });
+  }
+  return markers;
+});
+
+watch(
+  instructionMarkers,
+  (markers) => emit("instruction-markers-change", markers),
+  { immediate: true }
+);
 const entryCount = computed(() => entries.value.length);
 const pendingApprovals = computed(() => props.approvals.filter((item) => item.status === "pending"));
 
@@ -143,11 +180,19 @@ const pendingApprovals = computed(() => props.approvals.filter((item) => item.st
 // 默认仅渲染最近 RENDER_BATCH 条，「显示更早」按批次扩展；切换 run 重置。
 const RENDER_BATCH = 200;
 const visibleCount = ref(RENDER_BATCH);
-const auditOpen = ref(false);
+const processOpen = ref(false);
 const visibleEntries = computed(() =>
   entries.value.slice(Math.max(0, entries.value.length - visibleCount.value))
 );
 const hiddenCount = computed(() => entries.value.length - visibleEntries.value.length);
+const terminalEntry = computed<Extract<TranscriptEntry, { kind: "terminal" }> | null>(() => {
+  for (let index = entries.value.length - 1; index >= 0; index -= 1) {
+    const entry = entries.value[index];
+    if (entry.kind === "terminal") return entry;
+  }
+  return null;
+});
+const processExpanded = computed(() => terminalEntry.value === null || processOpen.value);
 
 function loadEarlier(): void {
   visibleCount.value += RENDER_BATCH * 5;
@@ -157,13 +202,15 @@ watch(
   () => props.projection?.runId,
   () => {
     visibleCount.value = RENDER_BATCH;
-    auditOpen.value = false;
+    processOpen.value = false;
   }
 );
 
 const scrollEl = ref<HTMLElement | null>(null);
 const anchoredBottom = ref(true);
 const newActivity = ref(false);
+const activeInstructionId = ref<string | null>(null);
+let instructionHighlightTimer: number | null = null;
 
 function onScroll(): void {
   const el = scrollEl.value;
@@ -181,6 +228,31 @@ async function scrollToBottom(): Promise<void> {
   newActivity.value = false;
 }
 
+async function scrollToInstruction(instructionId: string): Promise<void> {
+  await nextTick();
+  const el = scrollEl.value;
+  if (!el) return;
+  const target = Array.from(
+    el.querySelectorAll<HTMLElement>("[data-instruction-id]")
+  ).find((candidate) => candidate.dataset.instructionId === instructionId);
+  if (!target) return;
+  target.scrollIntoView?.({ behavior: "smooth", block: "center" });
+  activeInstructionId.value = instructionId;
+  if (instructionHighlightTimer !== null) window.clearTimeout(instructionHighlightTimer);
+  instructionHighlightTimer = window.setTimeout(() => {
+    activeInstructionId.value = null;
+    instructionHighlightTimer = null;
+  }, 1800);
+}
+
+watch(
+  () => props.instructionTarget?.seq,
+  () => {
+    const target = props.instructionTarget;
+    if (target) void scrollToInstruction(target.id);
+  }
+);
+
 watch(entryCount, async () => {
   if (anchoredBottom.value) {
     await nextTick();
@@ -192,7 +264,10 @@ watch(entryCount, async () => {
 
 onMounted(() => void scrollToBottom());
 onBeforeUnmount(() => {
-  // 无定时器/监听器需要拆除（scroll 绑定随 DOM 卸载）
+  if (instructionHighlightTimer !== null) {
+    window.clearTimeout(instructionHighlightTimer);
+    instructionHighlightTimer = null;
+  }
 });
 
 function approvalById(approvalId: string): RunApprovalRecord | undefined {
@@ -241,10 +316,30 @@ function formatDuration(startIso: string | null, endIso: string | null): string 
 
 function formatDurationMs(ms: number): string | null {
   if (!Number.isFinite(ms) || ms < 0) return null;
-  if (ms < 1000) return `${ms}ms`;
+  if (ms < 1000) return `${Math.round(ms)} 毫秒`;
   const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
+  if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟 ${Math.round(seconds % 60)} 秒`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时 ${minutes % 60} 分钟`;
+}
+
+function toolActionLabel(name: string): string {
+  const normalized = name.toLowerCase();
+  if (normalized.includes("browser") || normalized.includes("web")) return "使用了浏览器";
+  if (normalized.includes("image") || normalized.includes("screenshot")) return "查看了图像";
+  if (normalized.includes("command") || normalized.includes("shell") || normalized.includes("terminal")) return "运行了命令";
+  if (normalized.includes("patch") || normalized.includes("write") || normalized.includes("edit")) return "编辑了文件";
+  if (normalized.includes("read") || normalized.includes("file")) return "读取了文件";
+  if (normalized.includes("search") || normalized.includes("find")) return "搜索了内容";
+  return "调用了工具";
+}
+
+function shouldDisplayEntry(entry: TranscriptEntry): boolean {
+  if (entry.kind === "terminal") return true;
+  if (!processExpanded.value) return false;
+  return entry.kind !== "run-start" && entry.kind !== "model-turn";
 }
 
 /** 同名执行 ≥2 次时呈现重试序号（按创建顺序；公开事实，不推测原因） */
@@ -312,133 +407,37 @@ function terminalMeta(): { label: string; tone: string } | null {
   return { label: meta.label, tone: meta.tone };
 }
 
-type RunAuditRow = {
-  key: string;
-  title: string;
-  detail: string;
-  duration: string | null;
-};
-
 const runDurationLabel = computed(() => {
   const current = props.projection;
   return current ? formatDuration(current.startedAt, current.completedAt) : null;
 });
 
-const runTimeRange = computed(() => {
-  const current = props.projection;
-  if (!current) return null;
-  const started = formatClock(current.startedAt);
-  const completed = formatClock(current.completedAt);
-  if (!started && !completed) return null;
-  return `${started ?? "--"} → ${completed ?? "--"}`;
+const processHeaderLabel = computed(() => {
+  if (terminalEntry.value) {
+    return runDurationLabel.value ? `用时 ${runDurationLabel.value}` : "执行过程";
+  }
+  return runDurationLabel.value ? `已用时 ${runDurationLabel.value}` : "正在执行";
 });
 
-function auditRow(entry: TranscriptEntry): RunAuditRow {
-  switch (entry.kind) {
-    case "run-start":
-      return {
-        key: entry.key,
-        title: "任务开始",
-        detail: `上限 ${entry.maxSteps} 步、${entry.maxToolCalls} 次工具${entry.maxWallTimeSeconds !== null ? `、${Math.round(entry.maxWallTimeSeconds)} 秒` : ""}`,
-        duration: null,
-      };
-    case "context":
-      return {
-        key: entry.key,
-        title: "上下文准备",
-        detail: `约 ${entry.estimatedTokens.toLocaleString()} tokens${entry.truncated ? "，已截断" : ""}`,
-        duration: null,
-      };
-    case "model-turn":
-      return {
-        key: entry.key,
-        title: `模型第 ${entry.ordinal} 轮`,
-        detail:
-          entry.state === "completed"
-            ? `${entry.inputTokens.toLocaleString()} 输入 / ${entry.outputTokens.toLocaleString()} 输出 tokens${entry.finishReason ? `，结束原因：${entry.finishReason}` : ""}`
-            : "生成中",
-        duration: entry.latencyMs === null ? null : formatDurationMs(entry.latencyMs),
-      };
-    case "decision-summary":
-      return {
-        key: entry.key,
-        title: "公开决策摘要",
-        detail: [
-          `目标：${entry.goal}`,
-          entry.method ? `方法：${entry.method}` : null,
-          entry.nextSteps.length ? `后续：${entry.nextSteps.join("、")}` : null,
-        ].filter(Boolean).join("；"),
-        duration: null,
-      };
-    case "plan":
-      return {
-        key: entry.key,
-        title: entry.note === "created" ? "建立执行计划" : "更新执行计划",
-        detail: `v${entry.version}，${entry.itemCount} 项`,
-        duration: null,
-      };
-    case "tool": {
-      const detail = toolDetail(entry);
-      const facts = [
-        `状态：${TOOL_STATE_LABEL[entry.state]?.label ?? entry.state}`,
-        detail.attempt !== null ? `第 ${detail.attempt}/${detail.attemptCount} 次执行` : null,
-        detail.commandText ? `命令：${detail.commandText}` : null,
-        detail.resultSummary ? `结果：${detail.resultSummary}` : null,
-        entry.errorMessage ? `错误：${entry.errorType ?? "tool_error"} · ${entry.errorMessage}` : null,
-      ];
-      return {
-        key: entry.key,
-        title: `工具 · ${entry.name || "未命名工具"}`,
-        detail: redactSecretText(facts.filter(Boolean).join("；")),
-        duration: detail.durationLabel,
-      };
-    }
-    case "approval": {
-      const approval = approvalById(entry.approvalId);
-      return {
-        key: entry.key,
-        title: `授权 · ${approval?.tool_name ?? entry.toolName}`,
-        detail:
-          entry.resolved || (approval !== undefined && approval.status !== "pending")
-            ? `已处理（${approval?.status ?? "resolved"}）`
-            : "等待用户确认",
-        duration: null,
-      };
-    }
-    case "verification":
-      return {
-        key: entry.key,
-        title: `输出校验 · ${entry.verifier}`,
-        detail: `第 ${entry.attempt} 次，${entry.state === "passed" ? "通过" : entry.state === "started" ? "进行中" : entry.willRetry ? "未通过，将重试" : "未通过"}${entry.message ? `；${entry.message}` : ""}`,
-        duration: null,
-      };
-    case "patch-set":
-      return {
-        key: entry.key,
-        title: "变更集",
-        detail: `${PATCH_STATE_LABEL[entry.state]?.label ?? entry.state}${entry.fileCount !== null ? `，${entry.fileCount} 个文件` : ""}${entry.verified === true ? "，已验证" : ""}${entry.reason ? `；${entry.reason}` : ""}`,
-        duration: null,
-      };
-    case "artifact":
-      return {
-        key: entry.key,
-        title: `产出 · ${entry.artifactKind}`,
-        detail: entry.title,
-        duration: null,
-      };
-    case "terminal":
-      return {
-        key: entry.key,
-        title: "任务结束",
-        detail: `${RUN_STATUS_META[entry.status].label}${entry.errorCode ? `，错误码：${entry.errorCode}` : ""}`,
-        duration: runDurationLabel.value,
-      };
+const processSummaryLabels = computed(() => {
+  const labels: string[] = [];
+  for (const entry of entries.value) {
+    if (entry.kind === "tool") labels.push(toolActionLabel(entry.name));
+    if (entry.kind === "context" && entry.truncated) labels.push("压缩了上下文");
   }
-}
+  return [...new Set(labels)].slice(0, 6);
+});
 
-const auditRows = computed(() => entries.value.map(auditRow));
-const modelRoundCount = computed(
-  () => entries.value.filter((entry) => entry.kind === "model-turn").length
+const latestPatchEntry = computed<Extract<TranscriptEntry, { kind: "patch-set" }> | null>(() => {
+  for (let index = entries.value.length - 1; index >= 0; index -= 1) {
+    const entry = entries.value[index];
+    if (entry.kind === "patch-set") return entry;
+  }
+  return null;
+});
+
+const resultArtifactEntries = computed(() =>
+  entries.value.filter((entry): entry is Extract<TranscriptEntry, { kind: "artifact" }> => entry.kind === "artifact")
 );
 </script>
 
@@ -460,8 +459,12 @@ const modelRoundCount = computed(
             v-for="message in historyEntries"
             :key="`history:${message.id}`"
             class="history-message"
-            :class="`history-${message.role}`"
+            :class="[
+              `history-${message.role}`,
+              { 'instruction-targeted': message.role === 'user' && activeInstructionId === historyInstructionId(message.id) },
+            ]"
             :data-testid="`transcript-history-${message.role}`"
+            :data-instruction-id="message.role === 'user' ? historyInstructionId(message.id) : undefined"
           >
             <div v-if="message.role === 'user'" class="user-avatar">
               <PhUser :size="14" weight="fill" aria-hidden="true" />
@@ -476,13 +479,32 @@ const modelRoundCount = computed(
         <template v-if="projection">
         <div v-if="historyEntries.length" class="transcript-divider current"><span>当前执行</span></div>
         <!-- 用户请求 -->
-        <div v-if="projection.userMessage" class="user-bubble" data-testid="transcript-user-message">
+        <div
+          v-if="projection.userMessage"
+          class="user-bubble"
+          :class="{ 'instruction-targeted': activeInstructionId === currentInstructionId }"
+          data-testid="transcript-user-message"
+          :data-instruction-id="currentInstructionId ?? undefined"
+        >
           <div class="user-avatar"><PhUser :size="14" weight="fill" aria-hidden="true" /></div>
           <div class="user-copy">{{ projection.userMessage }}</div>
         </div>
 
         <button
-          v-if="hiddenCount > 0"
+          type="button"
+          class="process-toggle"
+          data-testid="run-duration-toggle"
+          :aria-expanded="processExpanded"
+          @click="processOpen = !processOpen"
+        >
+          <PhClock :size="17" aria-hidden="true" />
+          <span>{{ processHeaderLabel }}</span>
+          <PhCaretDown :size="15" class="process-caret" :class="{ open: processExpanded }" aria-hidden="true" />
+        </button>
+        <div class="process-divider" aria-hidden="true" />
+
+        <button
+          v-if="hiddenCount > 0 && processExpanded"
           class="load-earlier"
           data-testid="transcript-load-earlier"
           @click="loadEarlier"
@@ -493,6 +515,7 @@ const modelRoundCount = computed(
         <div
           v-for="entry in visibleEntries"
           :key="entry.key"
+          v-show="shouldDisplayEntry(entry)"
           class="entry"
           :class="`entry-${entry.kind}`"
           :data-testid="`transcript-${entry.kind}`"
@@ -509,7 +532,8 @@ const modelRoundCount = computed(
           <template v-else-if="entry.kind === 'context'">
             <PhClipboardText :size="14" class="entry-icon" aria-hidden="true" />
             <span class="entry-copy">
-              上下文就绪 · 约 {{ entry.estimatedTokens.toLocaleString() }} tokens<template v-if="entry.truncated">（已截断）</template>
+              {{ entry.truncated ? "上下文已自动压缩" : "已整理上下文" }}
+              <span class="entry-detail">· 约 {{ entry.estimatedTokens.toLocaleString() }} tokens</span>
             </span>
           </template>
 
@@ -526,20 +550,14 @@ const modelRoundCount = computed(
           </template>
 
           <!-- v0.9.0 H0 §8：逐轮公开决策摘要（结构化公开事实，不含隐藏推理） -->
-          <div
-            v-else-if="entry.kind === 'decision-summary'"
-            class="entry decision-entry"
-            data-testid="transcript-decision-summary"
-          >
+          <template v-else-if="entry.kind === 'decision-summary'">
             <PhPath :size="14" class="entry-icon" aria-hidden="true" />
-            <span class="entry-copy">
-              决策：{{ entry.goal }}
-              <template v-if="entry.method"> · {{ entry.method }}</template>
-            </span>
-            <span v-if="entry.nextSteps.length" class="decision-steps">
-              后续：{{ entry.nextSteps.join("、") }}
-            </span>
-          </div>
+            <div class="narrative-message" data-testid="transcript-decision-summary">
+              <p>{{ entry.goal }}</p>
+              <p v-if="entry.method">{{ entry.method }}</p>
+              <p v-if="entry.nextSteps.length" class="narrative-next">接下来：{{ entry.nextSteps.join("、") }}。</p>
+            </div>
+          </template>
 
           <!-- 计划摘要 -->
           <button
@@ -550,15 +568,30 @@ const modelRoundCount = computed(
           >
             <PhClipboardText :size="14" class="entry-icon" aria-hidden="true" />
             <span class="entry-copy">
-              {{ entry.note === "created" ? "执行计划已建立" : "执行计划已更新" }} · v{{ entry.version }} · {{ entry.itemCount }} 项 · 点击查看
+              {{ entry.note === "created" ? "已建立执行计划" : "已更新执行计划" }}
+              <span class="entry-detail">· {{ entry.itemCount }} 项 · 点击查看</span>
             </span>
           </button>
 
           <!-- 工具卡（摘要行 + W6-R 可追溯详情 + W3 执行输出按需加载） -->
           <template v-else-if="entry.kind === 'tool'">
-            <span class="entry-icon" :class="toolEntryClass(entry)" aria-hidden="true">●</span>
-            <span class="entry-copy mono">{{ entry.name }}</span>
-            <span class="entry-state" :class="toolEntryClass(entry)">
+            <PhCircleNotch
+              v-if="entry.state === 'started' || entry.state === 'requested'"
+              :size="14"
+              class="entry-icon spin"
+              aria-hidden="true"
+            />
+            <PhWarningCircle
+              v-else-if="entry.state === 'failed' || entry.state === 'approval_required'"
+              :size="14"
+              class="entry-icon"
+              :class="toolEntryClass(entry)"
+              aria-hidden="true"
+            />
+            <PhCheckCircle v-else :size="14" class="entry-icon tone-success" aria-hidden="true" />
+            <span class="entry-copy action-label">{{ toolActionLabel(entry.name) }}</span>
+            <code class="tool-name mono">{{ entry.name }}</code>
+            <span v-if="entry.state !== 'completed'" class="entry-state" :class="toolEntryClass(entry)">
               <PhCircleNotch v-if="entry.state === 'started' || entry.state === 'requested'" :size="12" class="spin" />
               {{ TOOL_STATE_LABEL[entry.state]?.label ?? entry.state }}
             </span>
@@ -595,39 +628,44 @@ const modelRoundCount = computed(
           </template>
 
           <!-- 审批卡 -->
-          <div v-else-if="entry.kind === 'approval'" class="approval-card" data-testid="approval-card">
-            <div class="approval-head">
-              <PhShieldWarning :size="16" class="approval-icon" aria-hidden="true" />
-              <strong>授权请求</strong>
-              <span class="mono approval-tool">{{ approvalById(entry.approvalId)?.tool_name ?? entry.toolName }}</span>
-            </div>
-            <div v-if="approvalById(entry.approvalId)" class="approval-meta">
-              <span class="risk" :class="`risk-${approvalById(entry.approvalId)!.risk_level}`">
-                {{ riskLabel(approvalById(entry.approvalId)!.risk_level) }}
-              </span>
-              <span>能力：{{ approvalById(entry.approvalId)!.required_capabilities.join("、") || "—" }}</span>
-              <span class="mono">{{ approvalById(entry.approvalId)!.tool_version }}</span>
-            </div>
-            <div v-if="entry.resolved || approvalById(entry.approvalId)?.status !== 'pending'" class="approval-resolved">
-              已处理（{{ approvalById(entry.approvalId)?.status ?? "resolved" }}）
-            </div>
-            <DiffArtifact
-              v-if="approvalPreviews[entry.approvalId] !== undefined || previewLoading.includes(entry.approvalId)"
-              :preview="approvalPreviews[entry.approvalId] ?? null"
-              :loading="previewLoading.includes(entry.approvalId)"
-            />
+          <template v-else-if="entry.kind === 'approval'">
             <div
-              v-if="!entry.resolved && approvalById(entry.approvalId)?.status === 'pending'"
-              class="approval-actions"
+              v-if="entry.resolved || approvalById(entry.approvalId)?.status !== 'pending'"
+              class="approval-resolved-line"
+              data-testid="approval-card"
             >
-              <button class="pa-btn pa-btn--primary" :data-testid="`approval-approve-${entry.approvalId}`" @click="emit('approve', entry.approvalId)">
-                批准执行
-              </button>
-              <button class="pa-btn pa-btn--ghost" :data-testid="`approval-reject-${entry.approvalId}`" @click="emit('reject', entry.approvalId)">
-                拒绝
-              </button>
+              <PhCheckCircle :size="14" class="tone-success" aria-hidden="true" />
+              <span>已处理授权</span>
+              <code class="mono tool-name">{{ approvalById(entry.approvalId)?.tool_name ?? entry.toolName }}</code>
             </div>
-          </div>
+            <div v-else class="approval-card" data-testid="approval-card">
+              <div class="approval-head">
+                <PhShieldWarning :size="16" class="approval-icon" aria-hidden="true" />
+                <strong>授权请求</strong>
+                <span class="mono approval-tool">{{ approvalById(entry.approvalId)?.tool_name ?? entry.toolName }}</span>
+              </div>
+              <div v-if="approvalById(entry.approvalId)" class="approval-meta">
+                <span class="risk" :class="`risk-${approvalById(entry.approvalId)!.risk_level}`">
+                  {{ riskLabel(approvalById(entry.approvalId)!.risk_level) }}
+                </span>
+                <span>能力：{{ approvalById(entry.approvalId)!.required_capabilities.join("、") || "—" }}</span>
+                <span class="mono">{{ approvalById(entry.approvalId)!.tool_version }}</span>
+              </div>
+              <DiffArtifact
+                v-if="approvalPreviews[entry.approvalId] !== undefined || previewLoading.includes(entry.approvalId)"
+                :preview="approvalPreviews[entry.approvalId] ?? null"
+                :loading="previewLoading.includes(entry.approvalId)"
+              />
+              <div class="approval-actions">
+                <button class="pa-btn pa-btn--primary" :data-testid="`approval-approve-${entry.approvalId}`" @click="emit('approve', entry.approvalId)">
+                  批准执行
+                </button>
+                <button class="pa-btn pa-btn--ghost" :data-testid="`approval-reject-${entry.approvalId}`" @click="emit('reject', entry.approvalId)">
+                  拒绝
+                </button>
+              </div>
+            </div>
+          </template>
 
           <!-- 输出校验 -->
           <template v-else-if="entry.kind === 'verification'">
@@ -638,8 +676,8 @@ const modelRoundCount = computed(
               aria-hidden="true"
             />
             <span class="entry-copy">
-              输出校验 · {{ entry.verifier }} · 第 {{ entry.attempt }} 次 · {{ entry.state === "started" ? "进行中" : entry.state === "passed" ? "通过" : entry.willRetry ? "未通过（将重试）" : "未通过" }}
-              <template v-if="entry.message"> · {{ entry.message }}</template>
+              {{ entry.state === "started" ? "正在校验输出" : entry.state === "passed" ? "已完成输出校验" : entry.willRetry ? "输出校验未通过，准备重试" : "输出校验未通过" }}
+              <span class="entry-detail">· 第 {{ entry.attempt }} 次<template v-if="entry.message"> · {{ entry.message }}</template></span>
             </span>
           </template>
 
@@ -647,44 +685,30 @@ const modelRoundCount = computed(
           <template v-else-if="entry.kind === 'patch-set'">
             <PhGitDiff :size="14" class="entry-icon" aria-hidden="true" />
             <span class="entry-copy">
-              变更集 · {{ PATCH_STATE_LABEL[entry.state]?.label ?? entry.state }}
-              <template v-if="entry.fileCount !== null"> · {{ entry.fileCount }} 个文件</template>
-              <template v-if="entry.verified === true"> · 已验证</template>
-              <template v-if="entry.reason"> · {{ entry.reason }}</template>
+              {{ entry.state === "applied" ? "已应用文件修改" : entry.state === "previewed" ? "已生成文件修改预览" : `文件修改${PATCH_STATE_LABEL[entry.state]?.label ?? entry.state}` }}
+              <span class="entry-detail"><template v-if="entry.fileCount !== null">· {{ entry.fileCount }} 个文件</template><template v-if="entry.verified === true"> · 已验证</template><template v-if="entry.reason"> · {{ entry.reason }}</template></span>
             </span>
           </template>
 
           <!-- 产出（W2 摘要，W3 按需加载内容） -->
           <template v-else-if="entry.kind === 'artifact'">
             <PhFilePlus :size="14" class="entry-icon" aria-hidden="true" />
-            <span class="entry-copy">产出 · {{ entry.artifactKind }} · {{ entry.title }}</span>
+            <span class="entry-copy">已生成 {{ entry.title }}<span class="entry-detail"> · {{ entry.artifactKind }}</span></span>
           </template>
 
-          <!-- 终态摘要 -->
-          <div v-else-if="entry.kind === 'terminal'" class="terminal-card" :data-testid="'terminal-summary'" :class="`tone-${terminalMeta()?.tone}`">
-            <div class="terminal-head">
-              <PhCheckCircle v-if="entry.status === 'completed'" :size="16" weight="fill" aria-hidden="true" />
-              <PhWarningCircle v-else-if="entry.status === 'failed' || entry.status === 'timed_out'" :size="16" aria-hidden="true" />
-              <PhProhibit v-else :size="16" aria-hidden="true" />
-              <strong>输出总结</strong>
-              <span class="terminal-status" :class="`tone-${terminalMeta()?.tone}`">{{ terminalMeta()?.label }}</span>
-              <span v-if="entry.errorCode" class="mono terminal-code">{{ entry.errorCode }}</span>
-              <span class="terminal-usage">
-                {{ projection.usage.toolCallCount }} 次工具 · {{ projection.usage.outputTokens.toLocaleString() }} 输出 tokens
-              </span>
-              <button
-                type="button"
-                class="terminal-duration"
-                data-testid="run-duration-toggle"
-                :aria-expanded="auditOpen"
-                aria-controls="run-audit-panel"
-                title="查看执行过程与结果"
-                @click="auditOpen = !auditOpen"
-              >
-                <PhClock :size="13" aria-hidden="true" />
-                {{ runDurationLabel ? `耗时 ${runDurationLabel}` : "耗时待同步" }}
-                <span class="duration-caret" :class="{ open: auditOpen }" aria-hidden="true">⌄</span>
-              </button>
+          <!-- 完成结果：与执行过程分离，按文档而非状态卡呈现。 -->
+          <section v-else-if="entry.kind === 'terminal'" class="terminal-card" data-testid="terminal-summary" :class="`tone-${terminalMeta()?.tone}`">
+            <div v-if="processOpen && processSummaryLabels.length" class="process-footer" data-testid="process-footer">
+              <PhPath :size="15" aria-hidden="true" />
+              <span>已使用</span>
+              <span v-for="label in processSummaryLabels" :key="label">{{ label }}</span>
+            </div>
+
+            <div v-if="entry.status !== 'completed'" class="result-state" :class="`tone-${terminalMeta()?.tone}`">
+              <PhWarningCircle v-if="entry.status === 'failed' || entry.status === 'timed_out'" :size="18" aria-hidden="true" />
+              <PhCheckCircle v-else :size="18" aria-hidden="true" />
+              <strong>{{ terminalMeta()?.label }}</strong>
+              <code v-if="entry.errorCode" class="mono terminal-code">{{ entry.errorCode }}</code>
             </div>
             <!-- v0.9.0 H1-B（§5.5/§5.6）：无工具/命令事件的完成态如实标注，
                  不把无执行证据的回答呈现为“已完成的可执行任务”。 -->
@@ -708,46 +732,35 @@ const modelRoundCount = computed(
               data-testid="terminal-output"
             ><MarkdownContent :content="entry.output ?? projection.output ?? ''" /></div>
 
-            <div
-              v-if="auditOpen"
-              id="run-audit-panel"
-              class="run-audit-panel"
-              data-testid="run-audit-panel"
-            >
-              <div class="audit-head">
+            <div v-if="latestPatchEntry || resultArtifactEntries.length" class="result-assets" aria-label="运行产物">
+              <div v-if="latestPatchEntry" class="result-asset-card" data-testid="result-patch-card">
+                <span class="result-asset-icon"><PhGitDiff :size="20" aria-hidden="true" /></span>
                 <div>
-                  <strong>执行过程与结果</strong>
-                  <p>按持久化事件展示公开决策、模型轮次、工具调用与验证；不包含模型隐藏推理。</p>
+                  <strong>{{ latestPatchEntry.fileCount !== null ? `已编辑 ${latestPatchEntry.fileCount} 个文件` : "文件修改" }}</strong>
+                  <span>{{ PATCH_STATE_LABEL[latestPatchEntry.state]?.label ?? latestPatchEntry.state }}</span>
                 </div>
-                <span v-if="runTimeRange" class="audit-time mono">{{ runTimeRange }}</span>
+                <span v-if="latestPatchEntry.verified" class="result-verified">已验证</span>
               </div>
-
-              <div class="audit-stats" aria-label="运行统计">
-                <span>{{ modelRoundCount }} 轮模型</span>
-                <span>{{ projection.usage.toolCallCount }} 次工具</span>
-                <span>{{ projection.usage.inputTokens.toLocaleString() }} 输入 tokens</span>
-                <span>{{ projection.usage.outputTokens.toLocaleString() }} 输出 tokens</span>
-              </div>
-
-              <ol class="audit-list">
-                <li v-for="row in auditRows" :key="`audit:${row.key}`" class="audit-row">
-                  <span class="audit-marker" aria-hidden="true"></span>
-                  <div class="audit-copy">
-                    <div class="audit-row-head">
-                      <strong>{{ row.title }}</strong>
-                      <span v-if="row.duration" class="mono">{{ row.duration }}</span>
-                    </div>
-                    <p>{{ row.detail }}</p>
-                  </div>
-                </li>
-              </ol>
-
-              <div v-if="entry.output || projection.output" class="audit-result">
-                <strong>最终结果</strong>
-                <MarkdownContent :content="entry.output ?? projection.output ?? ''" />
+              <div
+                v-for="artifact in resultArtifactEntries"
+                :key="artifact.artifactId"
+                class="result-asset-card"
+                data-testid="result-artifact-card"
+              >
+                <span class="result-asset-icon"><PhFilePlus :size="20" aria-hidden="true" /></span>
+                <div>
+                  <strong>{{ artifact.title }}</strong>
+                  <span>{{ artifact.artifactKind }}</span>
+                </div>
               </div>
             </div>
-          </div>
+          </section>
+        </div>
+
+        <div v-if="!terminalEntry && processExpanded && processSummaryLabels.length" class="process-footer" data-testid="process-footer">
+          <PhPath :size="15" aria-hidden="true" />
+          <span>已使用</span>
+          <span v-for="label in processSummaryLabels" :key="label">{{ label }}</span>
         </div>
 
         <!-- 断线重连提示（仅存在 durable run 时；创建失败由阻塞卡片呈现，
@@ -800,10 +813,15 @@ const modelRoundCount = computed(
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.transcript-scroll > * {
+  box-sizing: border-box;
+  width: min(1120px, 100%);
+  margin-inline: auto;
 }
 .transcript-empty {
   display: flex;
@@ -855,6 +873,15 @@ const modelRoundCount = computed(
   line-height: var(--leading-normal);
   white-space: pre-wrap;
   word-break: break-word;
+}
+.instruction-targeted .user-copy,
+.history-user.instruction-targeted .history-copy {
+  border-color: color-mix(in srgb, var(--color-accent) 58%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+.user-bubble[data-instruction-id],
+.history-user[data-instruction-id] {
+  scroll-margin-block: 72px;
 }
 
 .history-message {
@@ -928,6 +955,41 @@ const modelRoundCount = computed(
   color: var(--color-fg);
 }
 
+.process-toggle {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg-muted);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.process-toggle:hover {
+  color: var(--color-fg);
+}
+.process-toggle:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: var(--focus-ring);
+  outline-offset: 3px;
+}
+.process-caret {
+  transition: transform var(--duration-fast, 120ms) ease;
+}
+.process-caret.open {
+  transform: rotate(180deg);
+}
+.process-divider {
+  width: min(900px, 100%);
+  height: 1px;
+  margin-bottom: var(--space-3);
+  background: var(--color-border);
+}
+
 .entry {
   position: relative;
   display: flex;
@@ -937,11 +999,15 @@ const modelRoundCount = computed(
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1) var(--space-2);
-  min-height: 23px;
-  padding: 2px var(--space-1);
-  border-left: 2px solid transparent;
+  min-height: 36px;
+  padding: 6px 0;
   color: var(--color-fg-muted);
-  font-size: var(--text-xs);
+  font-size: 15px;
+  line-height: var(--leading-normal);
+}
+.transcript-scroll > .entry {
+  width: min(1120px, 100%);
+  margin-inline: auto;
 }
 .entry-icon {
   flex-shrink: 0;
@@ -954,15 +1020,39 @@ const modelRoundCount = computed(
 .entry-copy {
   min-width: 0;
 }
+.entry-detail {
+  color: var(--color-fg-subtle);
+  font-size: 13px;
+}
 /* v0.9.0 H0 §8：公开决策摘要（结构化公开事实；不呈现隐藏推理） */
-.decision-entry .entry-icon {
+.entry-decision-summary {
+  align-items: flex-start;
+  max-width: 920px;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) 0;
+  color: var(--color-fg);
+}
+.entry-decision-summary .entry-icon {
+  margin-top: 5px;
   color: var(--color-accent);
 }
-.decision-steps {
-  flex-basis: 100%;
-  padding-left: 22px;
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-text-meta);
+.narrative-message {
+  flex: 1;
+  min-width: 0;
+}
+.narrative-message p {
+  margin: 0 0 var(--space-2);
+  color: var(--color-fg);
+  font-size: 17px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.narrative-message p:last-child {
+  margin-bottom: 0;
+}
+.narrative-message .narrative-next {
+  color: var(--color-fg-muted);
 }
 .entry-state {
   display: inline-flex;
@@ -977,6 +1067,16 @@ const modelRoundCount = computed(
 .entry-state.tone-success { color: var(--color-success-fg); }
 .entry-state.tone-warning { color: var(--color-warning-fg); }
 .entry-state.tone-danger { color: var(--color-danger-fg); }
+.action-label {
+  color: var(--color-fg-muted);
+}
+.tool-name {
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-subtle);
+  font-size: 12px;
+}
 .entry-error {
   flex-basis: 100%;
   color: var(--color-danger-fg);
@@ -1047,6 +1147,14 @@ const modelRoundCount = computed(
   display: block;
   min-height: 0;
   padding: 0 var(--space-1);
+}
+.approval-resolved-line {
+  display: flex;
+  min-height: 36px;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-fg-muted);
+  font-size: 15px;
 }
 .approval-head {
   display: flex;
@@ -1322,6 +1430,111 @@ const modelRoundCount = computed(
   word-break: break-word;
 }
 
+/* 结果视图：参考文档式完成页，去除原“输出总结”状态卡。 */
+.entry-terminal {
+  display: block;
+  min-height: 0;
+  padding: 0;
+}
+.entry-terminal > .terminal-card {
+  display: flex;
+  width: min(900px, 100%);
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 auto;
+  padding: var(--space-2) 0 var(--space-8);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.entry-terminal .terminal-output {
+  max-height: none;
+  overflow: visible;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font-size: 17px;
+  line-height: 1.75;
+  word-break: break-word;
+}
+.result-state {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+  color: var(--color-fg);
+}
+.result-state.tone-danger { color: var(--color-danger-fg); }
+.result-state.tone-warning { color: var(--color-warning-fg); }
+.process-footer {
+  display: flex;
+  width: min(900px, 100%);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.process-footer span:not(:first-of-type) {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-muted);
+}
+.result-assets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+.result-asset-card {
+  display: grid;
+  min-height: 66px;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.result-asset-icon {
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  color: var(--color-fg-muted);
+}
+.result-asset-card > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.result-asset-card strong {
+  color: var(--color-fg);
+  font-size: var(--text-sm);
+}
+.result-asset-card div span {
+  color: var(--color-fg-subtle);
+  font-size: var(--pa-text-meta);
+}
+.result-verified {
+  padding: 2px var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--color-success) 35%, var(--color-border));
+  border-radius: var(--radius-full);
+  color: var(--color-success-fg);
+  font-size: var(--pa-text-meta);
+}
+
 .stream-notice {
   display: flex;
   flex-wrap: wrap;
@@ -1352,13 +1565,7 @@ const modelRoundCount = computed(
   font-size: var(--pa-text-meta);
 }
 .preview-tag {
-  align-self: flex-start;
-  padding: 2px var(--space-2);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
-  color: var(--color-fg-subtle);
-  font-size: var(--pa-t-11);
-  letter-spacing: 0.1em;
+  display: none;
 }
 
 .follow-pill {

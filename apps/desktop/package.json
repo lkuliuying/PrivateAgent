@@ -15,12 +15,16 @@
     "bundle:check": "node scripts/bundle-budget.mjs"
   },
   "dependencies": {
+    "@ant-design/icons-vue": "^7.0.1",
     "@phosphor-icons/vue": "^2.2.1",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "animejs": "^4.5.0",
-    "vue": "^3.5.13"
+    "ant-design-vue": "^4.2.6",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.13",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.12.1",

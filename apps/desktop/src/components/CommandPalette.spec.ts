@@ -20,8 +20,8 @@ vi.mock("../stores/notifications", () => ({
   }),
 }));
 
-async function mountPalette() {
-  const w = mount(CommandPalette);
+async function mountPalette(props: { codingOnly?: boolean } = {}) {
+  const w = mount(CommandPalette, { props });
   await nextTick();
   return w;
 }
@@ -75,6 +75,16 @@ describe("CommandPalette", () => {
     searchItem!.click();
     await nextTick();
     expect(w.emitted("open-search")).toBeTruthy();
+    w.unmount();
+  });
+
+  it("Coding 模式只显示 Coding Agent 相关目的地", async () => {
+    const w = await mountPalette({ codingOnly: true });
+    expect(document.body.textContent).toContain("打开Coding");
+    expect(document.body.textContent).toContain("打开设置");
+    expect(document.body.textContent).not.toContain("打开提醒");
+    expect(document.body.textContent).not.toContain("新建收件箱项");
+    expect(document.body.textContent).not.toContain("生成今日简报");
     w.unmount();
   });
 });

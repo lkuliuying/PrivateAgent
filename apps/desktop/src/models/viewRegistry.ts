@@ -204,6 +204,18 @@ export const VIEW_REGISTRY: Record<View, ViewMeta> = {
 export const NAV_GROUPS: ViewGroup[] = ["daily", "agent", "work", "knowledge", "connect"];
 export const SYSTEM_GROUP: ViewGroup = "system";
 
+/** 服务器级配置与运维入口仅向管理员展示；后端鉴权仍是最终权限边界。 */
+export const ADMIN_ONLY_VIEWS = new Set<View>([
+  "coding",
+  "projects",
+  "integrations",
+  "extensions",
+  "settings",
+  "diagnostics",
+  "backup",
+  "privacy",
+]);
+
 export function viewMeta(view: View): ViewMeta {
   return VIEW_REGISTRY[view];
 }

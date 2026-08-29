@@ -4,9 +4,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.requests import Request
 
 from personal_assistant.api import routes_health
 from personal_assistant.core import health as health_module
+from personal_assistant.core.auth import Principal
 from personal_assistant.core.health import HealthService
 from personal_assistant.main_api import register_managed_server
 
@@ -28,12 +30,18 @@ async def test_mysql_health_uses_injected_session_without_global_engine(monkeypa
 
 
 @pytest.mark.asyncio
-async def test_health_returns_four_components(client):
+async def test_health_returns_only_core_components(client, monkeypatch):
+    async def fail_if_ollama_is_probed(*_args, **_kwargs):
+        raise AssertionError("Ollama must not participate in periodic health checks")
+
+    from personal_assistant.core.provider import OllamaProvider
+
+    monkeypatch.setattr(OllamaProvider, "health", fail_if_ollama_is_probed)
     r = await client.get("/health")
     assert r.status_code == 200
     data = r.json()
-    assert set(data.keys()) == {"api", "ollama", "mysql", "chroma"}
-    for key in ("api", "ollama", "mysql", "chroma"):
+    assert set(data.keys()) == {"api", "mysql", "chroma"}
+    for key in ("api", "mysql", "chroma"):
         assert "ok" in data[key]
 
 
@@ -93,6 +101,28 @@ async def test_capabilities_expose_complete_coding_run_creation_chain(client, mo
     assert runtime.json()["agent_runs_api_enabled"] is True
     assert runtime.json()["coding_agent_ui_enabled"] is True
     assert runtime.json()["project_bound_runs_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_capabilities_expose_coding_workspace_to_authenticated_regular_user(
+    monkeypatch,
+):
+    monkeypatch.setattr(routes_health.settings, "agent_runs_api_enabled", True)
+    monkeypatch.setattr(routes_health.settings, "coding_agent_ui_enabled", True)
+    monkeypatch.setattr(routes_health.settings, "project_bound_runs_enabled", True)
+    request = Request({"type": "http", "method": "GET", "path": "/capabilities"})
+    request.state.principal = Principal(
+        user_id=42,
+        role="user",
+        email="regular@example.com",
+        actor_type="user",
+    )
+
+    runtime = await routes_health.capabilities(request)
+
+    assert runtime.agent_runs_api_enabled is True
+    assert runtime.coding_agent_ui_enabled is True
+    assert runtime.project_bound_runs_enabled is True
 
 
 @pytest.mark.asyncio

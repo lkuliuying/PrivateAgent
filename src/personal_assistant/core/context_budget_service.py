@@ -43,14 +43,32 @@ async def _latest_run(db: AsyncSession, session_id: int) -> AgentRunRecord | Non
     return result.scalar_one_or_none()
 
 
+async def _average_cache_hit_percent(
+    db: AsyncSession, session_id: int
+) -> float | None:
+    """返回会话加权缓存命中率；仅使用 Provider durable usage 事实。"""
+    result = await db.execute(
+        select(
+            func.sum(AgentRunRecord.cached_tokens),
+            func.sum(AgentRunRecord.input_tokens),
+        ).where(AgentRunRecord.session_id == session_id)
+    )
+    cached_total, input_total = result.one()
+    input_tokens = int(input_total or 0)
+    if input_tokens <= 0:
+        return None
+    cached_tokens = max(int(cached_total or 0), 0)
+    return round(min(cached_tokens * 100 / input_tokens, 100.0), 1)
+
+
 async def _window_max_tokens(db: AsyncSession, run: AgentRunRecord | None) -> int:
-    """上下文窗口上限：优先模型 profile 声明，回退全局配置（真实来源）。"""
+    """上下文窗口上限：优先模型 profile 声明；未知时如实返回 0。"""
     if run is not None and run.model_profile_id:
         from .model_profiles import ModelProfileService
 
         profile = await ModelProfileService(db).get(run.model_profile_id)
-        if profile is not None and profile.context_tokens:
-            return int(profile.context_tokens)
+        if profile is not None:
+            return int(profile.context_tokens or 0)
     return int(settings.llm_context_length)
 
 
@@ -87,12 +105,14 @@ async def evaluate_session_budget(
     run = await _latest_run(db, session_id)
     max_tokens = await _window_max_tokens(db, run)
     state, last_compacted_at = await _compaction_state(db, session_id)
+    cache_hit_percent = await _average_cache_hit_percent(db, session_id)
 
     if run is None:
         return ContextBudget(
             used_tokens=0,
             max_context_tokens=max_tokens,
             reserved_output_tokens=reserved,
+            cache_hit_percent=cache_hit_percent,
             source=UsageSource.UNAVAILABLE,
             compaction_state=state,
             error_reason="会话尚未产生执行记录",
@@ -103,6 +123,7 @@ async def evaluate_session_budget(
             used_tokens=0,
             max_context_tokens=max_tokens,
             reserved_output_tokens=reserved,
+            cache_hit_percent=cache_hit_percent,
             source=UsageSource.UNAVAILABLE,
             compaction_state=state,
             error_reason="模型未报告 token 用量（该 profile 无法准确计量）",
@@ -111,6 +132,7 @@ async def evaluate_session_budget(
         used_tokens=used,
         max_context_tokens=max_tokens,
         reserved_output_tokens=reserved,
+        cache_hit_percent=cache_hit_percent,
         source=UsageSource.PROVIDER_USAGE,
         compaction_state=state,
         last_compacted_at=last_compacted_at,

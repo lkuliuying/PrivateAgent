@@ -526,9 +526,17 @@ async def test_heartbeat_does_not_advance_sequence(client, monkeypatch):
 
     page1 = await client.get(f"/agent-runs/{run_id}/events?after_sequence=0")
     seq1 = page1.json()["last_sequence"]
+
+    # 实际建立 SSE 连接；coordinator 可能同时写入合法 run 事件，因此不能用
+    # 两次读取的 sequence 必须相等来间接判断 heartbeat 是否入库。
+    async with client.stream(
+        "GET", f"/agent-runs/{run_id}/events/stream?after_sequence={seq1}"
+    ) as stream:
+        assert stream.status_code == 200
+
     page2 = await client.get(f"/agent-runs/{run_id}/events?after_sequence=0")
-    seq2 = page2.json()["last_sequence"]
-    assert seq1 == seq2
+    assert page2.json()["last_sequence"] >= seq1
+    assert all(item["type"] != "heartbeat" for item in page2.json()["items"])
     await _cleanup_run(run_id)
 
 

@@ -176,78 +176,28 @@ function mockW6rApi(page: Page) {
   });
 }
 
-const PERSONAL_VIEWS = ["reminders", "inbox", "goals", "briefings", "capture", "privacy"];
-
 test.describe("v0.8.0 W6-R · 试用反馈修订", () => {
-  test("六模块迁出今日页：面板消失、侧栏入口到达独立主区、深链刷新保持", async ({ page }) => {
+  test("Coding Agent 模式移除个人工作区与更多工作区入口", async ({ page }) => {
     await mockW6rApi(page);
     await page.goto("/?coding=1");
     await expect(page.getByTestId("coding-sidebar")).toBeVisible({ timeout: 10_000 });
 
-    // 六个侧栏入口渲染且带待处理徽标（今日快照只读数字）
-    for (const view of PERSONAL_VIEWS) {
-      await expect(page.getByTestId(`coding-personal-${view}`)).toBeVisible();
-    }
-    await expect(page.getByTestId("coding-personal-badge-reminders")).toHaveText("2");
-    await expect(page.getByTestId("coding-personal-badge-inbox")).toHaveText("3");
-
-    // 点击入口进入提醒独立主区（沿用既有业务组件，数据接口保真）
-    await page.getByTestId("coding-personal-reminders").click();
-    await expect(page.getByText("给医生打电话")).toBeVisible({ timeout: 10_000 });
-    // 当前个人页高亮
-    await expect(page.getByTestId("coding-personal-reminders")).toHaveAttribute("aria-current", "page");
-
-    // 深链语义：刷新后（本地持久视图）仍停留在提醒独立页
-    await page.reload();
-    await expect(page.getByText("给医生打电话")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByTestId("coding-personal-reminders")).toHaveAttribute("aria-current", "page");
-
-    // 回到今日页：不再内嵌六个完整面板，主滚动区在快速入口后结束
-    await page.evaluate(() => window.localStorage.setItem("pa_last_view", "today"));
-    await page.reload();
-    await expect(page.locator(".today-shell")).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".workbench-modules")).toHaveCount(0);
-    // 主滚动长度不随六模块数据量增长：页面高度与视口同量级（无长列表模块撑高）
-    const scrollHeight = await page.locator(".today-shell").evaluate((el) => el.scrollHeight);
-    const clientHeight = await page.locator(".today-shell").evaluate((el) => el.clientHeight);
-    expect(scrollHeight).toBeLessThan(clientHeight * 4);
+    await expect(page.getByTestId("coding-personal")).toHaveCount(0);
+    await expect(page.getByTestId("coding-legacy-section")).toHaveCount(0);
+    await expect(page.getByText("个人工作区")).toHaveCount(0);
+    await expect(page.getByText("更多工作区")).toHaveCount(0);
+    await expect(page.getByTestId("coding-recent")).toBeVisible();
   });
 
-  test("六个侧栏入口键盘可达；折叠态保留可辨识名称", async ({ page }) => {
-    await mockW6rApi(page);
-    await page.goto("/?coding=1");
-    await expect(page.getByTestId("coding-sidebar")).toBeVisible({ timeout: 10_000 });
-
-    // 键盘：focus + Enter 打开收件箱独立主区
-    const inboxEntry = page.getByTestId("coding-personal-inbox");
-    await inboxEntry.focus();
-    await page.keyboard.press("Enter");
-    await expect(inboxEntry).toHaveAttribute("aria-current", "page");
-
-    // 逐入口 Tab 可达（六个入口均为可聚焦按钮）
-    for (const view of PERSONAL_VIEWS) {
-      const entry = page.getByTestId(`coding-personal-${view}`);
-      await entry.focus();
-      await expect(entry).toBeFocused();
-    }
-
-    // 折叠态：图标 + tooltip/aria-label 可识别
-    await page.getByTestId("coding-toggle-collapse").click();
-    for (const view of PERSONAL_VIEWS) {
-      const entry = page.getByTestId(`coding-personal-${view}`);
-      await expect(entry).toHaveAttribute("aria-label", /.+/);
-    }
-  });
-
-  test("窄窗口抽屉模式下六入口仍可识别并导航", async ({ page }) => {
+  test("窄窗口保留 Coding Agent 抽屉入口与核心导航", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 800 });
     await mockW6rApi(page);
     await page.goto("/?coding=1");
     await expect(page.getByTestId("coding-drawer-tab")).toBeVisible({ timeout: 10_000 });
     await page.getByTestId("coding-drawer-tab").click();
-    await expect(page.getByTestId("coding-personal-reminders")).toBeVisible();
-    await page.getByTestId("coding-personal-reminders").click();
-    await expect(page.getByText("给医生打电话")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("coding-new-task")).toBeVisible();
+    await expect(page.getByTestId("coding-toggle-projects")).toBeVisible();
+    await expect(page.getByTestId("coding-nav-settings")).toBeVisible();
   });
 
   test("执行详情可追溯：脱敏命令/退出码/耗时/测试结果；凭据不外泄；长输出可折叠", async ({ page }) => {

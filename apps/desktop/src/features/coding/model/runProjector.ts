@@ -506,13 +506,18 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       break;
     }
     case "patch_set.applied": {
+      const patchSetId = str(payload, "patch_set_id");
+      const previewEntry = projection.entries.find(
+        (entry): entry is Extract<TranscriptEntry, { kind: "patch-set" }> =>
+          entry.kind === "patch-set" && entry.patchSetId === patchSetId
+      );
       upsertEntry(projection, {
         kind: "patch-set",
-        key: `patchset:${str(payload, "patch_set_id")}`,
+        key: `patchset:${patchSetId}`,
         sequence: frame.sequence,
-        patchSetId: str(payload, "patch_set_id"),
+        patchSetId,
         state: "applied",
-        fileCount: null,
+        fileCount: previewEntry?.fileCount ?? null,
         verified: payload.verified === true,
         errorCode: null,
         reason: null,

@@ -4,7 +4,7 @@
 诊断包只用于排障，必须脱敏（API key / DB 密码 / Provider key / 聊天全文 / 文档原文 / 敏感记忆）。
 
 聚合来源（对齐 docs/archive/phases/phase7-requirements.md §5.5）：
-- /health 四项状态（HealthService.check_all）
+- /health 三项基础状态（HealthService.check_all；本地模型不参与周期探测）
 - 版本 / git commit / 构建时间 / migration head
 - 最近错误日志摘要（解析 rotating log 尾部）
 - 最近失败活动（ActivityService status=failed）

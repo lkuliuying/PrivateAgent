@@ -1,4 +1,4 @@
-"""Local API authentication plus strict Host and Origin validation."""
+"""Host/Origin validation plus service-token and user-session authentication."""
 
 from __future__ import annotations
 
@@ -9,6 +9,34 @@ from urllib.parse import urlsplit
 
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from ..core.auth import Principal, principal_for_token
+from ..core.tenant import enter_tenant, exit_tenant
+
+_PUBLIC_PATHS = frozenset(
+    {"/auth/login", "/auth/register", "/auth/email-verification/send"}
+)
+_ADMIN_PATH_PREFIXES = (
+    "/admin",
+    "/backup",
+    "/commands",
+    "/coding",
+    "/diagnostics",
+    "/files",
+    "/full-access",
+    "/http-profiles",
+    "/internal",
+    "/integrations",
+    "/maintenance",
+    "/patch-sets",
+    "/providers",
+    "/sql-profiles",
+    "/testing",
+    "/tools",
+    "/tool-calls",
+    "/workspaces",
+    "/worktrees",
+)
 
 
 def parse_csv_setting(value: str) -> tuple[str, ...]:
@@ -81,7 +109,7 @@ def _host_name(host_header: str) -> str | None:
 
 
 class LocalApiSecurityMiddleware:
-    """Authenticate every non-preflight HTTP request with one startup token."""
+    """认证服务令牌或用户会话，并把租户身份传给 ORM 层。"""
 
     def __init__(
         self,
@@ -129,25 +157,41 @@ class LocalApiSecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        path = str(scope.get("path") or "")
+        if path in _PUBLIC_PATHS:
+            await self.app(scope, receive, send)
+            return
+
+        principal: Principal | None = None
         if self.auth_enabled:
-            if self.token is None:
-                await self._reject(
-                    scope,
-                    receive,
-                    send,
-                    503,
-                    "Local API authentication is not configured",
-                )
-                return
             authorization = _single_header(scope, b"authorization")
             scheme, separator, supplied = (authorization or "").partition(" ")
-            valid = (
-                separator == " "
-                and scheme.lower() == "bearer"
-                and bool(supplied)
-                and secrets.compare_digest(supplied, self.token)
-            )
-            if not valid:
+            if separator == " " and scheme.lower() == "bearer" and supplied:
+                if self.token is not None and secrets.compare_digest(
+                    supplied, self.token
+                ):
+                    principal = Principal(
+                        user_id=None,
+                        role="service",
+                        email=None,
+                        actor_type="service",
+                    )
+                else:
+                    try:
+                        from ..core import db as db_module
+
+                        async with db_module.async_session_factory() as db:
+                            principal = await principal_for_token(db, supplied)
+                    except Exception:
+                        await self._reject(
+                            scope,
+                            receive,
+                            send,
+                            503,
+                            "Authentication service is unavailable",
+                        )
+                        return
+            if principal is None:
                 response = JSONResponse(
                     {"detail": "Unauthorized"},
                     status_code=401,
@@ -156,7 +200,20 @@ class LocalApiSecurityMiddleware:
                 await response(scope, receive, send)
                 return
 
-        await self.app(scope, receive, send)
+        if principal is not None and path.startswith(_ADMIN_PATH_PREFIXES):
+            if not principal.is_admin:
+                await self._reject(
+                    scope, receive, send, 403, "Administrator access is required"
+                )
+                return
+
+        state = scope.setdefault("state", {})
+        state["principal"] = principal
+        tenant_token = enter_tenant(principal.user_id if principal else None)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            exit_tenant(tenant_token)
 
     @staticmethod
     async def _reject(

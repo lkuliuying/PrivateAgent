@@ -160,11 +160,10 @@ async def test_run_probe_for_profile_partial_failure_persists_failed(db) -> None
 
 
 @pytest.mark.asyncio
-async def test_route_gate_blocks_file_write_without_valid_probe(
+async def test_route_keeps_file_write_tool_without_valid_probe(
     client, monkeypatch, tmp_path, db
 ) -> None:
-    """绑定 profile 的 coding run：无有效快照 → 409 tool_model_unsupported；
-    补有效快照后放行（§8.2 末条 + AD-T04 失败关闭）。"""
+    """无有效探测快照仍保留受权限/审批保护的真实文件写入工具。"""
     from test_v070_permissions import _create_coding_env, _post_coding_run
 
     from personal_assistant.api import routes_agent_runs
@@ -172,6 +171,12 @@ async def test_route_gate_blocks_file_write_without_valid_probe(
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_runs_api_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "project_bound_runs_enabled", True)
     monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
+    captured: dict = {}
+
+    def fake_start(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(routes_agent_runs.agent_run_coordinator, "start", fake_start)
 
     profile_id = f"ct3-gate-{uuid4().hex[:8]}"
     await ModelProfileService(db).upsert(
@@ -188,19 +193,16 @@ async def test_route_gate_blocks_file_write_without_valid_probe(
     env = await _create_coding_env(client, tmp_path)
     message = "在根目录创建 hello.py 文件，写入打印 hello world 的代码"
     try:
-        blocked = await _post_coding_run(
-            client, env, message=message, model_profile_id=profile_id
-        )
-        assert blocked.status_code == 409, blocked.text
-        assert blocked.json()["error_code"] == "tool_model_unsupported"
-
-        await ModelProbeSnapshotRepository(db).save(
-            profile_id, _snapshot("ollama", "qwen-local", results=_all_results(True))
-        )
         allowed = await _post_coding_run(
             client, env, message=message, model_profile_id=profile_id
         )
         assert allowed.status_code in (200, 202), allowed.text
+        assert await profile_tool_protocol_valid(
+            db, await ModelProfileService(db).get(profile_id)
+        ) is False
+        tool_names = {definition.name for definition in captured["tool_definitions"]}
+        assert "apply_patch_to_workspace" in tool_names
+        assert "propose_patch" not in tool_names
     finally:
         await ModelProfileService(db).delete(profile_id)
 

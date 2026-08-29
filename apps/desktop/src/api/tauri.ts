@@ -22,6 +22,12 @@ export async function getApiConnection(): Promise<ApiConnection | null> {
   return invoke<ApiConnection | null>("get_api_connection");
 }
 
+/** Read a sanitized sidecar startup failure captured by the Rust host. */
+export async function getSidecarStartupError(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("get_sidecar_startup_error");
+}
+
 /** Tauri directory picker; browser/dev mode returns null so callers can fall back to text input. */
 export async function pickDirectory(): Promise<string | null> {
   if (!isTauri()) return null;
@@ -91,12 +97,13 @@ export interface ProviderSecretStatus {
   claude_configured: boolean;
 }
 
-export interface DatabaseSecretPromptResult {
+export interface ModelProviderSecretStatus {
+  reference: string;
   configured: boolean;
-  cancelled: boolean;
 }
 
-export interface ProviderSecretPromptResult extends ProviderSecretStatus {
+export interface DatabaseSecretPromptResult {
+  configured: boolean;
   cancelled: boolean;
 }
 
@@ -140,11 +147,12 @@ export async function cmdProviderSecretStatus(): Promise<ProviderSecretStatus> {
   return invoke<ProviderSecretStatus>("provider_secret_status");
 }
 
-/** Ask Windows for a Provider secret; the renderer never receives the value. */
-export async function cmdPromptProviderSecret(
-  provider: ProviderSecretName
-): Promise<ProviderSecretPromptResult> {
-  return invoke<ProviderSecretPromptResult>("prompt_provider_secret", { provider });
+/** Store a Provider API key in the OS credential store without a native prompt. */
+export async function cmdSetProviderSecret(
+  provider: ProviderSecretName,
+  secret: string
+): Promise<ProviderSecretStatus> {
+  return invoke<ProviderSecretStatus>("set_provider_secret", { provider, secret });
 }
 
 /** Remove a Provider secret from the OS credential store. */
@@ -152,6 +160,31 @@ export async function cmdClearProviderSecret(
   provider: ProviderSecretName
 ): Promise<ProviderSecretStatus> {
   return invoke<ProviderSecretStatus>("clear_provider_secret", { provider });
+}
+
+/** Query a custom model provider credential without exposing its value. */
+export async function cmdModelProviderSecretStatus(
+  alias: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("model_provider_secret_status", { alias });
+}
+
+/** Store a custom model provider API key in the OS credential store. */
+export async function cmdSetModelProviderSecret(
+  alias: string,
+  secret: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("set_model_provider_secret", {
+    alias,
+    secret,
+  });
+}
+
+/** Remove one custom model provider API key from the OS credential store. */
+export async function cmdClearModelProviderSecret(
+  alias: string
+): Promise<ModelProviderSecretStatus> {
+  return invoke<ModelProviderSecretStatus>("clear_model_provider_secret", { alias });
 }
 
 /** Return only whether an MCP credential alias exists in the OS credential store. */
@@ -197,4 +230,26 @@ export async function cmdDownloadAndInstallUpdate(): Promise<void> {
 /** Relaunch the desktop app after config or updater changes. */
 export async function cmdRelaunchApp(): Promise<void> {
   return invoke<void>("relaunch_app");
+}
+
+/** Intercept the native close button before Tauri destroys the main window. */
+export async function listenForMainWindowClose(
+  handler: () => void | Promise<void>
+): Promise<() => void> {
+  if (!isTauri()) return () => undefined;
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  return getCurrentWindow().onCloseRequested((event) => {
+    event.preventDefault();
+    return handler();
+  });
+}
+
+/** Hide the window while leaving the desktop process and sidecar running. */
+export async function cmdHideMainWindow(): Promise<void> {
+  return invoke<void>("hide_main_window");
+}
+
+/** Exit the desktop process; RunEvent::Exit performs the existing sidecar cleanup. */
+export async function cmdExitApp(): Promise<void> {
+  return invoke<void>("exit_app");
 }

@@ -112,12 +112,15 @@ async def test_providers_config_privacy_and_remote_guard(client):
         json={
             "provider_type": "openai",
             "remote_provider_enabled": False,
+            "openai_config_name": "通用模型网关",
             "openai_base_url": "https://example.invalid/v1",
-            "openai_model": "test-model",
+            "openai_model": "vendor/custom-model-v2",
         },
     )
     assert res.status_code == 200, res.text
     body = res.json()
+    assert body["config"]["openai"]["name"] == "通用模型网关"
+    assert body["config"]["openai"]["model"] == "vendor/custom-model-v2"
     assert body["privacy"]["remote_provider_enabled"] is False
     assert body["privacy"]["sends"] == []
 

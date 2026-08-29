@@ -77,6 +77,8 @@ def test_executable_intent_matrix(message: str, expected: bool):
         ("在根目录下创建一个txt文档，文件名为hello.txt", True),
         ("帮我修改 README 的标题", True),
         ("删除 src/legacy.py 文件", True),
+        ("帮我在目录下创建一个python，实现一个简易的9*9乘法表", True),
+        ("创建一个 Python 项目", False),
         ("如何创建 hello.txt 文件", False),
         ("创建一个数据库", False),
         ("运行项目测试", False),
@@ -90,6 +92,8 @@ def test_file_mutation_intent_matrix(message: str, expected: bool):
     ("message", "expected"),
     [
         ("创建一个 hello.c 文件，写入打印 hello world 的代码", True),
+        ("帮我在目录下创建一个python，实现一个简易的9*9乘法表", True),
+        ("创建一个 Python 项目", False),
         ("修改 src/main.ts 文件", True),
         ("修改 src/a.ts 和 src/b.ts 文件", False),
         ("批量修改多个文件", False),

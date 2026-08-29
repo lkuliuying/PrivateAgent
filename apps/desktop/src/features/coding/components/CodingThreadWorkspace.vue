@@ -10,6 +10,7 @@
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { PhChatsCircle, PhWarningCircle } from "@phosphor-icons/vue";
+import { pickFile } from "../../../api";
 import type { View } from "../../../types";
 import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
@@ -26,6 +27,7 @@ import type {
 } from "../model/runContracts";
 import { isTerminalRunStatus } from "../model/runContracts";
 import type { RunProjection } from "../model/runProjector";
+import type { CodingInstructionMarker } from "../model/contracts";
 import {
   approveRunApproval,
   fetchRunApprovalPreview,
@@ -35,6 +37,7 @@ import {
   rejectRunApproval,
 } from "../api/runs";
 import {
+  attachCodingProjectFile,
   fetchCodingWorkspacePath,
   searchCodingProjectFiles,
 } from "../api/projects";
@@ -124,6 +127,9 @@ const contextOpen = ref(false);
 const cancelling = ref(false);
 const lastPermissionMode = ref<string | null>(null);
 const approvalRecords = shallowRef<RunApprovalRecord[]>([]);
+const instructionMarkers = ref<CodingInstructionMarker[]>([]);
+const instructionTarget = ref<{ id: string; seq: number } | null>(null);
+let instructionTargetSeq = 0;
 
 // ?coding-run-preview=<state>：任务页事件流静态预览（W0 矩阵 L2，生产不进入）
 const previewKey = import.meta.env.DEV
@@ -202,11 +208,24 @@ async function hydrateSelectedThread(): Promise<void> {
 
 watch(
   () => thread.value?.id ?? null,
-  (threadId) => {
+  async (threadId) => {
     hydrationSeq += 1;
     durableHistory.value = [];
+    instructionMarkers.value = [];
+    instructionTarget.value = null;
     stream.detach();
-    if (threadId !== null) void hydrateSelectedThread();
+    if (threadId === null) return;
+    await hydrateSelectedThread();
+    if (thread.value?.id !== threadId) return;
+    const firstTurn = props.store.takePendingFirstTurn(threadId);
+    if (!firstTurn) return;
+    const allowed = await guardFullAccess(firstTurn);
+    if (allowed) {
+      await send(firstTurn);
+      return;
+    }
+    restoreSeq += 1;
+    restoreRequest.value = { message: firstTurn.message, seq: restoreSeq };
   },
   { immediate: true }
 );
@@ -517,6 +536,19 @@ function searchFiles(query: string) {
   return searchCodingProjectFiles(projectId, query);
 }
 
+async function pickAttachment() {
+  const sourcePath = await pickFile();
+  if (!sourcePath) return null;
+  const currentThread = thread.value;
+  const projectId = props.store.selectedProjectId.value ?? currentThread?.projectId ?? null;
+  const workspaceId =
+    props.store.selectedWorkspaceId.value ?? currentThread?.workspaceId ?? null;
+  if (projectId === null || workspaceId === null) {
+    throw new Error("当前任务尚未绑定可用工作区");
+  }
+  return attachCodingProjectFile(projectId, workspaceId, sourcePath);
+}
+
 async function cancelRun(): Promise<void> {
   cancelling.value = true;
   try {
@@ -544,6 +576,15 @@ function togglePlan(): void {
 function toggleContext(): void {
   contextOpen.value = !contextOpen.value;
   if (contextOpen.value) planOpen.value = false;
+}
+
+function onInstructionMarkersChange(markers: CodingInstructionMarker[]): void {
+  instructionMarkers.value = markers;
+}
+
+function navigateToInstruction(instructionId: string): void {
+  instructionTargetSeq += 1;
+  instructionTarget.value = { id: instructionId, seq: instructionTargetSeq };
 }
 </script>
 
@@ -582,6 +623,29 @@ function toggleContext(): void {
       />
 
       <div class="thread-body">
+        <aside
+          v-if="instructionMarkers.length > 0"
+          class="instruction-index"
+          aria-label="用户指令索引"
+          data-testid="coding-instruction-index"
+        >
+          <div class="instruction-index__list">
+            <button
+              v-for="(marker, index) in instructionMarkers"
+              :key="marker.id"
+              type="button"
+              class="instruction-index__item"
+              :class="{ active: instructionTarget?.id === marker.id }"
+              :title="marker.label"
+              :aria-label="`定位到用户指令：${marker.label}`"
+              :data-testid="`coding-instruction-${index}`"
+              @click="navigateToInstruction(marker.id)"
+            >
+              <span class="instruction-index__tick" aria-hidden="true" />
+            </button>
+          </div>
+        </aside>
+
         <div class="thread-main">
           <RunTranscript
             :projection="projection"
@@ -596,11 +660,13 @@ function toggleContext(): void {
             :output-pages="outputPages"
             :output-loading="outputLoading"
             :preview-mode="previewMode"
+            :instruction-target="instructionTarget"
             @approve="onApprove"
             @reject="onReject"
             @open-plan="openPlanFromTranscript"
             @retry-stream="stream.retryConnection()"
             @load-output="loadOutput"
+            @instruction-markers-change="onInstructionMarkersChange"
           />
 
           <!-- v0.9.0 H1-B（§5.6）：创建失败阻塞卡片（具体阻塞项 + 恢复入口） -->
@@ -642,6 +708,7 @@ function toggleContext(): void {
               :running="runActive"
               :preview-mode="previewMode"
               :search-files="searchFiles"
+              :pick-attachment="pickAttachment"
               :before-send="guardFullAccess"
               :input-history="composerInputHistory"
               :restore-request="restoreRequest"
@@ -687,6 +754,61 @@ function toggleContext(): void {
   min-width: 0;
   flex: 1;
   flex-direction: column;
+}
+.instruction-index {
+  display: flex;
+  width: 30px;
+  min-width: 30px;
+  flex-direction: column;
+  justify-content: center;
+  overflow: hidden;
+  background: transparent;
+}
+.instruction-index__list {
+  display: flex;
+  width: 100%;
+  max-height: 64%;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.instruction-index__list::-webkit-scrollbar {
+  display: none;
+}
+.instruction-index__item {
+  display: flex;
+  width: 28px;
+  height: 8px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.instruction-index__item:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+.instruction-index__tick {
+  width: 8px;
+  height: 2px;
+  border-radius: var(--radius-full);
+  background: var(--color-border-strong);
+  transition: width 120ms ease, background-color 120ms ease;
+}
+.instruction-index__item:nth-child(3n + 2) .instruction-index__tick {
+  width: 14px;
+}
+.instruction-index__item:nth-child(3n) .instruction-index__tick {
+  width: 6px;
+}
+.instruction-index__item:hover .instruction-index__tick,
+.instruction-index__item.active .instruction-index__tick {
+  width: 22px;
+  height: 3px;
+  background: var(--color-fg);
 }
 .thread-composer {
   flex-shrink: 0;
@@ -740,6 +862,10 @@ function toggleContext(): void {
   flex-shrink: 0;
 }
 @media (max-width: 1080px) {
+  .instruction-index {
+    width: 26px;
+    min-width: 26px;
+  }
   .thread-body :deep(.plan-popover),
   .thread-body :deep(.context-drawer) {
     position: absolute;

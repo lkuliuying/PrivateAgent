@@ -3,7 +3,6 @@ import { createHealthStore } from "./health";
 
 const GREEN_HEALTH = {
   api: { ok: true },
-  ollama: { ok: true },
   mysql: { ok: true },
   chroma: { ok: true },
 };

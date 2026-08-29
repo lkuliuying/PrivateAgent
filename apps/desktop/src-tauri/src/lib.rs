@@ -7,7 +7,7 @@
 // 3. 配置命令：config_exists / read_config / write_config —— 读写 %APPDATA%/personal-assistant/.env（PA_ 前缀）。
 // 4. 依赖检测：check_dependencies（默认端口探测）/ test_connections（按配置探测 MySQL + Ollama）。
 // 5. 更新命令：check_for_updates / download_and_install_update / relaunch_app（基于 tauri-plugin-updater + process）。
-// 6. 应用退出时终止 sidecar 子进程。
+// 6. 关闭按钮可退出或隐藏到系统托盘；真正退出时终止 sidecar 子进程。
 //
 // .env 字段（与 src/personal_assistant/config.py 的 PA_ 前缀对齐）：
 //   PA_DB_HOST / PA_DB_PORT / PA_DB_USER / PA_DB_NAME / PA_DB_SECRET_REF
@@ -28,6 +28,8 @@ use std::time::Duration;
 use std::{collections::BTreeMap, collections::BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager, RunEvent, State};
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
@@ -35,13 +37,16 @@ use tauri_plugin_updater::UpdaterExt;
 
 use credential_prompt::PromptOutcome;
 use credentials::{
-    mcp_account, mcp_reference, provider_account, validate_mcp_secret_alias,
-    CLAUDE_API_KEY_ACCOUNT, DATABASE_PASSWORD_ACCOUNT, OPENAI_API_KEY_ACCOUNT,
+    mcp_account, mcp_reference, model_provider_account, model_provider_reference, provider_account,
+    validate_mcp_secret_alias, CLAUDE_API_KEY_ACCOUNT, DATABASE_PASSWORD_ACCOUNT,
+    OPENAI_API_KEY_ACCOUNT,
 };
 use zeroize::{Zeroize, Zeroizing};
 
 /// sidecar 二进制名（对应 tauri.conf.json 的 externalBin，去掉平台后缀）。
 const SIDECAR_BIN: &str = "personal-assistant-server";
+const TRAY_SHOW_ID: &str = "tray-show";
+const TRAY_EXIT_ID: &str = "tray-exit";
 
 /// sidecar 状态：协商端口与子进程句柄。
 /// port 为 None 表示未启动 sidecar（dev 模式手动起后端，或尚未调用 start_sidecar）。
@@ -49,6 +54,18 @@ struct SidecarState {
     port: Mutex<Option<u16>>,
     token: Mutex<Option<String>>,
     child: Mutex<Option<CommandChild>>,
+    startup_error: Mutex<Option<String>>,
+    generation: Mutex<u64>,
+}
+
+fn classify_sidecar_startup_error(line: &str) -> Option<&'static str> {
+    if line.contains("Another Agent-enabled API process already owns this database") {
+        return Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。");
+    }
+    if line.contains("Agent runtime requires database schema revision") {
+        return Some("数据库版本过旧，请先完成数据库升级后重试。");
+    }
+    None
 }
 
 /// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
@@ -69,7 +86,7 @@ struct ConfigData {
     ollama_base_url: String,
     llm_model: String,
     embed_model: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     mcp_enabled: bool,
     #[serde(default)]
     chat_agent_runtime_enabled: bool,
@@ -141,7 +158,7 @@ impl Default for ConfigData {
             ollama_base_url: "http://127.0.0.1:11434".into(),
             llm_model: "qwen2.5:14b-instruct-q4_K_M".into(),
             embed_model: "bge-m3".into(),
-            mcp_enabled: false,
+            mcp_enabled: true,
             chat_agent_runtime_enabled: false,
             conversation_summary_worker_enabled: false,
             http_workflow_enabled: false,
@@ -200,13 +217,6 @@ struct DatabaseSecretPromptResult {
 }
 
 #[derive(Serialize)]
-struct ProviderSecretPromptResult {
-    openai_configured: bool,
-    claude_configured: bool,
-    cancelled: bool,
-}
-
-#[derive(Serialize)]
 struct McpSecretStatus {
     reference: String,
     configured: bool,
@@ -217,6 +227,17 @@ struct McpSecretPromptResult {
     reference: String,
     configured: bool,
     cancelled: bool,
+}
+
+#[derive(Serialize)]
+struct ModelProviderSecretStatus {
+    reference: String,
+    configured: bool,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct ModelProviderSecretIndex {
+    aliases: Vec<String>,
 }
 
 #[derive(Default, Deserialize, Serialize)]
@@ -393,6 +414,64 @@ fn collect_mcp_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
     Ok(Zeroizing::new(encoded))
 }
 
+fn model_provider_secret_index_path() -> PathBuf {
+    config_dir().join("model-provider-secret-index.json")
+}
+
+fn read_model_provider_secret_aliases() -> Result<BTreeSet<String>, String> {
+    let path = model_provider_secret_index_path();
+    if !path.exists() {
+        return Ok(BTreeSet::new());
+    }
+    let raw =
+        fs::read_to_string(path).map_err(|_| "model provider credential index read failed")?;
+    let index: ModelProviderSecretIndex =
+        serde_json::from_str(&raw).map_err(|_| "model provider credential index is invalid")?;
+    if index.aliases.len() > 64 {
+        return Err("too many model provider credentials".to_string());
+    }
+    let mut aliases = BTreeSet::new();
+    for alias in index.aliases {
+        validate_mcp_secret_alias(&alias)?;
+        aliases.insert(alias);
+    }
+    Ok(aliases)
+}
+
+fn write_model_provider_secret_aliases(aliases: &BTreeSet<String>) -> Result<(), String> {
+    if aliases.len() > 64 {
+        return Err("too many model provider credentials".to_string());
+    }
+    fs::create_dir_all(config_dir())
+        .map_err(|_| "model provider credential index directory failed")?;
+    let encoded = serde_json::to_vec(&ModelProviderSecretIndex {
+        aliases: aliases.iter().cloned().collect(),
+    })
+    .map_err(|_| "model provider credential index serialization failed")?;
+    fs::write(model_provider_secret_index_path(), encoded)
+        .map_err(|_| "model provider credential index write failed".to_string())
+}
+
+fn collect_model_provider_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
+    let mut values = BTreeMap::new();
+    for alias in read_model_provider_secret_aliases()? {
+        let account = model_provider_account(&alias)?;
+        if let Some(secret) = credentials::get(&account)? {
+            values.insert(model_provider_reference(&alias)?, secret);
+        }
+    }
+    let mut encoded = serde_json::to_string(&values)
+        .map_err(|_| "model provider credential injection serialization failed")?;
+    for secret in values.values_mut() {
+        secret.zeroize();
+    }
+    if encoded.len() > 64 * 1024 {
+        encoded.zeroize();
+        return Err("model provider credential injection exceeds the process limit".to_string());
+    }
+    Ok(Zeroizing::new(encoded))
+}
+
 // ============ v0.5.0 B3：HTTP endpoint profile 凭据通道 ============
 // 与 MCP 同构：DB 只存 keyring 引用；桌面壳把引用→明文 map 注入
 // PA_HTTP_PROFILES_SECRETS_JSON，sidecar 进程内存一次性消费。
@@ -406,8 +485,7 @@ fn read_http_profile_secret_entries() -> Result<BTreeSet<HttpProfileSecretEntry>
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "HTTP profile credential index read failed")?;
+    let raw = fs::read_to_string(path).map_err(|_| "HTTP profile credential index read failed")?;
     let index: HttpProfileSecretIndex =
         serde_json::from_str(&raw).map_err(|_| "HTTP profile credential index is invalid")?;
     if index.entries.len() > 32 {
@@ -477,12 +555,19 @@ fn read_http_profile_secret_status(
 }
 
 #[tauri::command]
-fn http_profile_secret_status(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+fn http_profile_secret_status(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretStatus, String> {
     read_http_profile_secret_status(&name, &slot)
 }
 
 #[tauri::command]
-fn set_http_profile_secret(name: String, slot: String, secret: String) -> Result<HttpProfileSecretStatus, String> {
+fn set_http_profile_secret(
+    name: String,
+    slot: String,
+    secret: String,
+) -> Result<HttpProfileSecretStatus, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     credentials::set(&account, &secret)?;
     let mut entries = read_http_profile_secret_entries()?;
@@ -495,7 +580,10 @@ fn set_http_profile_secret(name: String, slot: String, secret: String) -> Result
 }
 
 #[tauri::command]
-fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretStatus, String> {
+fn clear_http_profile_secret(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretStatus, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     credentials::delete(&account)?;
     let mut entries = read_http_profile_secret_entries()?;
@@ -508,7 +596,10 @@ fn clear_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSe
 }
 
 #[tauri::command]
-fn prompt_http_profile_secret(name: String, slot: String) -> Result<HttpProfileSecretPromptResult, String> {
+fn prompt_http_profile_secret(
+    name: String,
+    slot: String,
+) -> Result<HttpProfileSecretPromptResult, String> {
     let account = credentials::http_profile_account(&name, &slot)?;
     let outcome = credential_prompt::prompt_and_store(
         &account,
@@ -558,8 +649,7 @@ fn read_sql_profile_secret_names() -> Result<BTreeSet<String>, String> {
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
-    let raw = fs::read_to_string(path)
-        .map_err(|_| "SQL profile credential index read failed")?;
+    let raw = fs::read_to_string(path).map_err(|_| "SQL profile credential index read failed")?;
     let index: SqlProfileSecretIndex =
         serde_json::from_str(&raw).map_err(|_| "SQL profile credential index is invalid")?;
     if index.names.len() > 32 {
@@ -1269,32 +1359,65 @@ fn provider_secret_status() -> Result<ProviderSecretStatus, String> {
 }
 
 #[tauri::command]
-fn prompt_provider_secret(provider: String) -> Result<ProviderSecretPromptResult, String> {
-    let account = provider_account(&provider)?;
-    let provider_label = match provider.as_str() {
-        "openai" => "OpenAI",
-        "claude" => "Claude",
-        _ => return Err("unsupported provider secret".to_string()),
-    };
-    let outcome = credential_prompt::prompt_and_store(
-        account,
-        &format!("PrivateAgent {provider_label} credential"),
-        &format!(
-            "Enter the {provider_label} API key. It will be stored in Windows Credential Manager."
-        ),
-    )?;
-    let status = read_provider_secret_status()?;
-    Ok(ProviderSecretPromptResult {
-        openai_configured: status.openai_configured,
-        claude_configured: status.claude_configured,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
+fn set_provider_secret(provider: String, secret: String) -> Result<ProviderSecretStatus, String> {
+    let secret = secret.trim();
+    if secret.is_empty() {
+        return Err("provider API key must not be empty".to_string());
+    }
+    if secret.len() > 16_384 {
+        return Err("provider API key is too long".to_string());
+    }
+    credentials::set(provider_account(&provider)?, secret)?;
+    read_provider_secret_status()
 }
 
 #[tauri::command]
 fn clear_provider_secret(provider: String) -> Result<ProviderSecretStatus, String> {
     credentials::delete(provider_account(&provider)?)?;
     read_provider_secret_status()
+}
+
+fn read_model_provider_secret_status(alias: &str) -> Result<ModelProviderSecretStatus, String> {
+    let account = model_provider_account(alias)?;
+    let aliases = read_model_provider_secret_aliases()?;
+    Ok(ModelProviderSecretStatus {
+        reference: model_provider_reference(alias)?,
+        configured: aliases.contains(alias) && credentials::exists(&account)?,
+    })
+}
+
+#[tauri::command]
+fn model_provider_secret_status(alias: String) -> Result<ModelProviderSecretStatus, String> {
+    read_model_provider_secret_status(&alias)
+}
+
+#[tauri::command]
+fn set_model_provider_secret(
+    alias: String,
+    secret: String,
+) -> Result<ModelProviderSecretStatus, String> {
+    let normalized = secret.trim();
+    if normalized.is_empty() {
+        return Err("model provider API key must not be empty".to_string());
+    }
+    if normalized.len() > 16_384 {
+        return Err("model provider API key is too long".to_string());
+    }
+    let account = model_provider_account(&alias)?;
+    credentials::set(&account, normalized)?;
+    let mut aliases = read_model_provider_secret_aliases()?;
+    aliases.insert(alias.clone());
+    write_model_provider_secret_aliases(&aliases)?;
+    read_model_provider_secret_status(&alias)
+}
+
+#[tauri::command]
+fn clear_model_provider_secret(alias: String) -> Result<ModelProviderSecretStatus, String> {
+    credentials::delete(&model_provider_account(&alias)?)?;
+    let mut aliases = read_model_provider_secret_aliases()?;
+    aliases.remove(&alias);
+    write_model_provider_secret_aliases(&aliases)?;
+    read_model_provider_secret_status(&alias)
 }
 
 fn read_mcp_secret_status(alias: &str) -> Result<McpSecretStatus, String> {
@@ -1449,6 +1572,7 @@ async fn start_sidecar(
     } else {
         Zeroizing::new("{}".to_string())
     };
+    let model_provider_secrets_json = collect_model_provider_secrets_for_sidecar()?;
     let http_profile_secrets_json = if loaded.public.http_workflow_enabled {
         collect_http_profile_secrets_for_sidecar()?
     } else {
@@ -1459,6 +1583,13 @@ async fn start_sidecar(
     } else {
         Zeroizing::new("{}".to_string())
     };
+
+    let generation = {
+        let mut current = state.generation.lock().unwrap();
+        *current = current.wrapping_add(1);
+        *current
+    };
+    *state.startup_error.lock().unwrap() = None;
 
     // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
     // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
@@ -1510,8 +1641,18 @@ async fn start_sidecar(
             .env("PA_OPENAI_API_KEY", openai_api_key)
             .env("PA_CLAUDE_API_KEY", claude_api_key)
             .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
-            .env("PA_HTTP_PROFILES_SECRETS_JSON", http_profile_secrets_json.as_str())
-            .env("PA_SQL_PROFILES_SECRETS_JSON", sql_profile_secrets_json.as_str())
+            .env(
+                "PA_MODEL_PROVIDER_SECRETS_JSON",
+                model_provider_secrets_json.as_str(),
+            )
+            .env(
+                "PA_HTTP_PROFILES_SECRETS_JSON",
+                http_profile_secrets_json.as_str(),
+            )
+            .env(
+                "PA_SQL_PROFILES_SECRETS_JSON",
+                sql_profile_secrets_json.as_str(),
+            )
             // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
             // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
             .env(
@@ -1520,7 +1661,10 @@ async fn start_sidecar(
             )
             .env(
                 "PA_CONVERSATION_SUMMARY_WORKER_ENABLED",
-                loaded.public.conversation_summary_worker_enabled.to_string(),
+                loaded
+                    .public
+                    .conversation_summary_worker_enabled
+                    .to_string(),
             )
             // v0.9.0 H1-C（计划 §5.7）：安装版能力位注入——“替我批准/完全访问/
             // 上下文用量”真实可用的前提；与 .env 落盘值一致，发布门禁通过后的
@@ -1583,7 +1727,10 @@ async fn start_sidecar(
             )
             .env(
                 "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED",
-                loaded.public.coding_workspace_auto_approve_enabled.to_string(),
+                loaded
+                    .public
+                    .coding_workspace_auto_approve_enabled
+                    .to_string(),
             )
             .env(
                 "PA_CODING_FULL_ACCESS_ENABLED",
@@ -1605,17 +1752,33 @@ async fn start_sidecar(
         {
             Ok((mut rx, child)) => {
                 // 转发 sidecar 输出到主进程日志
+                let event_app = app.clone();
                 tauri::async_runtime::spawn(async move {
+                    let mut detected_error: Option<String> = None;
                     while let Some(event) = rx.recv().await {
                         match event {
                             CommandEvent::Stdout(line) => {
                                 println!("[sidecar] {}", String::from_utf8_lossy(&line))
                             }
                             CommandEvent::Stderr(line) => {
-                                eprintln!("[sidecar] {}", String::from_utf8_lossy(&line))
+                                let rendered = String::from_utf8_lossy(&line);
+                                if let Some(error) = classify_sidecar_startup_error(&rendered) {
+                                    detected_error = Some(error.to_string());
+                                }
+                                eprintln!("[sidecar] {}", rendered)
                             }
                             CommandEvent::Terminated(status) => {
                                 eprintln!("[sidecar] 进程结束: {:?}", status);
+                                let state = event_app.state::<SidecarState>();
+                                if *state.generation.lock().unwrap() == generation {
+                                    *state.port.lock().unwrap() = None;
+                                    *state.token.lock().unwrap() = None;
+                                    *state.startup_error.lock().unwrap() =
+                                        Some(detected_error.unwrap_or_else(|| {
+                                            "本地后端进程意外退出，请检查数据库配置后重试。"
+                                                .to_string()
+                                        }));
+                                }
                                 break;
                             }
                             _ => {}
@@ -1670,6 +1833,12 @@ fn get_api_connection(state: State<SidecarState>) -> Option<ApiConnection> {
     }
 }
 
+/// Return only a sanitized startup failure; raw sidecar output stays in host logs.
+#[tauri::command]
+fn get_sidecar_startup_error(state: State<SidecarState>) -> Option<String> {
+    state.startup_error.lock().unwrap().clone()
+}
+
 // ============ 更新 ============
 
 #[tauri::command]
@@ -1715,9 +1884,77 @@ fn relaunch_app(app: AppHandle) {
     app.request_restart();
 }
 
+fn show_main_window(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?;
+    window.unminimize().map_err(|error| error.to_string())?;
+    window.show().map_err(|error| error.to_string())?;
+    window.set_focus().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn hide_main_window(app: AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "未找到主窗口".to_string())?
+        .hide()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn exit_app(app: AppHandle) {
+    request_app_exit(&app);
+}
+
+/// 先隐藏主窗口，再触发退出事件。sidecar 仍在 RunEvent::Exit 中优雅停止，
+/// 但用户不会在清理期间继续看到已经选择退出的窗口。
+fn request_app_exit(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+    app.exit(0);
+}
+
+fn install_system_tray(app: &tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, TRAY_SHOW_ID, "打开 PrivateAgent", true, None::<&str>)?;
+    let exit_item = MenuItem::with_id(app, TRAY_EXIT_ID, "退出 PrivateAgent", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &exit_item])?;
+
+    let mut tray = TrayIconBuilder::new()
+        .tooltip("PrivateAgent")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            TRAY_SHOW_ID => {
+                let _ = show_main_window(app);
+            }
+            TRAY_EXIT_ID => request_app_exit(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let _ = show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be registered first so a duplicate process cannot spawn another sidecar.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            let _ = show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1730,8 +1967,11 @@ pub fn run() {
             write_config,
             prompt_database_password,
             provider_secret_status,
-            prompt_provider_secret,
+            set_provider_secret,
             clear_provider_secret,
+            model_provider_secret_status,
+            set_model_provider_secret,
+            clear_model_provider_secret,
             mcp_secret_status,
             prompt_mcp_secret,
             clear_mcp_secret,
@@ -1748,9 +1988,12 @@ pub fn run() {
             start_sidecar,
             get_api_port,
             get_api_connection,
+            get_sidecar_startup_error,
             check_for_updates,
             download_and_install_update,
             relaunch_app,
+            hide_main_window,
+            exit_app,
         ])
         .setup(|app| {
             // 仅注册状态；sidecar 由前端引导流程按需 start_sidecar。
@@ -1758,7 +2001,10 @@ pub fn run() {
                 port: Mutex::new(None),
                 token: Mutex::new(None),
                 child: Mutex::new(None),
+                startup_error: Mutex::new(None),
+                generation: Mutex::new(0),
             });
+            install_system_tray(app)?;
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -1782,6 +2028,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sidecar_ownership_error_is_mapped_to_a_safe_actionable_message() {
+        let rendered = classify_sidecar_startup_error(
+            "personal_assistant.agents.recovery.AgentRuntimeOwnershipError: Another Agent-enabled API process already owns this database",
+        );
+        assert_eq!(
+            rendered,
+            Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。")
+        );
+    }
+
+    #[test]
     fn legacy_config_is_parsed_without_serializing_the_password() {
         let loaded = parse_config_content(
             "PA_DB_URL=mysql+aiomysql://user:p%40ss@127.0.0.1:3307/app?charset=utf8mb4\n",
@@ -1802,7 +2059,7 @@ mod tests {
         };
         let rendered = render_config(&cfg).unwrap();
         assert!(rendered.contains("PA_DB_SECRET_REF=secret://os-keyring/database/password"));
-        assert!(rendered.contains("PA_MCP_ENABLED=false"));
+        assert!(rendered.contains("PA_MCP_ENABLED=true"));
         assert!(!rendered.contains("PA_DB_URL="));
     }
 
@@ -1813,6 +2070,15 @@ mod tests {
         assert!(render_config(&loaded.public)
             .unwrap()
             .contains("PA_MCP_ENABLED=true"));
+    }
+
+    #[test]
+    fn explicit_mcp_disablement_survives_desktop_config_roundtrip() {
+        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
+        assert!(!loaded.public.mcp_enabled);
+        assert!(render_config(&loaded.public)
+            .unwrap()
+            .contains("PA_MCP_ENABLED=false"));
     }
 
     #[test]
@@ -1847,12 +2113,10 @@ mod tests {
 
     #[test]
     fn agent_runtime_flags_are_independent_of_each_other() {
-        let chat_only =
-            parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
+        let chat_only = parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
         assert!(chat_only.public.chat_agent_runtime_enabled);
         assert!(!chat_only.public.conversation_summary_worker_enabled);
-        let summary_only =
-            parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
+        let summary_only = parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
         assert!(!summary_only.public.chat_agent_runtime_enabled);
         assert!(summary_only.public.conversation_summary_worker_enabled);
     }

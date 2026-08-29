@@ -36,7 +36,7 @@ function makeDefault(): ConfigData {
     ollama_base_url: "http://127.0.0.1:11434",
     llm_model: "qwen2.5:14b-instruct-q4_K_M",
     embed_model: "bge-m3",
-    mcp_enabled: false,
+    mcp_enabled: true,
   };
 }
 

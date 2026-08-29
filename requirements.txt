@@ -1,9 +1,11 @@
 # PrivateAgent convenience dependencies for pip-based local development only.
-# This file is not a complete release mirror and is not consumed by the release
-# pipeline. pyproject.toml defines dependencies; uv.lock is the only reproducible
-# dependency lock used for builds and releases.
+# Keep shared package constraints aligned with pyproject.toml and include direct
+# imports needed by pip-based development. This file is not consumed by the
+# release pipeline; uv.lock is the only reproducible lock used for builds and
+# releases. Registration email uses Python's standard-library smtplib and
+# therefore does not require an additional SMTP client package.
 
-# Runtime: API and configuration
+# Runtime: API, configuration, and HTTP transport
 fastapi>=0.115
 uvicorn[standard]>=0.32
 python-multipart>=0.0.12
@@ -11,17 +13,19 @@ tzdata>=2024.1
 httpx[socks]>=0.27
 pydantic-settings>=2.6
 structlog>=24.4
+
+# Runtime: validated contracts, MCP transport, and SQL policy
 jsonschema>=4.26,<5
 mcp==2.0.0
 httpx2==2.9.1
 httpcore2==2.9.1
+sqlglot>=30.15.0
 
-# Runtime: database and migrations
+# Runtime: authentication, database, and migrations
+cryptography>=49.0.0
 sqlalchemy[asyncio]>=2.0.36
 aiomysql>=0.2.3
 alembic>=1.14
-cryptography>=49.0.0
-sqlglot>=30.15.0
 
 # Runtime: agent orchestration and local retrieval
 langchain>=0.3
@@ -35,7 +39,7 @@ pypdf>=5.1
 python-docx>=1.1.2
 markdown>=3.7
 
-# Tests and Windows sidecar packaging
+# Development checks and Windows sidecar packaging
 pytest>=8.3
 pytest-asyncio>=0.24
 ruff>=0.16

@@ -743,6 +743,53 @@ async def test_readonly_dispatcher_hides_write_tools(db, tmp_path, monkeypatch):
         await _cleanup(db, run_id=run_id, project_id=project_id, workspace_id=workspace_id)
 
 
+async def test_confirm_dispatcher_keeps_real_write_tool_without_probe_snapshot(
+    db, tmp_path, monkeypatch
+):
+    """自动探测缺失/失败只影响诊断，不得把已声明支持工具的模型降成仅预览。"""
+    from personal_assistant.core.models import ModelProfile
+
+    _enable_coding_flags(monkeypatch)
+    monkeypatch.setattr(routes_agent_runs.cfg, "agent_patch_workflow_enabled", True)
+    profile_id = f"unprobed-{uuid4().hex[:8]}"
+    db.add(
+        ModelProfile(
+            id=profile_id,
+            provider="openai",
+            display_name="Unprobed compatible model",
+            model_name="compatible-model",
+            native_tool_calls=True,
+            enabled=True,
+        )
+    )
+    await db.commit()
+    project_id, workspace_id = await _make_project(db, tmp_path)
+    run_id = await _create_run(
+        db,
+        project_id=project_id,
+        workspace_id=workspace_id,
+        permission_mode="confirm",
+        model_profile_id=profile_id,
+    )
+    try:
+        bundle = await get_agent_tool_bundle(db)
+        assert bundle is not None
+        dispatcher = await bundle.dispatcher_factory(db, run_id)
+        names = {definition.name for definition in dispatcher.model_definitions()}
+        assert "propose_patch" in names
+        assert "apply_patch_to_workspace" in names
+        assert "run_whitelisted_command" in names
+    finally:
+        await _cleanup(
+            db,
+            run_id=run_id,
+            project_id=project_id,
+            workspace_id=workspace_id,
+        )
+        await db.execute(delete(ModelProfile).where(ModelProfile.id == profile_id))
+        await db.commit()
+
+
 async def test_confirm_dispatcher_registers_write_tools(db, tmp_path, monkeypatch):
     """confirm run：写工具注册且命令工具 risk=confirm（审批把关）。"""
     _enable_coding_flags(monkeypatch)

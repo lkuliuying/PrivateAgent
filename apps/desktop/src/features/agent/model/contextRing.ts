@@ -24,6 +24,8 @@ export interface ContextRingFacts {
   usedTokens: number;
   limitTokens: number;
   reservedTokens: number;
+  /** 会话内按输入 token 加权的 Provider 缓存命中率。 */
+  cacheHitPercent: number | null;
   /** 不可用/失败原因（公开文案，不含敏感内容） */
   reason: string | null;
   compactionState: ContextBudgetResponse["compaction_state"];
@@ -42,6 +44,7 @@ export function contextRingLoading(): ContextRingFacts {
     usedTokens: 0,
     limitTokens: 0,
     reservedTokens: 0,
+    cacheHitPercent: null,
     reason: null,
     compactionState: "idle",
     lastCompactedAt: null,
@@ -57,6 +60,7 @@ export function contextRingUnavailable(reason: string | null): ContextRingFacts 
     usedTokens: 0,
     limitTokens: 0,
     reservedTokens: 0,
+    cacheHitPercent: null,
     reason,
     compactionState: "idle",
     lastCompactedAt: null,
@@ -92,6 +96,10 @@ export function deriveContextRing(
     usedTokens: body.used_tokens,
     limitTokens: body.max_context_tokens,
     reservedTokens: body.reserved_output_tokens,
+    cacheHitPercent:
+      body.cache_hit_percent === null
+        ? null
+        : Math.min(100, Math.max(0, body.cache_hit_percent)),
     compactionState: body.compaction_state,
     lastCompactedAt: body.last_compacted_at,
     source: body.source,
@@ -123,6 +131,15 @@ export function deriveContextRing(
           ? body.error_reason ?? "自动压缩失败，可新开会话恢复"
           : body.error_reason,
   };
+}
+
+/** 面向上下文容量卡片的中文紧凑 token 数字。 */
+export function formatCompactTokens(tokens: number): string {
+  const safe = Math.max(0, Math.round(tokens));
+  if (safe < 10_000) return safe.toLocaleString("zh-CN");
+  const value = safe / 10_000;
+  const compact = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return `${compact}万`;
 }
 
 /** 圆环文本替代（aria/读屏；固定文案，不含敏感内容）。 */

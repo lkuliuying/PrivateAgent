@@ -1,7 +1,42 @@
 import { getApiConnection } from "./tauri";
+import { clearAccessToken, getAccessToken } from "../auth/session";
 
 let API_BASE: string | null = null;
 let API_TOKEN: string | null = null;
+
+function normalizeRemoteApi(value: string): string {
+  if (!value) throw new Error("服务器地址不能为空");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("服务器地址必须是完整的 HTTP(S) 地址");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("远程 API 仅支持 HTTP(S)");
+  }
+  if (url.username || url.password) {
+    throw new Error("服务器地址不能包含用户名或密码");
+  }
+  if (url.search || url.hash) {
+    throw new Error("服务器地址不能包含查询参数或片段");
+  }
+  const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
+  if (import.meta.env.PROD && url.protocol !== "https:" && !loopback) {
+    throw new Error("生产环境远程 API 必须使用 HTTPS");
+  }
+  return value.replace(/\/+$/, "");
+}
+
+function configuredRemoteApi(): string | null {
+  const value = String(import.meta.env.VITE_API_BASE_URL || "").trim();
+  return value ? normalizeRemoteApi(value) : null;
+}
+
+/** 构建时配置了远程服务时，不再启动或探测本地 sidecar。 */
+export function hasConfiguredRemoteApi(): boolean {
+  return configuredRemoteApi() !== null;
+}
 
 /**
  * Resolve backend API base.
@@ -10,6 +45,12 @@ let API_TOKEN: string | null = null;
  */
 export async function ensureApiBase(): Promise<string> {
   if (API_BASE) return API_BASE;
+  const remote = configuredRemoteApi();
+  if (remote) {
+    API_BASE = remote;
+    API_TOKEN = null;
+    return API_BASE;
+  }
   try {
     const connection = await getApiConnection();
     if (connection) {
@@ -33,8 +74,27 @@ export function setApiBase(port: number, token: string): void {
 
 /** Fall back to the default manual backend used in dev mode. */
 export function setApiBaseDefault(): void {
-  API_BASE = "http://127.0.0.1:8000";
-  API_TOKEN = import.meta.env.VITE_API_TOKEN || null;
+  API_BASE = configuredRemoteApi() || "http://127.0.0.1:8000";
+  API_TOKEN = API_BASE.startsWith("http://127.0.0.1:")
+    ? import.meta.env.VITE_API_TOKEN || null
+    : null;
+}
+
+function targetsConfiguredApi(input: RequestInfo | URL): boolean {
+  if (!API_BASE) return false;
+  try {
+    const base = new URL(`${API_BASE}/`);
+    const raw = input instanceof Request ? input.url : input.toString();
+    const target = new URL(raw, base);
+    const basePath = base.pathname.endsWith("/") ? base.pathname : `${base.pathname}/`;
+    return (
+      target.origin === base.origin &&
+      (target.pathname === base.pathname.replace(/\/$/, "") ||
+        target.pathname.startsWith(basePath))
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Fetch through the local API boundary with this process's bearer token. */
@@ -45,10 +105,18 @@ export async function apiFetch(
   if (!API_BASE) await ensureApiBase();
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
-  if (API_TOKEN && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${API_TOKEN}`);
+  const accessToken = getAccessToken();
+  const authorizationToken = accessToken || API_TOKEN;
+  const isApiRequest = targetsConfiguredApi(input);
+  if (authorizationToken && isApiRequest && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authorizationToken}`);
   }
-  return fetch(input, { ...init, headers });
+  const response = await fetch(input, { ...init, headers });
+  if (response.status === 401 && accessToken && isApiRequest) {
+    clearAccessToken();
+    window.dispatchEvent(new CustomEvent("pa:session-expired"));
+  }
+  return response;
 }
 
 /** Clear cached base so the next request negotiates again. */

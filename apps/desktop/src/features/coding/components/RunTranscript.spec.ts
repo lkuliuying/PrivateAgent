@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { mount } from "@vue/test-utils";
+import { describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
 import RunTranscript from "./RunTranscript.vue";
 import { applyRunFrame, createRunProjection, type RunProjection } from "../model/runProjector";
 import type { RunApprovalRecord } from "../model/runContracts";
@@ -49,7 +49,33 @@ describe("RunTranscript", () => {
     const wrapper = mountTranscript();
     expect(wrapper.find('[data-testid="transcript-user-message"]').text()).toContain("修复窄屏遮挡");
     expect(wrapper.find('[data-testid="transcript-run-start"]').text()).toContain("任务开始");
-    expect(wrapper.find('[data-testid="transcript-context"]').text()).toContain("上下文就绪");
+    expect(wrapper.find('[data-testid="transcript-context"]').text()).toContain("已整理上下文");
+  });
+
+  it("生成用户指令索引，并按侧栏目标滚动到对应消息", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const wrapper = mountTranscript({
+      history: [
+        { id: 7, session_id: 11, role: "user", content: "先检查布局", created_at: "2026-08-29T00:00:00Z" },
+        { id: 8, session_id: 11, role: "assistant", content: "已经检查", created_at: "2026-08-29T00:01:00Z" },
+      ],
+    });
+    const markerEvents = wrapper.emitted("instruction-markers-change");
+    const markers = markerEvents?.[markerEvents.length - 1]?.[0] as Array<{ id: string; label: string }>;
+    expect(markers).toEqual([
+      { id: "message:7", label: "先检查布局" },
+      { id: "run:run-1", label: "修复窄屏遮挡" },
+    ]);
+
+    await wrapper.setProps({ instructionTarget: { id: "message:7", seq: 1 } });
+    await flushPromises();
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "center" });
+    expect(wrapper.find('[data-instruction-id="message:7"]').classes()).toContain("instruction-targeted");
+    wrapper.unmount();
   });
 
   it("审批卡：风险/能力 + 批准/拒绝事件", async () => {
@@ -85,14 +111,14 @@ describe("RunTranscript", () => {
       },
       attachTo: document.body,
     });
-    expect(wrapper.find('[data-testid="terminal-summary"]').text()).toContain("已完成");
+    expect(wrapper.find('[data-testid="terminal-summary"]').text()).not.toContain("输出总结");
     expect(wrapper.find('[data-testid="terminal-output"]').text()).toContain("修复完成");
     expect(wrapper.find('[data-testid="stream-reconnect-notice"]').exists()).toBe(true);
     await wrapper.find('[data-testid="stream-reconnect-notice"] button').trigger("click");
     expect(wrapper.emitted("retry-stream")).toBeTruthy();
   });
 
-  it("输出总结展示总耗时，点击后展开公开执行过程与最终结果", async () => {
+  it("完成结果默认独立展示，点击耗时后展开叙事式公开执行过程", async () => {
     const current = projection([
       [1, "run.started", { max_steps: 12, max_tool_calls: 8 }],
       [2, "context.prepared", { estimated_tokens: 1572, truncated: false }],
@@ -110,20 +136,19 @@ describe("RunTranscript", () => {
       props: { projection: current, approvals: [] },
       attachTo: document.body,
     });
-    expect(wrapper.find('[data-testid="terminal-summary"]').text()).toContain("输出总结");
+    expect(wrapper.find('[data-testid="terminal-summary"]').text()).not.toContain("输出总结");
+    expect(wrapper.find('[data-testid="terminal-output"]').text()).toContain("已创建 hello.txt");
     const duration = wrapper.find('[data-testid="run-duration-toggle"]');
-    expect(duration.text()).toContain("耗时 5.4s");
+    expect(duration.text()).toContain("用时 5.4 秒");
     expect(duration.attributes("aria-expanded")).toBe("false");
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').isVisible()).toBe(false);
 
     await duration.trigger("click");
-    const panel = wrapper.find('[data-testid="run-audit-panel"]');
     expect(duration.attributes("aria-expanded")).toBe("true");
-    expect(panel.text()).toContain("公开决策摘要");
-    expect(panel.text()).toContain("目标：创建 hello.txt");
-    expect(panel.text()).toContain("工具 · apply_patch_to_workspace");
-    expect(panel.text()).toContain("最终结果");
-    expect(panel.text()).toContain("已创建 hello.txt。");
-    expect(panel.text()).toContain("不包含模型隐藏推理");
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').isVisible()).toBe(true);
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').text()).toContain("创建 hello.txt");
+    expect(wrapper.find('[data-testid="transcript-tool"]').text()).toContain("编辑了文件");
+    expect(wrapper.find('[data-testid="process-footer"]').text()).toContain("编辑了文件");
   });
 
   it("失败终态在输出总结中直接显示可信失败原因", () => {
@@ -144,6 +169,24 @@ describe("RunTranscript", () => {
     const reason = wrapper.find('[data-testid="terminal-failure-reason"]');
     expect(reason.text()).toContain("失败原因");
     expect(reason.text()).toContain("没有 succeeded 的 Patch 写入执行");
+  });
+
+  it("完成结果把文件修改与产物显示为独立结果卡", () => {
+    const wrapper = mount(RunTranscript, {
+      props: {
+        projection: projection([
+          [1, "patch_set.preview_created", { patch_set_id: "ps-1", file_count: 2 }],
+          [2, "patch_set.applied", { patch_set_id: "ps-1", verified: true }],
+          [3, "artifact.created", { artifact_id: "art-1", kind: "final_report", title: "最终报告" }],
+          [4, "run.completed", { output: "已完成。", tool_call_count: 1 }],
+        ]),
+        approvals: [],
+      },
+      attachTo: document.body,
+    });
+    expect(wrapper.find('[data-testid="result-patch-card"]').text()).toContain("已编辑 2 个文件");
+    expect(wrapper.find('[data-testid="result-patch-card"]').text()).toContain("已验证");
+    expect(wrapper.find('[data-testid="result-artifact-card"]').text()).toContain("最终报告");
   });
 
   it("计划摘要可点击打开计划浮层", async () => {
@@ -275,7 +318,7 @@ describe("RunTranscript", () => {
     expect(command.text()).toContain("pytest tests");
     expect(command.text()).not.toContain("sk-demo");
     expect(command.text()).toContain("[REDACTED]");
-    expect(wrapper.find('[data-testid="tool-time"]').text()).toContain("4.0s");
+    expect(wrapper.find('[data-testid="tool-time"]').text()).toContain("4.0 秒");
     expect(wrapper.find('[data-testid="tool-result"]').text()).toContain("12 passed in 3.42s");
     // 单次执行不呈现重试徽标（不虚构）
     expect(wrapper.find('[data-testid="tool-retry"]').exists()).toBe(false);

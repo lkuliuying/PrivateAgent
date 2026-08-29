@@ -17,6 +17,7 @@ venv/
 .env
 .env.local
 .env.container
+smtp.env
 .secrets/
 
 # 运行时数据
@@ -75,4 +76,3 @@ apps/spawn-test/target/
 
 # Canvas 报告会话状态（仅 .canvas.tsx 本体入库）
 *.canvas.status.json
-

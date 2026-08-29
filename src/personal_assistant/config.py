@@ -61,18 +61,18 @@ def _default_data_dir() -> Path:
     return Path("./data")
 
 
-def _default_env_file() -> str | None:
-    """env 文件路径：打包模式读用户数据目录下的 ``.env``（不存在则返回 None），开发模式读项目根 ``.env``。"""
+def _default_env_files() -> tuple[str, str]:
+    """依次读取主配置和独立 SMTP 配置；后者仅承载邮件服务参数。"""
     if getattr(sys, "frozen", False):
-        p = _default_data_dir() / ".env"
-        return str(p) if p.exists() else None
-    return ".env"
+        data_dir = _default_data_dir()
+        return str(data_dir / ".env"), str(data_dir / "smtp.env")
+    return ".env", "smtp.env"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="PA_",
-        env_file=_default_env_file(),
+        env_file=_default_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -95,6 +95,27 @@ class Settings(BaseSettings):
         "http://localhost:1420,http://127.0.0.1:1420,"
         "http://tauri.localhost,https://tauri.localhost,tauri://localhost"
     )
+    # 多用户认证：注册端点可按部署策略关闭；首个成功注册账号成为管理员。
+    allow_public_registration: bool = True
+    auth_session_ttl_hours: int = Field(default=168, ge=1, le=24 * 365)
+    # 升级后的旧本地数据默认不归属任何新账号；仅在可信首次迁移时显式开启。
+    claim_legacy_data_on_first_user: bool = False
+    audit_log_retention_days: int = Field(default=90, ge=1, le=3650)
+    log_retention_days: int = Field(default=30, ge=1, le=3650)
+    security_cleanup_interval_seconds: int = Field(
+        default=3600, ge=60, le=86_400
+    )
+
+    # === 注册邮箱验证码（smtp.env / PA_SMTP_*） ===
+    smtp_host: str = ""
+    smtp_port: int = Field(default=465, ge=1, le=65_535)
+    smtp_username: str = ""
+    smtp_password: SecretStr | None = None
+    smtp_from_email: str = ""
+    smtp_from_name: str = "PrivateAgent"
+    smtp_use_ssl: bool = True
+    smtp_starttls: bool = False
+    smtp_timeout_seconds: int = Field(default=15, ge=3, le=60)
     agent_runs_api_enabled: bool = False
     agent_run_read_only_tools_enabled: bool = False
     agent_rag_tools_enabled: bool = False
@@ -114,7 +135,7 @@ class Settings(BaseSettings):
         ge=1_000,
         le=500_000,
     )
-    mcp_enabled: bool = False
+    mcp_enabled: bool = True
 
     # === v0.5.0 可信工作流独立开关（B0 冻结，全部默认关闭） ===
     # 四类高风险工作流各有独立 flag；不存在同时开启多类工作流的总开关。
@@ -179,7 +200,7 @@ class Settings(BaseSettings):
     # execution 视图聚合端点与 decision.summary 公开决策摘要事件。
     coding_execution_detail_enabled: bool = False
     # v1.0 CT-3（专项计划 §8.2）：模型配置保存后自动执行工具能力探测并持久化
-    # 快照；快照进入预检与工具面门禁（无有效快照失败关闭到最小工具面）。
+    # 快照；用于能力诊断与设置页反馈，不授予或撤销内建工具执行权限。
     agent_v2_model_probe_enabled: bool = True
     # v1.0 CT-9（专项计划 §14.2/§20）：工具快照诊断 API（observe-only，
     # 脱敏视图；不改变任何执行语义）。默认关闭，灰度按专项计划 §20 顺序。
@@ -353,6 +374,10 @@ class Settings(BaseSettings):
             )
             self.db_url = parsed.set(password=password).render_as_string(
                 hide_password=False
+            )
+        if self.smtp_use_ssl and self.smtp_starttls:
+            raise ValueError(
+                "configure only one of PA_SMTP_USE_SSL or PA_SMTP_STARTTLS"
             )
         return self
 

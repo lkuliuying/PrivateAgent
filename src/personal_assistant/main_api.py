@@ -15,11 +15,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
+from .api.audit import RequestAuditMiddleware, security_cleanup_loop
 from .api.routes_activities import router as activities_router
+from .api.routes_admin import router as admin_router
 from .api.routes_agent_runs import agent_run_coordinator
 from .api.routes_agent_runs import router as agent_runs_router
 from .api.routes_agent_tasks import router as agent_tasks_router
 from .api.routes_artifacts import router as artifacts_router
+from .api.routes_auth import router as auth_router
 from .api.routes_backup import router as backup_router
 from .api.routes_briefings import router as briefings_router
 from .api.routes_capture import router as capture_router
@@ -44,6 +47,7 @@ from .api.routes_maintenance import router as maintenance_router
 from .api.routes_mcp import router as mcp_router
 from .api.routes_memories import router as memories_router
 from .api.routes_model_profiles import router as model_profiles_router
+from .api.routes_model_providers import router as model_providers_router
 from .api.routes_notifications import router as notifications_router
 from .api.routes_ocr import router as ocr_router
 from .api.routes_patch_sets import router as patch_sets_router
@@ -106,6 +110,12 @@ async def lifespan(app: FastAPI):
         port=settings.api_port,
         db=settings.db_url.split("@")[-1] if "@" in settings.db_url else "***",
         ollama=settings.ollama_base_url,
+    )
+    security_cleanup_task = asyncio.create_task(security_cleanup_loop())
+    logger.info(
+        "security retention cleanup started",
+        audit_retention_days=settings.audit_log_retention_days,
+        file_retention_days=settings.log_retention_days,
     )
     agent_guard_task: asyncio.Task | None = None
     if settings.agent_runs_api_enabled or settings.chat_agent_runtime_enabled:
@@ -210,6 +220,9 @@ async def lifespan(app: FastAPI):
         tick_task.cancel()
         with suppress(asyncio.CancelledError):
             await tick_task
+        security_cleanup_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await security_cleanup_task
         logger.info("后端关闭")
 
 
@@ -233,6 +246,7 @@ app.add_middleware(
     allowed_hosts=_allowed_hosts,
     allowed_origins=_allowed_origins,
 )
+app.add_middleware(RequestAuditMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(_allowed_origins),
@@ -241,6 +255,8 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept", "Last-Event-ID"],
 )
 
+app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(health_router)
 app.include_router(http_profiles_router)
 app.include_router(sql_profiles_router)
@@ -280,6 +296,7 @@ app.include_router(plan_router)
 app.include_router(artifacts_router)
 app.include_router(commands_router)
 app.include_router(model_profiles_router)
+app.include_router(model_providers_router)
 app.include_router(providers_router)
 app.include_router(reminders_router)
 app.include_router(search_router)

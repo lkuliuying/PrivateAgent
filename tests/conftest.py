@@ -41,6 +41,10 @@ cfg.agent_context_builder_enabled = False
 cfg.agent_output_verification_enabled = False
 cfg.chat_agent_runtime_enabled = False
 cfg.compatibility_telemetry_persist_enabled = False
+# MCP 与 patch workflow 在开发环境可默认开启；通用测试仍从零工具面开始，
+# 需要覆盖这些能力的用例自行 monkeypatch 开启并注入受控依赖。
+cfg.mcp_enabled = False
+cfg.agent_patch_workflow_enabled = False
 # v0.9.0 H0：v0.6.0/v0.7.0 编码 flag 同样与生产 .env 解耦（开发 .env 会显式
 # 开启 project-bound 等供前端联调；需要开启的用例用 monkeypatch 显式设置）。
 cfg.project_bound_runs_enabled = False

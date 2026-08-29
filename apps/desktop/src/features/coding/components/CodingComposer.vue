@@ -23,18 +23,14 @@ import PaSelect from "../../../design/PaSelect.vue";
 import ContextUsageRing from "../../agent/ContextUsageRing.vue";
 import type { CodingFileHint } from "../model/runContracts";
 import { PERMISSION_MODE_META } from "../model/runContracts";
+import type { CodingFirstTurnPayload } from "../model/contracts";
 import type { CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 // v0.9.0 §5.3：full_access 授予查询/撤销 + 有效期显示（产品时区）
 import { fetchFullAccessGrant, revokeFullAccessGrant } from "../api/fullAccess";
 import { formatDateTime } from "../../../services/timeDisplay";
 import { useNotifications } from "../../../stores/notifications";
 
-export interface CodingComposerSendPayload {
-  message: string;
-  permissionMode: string;
-  modelProfileId: string | null;
-  reasoningEffort: string | null;
-}
+export interface CodingComposerSendPayload extends CodingFirstTurnPayload {}
 
 const notify = useNotifications();
 
@@ -47,6 +43,7 @@ const props = withDefaults(
     running?: boolean;
     previewMode?: boolean;
     searchFiles?: (query: string) => Promise<CodingFileHint[]>;
+    pickAttachment?: () => Promise<CodingFileHint | null>;
     /**
      * v0.9.0 H1-A：发送前守卫（如 full_access 二次确认/授予）。返回 false 时
      * 不发送、不清空输入（不丢失用户草稿），由调用方呈现原因。
@@ -83,6 +80,7 @@ const emit = defineEmits<{
 const text = ref("");
 const chips = ref<CodingFileHint[]>([]);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
+const attaching = ref(false);
 let caret = 0;
 
 type ComposerDraft = {
@@ -207,6 +205,24 @@ function applyAtHint(hint: CodingFileHint): void {
 
 async function openContextPicker(): Promise<void> {
   if (props.busy || props.previewMode) return;
+  if (props.pickAttachment) {
+    if (attaching.value) return;
+    attaching.value = true;
+    try {
+      const attachment = await props.pickAttachment();
+      if (
+        attachment &&
+        !chips.value.some((item) => item.relPath === attachment.relPath)
+      ) {
+        chips.value = [...chips.value, attachment];
+      }
+    } catch (error) {
+      notify.error("文件添加失败", errorText(error));
+    } finally {
+      attaching.value = false;
+    }
+    return;
+  }
   const input = inputEl.value;
   const position = input?.selectionStart ?? text.value.length;
   const before = text.value.slice(0, position);
@@ -221,6 +237,13 @@ async function openContextPicker(): Promise<void> {
   inputEl.value?.focus();
   inputEl.value?.setSelectionRange(caret, caret);
   if (props.searchFiles) void runAtSearch("");
+}
+
+function errorText(error: unknown): string {
+  if (error && typeof error === "object" && "message" in error) {
+    return String((error as { message: unknown }).message);
+  }
+  return String(error);
 }
 
 function removeChip(relPath: string): void {
@@ -382,29 +405,59 @@ const profiles = computed(() => {
   return result?.status === "ok" ? result.profiles : [];
 });
 
+const defaultProfile = computed(
+  () => profiles.value.find((profile) => profile.isDefault) ?? profiles.value[0] ?? null
+);
+
 const profileOptions = computed(() => [
-  { value: "", label: "默认模型" },
+  {
+    value: "",
+    label: defaultProfile.value
+      ? `默认 · ${defaultProfile.value.modelName?.trim() || defaultProfile.value.id}`
+      : "默认模型",
+  },
   ...profiles.value.map((profile) => ({
     value: profile.id,
-    label: `${profile.displayName}${profile.isLocal ? " · 本地" : ""}`,
+    label: profile.providerName
+      ? `${profile.providerName} / ${profile.modelName?.trim() || profile.id}`
+      : profile.modelName?.trim() || profile.id,
   })),
 ]);
 
 const selectedProfile = computed(
-  () => profiles.value.find((profile) => profile.id === modelProfileId.value) ?? null
+  () =>
+    profiles.value.find((profile) => profile.id === modelProfileId.value) ??
+    defaultProfile.value
 );
 
 const effortOptions = computed(() => {
-  const efforts = selectedProfile.value?.reasoningEfforts ?? [];
+  const declared = selectedProfile.value?.reasoningEfforts;
+  const efforts = declared?.length ? declared : ["low", "medium", "high", "max"];
+  const labels: Record<string, string> = {
+    none: "不启用推理",
+    minimal: "最低",
+    low: "低",
+    medium: "中",
+    high: "高",
+    xhigh: "最高",
+    max: "最高",
+  };
   return [
     { value: "", label: "默认强度" },
-    ...efforts.map((item) => ({ value: item, label: item })),
+    ...efforts.map((item) => ({ value: item, label: labels[item] ?? "自定义强度" })),
   ];
 });
 
 watch(profiles, () => {
   if (modelProfileId.value && !profiles.value.some((p) => p.id === modelProfileId.value)) {
     modelProfileId.value = "";
+    reasoningEffort.value = "";
+  }
+});
+
+watch(selectedProfile, () => {
+  const values = effortOptions.value.map((item) => item.value);
+  if (reasoningEffort.value && !values.includes(reasoningEffort.value)) {
     reasoningEffort.value = "";
   }
 });
@@ -422,7 +475,9 @@ async function send(): Promise<void> {
   const payload: CodingComposerSendPayload = {
     message: buildMessage(),
     permissionMode: permissionMode.value,
-    modelProfileId: modelProfileId.value || null,
+    // “默认”也是一个确定的 Profile。提交实际 ID，避免后端在默认项缺失或
+    // 旧配置残留时退回到与界面显示不一致的 legacy 模型。
+    modelProfileId: selectedProfile.value?.id ?? null,
     reasoningEffort: reasoningEffort.value || null,
   };
   // v0.9.0 H1-A：发送前守卫（full_access 二次确认/授予）。返回 false 时
@@ -672,9 +727,9 @@ onBeforeUnmount(() => {
           type="button"
           class="composer-icon-btn add-context"
           data-testid="composer-add-context"
-          :disabled="busy || previewMode"
-          title="引用项目文件"
-          aria-label="引用项目文件"
+          :disabled="busy || previewMode || attaching"
+          :title="pickAttachment ? '从本机添加文件' : '引用项目文件'"
+          :aria-label="pickAttachment ? '从本机添加文件' : '引用项目文件'"
           @click="void openContextPicker()"
         >
           <PhPlus :size="20" aria-hidden="true" />
@@ -726,7 +781,7 @@ onBeforeUnmount(() => {
           <PaSelect
             :model-value="reasoningEffort"
             :options="effortOptions"
-            :disabled="!selectedProfile?.reasoningEfforts?.length"
+            :disabled="!selectedProfile"
             size="sm"
             data-testid="composer-effort"
             aria-label="推理强度"
@@ -734,6 +789,7 @@ onBeforeUnmount(() => {
           />
         </label>
         <ContextUsageRing
+          v-if="threadId !== null"
           class="composer-context-ring"
           :session-id="threadId"
           :enabled="contextBudgetEnabled"

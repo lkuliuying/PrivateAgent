@@ -1,7 +1,7 @@
-"""健康检查服务：聚合 Ollama、MySQL、ChromaDB、本地 API 状态。
+"""健康检查服务：聚合 MySQL、ChromaDB、本地 API 状态。
 
-供 ``GET /health`` 与设置/状态页使用，帮助用户定位是模型、数据库、
-向量库还是后端本身的问题。
+供 ``GET /health`` 与设置/状态页使用，帮助用户定位数据库、向量库或
+后端本身的问题。Ollama 是可选的本地模型配置，不参与周期健康检查。
 """
 from __future__ import annotations
 
@@ -30,23 +30,16 @@ class HealthService:
         self.db = db
 
     async def check_all(self) -> dict[str, Any]:
-        ollama, mysql, chroma = await asyncio.gather(
-            self._check_ollama(),
+        mysql, chroma = await asyncio.gather(
             self._check_mysql(),
             self._check_chroma(),
             return_exceptions=False,
         )
         return {
             "api": {"ok": True},
-            "ollama": ollama,
             "mysql": mysql,
             "chroma": chroma,
         }
-
-    async def _check_ollama(self) -> dict[str, Any]:
-        from .provider import OllamaProvider
-
-        return await OllamaProvider().health()
 
     async def _check_mysql(self) -> dict[str, Any]:
         result: dict[str, Any] = {"ok": False}

@@ -23,6 +23,8 @@ import { codingFetch, codingFetchJson, codingJsonInit, toCodingApiError } from "
 interface ModelProfileDto {
   id: string;
   provider: string;
+  provider_id?: string | null;
+  provider_name?: string | null;
   display_name: string;
   model_name?: string | null;
   is_default?: boolean;
@@ -31,7 +33,7 @@ interface ModelProfileDto {
   supports_streaming?: boolean;
   supports_structured_output?: boolean;
   supports_vision?: boolean;
-  context_tokens?: number;
+  context_tokens?: number | null;
   reasoning_efforts: string[] | null;
   usage_reporting?: boolean;
   enabled: boolean;
@@ -41,6 +43,8 @@ export function toModelProfileDetail(dto: ModelProfileDto): CodingModelProfileDe
   return {
     id: dto.id,
     provider: dto.provider as CodingModelProfileDetail["provider"],
+    ...(dto.provider_id ? { providerId: dto.provider_id } : {}),
+    ...(dto.provider_name ? { providerName: dto.provider_name } : {}),
     displayName: dto.display_name,
     modelName: dto.model_name ?? null,
     isDefault: dto.is_default ?? false,
@@ -80,8 +84,13 @@ export async function fetchCodingModelProfiles(): Promise<CodingModelProfilesRes
     .map((dto) => ({
       id: dto.id,
       provider: dto.provider as CodingModelProfileSummary["provider"],
+      ...(dto.provider_id ? { providerId: dto.provider_id } : {}),
+      ...(dto.provider_name ? { providerName: dto.provider_name } : {}),
       displayName: dto.display_name,
+      modelName: dto.model_name ?? null,
+      isDefault: dto.is_default ?? false,
       isLocal: dto.is_local,
+      contextTokens: dto.context_tokens ?? 8192,
       reasoningEfforts: dto.reasoning_efforts,
     }));
   return { status: "ok", profiles };
