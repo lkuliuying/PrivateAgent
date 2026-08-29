@@ -69,7 +69,7 @@ async def capabilities(request: Request) -> RuntimeCapabilities:
 
     agent_runtime = settings.chat_agent_runtime_enabled
     principal = getattr(request.state, "principal", None)
-    privileged = isinstance(principal, Principal) and principal.is_admin
+    authenticated = isinstance(principal, Principal)
     return RuntimeCapabilities(
         chat_execution_mode="agent_runtime" if agent_runtime else "legacy",
         legacy_tool_planner_enabled=not agent_runtime,
@@ -79,37 +79,37 @@ async def capabilities(request: Request) -> RuntimeCapabilities:
             and settings.agent_rag_tools_enabled
             and settings.agent_output_verification_enabled
         ),
-        patch_workflow_enabled=privileged and settings.agent_patch_workflow_enabled,
-        command_workflow_enabled=privileged and settings.agent_command_workflow_enabled,
-        http_workflow_enabled=privileged and settings.agent_http_workflow_enabled,
+        patch_workflow_enabled=authenticated and settings.agent_patch_workflow_enabled,
+        command_workflow_enabled=authenticated and settings.agent_command_workflow_enabled,
+        http_workflow_enabled=authenticated and settings.agent_http_workflow_enabled,
         sql_readonly_workflow_enabled=(
-            privileged and settings.agent_sql_readonly_workflow_enabled
+            authenticated and settings.agent_sql_readonly_workflow_enabled
         ),
         # v0.9.0 H0 §3：能力位只反映 flag 事实；UI 据此启用选项，
         # workspace_auto_approve 额外要求命令 profile 子系统可用。
-        agent_runs_api_enabled=privileged and settings.agent_runs_api_enabled,
-        coding_agent_ui_enabled=privileged and settings.coding_agent_ui_enabled,
-        project_bound_runs_enabled=privileged and settings.project_bound_runs_enabled,
+        agent_runs_api_enabled=authenticated and settings.agent_runs_api_enabled,
+        coding_agent_ui_enabled=authenticated and settings.coding_agent_ui_enabled,
+        project_bound_runs_enabled=authenticated and settings.project_bound_runs_enabled,
         coding_workspace_auto_approve=(
-            privileged
+            authenticated
             and
             settings.coding_workspace_auto_approve_enabled
             and settings.coding_command_profiles_enabled
         ),
-        coding_full_access_supported=privileged and settings.coding_full_access_enabled,
+        coding_full_access_supported=authenticated and settings.coding_full_access_enabled,
         coding_context_budget_enabled=(
-            privileged and settings.coding_context_budget_enabled
+            authenticated and settings.coding_context_budget_enabled
         ),
         coding_execution_detail_enabled=(
-            privileged and settings.coding_execution_detail_enabled
+            authenticated and settings.coding_execution_detail_enabled
         ),
-        coding_worktree_enabled=privileged and settings.coding_worktree_enabled,
+        coding_worktree_enabled=authenticated and settings.coding_worktree_enabled,
         product_timezone=PRODUCT_TIMEZONE,
         # v0.9.0 H1-C（§5.3）：审计/撤销随 full_access 能力位声明（服务层内置）。
-        coding_full_access_audit=privileged and settings.coding_full_access_enabled,
-        coding_full_access_revoke=privileged and settings.coding_full_access_enabled,
+        coding_full_access_audit=authenticated and settings.coding_full_access_enabled,
+        coding_full_access_revoke=authenticated and settings.coding_full_access_enabled,
         # v0.9.0 H1-B（§5.6）：内置只读诊断命令依赖命令工作流子系统。
         coding_diagnostic_commands_enabled=(
-            privileged and settings.agent_command_workflow_enabled
+            authenticated and settings.agent_command_workflow_enabled
         ),
     )
