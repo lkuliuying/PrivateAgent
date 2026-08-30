@@ -16,6 +16,7 @@ import {
   CloseCircleFilled,
   DashboardOutlined,
   FolderOpenOutlined,
+  FileTextOutlined,
   LogoutOutlined,
   MessageOutlined,
   PlusOutlined,
@@ -28,6 +29,7 @@ import {
 } from "@ant-design/icons-vue";
 
 import { PRODUCT_TIMEZONE } from "../services/timeDisplay";
+import AdminLogsPanel from "../components/AdminLogsPanel.vue";
 import { useAdminStore } from "../stores/admin";
 import { useAuthStore } from "../stores/auth";
 import type { AdminUserCreateInput, AdminUserRow } from "../types/auth";
@@ -38,7 +40,7 @@ interface CreateUserForm extends AdminUserCreateInput {
   confirmPassword: string;
 }
 
-type AdminModule = "system" | "users";
+type AdminModule = "system" | "users" | "logs";
 
 const router = useRouter();
 const adminStore = useAdminStore();
@@ -74,12 +76,12 @@ const healthLabels: Record<string, string> = {
 };
 const currentUserId = computed(() => authStore.user?.id ?? null);
 const moduleTitle = computed(() =>
-  activeModule.value === "system" ? "系统总览" : "用户管理"
+  activeModule.value === "system" ? "系统总览" : activeModule.value === "users" ? "用户管理" : "服务器日志"
 );
 const moduleDescription = computed(() =>
   activeModule.value === "system"
     ? "查看平台运行状态、核心指标与最近操作"
-    : "创建账号、分配角色并管理用户访问状态"
+    : activeModule.value === "users" ? "创建账号、分配角色并管理用户访问状态" : "查看 Supervisor 与 Nginx 的最近运行日志"
 );
 const roleOptions = [
   { label: "用户", value: "user" },
@@ -385,6 +387,15 @@ onBeforeUnmount(() => {
             <small>账号、角色与访问状态</small>
           </span>
         </button>
+        <button
+          type="button"
+          class="admin-nav__item"
+          :class="{ 'is-active': activeModule === 'logs' }"
+          @click="handleModuleChange('logs')"
+        >
+          <FileTextOutlined class="admin-nav__icon" />
+          <span><strong>日志</strong><small>Supervisor 与 Nginx</small></span>
+        </button>
       </nav>
       <footer class="admin-sidebar__footer">
         <SafetyCertificateOutlined />
@@ -550,6 +561,7 @@ onBeforeUnmount(() => {
           </section>
         </template>
 
+        <AdminLogsPanel v-else-if="activeModule === 'logs'" />
         <section v-else class="admin-panel admin-panel--users">
           <header class="admin-user-toolbar">
             <div class="admin-user-toolbar__search">

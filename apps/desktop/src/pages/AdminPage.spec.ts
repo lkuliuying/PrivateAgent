@@ -111,7 +111,7 @@ describe("AdminPage layout", () => {
     vi.unstubAllEnvs();
   });
 
-  it("only exposes system and user modules and keeps the create form inside its modal", async () => {
+  it("exposes system, user and log modules and keeps the create form inside its modal", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const authStore = useAuthStore();
@@ -130,10 +130,11 @@ describe("AdminPage layout", () => {
     await flushPromises();
 
     const modules = wrapper.findAll(".admin-nav__item");
-    expect(modules).toHaveLength(2);
+    expect(modules).toHaveLength(3);
     expect(modules.map((item) => item.text())).toEqual([
       "系统运行监控与操作审计",
       "用户账号、角色与访问状态",
+      "日志Supervisor 与 Nginx",
     ]);
     expect(wrapper.get(".admin-content__heading h1").text()).toBe("系统总览");
     const healthPanel = wrapper.get(".admin-panel--health");

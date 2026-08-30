@@ -21,7 +21,9 @@ concurrency:
 jobs:
   build-sign-release:
     name: Build, SignPath sign, and publish
-    if: github.repository == 'lkuliuying/PrivateAgent'
+    if: >-
+      github.repository == 'lkuliuying/PrivateAgent' &&
+      !startsWith(github.event.release.tag_name || github.event.inputs.release_tag, 'remote-v')
     runs-on: windows-latest
     timeout-minutes: 120
     defaults:
