@@ -27,6 +27,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons-vue";
 
+import { PRODUCT_TIMEZONE } from "../services/timeDisplay";
 import { useAdminStore } from "../stores/admin";
 import { useAuthStore } from "../stores/auth";
 import type { AdminUserCreateInput, AdminUserRow } from "../types/auth";
@@ -130,8 +131,10 @@ const auditColumns = [
 function formatDate(value: string | null): string {
   if (!value) return "--";
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: PRODUCT_TIMEZONE,
     dateStyle: "medium",
     timeStyle: "medium",
+    hour12: false,
   }).format(new Date(value));
 }
 

@@ -1,7 +1,7 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { defineComponent, h } from "vue";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useAuthStore } from "../stores/auth";
 import AdminPage from "./AdminPage.vue";
@@ -45,6 +45,45 @@ const FormItemStub = defineComponent({
   },
 });
 
+function mountAdminPage(pinia = createPinia()) {
+  return mount(AdminPage, {
+    global: {
+      plugins: [pinia],
+      stubs: {
+        AModal: ModalStub,
+        ARow: { template: "<div><slot /></div>" },
+        ACol: { template: "<div><slot /></div>" },
+        ASelect: { template: "<div />" },
+        "a-alert": { template: "<div />" },
+        "a-avatar": { template: "<div><slot /></div>" },
+        "a-badge": { template: "<div />" },
+        "a-button": ButtonStub,
+        "a-empty": { template: "<div />" },
+        "a-form": { template: "<form><slot /></form>" },
+        "a-form-item": FormItemStub,
+        "a-input": { template: "<input />" },
+        "a-input-password": { template: "<input />" },
+        "a-tag": { template: "<span><slot /></span>" },
+        "a-table": {
+          props: ["columns", "dataSource"],
+          template: `<div data-testid="admin-table">
+            <template v-for="record in dataSource" :key="record.id">
+              <template v-for="column in columns" :key="column.key">
+                <div
+                  v-if="column.key === 'created_at' || column.key === 'last_login_at'"
+                  :data-time-field="column.key"
+                >
+                  <slot name="bodyCell" :column="column" :record="record" />
+                </div>
+              </template>
+            </template>
+          </div>`,
+        },
+      },
+    },
+  });
+}
+
 describe("AdminPage layout", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -62,10 +101,14 @@ describe("AdminPage layout", () => {
         mysql: { ok: true },
         chroma: { ok: false },
       },
-      generated_at: "2026-08-29T00:00:00Z",
+      generated_at: "2026-08-30T16:49:02.123Z",
     });
     adminService.getAdminUsers.mockResolvedValue({ total: 0, results: [] });
     adminService.getAuditLogs.mockResolvedValue({ total: 0, results: [] });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("only exposes system and user modules and keeps the create form inside its modal", async () => {
@@ -83,28 +126,7 @@ describe("AdminPage layout", () => {
       created_at: "2026-08-29T00:00:00Z",
     };
 
-    const wrapper = mount(AdminPage, {
-      global: {
-        plugins: [pinia],
-        stubs: {
-          AModal: ModalStub,
-          ARow: { template: "<div><slot /></div>" },
-          ACol: { template: "<div><slot /></div>" },
-          ASelect: { template: "<div />" },
-          "a-alert": { template: "<div />" },
-          "a-avatar": { template: "<div><slot /></div>" },
-          "a-badge": { template: "<div />" },
-          "a-button": ButtonStub,
-          "a-empty": { template: "<div />" },
-          "a-form": { template: "<form><slot /></form>" },
-          "a-form-item": FormItemStub,
-          "a-input": { template: "<input />" },
-          "a-input-password": { template: "<input />" },
-          "a-tag": { template: "<span><slot /></span>" },
-          "a-table": { template: "<div data-testid=\"admin-table\" />" },
-        },
-      },
-    });
+    const wrapper = mountAdminPage(pinia);
     await flushPromises();
 
     const modules = wrapper.findAll(".admin-nav__item");
@@ -140,4 +162,41 @@ describe("AdminPage layout", () => {
 
     wrapper.unmount();
   });
+
+  it.each(["UTC", "Asia/Shanghai", "America/Los_Angeles"])(
+    "shows overview, audit and login times in Shanghai when the client timezone is %s",
+    async (timezone) => {
+      vi.stubEnv("TZ", timezone);
+      expect(new Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(timezone);
+      adminService.getAuditLogs.mockResolvedValue({
+        total: 1,
+        results: [{ id: 1, created_at: "2026-08-30T06:49:00.000Z" }],
+      });
+      adminService.getAdminUsers.mockResolvedValue({
+        total: 2,
+        results: [
+          { id: 1, last_login_at: "2026-08-30T22:49:02+08:00" },
+          { id: 2, last_login_at: null },
+        ],
+      });
+
+      const wrapper = mountAdminPage();
+      try {
+        await flushPromises();
+        expect(wrapper.get(".admin-topbar__time").text()).toBe(
+          "更新于 2026年8月31日 00:49:02"
+        );
+        expect(wrapper.get('[data-time-field="created_at"]').text()).toBe(
+          "2026年8月30日 14:49:00"
+        );
+
+        await wrapper.findAll(".admin-nav__item")[1].trigger("click");
+        expect(
+          wrapper.findAll('[data-time-field="last_login_at"]').map((cell) => cell.text())
+        ).toEqual(["2026年8月30日 22:49:02", "--"]);
+      } finally {
+        wrapper.unmount();
+      }
+    }
+  );
 });
