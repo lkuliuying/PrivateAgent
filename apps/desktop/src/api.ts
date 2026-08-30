@@ -201,6 +201,7 @@ export {
   deleteModelProvider,
   discoverModelProviderModels,
   listModelProviders,
+  probeModelProviderModel,
   saveModelProvider,
   updateModelProviderRuntimeSecret,
 } from "./api/modelProviders";

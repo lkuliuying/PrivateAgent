@@ -354,21 +354,35 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
   });
 
   test("设置按模块切换，主区只显示当前模块", async ({ page }) => {
-    await openCoding(page);
-    await page.getByTestId("coding-nav-settings").click();
+    await mockCodingApi(page);
+    await page.addInitScript(() => {
+      window.sessionStorage.setItem("pa_access_token", "health-privacy-e2e-session");
+    });
+    await page.route("**://127.0.0.1:8000/auth/me", (route) => route.fulfill({
+      json: {
+        id: 2, email: "user@example.test", username: "user", display_name: "user",
+        role: "user", status: "active", last_login_at: null,
+        created_at: "2026-08-30T00:00:00Z",
+      },
+    }));
+    await page.goto("/?coding=1");
+    await page.getByRole("button", { name: "账号菜单：user" }).click();
+    await page.getByRole("menuitem", { name: "设置", exact: true }).click();
 
-    await expect(page.getByTestId("settings-section-status")).toHaveAttribute(
+    await expect(page.getByTestId("settings-section-status")).toHaveCount(0);
+    await expect(page.getByTestId("settings-section-current-model")).toHaveAttribute(
       "aria-current",
       "page"
     );
-    await expect(page.getByRole("heading", { name: "运行状态" }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "当前模型" }).first()).toBeVisible();
+    await expect(page.getByRole("heading", { name: "运行状态" })).toHaveCount(0);
 
     await page.getByTestId("settings-section-provider").click();
     await expect(page.getByTestId("settings-section-provider")).toHaveAttribute(
       "aria-current",
       "page"
     );
-    await expect(page.getByRole("heading", { name: "模型服务与隐私" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "模型设置", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { name: "运行状态" })).toHaveCount(0);
   });
 

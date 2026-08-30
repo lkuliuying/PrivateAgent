@@ -57,7 +57,11 @@ describe("AdminPage layout", () => {
       documents_total: 5,
       operations_24h: 6,
       errors_24h: 0,
-      health: {},
+      health: {
+        api: { ok: true },
+        mysql: { ok: true },
+        chroma: { ok: false },
+      },
       generated_at: "2026-08-29T00:00:00Z",
     });
     adminService.getAdminUsers.mockResolvedValue({ total: 0, results: [] });
@@ -110,10 +114,20 @@ describe("AdminPage layout", () => {
       "用户账号、角色与访问状态",
     ]);
     expect(wrapper.get(".admin-content__heading h1").text()).toBe("系统总览");
+    const healthPanel = wrapper.get(".admin-panel--health");
+    expect(healthPanel.text()).toContain("服务器运行状态");
+    expect(healthPanel.text()).toContain("仅管理员可见");
+    expect(healthPanel.findAll(".health-item strong").map((item) => item.text())).toEqual([
+      "服务器 API", "服务器 MySQL", "服务器 ChromaDB",
+    ]);
+    expect(healthPanel.findAll(".health-item > div > span").map((item) => item.text())).toEqual([
+      "运行正常", "运行正常", "需要检查",
+    ]);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
 
     await modules[1].trigger("click");
     expect(wrapper.get(".admin-content__heading h1").text()).toBe("用户管理");
+    expect(wrapper.find(".admin-panel--health").exists()).toBe(false);
     expect(wrapper.find('[role="dialog"]').exists()).toBe(false);
 
     await wrapper.get(".admin-content__heading button").trigger("click");

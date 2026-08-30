@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, type Component } from "vue";
 import {
-  PhActivity,
   PhArchive,
   PhArrowLeft,
   PhBrain,
@@ -30,7 +29,6 @@ const emit = defineEmits<{
 }>();
 
 const sectionIcons: Record<SettingsSection, Component> = {
-  status: PhActivity,
   "current-model": PhBrain,
   provider: PhPlugs,
   mcp: PhPuzzlePiece,

@@ -23,7 +23,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # 注入运行时数据库 URL
-config.set_main_option("sqlalchemy.url", settings.db_url)
+config.set_main_option("sqlalchemy.url", settings.db_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 

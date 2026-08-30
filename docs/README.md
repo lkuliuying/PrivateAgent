@@ -6,6 +6,7 @@
 
 ## 快速入口
 
+- 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
 - 使用产品：[使用指南](./usage-guide.md)、[故障排查](./troubleshooting.md)
 - 搭建环境：[部署指南](./deployment-guide.md)、[跨平台说明](./cross-platform.md)
 - 参与开发：[需求说明](./requirements.md)、[目标架构](./target-architecture.md)、[测试指南](./testing-guide.md)、[Coding Agent 重构计划](./coding-agent-refactor-plan.md)

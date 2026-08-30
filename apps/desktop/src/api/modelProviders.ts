@@ -203,6 +203,27 @@ export async function discoverModelProviderModels(input: {
   });
 }
 
+/** Check saved provider credentials and model availability without enabling Coding. */
+export async function probeModelProviderModel(
+  provider: ModelProvider,
+  modelId: string
+): Promise<boolean> {
+  if (!provider.enabled) throw new Error("供应商已禁用，请先启用并保存配置");
+  if (!provider.models.some((model) => model.modelId === modelId)) {
+    throw new Error("请先保存该模型配置，再测试连接");
+  }
+  // 不使用表单里的未保存密钥；让服务器按供应商 ID 解析已保存的凭据。
+  const models = await discoverModelProviderModels({
+    providerId: provider.id,
+    protocol: provider.protocol,
+    baseUrl: provider.baseUrl,
+  });
+  return models.some((model) =>
+    model.modelId === modelId ||
+    (provider.protocol === "ollama" && model.modelId === `${modelId}:latest`)
+  );
+}
+
 export async function updateModelProviderRuntimeSecret(
   providerId: string,
   secret: string
