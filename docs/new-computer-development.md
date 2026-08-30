@@ -100,6 +100,8 @@ npm.cmd run e2e -- e2e/coding-workbench.spec.ts --grep '设置按模块切换' -
 
 ## 5. 构建远程客户端
 
+本节为未签名便携测试包。需要客户端内“检查更新”的远程安装版，请使用[远程客户端更新流程](./remote-client-updates.md)，不要把便携 EXE 当作 updater 安装包发布。
+
 在仓库根目录运行，将示例地址替换为自己的 HTTPS API 域名；仅填 origin，不带路径、查询串、令牌或账号：
 
 ```powershell
