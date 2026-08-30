@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     claim_legacy_data_on_first_user: bool = False
     audit_log_retention_days: int = Field(default=90, ge=1, le=3650)
     log_retention_days: int = Field(default=30, ge=1, le=3650)
+    # 管理员只读日志白名单；只配置服务日志，不允许客户端传入文件路径。
+    admin_supervisor_log: Path | None = Path("/var/log/private-agent/supervisor.log")
+    admin_supervisord_log: Path | None = Path("/var/log/supervisord.log")
+    admin_nginx_access_log: Path | None = Path("/var/log/nginx/private-agent-access.log")
+    admin_nginx_error_log: Path | None = Path("/var/log/nginx/private-agent-error.log")
     security_cleanup_interval_seconds: int = Field(
         default=3600, ge=60, le=86_400
     )
