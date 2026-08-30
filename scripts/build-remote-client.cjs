@@ -69,20 +69,20 @@ function buildEnvironment(source, options, targetDir) {
     }
   }
   return Object.assign(env, {
-    NODE_ENV: "production", VITE_API_BASE_URL: options.apiBaseUrl, VITE_API_TOKEN: "", CARGO_TARGET_DIR: targetDir,
+    NODE_ENV: "production", VITE_API_BASE_URL: options.apiBaseUrl, VITE_API_TOKEN: "", VITE_LOCAL_EXECUTOR: "true", CARGO_TARGET_DIR: targetDir,
   });
 }
 
-function bundleConfig(options, frontendDist) {
+function bundleConfig(options, frontendDist, localExecutor = "binaries/private-agent-local") {
   const config = {
     build: { beforeBuildCommand: null, frontendDist },
-    bundle: { externalBin: [], createUpdaterArtifacts: options.mode === "release" },
+    bundle: { externalBin: [localExecutor], createUpdaterArtifacts: options.mode === "release" },
   };
   if (options.mode !== "portable") {
     Object.assign(config, { version: options.version, productName: "PrivateAgentRemote", identifier: REMOTE_IDENTIFIER, mainBinaryName: REMOTE_BINARY });
     Object.assign(config.bundle, {
       targets: ["nsis"], shortDescription: "PrivateAgent 远程客户端",
-      longDescription: "连接已部署的 PrivateAgent 服务，不安装本地后端。",
+      longDescription: "账号和模型连接 PrivateAgent 服务器，项目文件及任务在本机执行，无需安装数据库或模型服务。",
       // Remote install/uninstall must not stop another local edition's sidecar.
       windows: { nsis: { installerHooks: null } },
     });
@@ -156,6 +156,15 @@ function main() {
   const output = fs.mkdtempSync(path.join(runDir, "remote-client-"));
   const web = path.join(output, "web");
   console.log("Build output: " + output);
+  const python = path.join(root, ".venv", "Scripts", "python.exe");
+  if (!fs.existsSync(python)) throw new Error("Local executor packaging requires the existing project Python environment.");
+  const localBin = path.join(output, "local-bin");
+  const localName = "private-agent-local-x86_64-pc-windows-msvc";
+  run(python, ["-m", "PyInstaller", "--noconfirm", "--onefile", "--console", "--name", localName,
+    "--paths", path.join(root, "src"), "--distpath", localBin,
+    "--workpath", path.join(output, "pyinstaller-work"), "--specpath", output,
+    "--exclude-module", "personal_assistant", "--exclude-module", "torch", "--exclude-module", "numpy",
+    path.join(root, "src", "private_agent_local", "entry.py")]);
   run(process.execPath, [typecheck, "--noEmit"]);
   // Direct argv avoids cmd/npm double-quoting Windows paths that contain spaces.
   run(process.execPath, [vite, "build", "--outDir", web]);
@@ -168,7 +177,8 @@ function main() {
   }
   const triple = "x86_64-pc-windows-msvc";
   // An absolute Windows frontendDist is parsed as a URL by Tauri, omitting assets.
-  const config = bundleConfig(options, path.relative(tauriDir, web).replaceAll("\\", "/"));
+  const config = bundleConfig(options, path.relative(tauriDir, web).replaceAll("\\", "/"),
+    path.relative(tauriDir, path.join(localBin, "private-agent-local")).replaceAll("\\", "/"));
   const configPath = path.join(output, "tauri-build.json");
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { flag: "wx" });
   const buildFlags = options.mode === "portable" ? ["--no-bundle", "--no-sign"] : options.mode === "preview" ? ["--no-sign"] : [];
@@ -182,8 +192,10 @@ function main() {
   }
   const exeName = "PrivateAgent-remote-windows-x64.exe";
   fs.copyFileSync(builtExe, path.join(output, exeName), fs.constants.COPYFILE_EXCL);
+  const localBytes = fs.readFileSync(path.join(localBin, `${localName}.exe`));
+  fs.copyFileSync(path.join(localBin, `${localName}.exe`), path.join(output, "private-agent-local.exe"), fs.constants.COPYFILE_EXCL);
   const sha256 = crypto.createHash("sha256").update(exeBytes).digest("hex");
-  let sums = `${sha256}  ${exeName}\n`;
+  let sums = `${sha256}  ${exeName}\n${crypto.createHash("sha256").update(localBytes).digest("hex")}  private-agent-local.exe\n`;
   if (options.mode !== "portable") {
     const installerName = `PrivateAgentRemote_${options.version}_x64-setup.exe`;
     const installer = path.join(env.CARGO_TARGET_DIR, triple, "release", "bundle", "nsis", installerName);
@@ -212,7 +224,7 @@ function main() {
   }
   fs.writeFileSync(path.join(output, "SHA256SUMS.txt"), sums, { flag: "wx" });
   fs.writeFileSync(path.join(output, "build-info.json"), JSON.stringify({
-    commit, dirty, apiBaseUrl, target: triple, signing: options.mode === "release" ? "updater-verified" : "unsigned", sidecar: false,
+    commit, dirty, apiBaseUrl, target: triple, signing: options.mode === "release" ? "updater-verified" : "unsigned", sidecar: "desktop-local",
     mode: options.mode, updateTarget: options.mode === "portable" ? null : REMOTE_TARGET,
     updateUrl: options.updateUrl || null, downloadBaseUrl: options.downloadBaseUrl || null,
     version: options.version || JSON.parse(fs.readFileSync(path.join(desktop, "package.json"), "utf8")).version,
@@ -220,7 +232,7 @@ function main() {
   }, null, 2) + "\n", { flag: "wx" });
   console.log("Client EXE: " + path.join(output, exeName));
   console.log("SHA256: " + sha256);
-  if (options.mode === "portable") console.log("Unsigned test build. Requires WebView2. Do not use the in-app updater.");
+  if (options.mode === "portable") console.log("Unsigned test build. Keep private-agent-local.exe beside the client. Requires WebView2. Do not use the in-app updater.");
   if (dirty) console.log("Source has uncommitted changes; build-info.json records dirty=true.");
 }
 

@@ -16,7 +16,7 @@ test("portable CLI remains unsigned and does not inherit installer identity or c
   assert.equal(config.identifier, undefined);
   assert.equal(config.plugins, undefined);
   assert.equal(config.bundle.createUpdaterArtifacts, false);
-  assert.deepEqual(config.bundle.externalBin, []);
+  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local"]);
 });
 
 test("remote installers cannot replace the local edition or stop its sidecar", () => {
@@ -25,7 +25,7 @@ test("remote installers cannot replace the local edition or stop its sidecar", (
   assert.equal(config.version, "1.0.1");
   assert.equal(config.identifier, REMOTE_IDENTIFIER);
   assert.equal(config.mainBinaryName, "privateagent-remote");
-  assert.deepEqual(config.bundle.externalBin, []);
+  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local"]);
   assert.equal(config.bundle.windows.nsis.installerHooks, null);
   assert.deepEqual(config.plugins.updater.endpoints, ["https://api.example.com/updates/remote/latest.json"]);
   assert.equal(config.bundle.createUpdaterArtifacts, true);
@@ -72,6 +72,7 @@ test("preview installers never inherit signing secrets or produce an update mani
   assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, undefined);
   assert.equal(env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, undefined);
   assert.equal(env.VITE_API_TOKEN, "");
+  assert.equal(env.VITE_LOCAL_EXECUTOR, "true");
   assert.equal(bundleConfig(options, "web").bundle.createUpdaterArtifacts, false);
   assert.throws(() => updateManifest(options, "app-setup.exe", "fixture"), /signed release/);
 });

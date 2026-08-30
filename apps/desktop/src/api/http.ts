@@ -1,5 +1,6 @@
 import { getApiConnection } from "./tauri";
 import { clearAccessToken, getAccessToken } from "../auth/session";
+import { fetchLocalProject, isLocalProjectPath, usesLocalExecutor } from "../services/localExecutor";
 
 let API_BASE: string | null = null;
 let API_TOKEN: string | null = null;
@@ -33,7 +34,7 @@ function configuredRemoteApi(): string | null {
   return value ? normalizeRemoteApi(value) : null;
 }
 
-/** 构建时配置了远程服务时，不再启动或探测本地 sidecar。 */
+/** 构建时配置的账号和模型服务器；本机项目执行器使用独立连接。 */
 export function hasConfiguredRemoteApi(): boolean {
   return configuredRemoteApi() !== null;
 }
@@ -111,8 +112,17 @@ export async function apiFetch(
   if (authorizationToken && isApiRequest && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${authorizationToken}`);
   }
-  const response = await fetch(input, { ...init, headers });
-  if (response.status === 401 && accessToken && isApiRequest) {
+  const url = new URL(input instanceof Request ? input.url : input.toString(), `${API_BASE}/`);
+  let response: Response;
+  if (usesLocalExecutor() && isApiRequest && isLocalProjectPath(url.pathname)) {
+    const requestInit = input instanceof Request
+      ? { method: input.method, body: input.body && init.body === undefined ? await input.clone().arrayBuffer() : undefined, signal: input.signal, ...init, headers }
+      : { ...init, headers };
+    response = await fetchLocalProject(url.pathname + url.search, requestInit);
+  } else {
+    response = await fetch(input, { ...init, headers });
+  }
+  if (response.status === 401 && accessToken && accessToken === getAccessToken() && isApiRequest) {
     clearAccessToken();
     window.dispatchEvent(new CustomEvent("pa:session-expired"));
   }

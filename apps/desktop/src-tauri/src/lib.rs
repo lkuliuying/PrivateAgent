@@ -18,6 +18,7 @@
 
 mod credential_prompt;
 mod credentials;
+mod local_executor;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -1890,6 +1891,7 @@ async fn download_and_install_update(
         .map_err(|e| e.to_string())?;
     // 安装会通过 std::process::exit 退出当前进程，绕过 RunEvent::Exit（sidecar 的唯一终止点），
     // 因此先手动停 sidecar（优雅停机 + 强杀兜底），避免更新后留下孤儿进程。
+    local_executor::stop(&app);
     if let Some(child) = state.child.lock().unwrap().take() {
         stop_sidecar(&state, child);
         *state.port.lock().unwrap() = None;
@@ -2006,6 +2008,7 @@ pub fn run() {
             check_dependencies,
             test_connections,
             start_sidecar,
+            local_executor::start_local_executor,
             get_api_port,
             get_api_connection,
             get_sidecar_startup_error,
@@ -2016,6 +2019,7 @@ pub fn run() {
             exit_app,
         ])
         .setup(|app| {
+            app.manage(local_executor::LocalExecutorState::default());
             // 仅注册状态；sidecar 由前端引导流程按需 start_sidecar。
             app.manage(SidecarState {
                 port: Mutex::new(None),
@@ -2033,6 +2037,7 @@ pub fn run() {
             // 应用退出时停止 sidecar：先请求优雅停机（写遥测 ended_at、收拢
             // coordinator），超时再强杀进程树兜底（0.2.1 QA 修复保留）。
             if let RunEvent::Exit = event {
+                local_executor::stop(app_handle);
                 if let Some(state) = app_handle.try_state::<SidecarState>() {
                     if let Some(child) = state.child.lock().unwrap().take() {
                         stop_sidecar(&state, child);
