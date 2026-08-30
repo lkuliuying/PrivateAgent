@@ -11,7 +11,9 @@
 | 可执行文件 | `privateagent-remote.exe` |
 | 更新清单平台键 | `remote-windows-x86_64` |
 | 默认清单地址 | `https://<API 域名>/updates/remote/latest.json` |
-| 本地后端 | 不打包、不启动，也不执行停止本地版 sidecar 的安装钩子 |
+| 本地后端 | 1.0.3 起捆绑轻量本机执行器，项目和工具在本机运行；不启动普通版完整后端，也不执行停止普通版 sidecar 的安装钩子 |
+
+1.0.3 的服务端接口、日志权限和第二台电脑验收步骤见 [联网客户端部署指南](./connected-desktop-rollout.md)。账号与模型仍连接服务器，项目文件不自动同步到服务器或其他电脑。
 
 本地安装版的标识、发布工作流、更新地址不变。不要把远程包覆盖到现有通用 GitHub `latest.json`：旧客户端使用相同默认平台键，无法安全区分本地版与远程便携版。
 
@@ -65,7 +67,7 @@ publish/
 
 ## 托管与发布
 
-脚本不会修改服务器、上传文件、创建 Git 标签或发布 GitHub Release。现有 `.github/workflows/signpath-release.yml` 仍构建本地版，不用于发布远程版。
+脚本不会修改服务器、上传文件、创建 Git 标签或发布 GitHub Release。现有 `.github/workflows/signpath-release.yml` 仍构建本地版，排除 `remote-v*` 标签，不用于发布远程版；发布标签应包含该排除条件。
 
 更新清单和安装包必须可由终端用户通过 HTTPS 读取；不能被 API 登录校验重定向成 HTML。更新包可以公开下载而源码保持私有。若需要鉴权下载，需要另行实现更新客户端鉴权，不能嵌入共享凭据。
 
