@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import {
   exportBackup,
   getSettings,
@@ -14,7 +14,6 @@ import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
-import { useHealth } from "../stores/health";
 import {
   settingsSectionMeta,
   type SettingsSection,
@@ -34,7 +33,7 @@ const props = withDefaults(
     focusSection?: SettingsSection | null;
     returnTo?: string | null;
   }>(),
-  { activeSection: "status", focusSection: null, returnTo: null }
+  { activeSection: "current-model", focusSection: null, returnTo: null }
 );
 const emit = defineEmits<{
   (e: "reconfigure"): void;
@@ -55,17 +54,10 @@ async function onModelProfilesSaved(): Promise<void> {
 const settings = ref<AppSettings | null>(null);
 const modelProviders = ref<ModelProvider[]>([]);
 const modelProfiles = ref<CodingModelProfileSummary[]>([]);
-const {
-  health,
-  refreshing: healthLoading,
-  error: healthError,
-  refresh: refreshHealth,
-} = useHealth();
 const backups = ref<BackupExportResult[]>([]);
 const backupPreview = ref<BackupRestorePreview | null>(null);
 const backupPath = ref("");
 const backupMsg = ref("");
-let timer: ReturnType<typeof setInterval> | undefined;
 
 async function loadCurrentModel(): Promise<void> {
   try {
@@ -90,7 +82,6 @@ async function load() {
     settings.value = null;
   }
   await loadCurrentModel();
-  await refreshHealth();
   try {
     backups.value = (await listBackups()).items;
     if (!backupPath.value && backups.value.length) backupPath.value = backups.value[0].path;
@@ -100,15 +91,10 @@ async function load() {
 }
 onMounted(() => {
   load();
-  // 只轮询健康状态；重复加载整张设置表单会覆盖用户尚未保存的输入。
-  timer = setInterval(() => void refreshHealth(), 5000);
   // H1-D：由父级模块导航定位到模型管理区，不再依赖长页面滚动。
   if (props.focusSection === "provider") {
     emit("select-section", "provider");
   }
-});
-onUnmounted(() => {
-  if (timer) clearInterval(timer);
 });
 
 async function doBackup() {
@@ -132,16 +118,6 @@ async function previewBackup() {
     backupMsg.value = "恢复预览失败：" + String(e);
   }
 }
-
-const statusItems = computed(() => {
-  const h = health.value;
-  if (!h) return [];
-  return [
-    { label: "本地后端 API", ok: h.api.ok },
-    { label: "MySQL", ok: h.mysql.ok },
-    { label: "ChromaDB", ok: h.chroma.ok },
-  ];
-});
 
 const activeModelProfile = computed(
   () =>
@@ -207,18 +183,6 @@ const activeEndpoint = computed(() => {
     </div>
 
     <div class="settings-grid">
-
-    <!-- 状态 -->
-    <section v-if="activeSection === 'status'" class="setting-card wide status-card">
-      <div class="card-heading"><span>01</span><div><h2>运行状态</h2><p>关键依赖与本地服务连通性</p></div></div>
-      <div class="status-row">
-        <div v-for="s in statusItems" :key="s.label" class="status-pill" :class="s.ok ? 'ok' : 'bad'">
-          <span class="dot" />{{ s.label }}{{ s.ok ? " 正常" : " 不可用" }}
-        </div>
-      </div>
-      <div v-if="healthError" class="warn-text">⚠ 本地后端暂时未连接，当前显示上次状态。</div>
-      <div v-else-if="healthLoading && !health" class="loading-text">正在检查系统状态…</div>
-    </section>
 
     <!-- 模型信息（只读） -->
     <section v-if="activeSection === 'current-model'" class="setting-card wide">

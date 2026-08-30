@@ -55,8 +55,11 @@ class RuntimeCapabilities(BaseModel):
 
 
 @router.get("/health")
-async def health() -> dict:
-    """返回 API、MySQL、ChromaDB 状态；本地模型不参与周期探测。"""
+async def health(request: Request) -> dict:
+    """普通客户端仅检查 API 可达性；依赖详情限管理员和运维令牌。"""
+    principal = getattr(request.state, "principal", None)
+    if not isinstance(principal, Principal) or not principal.is_admin:
+        return {"api": {"ok": True}}
     result = await HealthService().check_all()
     logger.info("health check", **{k: v.get("ok") for k, v in result.items()})
     return result

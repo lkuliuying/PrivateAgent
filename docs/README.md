@@ -6,13 +6,14 @@
 
 ## 快速入口
 
+- 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
 - 使用产品：[使用指南](./usage-guide.md)、[故障排查](./troubleshooting.md)
 - 搭建环境：[部署指南](./deployment-guide.md)、[跨平台说明](./cross-platform.md)
 - 参与开发：[需求说明](./requirements.md)、[目标架构](./target-architecture.md)、[测试指南](./testing-guide.md)、[Coding Agent 重构计划](./coding-agent-refactor-plan.md)
 - 当前策略：[观察期顺延决策](./releases/observation-policy-20260820.md)、[v0.6.0 开工审计](./releases/v0.6.0/v0.6.0-readiness-20260820.md)
 - 工程基线：[v0.5.0 开发计划](./releases/v0.5.0/v0.5.0-development-plan-20260809.md)、[rc.4 检查点](./releases/v0.5.0/v0.5.0-rc.4-checkpoint-20260810.md)、[Day 10 历史记录](./releases/v0.5.0/observation-day10-20260820.md)
 - 后续版本：[Coding Agent 版本路线图](./releases/coding-agent-version-roadmap-20260820.md)、[v0.6.0 开工审计](./releases/v0.6.0/v0.6.0-readiness-20260820.md)、[C0 契约](./releases/v0.6.0/v0.6.0-c0-contracts-20260820.md)、[v0.6.0 开发计划](./releases/v0.6.0/v0.6.0-development-plan-20260820.md) 至 [v1.0.0](./releases/v1.0.0/v1.0.0-development-plan-20260820.md)
-- 发布维护：[发布检查清单](./release-checklist.md)、[数据库升级手册](./database-upgrade-runbook.md)、[签名与密钥](./signing-and-keys.md)
+- 发布维护：[发布检查清单](./release-checklist.md)、[远程客户端更新](./remote-client-updates.md)、[数据库升级手册](./database-upgrade-runbook.md)、[签名与密钥](./signing-and-keys.md)
 
 ## 长期维护文档
 

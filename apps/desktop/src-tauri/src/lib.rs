@@ -1841,9 +1841,19 @@ fn get_sidecar_startup_error(state: State<SidecarState>) -> Option<String> {
 
 // ============ 更新 ============
 
+fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    let mut builder = app.updater_builder().timeout(Duration::from_secs(120));
+    // A remote client must reject a local/sidecar installer's manifest, even if
+    // someone accidentally uploads it to the remote edition's update endpoint.
+    if app.config().identifier == "com.personal-assistant.desktop.remote" {
+        builder = builder.target("remote-windows-x86_64");
+    }
+    builder.build().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = desktop_updater(&app)?;
     match updater.check().await.map_err(|e| e.to_string())? {
         Some(u) => Ok(Some(UpdateInfo {
             version: u.version.clone(),
@@ -1858,13 +1868,26 @@ async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String>
 async fn download_and_install_update(
     app: AppHandle,
     state: State<'_, SidecarState>,
+    expected_version: Option<String>,
 ) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = desktop_updater(&app)?;
     let update = updater
         .check()
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "当前已是最新版本".to_string())?;
+    if expected_version
+        .as_ref()
+        .is_some_and(|version| version != &update.version)
+    {
+        return Err("更新版本已经变化，请重新检查更新后再安装".to_string());
+    }
+    // download() verifies the signature too. A network/signature failure must
+    // leave the running app and its local sidecar untouched.
+    let bytes = update
+        .download(|_chunk, _total| {}, || {})
+        .await
+        .map_err(|e| e.to_string())?;
     // 安装会通过 std::process::exit 退出当前进程，绕过 RunEvent::Exit（sidecar 的唯一终止点），
     // 因此先手动停 sidecar（优雅停机 + 强杀兜底），避免更新后留下孤儿进程。
     if let Some(child) = state.child.lock().unwrap().take() {
@@ -1872,10 +1895,7 @@ async fn download_and_install_update(
         *state.port.lock().unwrap() = None;
         *state.token.lock().unwrap() = None;
     }
-    update
-        .download_and_install(|_chunk, _total| {}, || {})
-        .await
-        .map_err(|e| e.to_string())?;
+    update.install(bytes).map_err(|e| e.to_string())?;
     Ok(())
 }
 

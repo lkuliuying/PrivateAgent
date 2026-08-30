@@ -330,12 +330,12 @@ async function quitApp() {
 
 // ============ 导航 ============
 
-const settingsSection = ref<SettingsSection>("status");
+const settingsSection = ref<SettingsSection>("current-model");
 
 function onNavigate(v: View) {
   const target = CODING_ALLOWED_VIEWS.has(v) ? v : "coding";
   if (target === "settings" && view.value !== "settings" && settingsFocus.value === null) {
-    settingsSection.value = "status";
+    settingsSection.value = "current-model";
   }
   history.navigate({ view: target });
 }

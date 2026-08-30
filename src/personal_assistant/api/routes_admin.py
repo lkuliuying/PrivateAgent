@@ -7,7 +7,13 @@ from datetime import datetime, timedelta
 from typing import Literal, Self
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +23,7 @@ from ..core.db import get_session
 from ..core.health import HealthService
 from ..core.models import AuditLog, AuthSession, ChatSession, Document, Project, User
 from ..core.tenant import without_tenant_scope
-from ..core.timeutil import utcnow
+from ..core.timeutil import format_rfc3339_utc, utcnow
 from .auth_dependencies import admin_principal
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -35,6 +41,10 @@ class AdminOverview(BaseModel):
     health: dict
     generated_at: datetime
 
+    @field_serializer("generated_at")
+    def _serialize_time(self, value: datetime) -> str | None:
+        return format_rfc3339_utc(value)
+
 
 class AdminUserRow(BaseModel):
     id: int
@@ -51,6 +61,10 @@ class AdminUserRow(BaseModel):
     document_count: int
     operation_count: int
 
+    @field_serializer("last_login_at", "created_at")
+    def _serialize_time(self, value: datetime | None) -> str | None:
+        return format_rfc3339_utc(value)
+
 
 class AdminUserList(BaseModel):
     total: int
@@ -66,6 +80,10 @@ class AdminUserAccount(BaseModel):
     status: str
     last_login_at: datetime | None
     created_at: datetime
+
+    @field_serializer("last_login_at", "created_at")
+    def _serialize_time(self, value: datetime | None) -> str | None:
+        return format_rfc3339_utc(value)
 
 
 class AdminUserCreate(BaseModel):
@@ -119,6 +137,10 @@ class AuditLogRow(BaseModel):
     duration_ms: int
     client_ip: str | None
     created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_time(self, value: datetime) -> str | None:
+        return format_rfc3339_utc(value)
 
 
 class AuditLogList(BaseModel):

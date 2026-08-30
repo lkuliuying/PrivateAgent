@@ -27,6 +27,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons-vue";
 
+import { PRODUCT_TIMEZONE } from "../services/timeDisplay";
 import { useAdminStore } from "../stores/admin";
 import { useAuthStore } from "../stores/auth";
 import type { AdminUserCreateInput, AdminUserRow } from "../types/auth";
@@ -66,6 +67,11 @@ const roleValue = ref<"admin" | "user">("user");
 let refreshTimer: number | null = null;
 
 const healthEntries = computed(() => Object.entries(overview.value?.health || {}));
+const healthLabels: Record<string, string> = {
+  api: "服务器 API",
+  mysql: "服务器 MySQL",
+  chroma: "服务器 ChromaDB",
+};
 const currentUserId = computed(() => authStore.user?.id ?? null);
 const moduleTitle = computed(() =>
   activeModule.value === "system" ? "系统总览" : "用户管理"
@@ -125,8 +131,10 @@ const auditColumns = [
 function formatDate(value: string | null): string {
   if (!value) return "--";
   return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: PRODUCT_TIMEZONE,
     dateStyle: "medium",
     timeStyle: "medium",
+    hour12: false,
   }).format(new Date(value));
 }
 
@@ -464,8 +472,8 @@ onBeforeUnmount(() => {
           <section class="admin-panel admin-panel--health">
             <header class="admin-panel__header">
               <div>
-                <h2>系统状态</h2>
-                <p>核心服务实时健康检查</p>
+                <h2>服务器运行状态</h2>
+                <p>仅管理员可见的后端服务与数据库健康检查</p>
               </div>
               <a-tag color="green">自动刷新</a-tag>
             </header>
@@ -480,7 +488,7 @@ onBeforeUnmount(() => {
                   :class="state.ok ? 'health-item__ok' : 'health-item__error'"
                 />
                 <div>
-                  <strong>{{ name }}</strong>
+                  <strong>{{ healthLabels[name] || name }}</strong>
                   <span>{{ state.ok ? "运行正常" : "需要检查" }}</span>
                 </div>
               </article>

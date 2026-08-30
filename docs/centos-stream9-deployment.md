@@ -1,5 +1,7 @@
 # CentOS Stream 9 源码部署
 
+> 本文是早期通用模板，示例端口和目录不代表现有部署。2026-08-30 已实施部署的差异、验证结果与升级注意事项见 [部署交接总结](./deployment-handoff-20260830.md)，换电脑开发见 [开发交接指南](./new-computer-development.md)。不要用本模板覆盖正在运行的配置。
+
 本文面向一台 CentOS Stream 9 服务器，使用以下拓扑：
 
 ```text

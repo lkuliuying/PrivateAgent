@@ -22,6 +22,7 @@ import {
   getSettings,
   isDesktopRuntime,
   listModelProviders,
+  probeModelProviderModel,
   saveModelProvider,
   updateSettings,
   updateModelProviderRuntimeSecret,
@@ -33,7 +34,6 @@ import {
   type AppSettings,
   type ModelMetadataSource,
 } from "../api";
-import { probeCodingModelProfile } from "../features/coding/api/modelProfiles";
 import { useNotifications } from "../stores/notifications";
 
 const emit = defineEmits<{ saved: [] }>();
@@ -403,15 +403,23 @@ async function removeProvider(): Promise<void> {
 
 async function testModel(profileId: string): Promise<void> {
   if (!profileId || testingProfileId.value) return;
+  const provider = providers.value.find((item) => item.id === draft.value.id);
+  const model = provider?.models.find((item) => item.profileId === profileId);
+  if (!provider || !model) {
+    setMessage("请先保存该模型配置，再测试连接", "error");
+    return;
+  }
   testingProfileId.value = profileId;
   message.value = "";
   try {
-    const result = previewMode
-      ? { status: "ok" as const, detail: "" }
-      : await probeCodingModelProfile(profileId);
+    const available = previewMode
+      ? true
+      : await probeModelProviderModel(provider, model.modelId);
     setMessage(
-      result.status === "ok" ? "模型连接测试成功" : result.detail || `测试失败：${result.status}`,
-      result.status === "ok" ? "ok" : "error"
+      available
+        ? "模型连接测试成功：模型在可用列表中（未测试聊天生成）"
+        : "供应商可连接，但可用列表中未找到该模型",
+      available ? "ok" : "error"
     );
   } catch (error) {
     setMessage(errorText(error), "error");
