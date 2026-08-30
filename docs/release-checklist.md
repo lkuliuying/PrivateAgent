@@ -18,7 +18,7 @@
 | 发布 manifest | `uv run python scripts\generate_release_manifest.py --write`（在完整检查**之后**执行；checklist 由报告步骤生成） | `dist\release-manifest-<version>.md` 与报告同一 commit 且摘要一致 |
 | 性能基线（phase8） | `uv run python scripts\measure_perf_baseline.py` | `dist\perf-baseline.md`，无 blocker |
 | 健康检查 | 启动后端，`GET /health` | API / Ollama / MySQL / ChromaDB 四项全绿 |
-| 迁移 head | `uv run alembic current` | `0035 (head)`（与代码模型一致） |
+| 迁移 head | 先用 `uv run alembic heads` 核对源码，再在获准的目标环境用 `uv run alembic current` 核对数据库 | 当前源码 head 为 `0038`；源码存在不证明生产数据库已迁移，后续发布以当次源码和目标环境结果为准 |
 
 > `release-check.bat` 中 cargo check 在无 MSVC 时 SKIP（不记为失败）；发布 Windows 安装包前必须确保 MSVC 可用。
 > 完整 release check 的顺序固定：先跑 `release-check-full.bat`，再刷新 manifest，避免 manifest 固化旧报告。sidecar 未构建时 `sidecar_smoke` 如实标记 skipped，不伪装通过。
@@ -34,7 +34,26 @@
 
 ## 2. 构建和 SignPath 签名 NSIS 安装包
 
-正式公开发布使用 `.github/workflows/signpath-release.yml`：先在主仓库创建与应用版本一致的 Release/tag，再触发工作流。工作流在 GitHub 托管 Windows runner 构建未签名安装包，固化 GitHub Actions artifact，提交 SignPath 并等待人工批准；签名返回后验证 Authenticode、重新生成 updater `.sig` / `latest.json`，最后上传 Release 资产。
+普通版签名流水线为 `.github/workflows/signpath-release.yml`。先确认源码、版本、测试证据与拟使用的标签提交一致，再准备 Release 草稿；**不要将历史草稿直接公开来试跑构建**。Git 标签和 Release 草稿是不同对象，草稿填写的标签名不证明对应 `refs/tags/...` 已存在。
+
+工作流保留两种既有触发方式：`release.published` 和 `workflow_dispatch`，不监听分支 push 或 PR。仅编辑草稿、合并主线不会触发该流水线；从草稿发布为预发布版也会触发 `published`。发布事件使用标签对应提交的工作流，**更新 main 不会更新历史标签中的工作流**。不得移动旧标签或替换旧附件来掩盖来源差异。事件规则见 [GitHub 官方说明](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release)。
+
+包含本次保护的工作流具有以下约束：
+
+- 自动和手动运行都明确检出 `refs/tags/<release_tag>`。`scripts/verify-release.ps1 -Mode Source` 在安装依赖和构建前核验实际 HEAD 等于标签最终提交，支持轻量和附注标签；发布事件还核对事件 SHA。仅版本字符串相同不够，签名记录的 `commit` 使用实际检出 SHA。
+- 标签须已存在且与普通版 `tauri.conf.json` 版本一致。标签等输入经环境变量传入脚本，不拼接为 PowerShell 源码。手动从新版工作流选择不含校验脚本的旧标签会失败停止；这不等于旧标签自身的旧工作流获得了保护。
+- 普通版仍由本流水线构建，`remote-v*` 仍被排除；远程安装版使用[独立更新流程](./remote-client-updates.md)。发布前检查实际标签中的条件，不能只看主线文件。
+- 上传前检查全部本地附件完整、远端 Release 可读且没有同名附件；任何读取、校验或上传失败均停止，不使用 `--clobber`。预检不能消除并发窗口，服务端冲突仍会导致失败，也可能留下部分已上传附件；人工核对后再决定后续操作，不盲目重跑或删除旧附件。
+
+工作流在 GitHub 托管 Windows runner 构建未签名安装包，固化 GitHub Actions artifact，提交 SignPath 并等待人工批准；签名返回后验证 Authenticode、重新生成 updater `.sig` / `latest.json`，最后上传 Release 资产。手动运行仍会执行签名和上传，不是只读预检；向草稿上传后若再公开，`published` 会再次触发流程，同名附件保护不会因重跑放行。应在实际发布前审查这两种触发路径与目标资产，不能以覆盖附件解决重复运行。
+
+离线保护回归可在安装了 Python 3.12+、Git 和 PowerShell 7 的环境运行，不加载项目 `conftest.py`、数据库、签名密钥或真实 GitHub CLI：
+
+```powershell
+python -I tests/unit/test_release_workflow.py
+```
+
+测试使用临时 Git 仓库和本地 `gh` 替身，验证来源绑定、失败停止和不覆盖行为；不等于已完成 GitHub Actions、SignPath 或真实安装升级验收。
 
 SignPath 尚未批准或 CI 变量未配置时，可执行以下本地构建做候选验证，但不得把 unsigned 候选标记为已签名：
 
@@ -65,15 +84,15 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 
 ## 4. 上传 GitHub Release 资产
 
-1. 在 GitHub 创建 Release，tag = `v<version>`（与 `latest.json` 的 tag 一致）。
+1. 核对已有标签 `v<version>`、Release 草稿目标、实际构建 SHA 与 `latest.json` 一致。先完成构建和验收准备，公开草稿须按当次发布授权执行，不因文档整理自动发布。
 2. 上传**三个**资产：
    - `PrivateAgent_<version>_x64-setup.exe`
    - `PrivateAgent_<version>_x64-setup.exe.sig`
    - `latest.json`
 3. Release 说明写入 changelog、[Code signing policy](../CODE_SIGNING_POLICY.md) 与签名状态；未代码签名时必须保留 SmartScreen 风险提示。
-4. SignPath 路径额外上传 `codesign-status-<version>.json` 和 `release-manifest-<version>.md`，并保留 signing request URL/审批记录。
+4. SignPath 路径额外上传 `codesign-status-<version>.json`、`signpath-request-<version>.json` 和 `release-manifest-<version>.md`，并保留 signing request URL/审批记录。已有同名附件不得覆盖；历史 dirty 构建应保留原始来源记录，新交付重新构建并绑定新的证据。
 
-> updater endpoint（`tauri.conf.json`）指向 `.../releases/latest/download/latest.json`，所以**最新** Release 的 `latest.json` 即生效版本。发布新版只需让新 Release 成为 latest；回滚只需让旧 Release 重新成为 latest 或覆盖 `latest.json`。
+> 普通版 updater endpoint（`tauri.conf.json`）指向 `.../releases/latest/download/latest.json`，GitHub Latest 的选择会改变客户端入口。远程版的工作流排除条件不会阻止其被设为 Latest；发布远程版时必须保持普通版 Latest 不变。只有经批准且资产和升级验收齐全的普通版发布才能切换该入口；不要按版本数字排序重设 Latest，也不要覆盖旧 `latest.json` 或安装包。远程版保持独立清单与版本目录，详见[远程客户端更新](./remote-client-updates.md)。
 
 ## 5. 安装 / 升级 / 卸载 QA 矩阵
 
@@ -157,7 +176,7 @@ uv run python scripts\generate-latest-json.py --notes "<发布说明>" --out dis
 - [ ] 重大迁移（破坏性变更）前在发布说明提示用户先备份（设置页"导出备份"）。
 
 ### 7.2 回滚
-- **应用层回滚**：撤回 GitHub Release 资产，或把旧 Release 重新设为 latest（覆盖 `latest.json` 指回稳定版本）。
+- **应用层回滚**：先核对故障范围、旧包及其签名和清单，按授权将普通版更新入口恢复到已验证的旧 Release；不覆盖旧资产，也不假定改变入口会强制已升级客户端降级。远程版按其独立清单流程处置，不改普通版 Latest。
 - **用户层回滚**：卸载新版 -> 重装旧版安装包；用户数据目录未删，配置与数据可直接复用。
 - **数据库回滚**：若迁移破坏数据，用发布前备份（`%APPDATA%\personal-assistant` 下的备份导出 + MySQL dump）恢复；Alembic downgrade 仅在迁移提供 downgrade 时可用。
 

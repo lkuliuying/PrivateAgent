@@ -4,7 +4,9 @@ PrivateAgent 是一款面向个人知识、学习、任务和代码项目的本�
 
 项目强调“可控”而不是无边界自动化：文件访问受授权路径约束，写入和命令执行必须经过审批，高风险任务保留计划、状态、输出和证据；远程 Provider 默认关闭，诊断包和发布流程包含脱敏、签名与完整性检查。
 
-> 当前版本：`1.0.0` · 源码数据库迁移：`0038 (head)` · 主交付平台：Windows 10/11 x64
+> 源码声明版本：`1.0.0` · 源码数据库迁移：`0038 (head)` · 主交付平台：Windows 10/11 x64
+
+截至 2026-08-31，普通版已发布版本与 GitHub Latest 为 `v0.2.1`，远程版已发布版本为 `remote-v1.0.2`；两者使用独立更新渠道。`remote-v1.0.3-test.1` 仍是测试草稿，原安装包由 `debcd81` 加当时未提交改动构建，不能视为从当前源码干净构建的正式版。本次仓库整理没有重新构建安装包。版本、标签和草稿的对应关系见[文档中心](docs/README.md)与[仓库维护说明](docs/repository-maintenance-20260831.md)。
 
 ## 目录
 
@@ -287,7 +289,7 @@ Set-Location ..\..
 scripts\run-tauri-dev.bat
 ```
 
-`run-tauri-dev.bat` 会定位 MSVC 环境、补充 Cargo PATH，并执行 `npm run tauri dev`。开发模式连接 `127.0.0.1:8000`；安装版由 Tauri 选择空闲端口并启动 sidecar。
+`run-tauri-dev.bat` 是历史机包装脚本：目前硬编码 `F:\Program\Agent` 与 VS2022 BuildTools 路径，还会强制结束占用 1420 端口的进程。必须先核对进程归属并适配本机路径，不能直接将上方命令视为任意检出的通用启动方式。相关限制见[脚本索引](scripts/README.md)。开发模式连接 `127.0.0.1:8000`；安装版由 Tauri 选择空闲端口并启动 sidecar。
 
 ### 6. 仅预览 Agent 工作台界面
 
@@ -379,11 +381,13 @@ npm run test
 npm run e2e
 Set-Location ..\..
 
-# Tauri / Rust
+# Tauri / Rust：历史包装脚本含固定仓库和 MSVC 路径，适配本机后再执行
 scripts\cargo-check-tauri.bat
 ```
 
 ### 发布前检查
+
+完整检查会调用硬编码历史机路径的 `cargo-check-tauri.bat` 和 `cargo-test-tauri.bat`。换机或使用独立 worktree 时须先适配并核对实际工作目录，不能把在错误目录运行的结果作为当前源码的验证证据；见[脚本索引](scripts/README.md)。
 
 ```powershell
 # 快速检查：pytest、前端构建、Cargo check、迁移状态
@@ -492,7 +496,7 @@ Free code signing is provided by [SignPath.io](https://signpath.io/), with a cer
 
 - `UnicodeDecodeError: 'gbk'`：在 PowerShell 中设置 `$env:PYTHONUTF8='1'` 后重试。
 - MySQL `Access denied`：源码开发检查项目 `.env` 的 `PA_DB_URL`；Windows 安装版在连接配置向导中重新输入系统凭据并核对主机、端口、用户名和数据库名。
-- `link.exe not found`：安装 MSVC Build Tools，并使用 `scripts\run-tauri-dev.bat`。
+- `link.exe not found`：核对 MSVC Build Tools 与当前终端环境；历史 `scripts\run-tauri-dev.bat` 的固定路径和端口清理行为需先按[脚本索引](scripts/README.md)审查，不能直接照搬。
 - `tauri build` 首次下载 NSIS 超时：确认 GitHub 网络可达，必要时为当前终端配置 `HTTPS_PROXY`。
 - Ollama 状态异常：确认 `ollama serve` 正在运行，并已拉取对话模型和 `bge-m3`。`/health` 的 `ollama` 项
   会区分服务未启动（`ollama_not_running`）/ 超时（`ollama_timeout`）/ 模型缺失（`missing_models`），
@@ -502,6 +506,8 @@ Free code signing is provided by [SignPath.io](https://signpath.io/), with a cer
 ## 文档导航
 
 - `docs/README.md`：文档中心、当前版本入口与目录维护规则
+- [仓库维护说明](docs/repository-maintenance-20260831.md)：分支、标签、发布渠道与历史资料的整理边界
+- [脚本索引](scripts/README.md)：构建、发布、运维及验证入口，含执行前提与副作用说明
 - `docs/usage-guide.md`：最终用户与开发者完整使用说明
 - `docs/requirements.md`：项目需求基线与已落地范围
 - `docs/archive/phases/phase2-requirements.md` ～ `docs/archive/phases/phase8-requirements.md`：阶段需求
@@ -524,4 +530,4 @@ Free code signing is provided by [SignPath.io](https://signpath.io/), with a cer
 - `docs/api-reference.md`：API 安全约束、端点分组和现代化能力边界
 - `docs/troubleshooting.md`：启动、认证、Ollama、RAG、MCP 和构建故障排查
 - `docs/archive/ui/personal-agent-ui-refactor-prompt.md`：Agent 工作台界面重构说明
-- `design-qa.md`：桌面工作台视觉、交互、响应式与无障碍验收记录
+- [历史设计产物](docs/archive/design-artifacts/README.md)：历史截图与对应提交中的视觉验收记录，不代表当前界面已重新验收
