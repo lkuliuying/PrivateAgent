@@ -14,6 +14,10 @@ import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
+import ConnectionSettings from "./ConnectionSettings.vue";
+import HistoryMigration from "./HistoryMigration.vue";
+import { usesLocalExecutor } from "../services/localExecutor";
+import { usesLocalInference } from "../services/connectionProfile";
 import {
   settingsSectionMeta,
   type SettingsSection,
@@ -52,6 +56,8 @@ async function onModelProfilesSaved(): Promise<void> {
   if (props.returnTo) emit("return");
 }
 const settings = ref<AppSettings | null>(null);
+const localInference = usesLocalInference();
+const localRuntime = usesLocalExecutor();
 const modelProviders = ref<ModelProvider[]>([]);
 const modelProfiles = ref<CodingModelProfileSummary[]>([]);
 const backups = ref<BackupExportResult[]>([]);
@@ -169,6 +175,7 @@ const activeEndpoint = computed(() => {
 
 <template>
   <section class="content">
+    <ConnectionSettings />
     <header class="settings-hero">
       <div>
         <h1>{{ currentSectionMeta.label }}</h1>
@@ -196,8 +203,11 @@ const activeEndpoint = computed(() => {
     </section>
 
     <!-- 统一模型供应商：保存后的启用模型直接进入对话/Coding 选择器。 -->
-    <section v-if="activeSection === 'provider'" class="model-provider-section">
+    <section v-if="activeSection === 'provider' && !localInference" class="model-provider-section">
       <ModelProvidersPanel @saved="onModelProfilesSaved" />
+    </section>
+    <section v-if="activeSection === 'provider' && localInference" class="setting-card wide">
+      <p>当前使用本机模型。请在上方「连接设置」配置模型名称、接口与实际上下文容量。</p>
     </section>
 
     <!-- MCP -->
@@ -215,7 +225,8 @@ const activeEndpoint = computed(() => {
     <!-- 备份 -->
     <section v-if="activeSection === 'backup'" class="setting-card wide">
       <div class="card-heading"><span>06</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
-      <div class="form">
+      <HistoryMigration v-if="localRuntime" />
+      <div v-else class="form">
       <div class="form-actions">
         <button class="save-btn" @click="doBackup">创建备份包</button>
       </div>

@@ -473,7 +473,7 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
       message:
         "有效期 4 小时；切换项目、退出应用或手动撤销后立即失效。不获得管理员权限，也不绕过系统权限。",
       impact:
-        "当前系统用户可访问的本机文件与常规命令将免逐次审批；凭据、秘密与远程外发仍受硬边界约束并保留审计。",
+        "当前系统用户可访问的普通本机文件与已登记的开发命令将免逐次审批。文件工具拒绝凭据和系统目录；项目脚本可读写该用户可访问的文件并联网，请只对可信项目启用。所有操作保留审计。",
       confirmLabel: "启用完全访问",
       danger: true,
     });

@@ -61,6 +61,12 @@ export async function getCurrentAccount(): Promise<AuthUser> {
   return responseJson<AuthUser>(await apiFetch(`${base}/auth/me`));
 }
 
+/** 本地模式使用当前桌面进程的临时身份，不要求云端注册或密码。 */
+export async function enterLocalAccount(): Promise<AuthResponse> {
+  const base = await ensureApiBase();
+  return responseJson<AuthResponse>(await apiFetch(`${base}/auth/local`, { method: "POST" }));
+}
+
 export async function logoutAccount(): Promise<void> {
   const base = await ensureApiBase();
   const response = await apiFetch(`${base}/auth/logout`, { method: "POST" });

@@ -252,6 +252,7 @@ export interface ContextBudgetResponse {
   max_context_tokens: number;
   reserved_output_tokens: number;
   cache_hit_percent: number | null;
+  cache_hit_scope?: "latest_request" | "session";
   usage_percent: number | null;
   source: "provider_usage" | "tokenizer" | "runtime_count" | "unavailable";
   compaction_state: "idle" | "compacting" | "compacted" | "failed";
@@ -261,10 +262,12 @@ export interface ContextBudgetResponse {
 }
 
 export async function getContextBudget(
-  sessionId: number
+  sessionId: number,
+  modelProfileId?: string | null
 ): Promise<ContextBudgetResponse> {
   const base = await ensureApiBase();
-  const response = await fetch(`${base}/sessions/${sessionId}/context-budget`);
+  const query = modelProfileId ? `?model_profile_id=${encodeURIComponent(modelProfileId)}` : "";
+  const response = await fetch(`${base}/sessions/${sessionId}/context-budget${query}`);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   return (await response.json()) as ContextBudgetResponse;
 }

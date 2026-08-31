@@ -13,6 +13,7 @@ import {
 import { sendRegistrationVerificationCode } from "../services/auth";
 import { ensureDesktopBackendReady } from "../services/backendStartup";
 import { useAuthStore } from "../stores/auth";
+import ConnectionSettings from "../components/ConnectionSettings.vue";
 
 type AuthMode = "login" | "register";
 interface AuthForm {
@@ -156,6 +157,7 @@ onMounted(async () => {
 
     <section class="auth-panel">
       <div class="auth-card">
+        <ConnectionSettings />
         <div class="auth-card__head">
           <h2>{{ title }}</h2>
           <p>{{ subtitle }}</p>

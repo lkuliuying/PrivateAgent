@@ -23,10 +23,11 @@ import {
 const props = withDefaults(
   defineProps<{
     sessionId?: number | null;
+    modelProfileId?: string | null;
     /** 能力位（/capabilities.coding_context_budget_enabled） */
     enabled?: boolean;
   }>(),
-  { sessionId: null, enabled: false }
+  { sessionId: null, modelProfileId: null, enabled: false }
 );
 
 const facts = ref<ContextRingFacts>(contextRingLoading());
@@ -44,7 +45,7 @@ async function load(): Promise<void> {
     return;
   }
   try {
-    const body = await getContextBudget(props.sessionId);
+    const body = await getContextBudget(props.sessionId, props.modelProfileId);
     if (mine !== fetchSeq) return;
     facts.value = deriveContextRing(body);
   } catch {
@@ -66,7 +67,7 @@ function stopPolling(): void {
 }
 
 watch(
-  () => [props.sessionId, props.enabled] as const,
+  () => [props.sessionId, props.modelProfileId, props.enabled] as const,
   () => {
     facts.value = contextRingLoading();
     void load();
@@ -127,7 +128,7 @@ const preciseUsagePercent = computed(() => {
 const capacityLabel = computed(() => {
   const f = facts.value;
   const percent = preciseUsagePercent.value;
-  if (percent === null) return "不可用";
+  if (percent === null) return f.limitTokens > 0 ? `容量 ${formatCompactTokens(f.limitTokens)}，用量待上报` : "不可用";
   return `${formatCompactTokens(f.usedTokens)}/${formatCompactTokens(f.limitTokens)}（${percent.toFixed(1)}%）`;
 });
 
@@ -185,13 +186,14 @@ const cacheHitLabel = computed(() => {
         </div>
         <div class="popover-divider" />
         <div class="cache-row">
-          <span>平均缓存命中率</span>
+          <span>{{ facts.cacheHitScope === "latest_request" ? "最近请求缓存命中率" : "平均缓存命中率" }}</span>
           <strong data-testid="context-cache-hit">{{ cacheHitLabel }}</strong>
         </div>
       </template>
-      <p v-else class="unavailable-copy">
-        上下文容量不可用：{{ facts.reason ?? "无法准确计量" }}
-      </p>
+      <template v-else>
+        <p v-if="facts.limitTokens > 0" data-testid="context-capacity-pending">{{ capacityLabel }}</p>
+        <p class="unavailable-copy">{{ facts.limitTokens > 0 ? "上下文用量" : "上下文容量" }}不可用：{{ facts.reason ?? "无法准确计量" }}</p>
+      </template>
     </div>
   </div>
 </template>

@@ -1,6 +1,7 @@
 import { getApiConnection } from "./tauri";
 import { clearAccessToken, getAccessToken } from "../auth/session";
 import { fetchLocalProject, isLocalProjectPath, usesLocalExecutor } from "../services/localExecutor";
+import { getConnectionProfile } from "../services/connectionProfile";
 
 let API_BASE: string | null = null;
 let API_TOKEN: string | null = null;
@@ -30,11 +31,13 @@ function normalizeRemoteApi(value: string): string {
 }
 
 function configuredRemoteApi(): string | null {
+  const profile = getConnectionProfile();
+  if (profile) return profile.mode === "local" ? "http://127.0.0.1" : profile.server_origin;
   const value = String(import.meta.env.VITE_API_BASE_URL || "").trim();
   return value ? normalizeRemoteApi(value) : null;
 }
 
-/** 构建时配置的账号和模型服务器；本机项目执行器使用独立连接。 */
+/** 运行时选择账号服务；本机模式的虚拟源站只用于路由，不发起直接网络请求。 */
 export function hasConfiguredRemoteApi(): boolean {
   return configuredRemoteApi() !== null;
 }

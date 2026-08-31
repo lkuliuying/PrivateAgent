@@ -359,25 +359,29 @@ watch([workspaceAutoApproveSupported, fullAccessSupported], () => {
 // v0.9.0 §5.3：full_access 授予状态与即时撤销（threadId 即会话 id）
 const activeGrant = ref<{ grantId: string; expiresAt: string | null } | null>(null);
 const revoking = ref(false);
+let grantRequestSequence = 0;
 
 async function refreshGrantState(): Promise<void> {
+  const sequence = ++grantRequestSequence;
   if (permissionMode.value !== "full_access" || props.threadId === null) {
     activeGrant.value = null;
     return;
   }
   try {
     const state = await fetchFullAccessGrant(props.threadId);
+    if (sequence !== grantRequestSequence) return;
     activeGrant.value =
       state.active && state.grantId
         ? { grantId: state.grantId, expiresAt: state.expiresAt }
         : null;
   } catch {
+    if (sequence !== grantRequestSequence) return;
     activeGrant.value = null;
   }
 }
 
 watch(
-  [() => props.threadId, permissionMode],
+  [() => props.threadId, permissionMode, () => props.busy],
   () => void refreshGrantState(),
   { immediate: true }
 );
@@ -393,9 +397,11 @@ async function onRevokeFullAccess(): Promise<void> {
   if (!confirmed) return;
   revoking.value = true;
   try {
-    await revokeFullAccessGrant(grant.grantId);
+    if (!await revokeFullAccessGrant(grant.grantId)) throw new Error("撤销响应无效");
     activeGrant.value = null;
     permissionMode.value = "confirm";
+  } catch {
+    notify.error("完全访问未确认撤销，请重试；必要时退出客户端以停止任务");
   } finally {
     revoking.value = false;
   }
@@ -485,6 +491,7 @@ async function send(): Promise<void> {
   if (props.beforeSend) {
     const proceed = await props.beforeSend(payload);
     if (!proceed) return;
+    await refreshGrantState();
   }
   emit("send", payload);
   resetHistoryNavigation();
@@ -792,6 +799,7 @@ onBeforeUnmount(() => {
           v-if="threadId !== null"
           class="composer-context-ring"
           :session-id="threadId"
+          :model-profile-id="selectedProfile?.id ?? null"
           :enabled="contextBudgetEnabled"
         />
         <button

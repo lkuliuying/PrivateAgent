@@ -55,6 +55,15 @@ describe("connected desktop API routing", () => {
     }
   });
 
+  it("授权撤销与上下文查询均留在本机执行器", async () => {
+    const { http, fetchMock } = await setup();
+    await http.apiFetch("https://cloud.example.test/full-access-grants/fixture", { method: "DELETE" });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43188/full-access-grants/fixture");
+    expect(fetchMock.mock.calls[0][1]?.method).toBe("DELETE");
+    await http.apiFetch("https://cloud.example.test/sessions/7/context-budget?model_profile_id=model");
+    expect(fetchMock.mock.calls[1][0]).toBe("http://127.0.0.1:43188/sessions/7/context-budget?model_profile_id=model");
+  });
+
   it("fails closed when a local executor is absent, with no cloud project request", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

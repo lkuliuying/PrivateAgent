@@ -263,7 +263,7 @@ export const PERMISSION_MODE_META: Record<string, { label: string; hint: string 
   },
   full_access: {
     label: "完全访问",
-    hint: "当前系统用户可访问范围内免逐次审批；不获得管理员权限，凭据/远程外发仍有硬边界；需显式确认且可撤销",
+    hint: "普通本机文件与已登记开发命令免逐次审批；不获得管理员权限，项目脚本可访问用户文件并联网；需限时授权且可撤销",
   },
 };
 

@@ -1844,9 +1844,10 @@ fn get_sidecar_startup_error(state: State<SidecarState>) -> Option<String> {
 
 fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
     let mut builder = app.updater_builder().timeout(Duration::from_secs(120));
-    // A remote client must reject a local/sidecar installer's manifest, even if
-    // someone accidentally uploads it to the remote edition's update endpoint.
-    if app.config().identifier == "com.personal-assistant.desktop.remote" {
+    // 统一客户端与旧联网客户端分别校验更新目标，拒绝误放的其他版本安装包。
+    if app.config().main_binary_name.as_deref() == Some("privateagent") {
+        builder = builder.target("unified-windows-x86_64");
+    } else if app.config().identifier == "com.personal-assistant.desktop.remote" {
         builder = builder.target("remote-windows-x86_64");
     }
     builder.build().map_err(|e| e.to_string())
@@ -2009,6 +2010,9 @@ pub fn run() {
             test_connections,
             start_sidecar,
             local_executor::start_local_executor,
+            local_executor::stop_local_executor,
+            local_executor::local_executor_request,
+            local_executor::local_executor_cancel,
             get_api_port,
             get_api_connection,
             get_sidecar_startup_error,

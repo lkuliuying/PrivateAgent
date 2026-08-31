@@ -24,8 +24,9 @@ export interface ContextRingFacts {
   usedTokens: number;
   limitTokens: number;
   reservedTokens: number;
-  /** 会话内按输入 token 加权的 Provider 缓存命中率。 */
+  /** 缓存命中率与统计范围由后端一起声明。 */
   cacheHitPercent: number | null;
+  cacheHitScope?: "latest_request" | "session";
   /** 不可用/失败原因（公开文案，不含敏感内容） */
   reason: string | null;
   compactionState: ContextBudgetResponse["compaction_state"];
@@ -96,6 +97,7 @@ export function deriveContextRing(
     usedTokens: body.used_tokens,
     limitTokens: body.max_context_tokens,
     reservedTokens: body.reserved_output_tokens,
+    cacheHitScope: body.cache_hit_scope ?? "session",
     cacheHitPercent:
       body.cache_hit_percent === null
         ? null

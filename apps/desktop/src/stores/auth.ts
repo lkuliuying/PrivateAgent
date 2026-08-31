@@ -4,6 +4,7 @@ import { defineStore } from "pinia";
 import { clearAccessToken, getAccessToken, setAccessToken } from "../auth/session";
 import {
   getCurrentAccount,
+  enterLocalAccount,
   loginAccount,
   logoutAccount,
   registerAccount,
@@ -11,6 +12,7 @@ import {
 import type { AuthUser } from "../types/auth";
 import { bindLocalIdentity, clearLocalIdentity, usesLocalExecutor } from "../services/localExecutor";
 import { resetCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
+import { isLocalConnection } from "../services/connectionProfile";
 
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<AuthUser | null>(null);
@@ -23,6 +25,21 @@ export const useAuthStore = defineStore("auth", () => {
   async function restoreSession(): Promise<boolean> {
     if (initialized.value) return isAuthenticated.value;
     initialized.value = true;
+    if (isLocalConnection()) {
+      loading.value = true;
+      try {
+        const response = await enterLocalAccount();
+        setAccessToken(response.access_token);
+        user.value = response.user;
+        await bindLocalIdentity(response.access_token);
+        return true;
+      } catch {
+        clearSession();
+        return false;
+      } finally {
+        loading.value = false;
+      }
+    }
     if (!getAccessToken()) return false;
     loading.value = true;
     try {

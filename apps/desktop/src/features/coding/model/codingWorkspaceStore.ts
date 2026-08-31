@@ -8,7 +8,8 @@
  * 竞态防护：bootstrap/refresh 使用序号令牌，迟到响应不回写状态
  * （对齐 App.vue contextSeq 范式）；切换项目只改选择，不整页重置树。
  */
-import { computed, ref, type ComputedRef, type Ref } from "vue";
+import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import { setLocalProjectContext } from "../../../services/localExecutor";
 import { getHealth, getRuntimeCapabilities } from "../../../api";
 import {
   ensureCodingRootWorkspace,
@@ -112,6 +113,15 @@ export function createCodingWorkspaceStore(
   const selectedWorkspaceId = ref<number | null>(null);
   const selectedThreadId = ref<number | null>(null);
   const pendingFirstTurn = ref<CodingPendingFirstTurn | null>(null);
+
+  function syncProjectContext(projectId: number | null): void {
+    void setLocalProjectContext(projectId).then(() => {
+      if (loadError.value?.code === "project_context_failed") loadError.value = null;
+    }).catch(() => {
+      loadError.value = { status: 0, code: "project_context_failed", message: "项目切换撤权失败，请重新选择项目或退出客户端；新操作已阻止" };
+    });
+  }
+  watch(selectedProjectId, syncProjectContext, { flush: "sync" });
 
   // bootstrap/refresh 序号令牌：迟到响应放弃回写
   let loadSeq = 0;
@@ -285,6 +295,7 @@ export function createCodingWorkspaceStore(
 
   function selectProject(projectId: number): void {
     if (!projectExists(projectId)) return;
+    if (selectedProjectId.value === projectId) syncProjectContext(projectId);
     selectedProjectId.value = projectId;
     const workspaces = workspacesByProject.value[projectId] ?? [];
     const preferred = workspaces.find(isWorkspaceUsable) ?? workspaces[0];
