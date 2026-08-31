@@ -12,6 +12,7 @@
 - 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
 - 本次故障修复：[1.0.3 模型与管理员日志修复总结](./solutions/2026-08-31-privateagent-1-0-3.md)、[服务器修复操作说明](./connected-runtime-1.0.3-repair.md)
 - 后续代码修复：[指令 HTTP 502 与管理员上海时间](./solutions/2026-08-31-model-502-admin-timezone.md)
+- 后续更新流程：[开发机提交、服务器拉取与重启](./server-code-update-workflow.md)（含一次性历史整理、源码入口切换、检查工具与回退边界；生产切换待执行）
 - 最新测试安装包：[联网版 1.0.4 手动安装交付记录](./releases/remote-v1.0.4-test.1-20260831.md)（已上传 GitHub 草稿；服务器由维护者更新，未完成生产验收）
 - 使用产品：[使用指南](./usage-guide.md)、[故障排查](./troubleshooting.md)
 - 搭建环境：[部署指南](./deployment-guide.md)、[跨平台说明](./cross-platform.md)
