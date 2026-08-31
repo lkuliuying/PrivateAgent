@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -138,7 +141,7 @@ def raw_git(root, *args):
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull, GIT_TERMINAL_PROMPT="0")
     result = subprocess.run(["git", "-C", str(root), *args], capture_output=True,
                             encoding="utf-8", env=env, timeout=15, check=True)
-    return result.stdout if "-z" in args else result.stdout.strip()
+    return result.stdout if "-z" in args or args[:2] == ("cat-file", "blob") else result.stdout.strip()
 
 
 @pytest.fixture
@@ -153,7 +156,12 @@ def deployment(tmp_path, monkeypatch):
     raw_git(repo, "config", "core.autocrlf", "false")
     raw_git(repo, "remote", "add", "origin", str(remote))
     (repo / "README.md").write_text("initial\n", encoding="utf-8")
-    raw_git(repo, "add", "README.md")
+    for name in ("src/personal_assistant/__init__.py", "src/personal_assistant/server_entry.py", "src/private_agent_core/__init__.py"):
+        path = repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+    raw_git(repo, "add", ".")
     raw_git(repo, "commit", "-m", "initial")
     raw_git(repo, "push", "origin", updater.BRANCH)
     before = raw_git(repo, "rev-parse", "HEAD")
@@ -164,11 +172,21 @@ def deployment(tmp_path, monkeypatch):
     raw_git(developer, "config", "core.autocrlf", "false")
     events = []
     monkeypatch.setattr(updater, "ROOT", repo)
+    monkeypatch.setattr(updater, "BACKUPS", tmp_path / "backups")
     monkeypatch.setattr(updater, "git", lambda *args, **kwargs: raw_git(repo, *args))
     monkeypatch.setattr(updater, "source_check", lambda: events.append("source-check"))
-    monkeypatch.setattr(updater, "require_running_source", lambda: events.append("running-check"))
+    monkeypatch.setattr(updater, "require_running_source", lambda: events.append("running-check") or 123)
+    monkeypatch.setattr(updater, "wait_running_source", lambda: events.append("stable-check"))
 
     def supervisor(args, **kwargs):
+        if args[:4] == ["runuser", "-u", updater.ACCOUNT, "--"]:
+            if "archive" in args:
+                subprocess.run(args[4:], stdout=kwargs["stdout_file"], stderr=subprocess.PIPE, timeout=15, check=True)
+                events.append("source-backup")
+                return ""
+            assert args[-3:] == ["-m", "pip", "check"]
+            events.append("dependencies-check")
+            return ""
         assert args[:3] == updater.SUPERVISOR
         assert args[-1] == "private-agent"
         events.append(args[-2])
@@ -178,10 +196,10 @@ def deployment(tmp_path, monkeypatch):
     return repo, developer, before, events
 
 
-def publish(developer, relative="src/personal_assistant/feature.py"):
+def publish(developer, relative="src/personal_assistant/feature.py", content="value = 1\n"):
     path = developer / relative
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("value = 1\n", encoding="utf-8")
+    path.write_text(content, encoding="utf-8")
     raw_git(developer, "add", "--", relative)
     raw_git(developer, "commit", "-m", "tested update")
     raw_git(developer, "push", "origin", updater.BRANCH)
@@ -196,9 +214,10 @@ def test_fast_forward_stops_before_checkout_then_starts_only_one_service(deploym
     assert paths == ["src/personal_assistant/feature.py"]
     assert raw_git(repo, "rev-parse", "HEAD") == before
     assert "stop" not in events
+    assert not updater.BACKUPS.exists()
     events.clear()
     assert updater.apply_update(before, target) == "PROCESS_RUNNING_REQUIRES_ACCEPTANCE"
-    assert events == ["running-check", "stop", "status", "source-check", "start", "running-check"]
+    assert events == ["running-check", "source-backup", "running-check", "stop", "status", "source-check", "start", "stable-check"]
     assert raw_git(repo, "rev-parse", "HEAD") == target
 
 
@@ -230,7 +249,7 @@ def test_unsafe_git_states_never_stop_service_or_overwrite_files(deployment, rea
         assert (repo / "local.py").read_text() == "preserve me"
 
 
-@pytest.mark.parametrize("relative", ["pyproject.toml", "uv.lock", "requirements.txt", "alembic/versions/new.py", "scripts/update-connected-server.py", "src/personal_assistant/config.py", "src/personal_assistant/server_entry.py", "src/personal_assistant/schema.json"])
+@pytest.mark.parametrize("relative", ["pyproject.toml", "uv.lock", "requirements.txt", "alembic/versions/new.py", "scripts/update-connected-server.py", "src/personal_assistant/config.py", "src/personal_assistant/server_entry.py", "src/personal_assistant/core/models.py", "src/personal_assistant/core/settings.py", "src/personal_assistant/schema.json", "src/private_agent_core/schema.json"])
 def test_dependency_migration_startup_and_unknown_changes_require_manual_update(deployment, relative):
     repo, developer, before, events = deployment
     publish(developer, relative)
@@ -273,7 +292,8 @@ def test_stop_failure_never_updates_checkout(deployment, monkeypatch):
     repo, developer, before, _ = deployment
     target = publish(developer)
     updater.preflight()
-    monkeypatch.setattr(updater, "command", lambda *args, **kwargs: "private-agent RUNNING pid 123\n")
+    original = updater.command
+    monkeypatch.setattr(updater, "command", lambda args, **kwargs: "private-agent RUNNING pid 123\n" if args[:3] == updater.SUPERVISOR else original(args, **kwargs))
     with pytest.raises(updater.UpdateRefused, match="STOP_NOT_CONFIRMED"):
         updater.apply_update(before, target)
     assert raw_git(repo, "rev-parse", "HEAD") == before
@@ -302,14 +322,19 @@ def test_apply_requires_a_reviewed_full_commit_before_any_work():
     assert error.value.code == 2
 
 
-@pytest.mark.parametrize("issue", [None, "old-entry", "wrong-directory", "root-user", "not-running", "missing-pid"])
+@pytest.mark.parametrize("issue", [None, "old-entry", "wrong-directory", "root-user", "not-running", "missing-pid", "exited"])
 def test_running_process_must_match_source_entry_and_service_account(monkeypatch, issue):
     expected = [os.fsencode(updater.PYTHON), b"-I", b"-B", os.fsencode(updater.LAUNCHER)]
     args = expected if issue != "old-entry" else [expected[0], b"-m", b"personal_assistant.server_entry"]
     cwd = updater.ROOT if issue != "wrong-directory" else updater.ROOT.parent
     uid = 1001 if issue != "root-user" else 0
+    def read_cmdline():
+        if issue == "exited":
+            raise FileNotFoundError()
+        return b"\0".join(args) + b"\0"
+
     proc = SimpleNamespace(
-        joinpath=lambda name: SimpleNamespace(read_bytes=lambda: b"\0".join(args) + b"\0", resolve=lambda: cwd.resolve()),
+        joinpath=lambda name: SimpleNamespace(read_bytes=read_cmdline, resolve=lambda: cwd.resolve()),
         stat=lambda: SimpleNamespace(st_uid=uid),
     )
 
@@ -371,3 +396,222 @@ def test_timeout_or_interrupt_kills_linux_command_group(monkeypatch, interrupted
     with pytest.raises(KeyboardInterrupt if interrupted else updater.UpdateRefused):
         updater.command(["test"])
     assert killed == [987]
+
+
+@pytest.mark.parametrize("relative", [
+    "scripts/build-client.cjs", "scripts/build-remote-client.cjs", "scripts/build-remote-client.test.cjs",
+    "scripts/verify-unified-client.py", "apps/desktop/src/App.vue", "src/private_agent_local/app.py",
+    "docs/update.md", "tests/unit/test_example.py", "README.md",
+])
+def test_client_or_documentation_changes_sync_without_stopping_service(deployment, relative):
+    repo, developer, before, events = deployment
+    target = publish(developer, relative)
+    assert updater.preflight() == (before, target, [relative])
+    assert "dependencies-check" not in events
+    assert updater.apply_update(before, target) == "CODE_SYNCED_NO_RESTART"
+    assert "stop" not in events and "start" not in events and "stable-check" not in events
+    assert raw_git(repo, "rev-parse", "HEAD") == target
+
+
+def test_shared_core_update_requires_dependencies_and_restart(deployment):
+    _, developer, before, events = deployment
+    target = publish(developer, "src/private_agent_core/runtime.py")
+    updater.preflight()
+    assert "dependencies-check" in events
+    assert updater.apply_update(before, target) == "PROCESS_RUNNING_REQUIRES_ACCEPTANCE"
+    assert events.index("source-backup") < events.index("stop") < events.index("start") < events.index("stable-check")
+
+
+def test_backup_contains_old_commit_and_hash_but_not_ignored_environment(deployment):
+    repo, developer, before, _ = deployment
+    (repo / ".env").write_text("isolated fixture, never archive working files", encoding="utf-8")
+    target = publish(developer)
+    updater.preflight()
+    updater.apply_update(before, target)
+    directories = list(updater.BACKUPS.iterdir())
+    assert len(directories) == 1
+    directory = directories[0]
+    manifest = json.loads((directory / "manifest.json").read_text())
+    assert manifest["before"] == before and manifest["target"] == target
+    assert manifest["database_backup"] is False
+    assert manifest["source_archive_sha256"] == hashlib.sha256((directory / "source.tar").read_bytes()).hexdigest()
+    with tarfile.open(directory / "source.tar") as archive:
+        names = archive.getnames()
+        assert ".env" not in names and "src/personal_assistant/feature.py" not in names
+        expected = subprocess.run(["git", "-C", str(repo), "show", f"{before}:README.md"],
+                                  capture_output=True, timeout=15, check=True).stdout
+        assert archive.extractfile("README.md").read() == expected
+    stages = [json.loads(line)["stage"] for line in (directory / "events.jsonl").read_text().splitlines()]
+    assert stages == ["creating_source_backup", "backup_ready", "stopping_service", "fast_forwarding",
+                      "starting_service", "verifying_process", "PROCESS_RUNNING_REQUIRES_ACCEPTANCE"]
+
+
+def test_backup_failure_prevents_stop_and_checkout(deployment, monkeypatch):
+    repo, developer, before, events = deployment
+    target = publish(developer)
+    updater.preflight()
+    original = updater.command
+
+    def disk_full(args, **kwargs):
+        if "archive" in args:
+            kwargs["stdout_file"].write(b"partial archive")
+            raise OSError("isolated disk full")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(updater, "command", disk_full)
+    with pytest.raises(OSError):
+        updater.apply_update(before, target)
+    assert "stop" not in events and raw_git(repo, "rev-parse", "HEAD") == before
+    directory = next(updater.BACKUPS.iterdir())
+    assert not (directory / "manifest.json").exists()
+    assert "backup_ready" not in (directory / "events.jsonl").read_text()
+
+
+def test_change_during_backup_prevents_stop(deployment, monkeypatch):
+    repo, developer, before, events = deployment
+    target = publish(developer)
+    updater.preflight()
+    original = updater.create_backup
+
+    def concurrent_edit(*args):
+        backup = original(*args)
+        (repo / "local-note.txt").write_text("preserve", encoding="utf-8")
+        return backup
+
+    monkeypatch.setattr(updater, "create_backup", concurrent_edit)
+    with pytest.raises(updater.UpdateRefused, match="DIRTY_WORKTREE"):
+        updater.apply_update(before, target)
+    assert "stop" not in events and raw_git(repo, "rev-parse", "HEAD") == before
+
+
+@pytest.mark.parametrize("content", ["def broken(\n", "    unexpected_indent = 1\n"])
+def test_invalid_target_python_is_rejected_before_backup_or_stop(deployment, content):
+    repo, developer, before, events = deployment
+    publish(developer, content=content)
+    with pytest.raises(updater.UpdateRefused, match="SOURCE_SYNTAX_INVALID"):
+        updater.preflight()
+    assert raw_git(repo, "rev-parse", "HEAD") == before
+    assert "stop" not in events and not updater.BACKUPS.exists()
+
+
+def test_removing_package_entry_is_rejected_before_stop(deployment):
+    _, developer, _, events = deployment
+    raw_git(developer, "rm", "src/private_agent_core/__init__.py")
+    raw_git(developer, "commit", "-m", "remove entry")
+    raw_git(developer, "push", "origin", updater.BRANCH)
+    with pytest.raises(updater.UpdateRefused, match="SOURCE_ENTRY_MISSING"):
+        updater.preflight()
+    assert "stop" not in events
+
+
+@pytest.mark.parametrize("path", ["src/personal_assistant/link.py", "docs/link", "apps/desktop/link"])
+def test_symlink_git_tree_is_rejected_even_for_client_only_changes(deployment, path):
+    _, developer, _, events = deployment
+    blob = raw_git(developer, "hash-object", "-w", "README.md")
+    raw_git(developer, "update-index", "--add", "--cacheinfo", f"120000,{blob},{path}")
+    raw_git(developer, "commit", "-m", "unsafe link fixture")
+    raw_git(developer, "push", "origin", updater.BRANCH)
+    with pytest.raises(updater.UpdateRefused, match="UNSAFE_SOURCE_TREE"):
+        updater.preflight()
+    assert "stop" not in events
+
+
+def test_dependency_failure_prevents_backup_and_stop(deployment, monkeypatch):
+    repo, developer, before, events = deployment
+    publish(developer)
+    original = updater.command
+
+    def inconsistent_dependencies(args, **kwargs):
+        if args[-3:] == ["-m", "pip", "check"]:
+            raise updater.UpdateRefused("COMMAND_FAILED：依赖检查失败")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(updater, "command", inconsistent_dependencies)
+    with pytest.raises(updater.UpdateRefused, match="COMMAND_FAILED"):
+        updater.preflight()
+    assert "stop" not in events and raw_git(repo, "rev-parse", "HEAD") == before
+    assert not updater.BACKUPS.exists()
+
+
+def test_start_failure_keeps_target_and_records_last_stage(deployment, monkeypatch):
+    repo, developer, before, events = deployment
+    target = publish(developer)
+    updater.preflight()
+
+    def startup_failed():
+        raise updater.UpdateRefused("START_TIMEOUT：isolated fixture")
+
+    monkeypatch.setattr(updater, "wait_running_source", startup_failed)
+    with pytest.raises(updater.UpdateRefused, match="START_TIMEOUT"):
+        updater.apply_update(before, target)
+    assert raw_git(repo, "rev-parse", "HEAD") == target
+    assert events.count("start") == 1
+    stages = (next(updater.BACKUPS.iterdir()) / "events.jsonl").read_text().splitlines()
+    assert json.loads(stages[-1])["stage"] == "verifying_process"
+
+
+def fake_clock(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(updater.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(updater.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    return clock
+
+
+def test_startup_wait_requires_continuous_same_pid(monkeypatch):
+    clock = fake_clock(monkeypatch)
+    sequence = iter([None, 11, 11, 12, 12, 12, 12])
+
+    def process():
+        pid = next(sequence)
+        if pid is None:
+            raise updater.UpdateRefused("SERVICE_NOT_RUNNING：尚在启动")
+        return pid
+
+    monkeypatch.setattr(updater, "require_running_source", process)
+    updater.wait_running_source(timeout=8, stable_seconds=3)
+    assert clock[0] == 6
+
+
+def test_restarting_process_never_passes_readiness(monkeypatch):
+    clock = fake_clock(monkeypatch)
+    monkeypatch.setattr(updater, "require_running_source", lambda: int(clock[0]) + 100)
+    with pytest.raises(updater.UpdateRefused, match="START_TIMEOUT"):
+        updater.wait_running_source(timeout=5, stable_seconds=3)
+    assert clock[0] == 5
+
+
+def test_wrong_runtime_fails_readiness_without_retries(monkeypatch):
+    clock = fake_clock(monkeypatch)
+
+    def wrong_runtime():
+        raise updater.UpdateRefused("SOURCE_MIGRATION_REQUIRED：入口不符")
+
+    monkeypatch.setattr(updater, "require_running_source", wrong_runtime)
+    with pytest.raises(updater.UpdateRefused, match="SOURCE_MIGRATION_REQUIRED"):
+        updater.wait_running_source()
+    assert clock[0] == 0
+
+
+@pytest.mark.parametrize("args, applies", [([], True), (["update"], True), (["check"], False), (["apply", "--target", "b" * 40], True)])
+def test_cli_single_command_and_legacy_modes(monkeypatch, capsys, args, applies):
+    calls = []
+    monkeypatch.setattr(updater.sys, "platform", "linux")
+    monkeypatch.setattr(updater.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(updater, "ROOT", ROOT)
+    monkeypatch.setattr(updater, "PYTHON", Path(sys.executable))
+    monkeypatch.setattr(updater, "deployment_lock", nullcontext)
+    monkeypatch.setattr(updater, "preflight", lambda target: ("a" * 40, "b" * 40, ["docs/readme.md"]))
+    monkeypatch.setattr(updater, "apply_update", lambda *values: calls.append(values) or "CODE_SYNCED_NO_RESTART")
+    assert updater.main(args) == 0
+    assert bool(calls) is applies
+    output = capsys.readouterr().out
+    assert json.loads(output.splitlines()[0])["restart_required"] is False
+    assert ("CODE_SYNCED_NO_RESTART" if applies else "CHECK_PASSED") in output
+
+
+def test_command_streams_binary_backup_without_decoding(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, "ROOT", tmp_path)
+    target = tmp_path / "bytes.bin"
+    with target.open("wb") as stream:
+        assert updater.command([sys.executable, "-I", "-c", "import sys; sys.stdout.buffer.write(bytes([255,0,128]))"], stdout_file=stream) == ""
+    assert target.read_bytes() == bytes([255, 0, 128])

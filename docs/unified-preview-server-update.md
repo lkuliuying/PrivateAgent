@@ -32,7 +32,7 @@
 
 已核对本次从 `6241369` 开始的改动：没有依赖版本、锁文件或 Alembic 迁移文件变更。**这不证明服务器当前环境与这个基线一致。** 应核对服务器实际 HEAD 到目标提交的全部差异，并检查现有依赖。若已经使用源码启动入口，且已有依赖满足目标代码，本次无需机械执行 `pip install -U` 或重建环境。
 
-现有 `scripts/update-connected-server.py check/apply` 会将 `private_agent_core`、`pyproject.toml` 等列为专项审阅文件。本次不要直接运行 `apply`，也不要修改白名单跳过保护。首次引入更新脚本的旧服务器同样需要按下述人工流程操作。
+初版 `scripts/update-connected-server.py check/apply` 会将 `private_agent_core`、`pyproject.toml` 等列为专项审阅文件。这次首次统一版本更新不要直接运行 `apply`，也不要修改白名单跳过保护。首次引入更新脚本的旧服务器同样需要按下述人工流程操作；后续一键模式见本文第 6 节和当前日常更新指南。
 
 ## 3. 操作前检查与备份
 
@@ -129,7 +129,7 @@ supervisorctl -c /etc/supervisord.conf status private-agent
   /opt/private-agent/current/scripts/update-connected-server.py check
 ```
 
-只有 `CHECK_PASSED` 才按[日常更新指南](./server-code-update-workflow.md#3-今后的日常更新)使用其给出的完整 target 执行 apply。未来修改 `private_agent_core` 仍会被现有规则拦截，继续按专项更新审阅，不能默认所有 Python 改动都支持自动更新。
+以上是初版更新工具的流程：只有 `CHECK_PASSED` 才能使用完整 target 执行 apply，当时 `private_agent_core` 仍需专项审阅。后续一键工具已增加客户端变更免重启、普通共享核心 Python 更新及源码备份；首次安装后按[当前日常更新指南](./server-code-update-workflow.md#3-今后的日常更新)执行。依赖、迁移、启动/更新工具等变化仍需专项处理，不能默认所有改动都可自动更新。
 
 失败后先查清停在哪一步，保留源码、数据库与旧环境。首次切换失败且没有不兼容数据变化时可按原指南恢复已备份的入口配置；后续优先在开发机提交经测试的修复或回退提交，再让服务器快进。不要 `git reset --hard`、删除未跟踪文件或修改数据库版本表。
 

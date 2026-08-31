@@ -2,9 +2,9 @@
 
 适用部署：CentOS Stream 9，仓库 `/opt/private-agent/current`，分支 `dev/1.0.0`，服务账号 `privateagent`，Supervisor 程序 `private-agent`，Python `/opt/private-agent/venv/bin/python`。其他部署不能直接套用这些命令。
 
-目标流程：**开发机修改并测试 → 提交和推送 GitHub → 服务器检查目标提交 → 停止单个服务 → 快进代码 → 启动并验收。** 服务器不再承担日常代码编写、提交和推送。
+目标流程：**开发机修改并测试 → 提交和推送 GitHub → 服务器一条命令检查、备份和快进 → 仅后端变化时重启单个服务并验收。** 服务器不承担日常代码编写、提交和推送。
 
-本说明及工具已在开发机验证，尚未在生产服务器完成首次切换。服务器之前加载的是虚拟环境内的安装副本，因此目前不能只执行 `git pull` 就认为运行代码已更新。先完成下述一次性整理。
+服务器之前加载的是虚拟环境内的安装副本。2026-08-31 后续用户回执已确认指定服务器通过源码进程检查，仓库快进至 `8a20799d1c121e557bc4f824020456d9542c4612`、工作区干净且原服务继续 RUNNING；这次仅同步客户端相关代码，没有重启。真实账号业务验收仍待确认。以下一次性整理和切换步骤保留给尚未完成的环境，该服务器不重复执行。本文新增的一键模式尚需首次接入及真实 Linux 验证，不能用旧工具的回执代替。
 
 > 2026-08-31 服务器历史核对：收到 `server-history-20260831-104455.bundle`，其中服务器分支头为 `b7fccfbd3bfb68458fd85b5d7445b815d58e227e`。该提交已经合并服务器补丁 `43b63c0` 与远端 `1496153`，其完整 Git 文件树与 `1496153` 相同。此次收拢保留这两个服务器提交和开发机后续的更新工具，不改变业务代码。该服务器不必重复下述冲突处理和 bundle 导出；在包含 `b7fccfb` 的开发分支推送后，先 fetch 并确认可快进，再进入第 2 节。bundle 仅证明导出时的已提交历史，不证明当前工作区干净、服务已切换或生产验收通过。
 
@@ -190,7 +190,28 @@ git push origin dev/1.0.0
 
 如果推送因远端更新被拒绝，先保留本地提交、fetch 并在开发机处理合并；不 force push。
 
-### 服务器：检查
+### 服务器：一条命令更新（默认方式）
+
+首次安装本文对应的新工具后，在服务器 root 运维终端执行：
+
+```bash
+/opt/private-agent/venv/bin/python -I -B /opt/private-agent/current/scripts/update-connected-server.py
+```
+
+不传模式等同于 `update`：在同一更新锁内检查工作区、源码运行入口和远端提交，固定本次完整 target，检查文件类型和后端 Python 语法，再备份旧提交并快进。无需另行复制 target 或运行 apply。该命令是按需执行，不创建定时任务，不在服务器构建或安装桌面应用。
+
+| 本次差异 | 自动行为 |
+| --- | --- |
+| 没有新提交 | 输出 `ALREADY_CURRENT`，不备份、不重启 |
+| 仅桌面客户端、本机执行器、文档、测试或已支持的客户端构建/验证脚本 | 备份旧源码并快进，输出 `CODE_SYNCED_NO_RESTART`，保持服务运行 |
+| 普通后端或共享核心 `.py`，不涉及第 5 节的例外 | 先检查既有环境 `pip check`，备份成功后停止单个服务、快进、检查源码入口并启动；在有限等待窗口内确认同一 PID 持续 RUNNING 至少 10 秒 |
+| 本地修改、分叉、依赖、迁移、配置、数据库模型、启动/更新工具或未知文件变化 | 停止并说明原因，不清理文件、不安装依赖、不修改数据库 |
+
+已支持的构建/验证脚本是 `scripts/build-client.cjs`、`build-client.cmd`、`build-remote-client.cjs`、`build-remote-client.cmd`、`build-remote-client.test.cjs`、`verify-unified-client.py`。不会把所有 `scripts/` 文件一概视为安全。
+
+后端更新可能短暂停服，执行前等待业务任务结束，选择维护窗口。不要同时手工改 Git 或操作服务。更新工具仍不负责业务语义、数据库兼容性或新增依赖的推断，提交前必须完成对应测试。
+
+### 服务器：只检查（可选）
 
 在 root 运维会话执行：
 
@@ -199,11 +220,11 @@ git push origin dev/1.0.0
   /opt/private-agent/current/scripts/update-connected-server.py check
 ```
 
-`check` 会 fetch 远端分支，因此会更新 Git 对象和远端跟踪引用；**不会修改工作区、停止服务或安装依赖**。输出 `before`、`target` 和变更路径。必须看到 `CHECK_PASSED` 才进入下一步。
+`check` 会 fetch 远端分支，因此会更新 Git 对象和远端跟踪引用；**不会修改工作区、创建源码备份、停止服务或安装依赖**。输出 `before`、`target`、变更路径和 `restart_required`。成功输出 `CHECK_PASSED`；采用下述手工锁定目标方式时，必须先通过检查。
 
 工具固定执行 Git 的账号为 `privateagent`，服务名为 `private-agent`，只允许快进。Git `--ff-only` 在存在本地独有历史时拒绝合并，从而防止把服务器重新变成开发分支。[Git 合并说明](https://git-scm.com/docs/git-merge)。
 
-### 服务器：应用
+### 服务器：锁定目标应用（保留兼容方式）
 
 保存 `before` 完整 SHA 作为回退依据，核对 `target`，等待正在运行的任务结束。在维护窗口把下面参数替换为 `check` 输出的 **40 位 target**：
 
@@ -213,11 +234,21 @@ git push origin dev/1.0.0
   --target 在此填写已核对的40位target
 ```
 
-顺序为再次 fetch/核对目标 → 核对干净工作区及源码运行进程 → 停止 `private-agent` → 确认 `STOPPED` → 快进到已核对提交 → 检查源码入口 → 启动该服务 → 核对进程。
+`apply` 与默认 `update` 使用相同的备份、分类和按需重启流程，但要求传入先前检查的完整目标。再次 fetch 后远端目标不一致时拒绝执行，不悄悄换成新提交。普通后端更新的顺序为：核对目标、工作区及源码进程 → 备份 → 停止 `private-agent` → 确认 `STOPPED` → 快进 → 检查入口 → 启动 → 持续检查进程。仅客户端差异跳过停服和启动。
 
 远端在 check 后改变、未提交改动、分支分叉、合并未结束、入口不符、依赖或迁移变更均会拒绝例行更新。工具用 `/run/private-agent-code-update.lock` 阻止自身并发运行；维护窗口仍须避免其他人手工改 Git、配置或服务。
 
-成功输出 `PROCESS_RUNNING_REQUIRES_ACCEPTANCE`，随后必须执行第 4 节验收。无新提交输出 `ALREADY_CURRENT`，不会无故重启。
+后端重启验证成功输出 `PROCESS_RUNNING_REQUIRES_ACCEPTANCE`，随后必须执行第 4 节业务验收。仅源码同步成功输出 `CODE_SYNCED_NO_RESTART`；无新提交输出 `ALREADY_CURRENT`。
+
+### 源码备份与执行记录
+
+实际更新前，工具在 `/opt/private-agent/code-update-backups/` 创建独立备份目录并输出 `BACKUP_DIR`。父目录须由 root 所有、权限 0700，不能是符号链接。每次目录包含：
+
+- `source.tar`：通过 `git archive` 归档的旧提交源码；不包含工作区中未提交或被忽略的 `.env`、日志、数据库和外部数据。遵循旧提交的 Git 归档属性。
+- `manifest.json`：原提交、目标提交、是否重启及归档 SHA-256；明确标记 `database_backup=false`。
+- `events.jsonl`：备份、停服、快进、启动及检查阶段。不记录生产日志、环境正文或凭据。发生错误时，结合最后阶段和终端错误检查实际 Git/服务状态。
+
+备份写入、空间不足或依赖检查失败均发生在停服前，不继续更新。不会自动删除旧备份；由运维按保留策略管理磁盘空间。源码归档供核对和恢复评审使用，不要直接解包覆盖当前运行目录，也不能用它代替数据库备份。
 
 任何失败立即停止后续操作。工具不自动回滚、不自动清理，也不尝试启动旧版本。**停服后失败可能使服务保持停止；启动失败或中断也可能出现部分执行状态。** 先用 Git status/log 与 Supervisor status 确认停在哪一步，再处理。命令错误正文可能含远程凭据，因此工具只输出固定错误摘要；需要在服务器本机排查详细原因。
 
@@ -235,16 +266,16 @@ git push origin dev/1.0.0
 
 | 变化 | 操作边界 |
 | --- | --- |
-| 普通后端 `.py` 逻辑，既有依赖足够 | 可用例行工具；仍需测试、维护窗口和业务验收 |
+| 普通后端及 `private_agent_core` 的 `.py` 逻辑，既有依赖足够 | 可用默认一键更新；排除下列配置和模型文件，仍需测试、维护窗口和业务验收 |
 | `pyproject.toml`、`uv.lock`、`requirements.txt` 或依赖实际需求变化 | 先按锁文件在隔离 Linux 候选环境准备和测试依赖，验证回退；工具不会自动安装或升级 |
 | `alembic.ini`、`alembic/`、数据库模型含义变化 | 阅读迁移、备份数据库并验证恢复；原启动入口会执行迁移，不能盲目启动，参阅[数据库升级手册](./database-upgrade-runbook.md) |
-| `config.py`、`server_entry.py`、启动或更新工具、其他未知文件 | 人工审阅专项更新；停止服务后快进，保留配置和旧环境，再验证入口与启动 |
-| Vue/Tauri 桌面端或 `private_agent_local` | 服务器拉取不能替用户升级客户端；需单独构建、上传和安装对应联网版安装包 |
+| `config.py`、`server_entry.py`、`core/settings.py`、`core/models.py`、启动或更新工具、其他未知文件 | 人工审阅专项更新；按实际运行影响决定是否停服，保留配置和旧环境，再验证入口与启动 |
+| Vue/Tauri 桌面端、`private_agent_local` 或已支持的构建/验证脚本 | 可自动同步且不重启服务器；不会替用户升级客户端，仍需单独构建、上传和安装对应安装包 |
 | 外部配置、密钥、数据、Nginx/Supervisor | 不由 Git 覆盖；不在本工具自动修改范围内 |
 
 工具按文件路径保守拦截，但不能从代码推断全部依赖和数据库兼容性。即使没有迁移文件变化，只要本次功能需要新的依赖、表结构或数据调整，仍按专项更新处理。不要用跳过迁移开关绕过失败，也不要拿生产库跑测试。
 
-首次引入这些脚本本身就是一次专项更新，因此不能要求尚未安装的新工具完成自己的首次安装。后续工具变更也不允许脚本自行升级并继续执行未审阅的部署逻辑。
+首次引入这些脚本或本次升级旧工具本身就是一次专项更新，不能要求旧工具自动完成自己的替换。首次接入使用交付时核对的固定提交：检查干净工作区，fetch 后核对提交范围，确认仅更新工具/测试/说明变化且服务器运行文件不变，再快进并执行上述默认命令验证。不要使用不确定的最新分支头、修改白名单或从远端下载未核对的脚本直接交给 shell。后续更新工具自身变化仍停止，由运维审阅。
 
 ## 6. 回退与恢复
 
@@ -282,12 +313,12 @@ supervisorctl -c /etc/supervisord.conf status private-agent
 ## 7. 工具与旧文档的关系
 
 - [源码启动入口](../scripts/start-connected-server.py)：选择当前仓库的包，保留原服务器入口；附只读入口检查和完整 Python 文件摘要比较。
-- [例行更新工具](../scripts/update-connected-server.py)：固定部署边界，保护本地修改和分叉历史，不改外部配置、不装依赖、不操作其他服务。
+- [一键更新工具](../scripts/update-connected-server.py)：默认一次执行，源码备份与阶段记录，按差异决定是否重启；保留 check/apply，保护本地修改和分叉历史，不改外部配置、不装依赖、不操作其他服务。
 - [隔离回归测试](../tests/unit/test_connected_server_workflow.py)：验证临时 Git 远端、真实快进和拒绝条件；Supervisor 使用替身，不等于 Linux 生产演练。
 - [旧安装副本应急修复](./connected-runtime-1.0.3-repair.md)保留历史用途。首次源码切换验收完成后，日常更新不再执行五文件复制补丁。
-- [项目状态记忆](./project-state.md)是此前记录，Git/构建/生产状态必须按当前证据核对。本次未把“准备好切换”写成“服务器已切换”。
+- [项目状态记忆](./project-state.md)保留此前历史快照，按项目入口约定本次不改写；本文开头按后续用户回执补充已确认的源码进程和提交状态，不将其扩展为新工具或真实账号验收通过。
 
-## 8. 本次本机验证记录
+## 8. 历史本机验证记录
 
 2026-08-31，在 Windows 开发机、没有环境配置文件的 `.tmp/server-workflow-check` 目录中执行：
 
@@ -323,3 +354,31 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 ```
 
 结果：**113 passed，3 skipped**；跳过项均为 Windows 真实符号链接权限限制，两个 Alembic 警告与前次相同。相关模型/日志模块及更新工具的 Ruff、Git 差异检查通过，源码入口检查返回 `SOURCE_ENTRY_OK`。bundle 验证及完整文件树比较通过；原开发目录未提交的 `README.md` 保持原样，未包含在此次合并中。这些结果仍不代表服务器已切换或真实账号验收通过。
+
+## 9. 一键更新工具验证（2026-08-31）
+
+在不含环境配置的 `E:\Program\Agent\.tmp\server-update-one-command` 中执行：
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'
+& E:/Program/Agent/.venv/Scripts/python.exe -B -m pytest -q E:/Program/Agent/tests/unit/test_connected_server_workflow.py --noconftest -p no:cacheprovider --basetemp E:/Program/Agent/.tmp/server-update-one-command/pytest-3
+```
+
+结果：**77 passed，1 skipped**。覆盖默认 update 和旧 check/apply、真实临时 Git 远端与快进、客户端免重启、共享核心重启、源码归档及 SHA-256、忽略环境文件、备份失败不停止服务、检查期间退出或改变的进程、稳定 PID 等待及超时、工作区并发改动、依赖/迁移/配置边界、非法 Python 和 Git 符号链接树。Supervisor、运行账号和进程状态使用隔离替身；仅旧源码审计的真实文件系统符号链接用例因 Windows 权限限制跳过，新增 Git 符号链接树用例通过。
+
+初次 pytest 被 Windows 沙箱的临时目录权限阻断，随后在获准的隔离环境重跑。第一轮完整回归发现备份测试错误假设 LF，已改为与旧提交的原始 Git 字节比较；最终上述回归通过，没有放宽归档内容或安全断言。
+
+仓库根目录实际执行：
+
+```powershell
+.venv/Scripts/ruff.exe check scripts/update-connected-server.py tests/unit/test_connected_server_workflow.py
+git diff --check
+$env:PYTHONIOENCODING='utf-8'
+.venv/Scripts/python.exe -B scripts/update-connected-server.py --help
+```
+
+以上通过；两份相关说明中 22 个 Bash 代码块经 Git Bash `-n` 解析通过，本地文档链接存在。当前 Git 树均为普通文件，符合新工具的目标树约束。未安装新依赖、修改业务代码或改动数据库。
+
+本机只有 Docker 管理的 WSL 环境且 Docker Linux 引擎未运行，因此没有新增 Linux 实测，也没有启动其环境或访问生产服务器。新工具在实际 Linux 上的 root 归档权限、Supervisor 启停和业务恢复仍待服务器验收；同一 PID 持续 RUNNING 不代表账号、数据库或模型功能已验收。
+
+已读取项目入口和 `docs/project-state.md`，后者仍保留历史快照；根据用户新回执修正本操作说明开头的服务器状态，并将旧工具行为标为历史。按项目入口约定没有改写 `docs/project-state.md` 或全局记忆。README 原有未提交改动保持不变，本次只更新脚本、对应测试和两份操作说明。
