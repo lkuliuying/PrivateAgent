@@ -15,8 +15,10 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 
-async def verify(bundle: Path, work: Path) -> dict:
+
+async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
     work.mkdir(parents=True, exist_ok=True)
     area = Path(tempfile.mkdtemp(prefix="packaged-runtime-", dir=work)).resolve()
     staged, project = area / "binaries", area / "project"
@@ -30,49 +32,103 @@ async def verify(bundle: Path, work: Path) -> dict:
     (project / "fixture.py").write_text('print("full-access-script-ok")\n', encoding="utf-8")
     replies: list[dict] = []
 
-    class ModelFixture(BaseHTTPRequestHandler):
-        def do_POST(self):
-            size = int(self.headers.get("content-length", "0"))
-            if self.path != "/v1/chat/completions" or not 0 < size <= 2 * 1024 * 1024 or not replies:
-                self.send_error(400)
-                return
-            json.loads(self.rfile.read(size))
-            message = replies.pop(0)
-            body = json.dumps({"id": "fixture", "model": "fixture-model", "choices": [{"index": 0, "message": message,
-                "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}],
-                "usage": {"prompt_tokens": 1000, "completion_tokens": 25, "prompt_tokens_details": {"cached_tokens": 200}}}).encode()
-            self.send_response(200)
+    fixture_token = secrets.token_urlsafe(48)
+    active = False
+    server_calls = []
+    profile_id = "server-profile" if model_mode == "service" else "local-model"
+
+    class AccountFixture(BaseHTTPRequestHandler):
+        def reply(self, data, status=200):
+            body = json.dumps(data).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def authorized(self):
+            return active and self.headers.get("Authorization") == "Bearer " + fixture_token
+
+        def do_GET(self):
+            server_calls.append(self.path)
+            if not self.authorized():
+                self.reply({"detail": "fixture unauthorized"}, 401)
+            elif self.path == "/auth/me":
+                self.reply({"id": 7, "username": "fixture"})
+            elif self.path == "/agent-model-profiles?enabled_only=true":
+                self.reply([{"id": "server-profile", "model_name": "fixture-model", "context_tokens": 4096, "enabled": True, "is_default": True}])
+            else:
+                self.reply({"detail": "fixture route missing"}, 404)
+
+        def do_POST(self):
+            nonlocal active
+            server_calls.append(self.path)
+            size = int(self.headers.get("content-length", "0"))
+            if not 0 < size <= 2 * 1024 * 1024:
+                self.reply({"detail": "fixture invalid body"}, 400)
+                return
+            payload = json.loads(self.rfile.read(size))
+            if self.path == "/auth/login":
+                if payload != {"identifier": "fixture", "password": "fixture-password"}:
+                    self.reply({"detail": "fixture invalid credentials"}, 401)
+                    return
+                active = True
+                self.reply({"access_token": fixture_token, "user": {"id": 7}, "token_type": "bearer"})
+            elif self.path in {"/api/chat", "/v1/chat/completions"}:
+                assert active and self.headers.get("Authorization") is None, "账号令牌不得发送到本机模型"
+                assert replies and payload["model"] == "fixture-model"
+                result = replies.pop(0)
+                calls = result["tool_calls"]
+                if self.path == "/api/chat":
+                    self.reply({"model": "fixture-model", "message": {"role": "assistant", "content": result["text"],
+                        "tool_calls": [{"id": c["id"], "function": {"name": c["name"], "arguments": c["arguments"]}} for c in calls]},
+                        "done": True, "prompt_eval_count": 1000, "eval_count": 25})
+                else:
+                    self.reply({"model": "fixture-model", "choices": [{"message": {"role": "assistant", "content": result["text"],
+                        "tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}} for c in calls]},
+                        "finish_reason": "tool_calls" if calls else "stop"}], "usage": {"prompt_tokens": 1000, "completion_tokens": 25}})
+            elif not self.authorized():
+                self.reply({"detail": "fixture unauthorized"}, 401)
+            elif self.path == "/auth/logout":
+                active = False
+                self.reply({"logged_out": True})
+            elif self.path == "/desktop/model/complete" and replies:
+                assert payload["model_profile_id"] == "server-profile"
+                assert "messages" in payload["request"]
+                self.reply(replies.pop(0))
+            else:
+                self.reply({"detail": "fixture route missing"}, 404)
+
         def log_message(self, *_args):
             pass
 
+    def model_reply(text="", calls=None):
+        return {"provider": "fixture-server", "model": "fixture-model", "text": text, "tool_calls": calls or [],
+                "usage": {"input_tokens": 1000, "output_tokens": 25, "cached_tokens": 200}}
+
     def tool(name, arguments):
-        return {"role": "assistant", "content": "", "tool_calls": [{"id": str(uuid.uuid4()), "type": "function",
-            "function": {"name": name, "arguments": json.dumps(arguments, ensure_ascii=False)}}]}
+        return model_reply(calls=[{"id": str(uuid.uuid4()), "name": name, "arguments": arguments}])
 
     def finish():
-        return {"role": "assistant", "content": "fixture complete"}
+        return model_reply(text="fixture complete")
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelFixture)
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AccountFixture)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    profile = {"mode": "local", "model_protocol": "openai", "model_endpoint": f"http://127.0.0.1:{server.server_port}/v1",
-               "model_name": "fixture-model", "context_tokens": 4096}
+    server_origin = f"http://127.0.0.1:{server.server_port}"
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
     env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     env.update(PATH=str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", ""), PRIVATEAGENT_LOCAL_NONCE=secrets.token_urlsafe(48))
+    model_config = {} if model_mode == "service" else {"inference_mode": "local", "model_protocol": model_mode,
+        "model_endpoint": server_origin + ("/v1" if model_mode == "openai" else ""), "model_name": "fixture-model", "context_tokens": 4096}
     process = None
     token = None
     try:
         process = await asyncio.create_subprocess_exec(str(staged / "private-agent-local.exe"), "--stdio", "--data-dir", str(area / "records"),
-            "--connection-json", json.dumps(profile), cwd=area, env=env, stdin=asyncio.subprocess.PIPE,
+            "--server", server_origin, "--model-json", json.dumps(model_config), cwd=area, env=env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0))
 
-        async def request(path, method="GET", body=None):
+        async def request(path, method="GET", body=None, expected_status=None):
             identity = str(uuid.uuid4())
             headers = {"content-type": "application/json"}
             if token:
@@ -92,7 +148,7 @@ async def verify(bundle: Path, work: Path) -> dict:
                     chunks.append(event.get("data", ""))
                     if event.get("done"):
                         break
-            assert status is not None and 200 <= status < 300, f"本机接口失败：{path}，状态 {status}"
+            assert status is not None and (status == expected_status if expected_status else 200 <= status < 300), f"本机接口失败：{path}，状态 {status}"
             return json.loads("".join(chunks))
 
         async def terminal(run_id, *, approve=False):
@@ -109,12 +165,19 @@ async def verify(bundle: Path, work: Path) -> dict:
                     await asyncio.sleep(0.1)
 
         assert (await request("/health"))["mode"] == "desktop-local"
-        token = (await request("/auth/local", "POST"))["access_token"]
+        await request("/auth/local", "POST", expected_status=404)
+        await request("/auth/login", "POST", expected_status=404)
+        await request("/projects", expected_status=401)
+        async with httpx.AsyncClient(base_url=server_origin, timeout=15, trust_env=False) as account:
+            login = await account.post("/auth/login", json={"identifier": "fixture", "password": "fixture-password"})
+            assert login.status_code == 200
+            token = login.json()["access_token"]
+        assert (await request("/identity", "POST"))["ready"]
         created = await request("/projects", "POST", {"name": "打包隔离验证", "root_path": str(project)})
         workspace = (await request(f"/projects/{created['id']}/workspaces"))[0]
         binding = {"project_id": created["id"], "workspace_id": workspace["id"]}
         session = await request("/sessions", "POST", {**binding, "title": "隔离验收"})
-        binding.update(session_id=session["id"], message="fixture", model_profile_id="local-model")
+        binding.update(session_id=session["id"], message="fixture", model_profile_id=profile_id)
         replies.extend([tool("write_project_file", {"rel_path": "result.txt", "content": "本机验证"}),
             tool("run_project_command", {"command": "python -m pytest"}), finish()])
         run = await request("/agent-runs", "POST", {**binding, "permission_mode": "workspace"})
@@ -127,7 +190,7 @@ async def verify(bundle: Path, work: Path) -> dict:
         assert command_output["execution_host_sha256"] == host_digest
         approvals = await request(f"/agent-runs/{run['id']}/approvals")
         assert len(approvals) == 1 and approvals[0]["status"] == "consumed"
-        budget = await request(f"/sessions/{session['id']}/context-budget?model_profile_id=local-model")
+        budget = await request(f"/sessions/{session['id']}/context-budget?model_profile_id={profile_id}")
         assert budget["source"] == "provider_usage" and budget["used_tokens"] == 1000 and budget["max_context_tokens"] == 4096
         grant = await request(f"/sessions/{session['id']}/full-access-grant", "POST", {})
         replies.extend([tool("run_project_command", {"command": "python fixture.py"}), finish()])
@@ -147,7 +210,18 @@ async def verify(bundle: Path, work: Path) -> dict:
         exported = await request("/local-history/export")
         assert len(exported["records"]["runs"]) == 3 and exported["records"]["run_steps"]
         assert not replies
-        return {"passed": True, "work_dir": str(area), "file_write": True, "manual_command_approval": True,
+        await request("/identity/clear", "POST")
+        async with httpx.AsyncClient(base_url=server_origin, timeout=15, trust_env=False) as account:
+            logout = await account.post("/auth/logout", json={}, headers={"Authorization": "Bearer " + token})
+            assert logout.status_code == 200
+        await request("/projects", expected_status=401)
+        assert server_calls.count("/auth/login") == 1 and server_calls.count("/auth/logout") == 1
+        assert "/auth/me" in server_calls
+        model_path = "/desktop/model/complete" if model_mode == "service" else "/api/chat" if model_mode == "ollama" else "/v1/chat/completions"
+        assert model_path in server_calls
+        if model_mode != "service":
+            assert "/desktop/model/complete" not in server_calls
+        return {"model_mode": model_mode, "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "manual_command_approval": True,
                 "full_access_script": True, "context_usage": budget["used_tokens"], "tampered_host_blocked": True,
                 "history_export_runs": 3, "sandbox_available": command_output["sandbox_available"], "real_model_called": False}
     finally:
@@ -171,5 +245,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument("--model-mode", choices=["service", "ollama", "openai"], default="service")
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(verify(args.bundle.resolve(), args.work_dir.resolve())), ensure_ascii=False, indent=2))
+    print(json.dumps(asyncio.run(verify(args.bundle.resolve(), args.work_dir.resolve(), args.model_mode)), ensure_ascii=False, indent=2))

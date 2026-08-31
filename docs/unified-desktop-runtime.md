@@ -2,6 +2,8 @@
 
 本说明记录 `E:\Program\Agent` 统一客户端的实现与本机隔离验证。在该实现验收阶段没有发布、覆盖现有安装、迁移真实账号记录或修改服务器。后续按用户要求提交、推送与预览包发行的范围及服务器操作步骤，见[统一客户端预览版与服务器更新](./unified-preview-server-update.md)。`docs/project-state.md` 保留原有历史快照，本说明不将历史部署状态改写为上线成功。
 
+当前账号与模型边界已按登录故障修复收敛，见[固定账号入口与本机模型修复](./solutions/2026-08-31-server-account-login.md)。下文第 7 节及后续验收记录属于初版 1.0.0，不代表修复版本已发布或真实账号已验收。
+
 ## 1. 统一后的边界
 
 统一的是桌面入口、Coding 执行核心和本机记录，不是把整个业务后端换成 SQLite。参考 Codex 的共享核心与 app-server 进程分离方式，以及提供的 Grok Bot 压缩包中的客户端组织思路；没有执行压缩包中的程序，也没有复制第三方实现。保留 Python 核心以复用现有模型契约和测试，避免为了统一客户端再维护一套 Rust Agent 业务逻辑。
@@ -17,20 +19,21 @@ flowchart LR
   Runtime -->|私有 stdio| Host[Rust exec-host / 进程树管理]
   Host --> Commands[获准的开发命令]
   Core --> Local[本机 Ollama / OpenAI 兼容服务]
-  Core --> Service[云端或自托管账号与模型服务]
+  Core --> Service[固定服务器账号与模型服务]
 ```
 
-| 连接方式 | 身份与记录 | 模型 | 本机依赖 |
+| 账号方式 | 身份与记录 | 模型 | 本机依赖 |
 | --- | --- | --- | --- |
-| 本地模型 | 当前系统用户下的本机身份，独立 SQLite | 回环地址 Ollama / 无密钥 OpenAI 兼容服务 | 所选模型服务、实际需要的开发工具 |
-| 云端账号 | 服务源站 + 用户 ID，独立 SQLite | 账号服务模型，或切换成本机模型 | 开发工具；使用本机模型时还需模型服务 |
-| 自托管账号 | 与云端相同规则，自托管源站独立隔离 | 自托管模型服务，或本机模型 | 同上 |
+| 固定服务器账号 | 固定源站 + 用户 ID，独立 SQLite | 服务器提供的模型 | 需要执行的开发工具 |
+| 同一服务器账号 | 与上行共享同一个账号记录库 | 回环地址 Ollama / 无密钥 OpenAI 兼容服务 | 所选本机模型服务、开发工具 |
 
-切换同一账号的模型执行位置不会另建账号记录库；切换账号、源站或本机身份不自动合并记录。连接设置只保存地址、协议、模型名和容量，不保存模型密钥。远程账号服务必须 HTTPS；HTTP 仅允许回环地址。直接本机模型连接目前只支持回环地址，不支持携带 API key 的服务。
+客户端不再提供本机账号、自托管账号或账号服务器地址设置。服务器入口由 Tauri 后端内置；前端和运行时使用同一来源，旧环境开关与缓存地址不能覆盖安装包的账号入口。当前服务器 43.163.232.238 的裸 IP HTTP 路由返回 404，HTTPS 证书校验失败；用户已确认在后端固定使用指向该 IP 的 https://www.liuyingapi.top，详见修复说明。
+
+切换模型执行位置不改变账号记录库。模型设置只保存推理位置、协议、回环地址、模型名及容量，不保存账号服务器地址、令牌或模型密钥。本机模型仍需先登录服务器账号；不能使用模型配置绕过身份验证。
 
 项目目录、文件修改、审批、运行和命令均由本机处理，失联时不回退到服务器执行。模型请求仍会把必要的对话、选中的代码及工具结果发送给所选模型服务；本机存储不等于远程模型看不到这些请求内容。
 
-旧完整后端继续提供账号、管理、知识库、记忆等可选业务服务；这些服务的 MySQL/ChromaDB 数据不在本次 SQLite 迁移范围内。本地模型模式不具备这些业务服务，相关旧页面可能提示不可用；需要时切换到提供对应能力的账号服务。工作树创建、上下文自动压缩等尚未移植的能力不会声明为已支持。
+服务器业务后端提供账号、管理、知识库、记忆等能力；这些服务的 MySQL/ChromaDB 数据不在本次 SQLite 迁移范围内。客户端不再启动完整本机业务后端；选择本机模型只替换 Coding 推理服务，不改变账号或业务接口。工作树创建、上下文自动压缩等尚未移植的能力不会声明为已支持。
 
 ## 2. 代码归属与传输
 
@@ -45,7 +48,7 @@ flowchart LR
 
 ## 3. SQLite 与恢复
 
-Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assistant.desktop\local-projects\<账号摘要>\projects.sqlite3`。账号摘要是 `SHA-256(服务源站 + NUL + 用户 ID)`；本机身份使用 `local://device` 和本机用户 ID。旧 Remote 安装使用独立的 `com.personal-assistant.desktop.remote` 应用目录。
+Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assistant.desktop\local-projects\<账号摘要>\projects.sqlite3`。账号摘要是 `SHA-256(服务源站 + NUL + 用户 ID)`。旧 `local://device` 身份的数据库文件保留，但不再生成本机身份，也不自动将其归入服务器账号。旧 Remote 安装使用独立的 `com.personal-assistant.desktop.remote` 应用目录。
 
 当前 SQLite schema 为 3：项目、工作区、会话、消息、运行、追加事件、审批、执行、限时授权、审计与迁移批次分别保存。采用 WAL、foreign_keys、5 秒 busy timeout 和 FULL 同步。较大的内容存入同目录 `artifacts/<SHA-256>`，读取时校验长度及摘要。SQLite 不加密；账号目录是应用层隔离，不阻止同一系统用户自行读取磁盘。不要把它当作多用户操作系统安全隔离。
 
@@ -62,7 +65,7 @@ Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assist
 | 替我批准 | 项目内写入自动批准并审计 | 精确匹配的 Git 诊断自动批准；项目测试/构建脚本仍询问 |
 | 完全访问 | 用户确认限时授权后允许普通绝对路径 | 授权内自动执行登记的开发程序及动作；拒绝直接 shell 拼接、内联求值、提权等入口 |
 
-完全访问授权最长 4 小时，绑定会话和项目；每次操作前、等待审批后再次验证。撤销、退出账号、切换连接/项目会撤权，正在进行的完全访问任务会取消。非活动工作区不能开始任务。审批绑定参数、工具、项目位置及预览摘要，只能消费一次。文件写入核对原内容 SHA-256，并记录写后摘要，防止批准期间文件发生变化后被静默覆盖。
+完全访问授权最长 4 小时，绑定会话和项目；每次操作前、等待审批后再次验证。撤销、退出账号、切换模型/项目会撤权，正在进行的完全访问任务会取消。非活动工作区不能开始任务。审批绑定参数、工具、项目位置及预览摘要，只能消费一次。文件写入核对原内容 SHA-256，并记录写后摘要，防止批准期间文件发生变化后被静默覆盖。
 
 文件工具拒绝路径回退、链接、敏感文件和客户端内部目录。命令采用参数数组、登记规则和清理后的环境，通过 `exec-host` 执行；发布包运行前验证宿主 SHA-256。Windows Job 回收命令后代，输出有界，超时停止。客户端强制关闭还需回收 PyInstaller 引导进程树。
 
@@ -93,26 +96,25 @@ Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assist
 # 只核对构建配置
 node scripts/build-client.cjs --dry-run
 
-# 生成本地模型默认模式的便携验证包
+# 生成固定服务器账号入口的便携验证包
 .\scripts\build-client.cmd
 
 # 生成未签名安装包，用于本机 QA，不安装、不发布
 $env:CARGO_BUILD_JOBS = '1'
-.\scripts\build-client.cmd --preview-installer --version 1.0.0
+.\scripts\build-client.cmd --preview-installer --version 1.0.1
 
-# 可选：预置账号服务地址，仍可在客户端中切换
-.\scripts\build-client.cmd "https://agent.example.com"
+# 账号入口从 Tauri 后端 server.rs 读取，不接受其他服务器地址覆盖
 ```
 
 输出在新的 `.run/unified-client-*` 目录。便携运行须保留同目录的 `PrivateAgent-windows-x64.exe`、`private-agent-local.exe`、`exec-host.exe`、`exec-host.sha256`。不要拿缺少 sidecar 的单独 EXE 交付。
 
 统一包沿用普通版 application identifier，主程序名为 `privateagent`，专用更新目标为 `unified-windows-x86_64`。预览版关闭更新 endpoint，不生成 latest.json。正式签名构建要求干净工作树、既有安全签名环境及显式独立的 `--update-url`；不会默认使用旧普通版/联网版更新源。
 
-旧 `build-remote-client.cmd` 是同一套核心的 Remote 兼容包装，仍使用独立应用 ID 和 `remote-windows-x86_64` 目标。旧 `build-release.bat`/基础 tauri.conf 仅保留完整后端维护路径：该脚本显式 `VITE_LOCAL_EXECUTOR=false`，不能从统一客户端的已保存配置误启动不存在的轻量 sidecar。手工直接运行旧基础 Tauri 构建时也必须显式设置该标志；新统一包应使用主构建入口，不直接使用旧基础配置。
+旧 `build-remote-client.cmd` 仅作为不同安装身份的兼容包装保留，同样只连接后端内置的账号服务。新客户端不注册完整本机后端的启动命令，`VITE_LOCAL_EXECUTOR=false` 不能恢复该路径。旧 `build-release.bat` 与基础配置不再作为本次客户端的交付入口；使用上面的统一构建命令，确保捆绑轻量执行器和 exec-host。
 
 旧普通安装与统一包共享应用身份，正式替换前需要备份并验证升级/卸载回归。当前只生成预览安装包，没有覆盖用户安装。应用 ID、schema、签名、更新目标和历史迁移是独立边界，不能靠把 Remote 安装包改名来合并。
 
-## 7. 实际验证与未验证事项
+## 7. 初版 1.0.0 实际验证记录（历史）
 
 所有 Python 测试均在 `.run/unified-tests` 的独立数据库/项目目录运行，使用 `--noconftest` 避免生产配置。实际完成的命令与结果：
 
@@ -124,7 +126,7 @@ $env:CARGO_BUILD_JOBS = '1'
 - 实际 Vue 组件在隔离页面用合成数据验证：连接方式/推理位置切换、权限选项、上下文悬浮窗、迁移预览和只读归档；已查看截图。这不是原生安装后的真实账号验收。
 - 未签名 NSIS 和便携内容构建成功。打包运行时实测验证文件写入、人工批准 pytest、完全访问脚本、真实 exec-host、usage、撤权、历史导出、篡改宿主摘要后拒绝执行、正常退出；模型是回环 HTTP 替身，没有付费调用。
 
-复测打包结果：
+以下为初版历史复测命令；当前验证脚本已改为服务器认证夹具，需使用新修复包，不适用于旧本机账号包：
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/verify-unified-client.py --bundle ".run\unified-client-z96sXu" --work-dir ".run\unified-tests"

@@ -4,6 +4,10 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
+const serverSource = fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/src/server.rs"), "utf8");
+const FIXED_API_ORIGIN = serverSource.match(/ACCOUNT_SERVER_ORIGIN: &str = "([^"]+)"/)?.[1];
+if (!FIXED_API_ORIGIN) throw new Error("Missing backend account server constant.");
+
 const REMOTE_IDENTIFIER = "com.personal-assistant.desktop.remote";
 const REMOTE_TARGET = "remote-windows-x86_64";
 const UNIFIED_TARGET = "unified-windows-x86_64";
@@ -45,7 +49,8 @@ function parseOptions(args) {
       api = arg;
     }
   }
-  options.apiBaseUrl = options.unified && !api ? "" : httpsUrl(api, "API origin", true).origin;
+  options.apiBaseUrl = httpsUrl(api || FIXED_API_ORIGIN, "API origin", true).origin;
+  if (options.apiBaseUrl !== FIXED_API_ORIGIN) throw new Error("Account server is fixed in the desktop backend; API overrides are not supported.");
   if (options.mode === "portable") {
     if (options.version || options.updateUrl || options.downloadBaseUrl) {
       throw new Error("Version and update URLs require --release or --preview-installer.");
@@ -96,7 +101,7 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
   if (options.unified) {
     Object.assign(config, { productName: "PrivateAgent", identifier: "com.personal-assistant.desktop", mainBinaryName: "privateagent" });
     config.bundle.shortDescription = "PrivateAgent 统一本地运行时";
-    config.bundle.longDescription = "项目、任务与命令在本机运行，支持本地模型、云端账号和自托管服务。";
+    config.bundle.longDescription = "固定连接服务器账号，项目、任务与命令在本机运行，保留本机模型配置。";
     config.bundle.windows = { nsis: { installerHooks: null } };
     config.plugins = { updater: { endpoints: options.mode === "release" ? [options.updateUrl] : [] } };
   }
@@ -124,7 +129,7 @@ function assertReleaseReady(options, dirty, signingConfigured) {
 
 function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === "--help") {
-    console.log('Usage: scripts\\build-remote-client.cmd "https://api.example.com"');
+    console.log('Usage: scripts\\build-remote-client.cmd "[fixed backend server]"');
     console.log("  --release --version 1.0.1       signed remote NSIS installer + publish/latest.json");
     console.log("  --preview-installer --version 1.0.1  unsigned installer for local QA; no update manifest");
     console.log("  --update-url HTTPS_URL         default: API_ORIGIN/updates/remote/latest.json");
@@ -190,8 +195,8 @@ function main(args = process.argv.slice(2)) {
   const entry = index.match(/src="([^"]+\.js)"/);
   if (!entry) throw new Error("Built frontend entry was not found.");
   const entryFile = path.join(web, entry[1].replace(/^\//, ""));
-  if (apiBaseUrl && !fs.readFileSync(entryFile, "utf8").includes(apiBaseUrl)) {
-    throw new Error("Remote API origin is missing from the built frontend.");
+  if (!fs.readFileSync(entryFile, "utf8").includes("account_server_origin")) {
+    throw new Error("Built frontend must obtain the account server from the desktop backend.");
   }
   const triple = "x86_64-pc-windows-msvc";
   // An absolute Windows frontendDist is parsed as a URL by Tauri, omitting assets.
@@ -207,8 +212,8 @@ function main(args = process.argv.slice(2)) {
     "--target", triple, "--config", JSON.stringify(config), "--", "--locked"]);
   const builtExe = path.join(env.CARGO_TARGET_DIR, triple, "release", options.unified ? "privateagent.exe" : options.mode === "portable" ? "appsdesktop.exe" : `${REMOTE_BINARY}.exe`);
   const exeBytes = fs.readFileSync(builtExe);
-  if (exeBytes.subarray(0, 2).toString() !== "MZ" || !exeBytes.includes(Buffer.from(entry[1].split("/").pop()))) {
-    throw new Error("Executable validation failed: missing PE header or current frontend entry.");
+  if (exeBytes.subarray(0, 2).toString() !== "MZ" || !exeBytes.includes(Buffer.from(entry[1].split("/").pop())) || !exeBytes.includes(Buffer.from(apiBaseUrl))) {
+    throw new Error("Executable validation failed: missing PE header, current frontend entry or fixed backend account origin.");
   }
   const exeName = options.unified ? "PrivateAgent-windows-x64.exe" : "PrivateAgent-remote-windows-x64.exe";
   fs.copyFileSync(builtExe, path.join(output, exeName), fs.constants.COPYFILE_EXCL);
