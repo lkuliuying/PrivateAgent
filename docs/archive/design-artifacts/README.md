@@ -27,4 +27,4 @@
 - [PrivateAgent QA 对比](./design-qa-comparison-privateagent.png)
 - [Agent Workspace 参考对比](./design-reference-comparison-1536x1024.png)
 
-对应验收说明仍保留在仓库根目录的 [`design-qa.md`](../../../design-qa.md)。
+对应验收说明见归档时提交 `c5632a5` 中的 [`design-qa.md`](https://github.com/lkuliuying/PrivateAgent/blob/c5632a5e9201e145ffa678fe8f59a0a6d12d82d3/design-qa.md)。根目录的临时验收文件后来已移除，此处固定到与本归档相符的历史内容，不恢复临时文件，也不将历史验收结果视为当前界面的验证结果。

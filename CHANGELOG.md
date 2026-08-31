@@ -1,5 +1,30 @@
 # 更新日志
 
+## 版本与发布索引（2026-08-31 核对）
+
+源码版本、开发检查点和已发布安装包分别记录。下表是状态索引，不补造缺失的历史发布日志；后文原有记录保留其当时的版本和验证口径。
+
+| 范围 | 当前记录 | 交付边界 |
+|---|---|---|
+| 源码 | 声明版本 `1.0.0`，持续开发于 `dev/1.0.0` | 不等同于普通版 `v1.0.0` 已正式发布 |
+| 普通版 | [`v0.2.1`](https://github.com/lkuliuying/PrivateAgent/releases/tag/v0.2.1)，已发布且为 GitHub Latest | 保留普通版更新入口，不改指向远程包 |
+| 远程版 | [`remote-v1.0.2`](https://github.com/lkuliuying/PrivateAgent/releases/tag/remote-v1.0.2)，已发布 | 使用独立的远程客户端更新渠道 |
+| 远程测试包 | `remote-v1.0.3-test.1`，测试草稿 | 原包基于 `debcd81` 加未提交改动，构建为 `dirty=true`；本次未重建、未公开发布 |
+| 其他历史草稿 | `0.5.0-rc.4`、`v1.0.0` | 草稿名称不等同于正式版本；`v1.0.0` 草稿装载的是历史远程便携客户端 |
+
+完整治理规则见[仓库维护说明](docs/repository-maintenance-20260831.md)，测试包与源码的差异见[1.0.3 交接记录](docs/next-agent-handoff-1.0.3.md)。本索引不证明旧测试包包含后续提交中的修复，也不补记未执行的产品回归结果。
+
+## 已提交源码增量（2026-08-30，尚未据此重建交付物）
+
+| 提交 | 可从源码核对的变化 |
+|---|---|
+| [`599f97f`](https://github.com/lkuliuying/PrivateAgent/commit/599f97fad1324f000cc1488e44515c4da85d29e4) | 桌面模型代理、管理员日志接口及相关测试源码 |
+| [`bdd7e0a`](https://github.com/lkuliuying/PrivateAgent/commit/bdd7e0aa7f7395cacc0845d5e2d0bf885a6449be) | 联网客户端本机执行器、请求分流、账号隔离与构建接入 |
+| [`bd21717`](https://github.com/lkuliuying/PrivateAgent/commit/bd217177bf529d13315f6336ca537bf3a46e8cc4) | 桌面端管理员日志界面、服务层及相关测试源码 |
+| [`180603b`](https://github.com/lkuliuying/PrivateAgent/commit/180603b6690d2fb18f08bf10c4197520b97840cc) | 联网部署辅助脚本、发布工作流保护和部署交接文档 |
+
+以上仅记录提交内容，不代表本次整理已执行这些测试或验证服务器运行状态。更早的开发演进通过 [v0.8.0 交接与勘误](docs/releases/v0.8.0/v0.8.0-handoff-to-v0.9.0-20260822.md)、[版本计划索引](docs/releases/README.md)追溯。
+
 ## 0.4.0-alpha.2（2026-08-08，Workbench UX 2.0 收口 · 开发中）
 
 > 计划：[`docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md`](docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md)。
