@@ -14,10 +14,6 @@ import UpdateChecker from "./UpdateChecker.vue";
 import McpServersPanel from "./McpServersPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
-import ConnectionSettings from "./ConnectionSettings.vue";
-import { usesLocalInference } from "../services/connectionProfile";
-
-const localInference = usesLocalInference();
 import HistoryMigration from "./HistoryMigration.vue";
 import { usesLocalExecutor } from "../services/localExecutor";
 import {
@@ -176,7 +172,6 @@ const activeEndpoint = computed(() => {
 
 <template>
   <section class="content">
-    <ConnectionSettings />
     <header class="settings-hero">
       <div>
         <h1>{{ currentSectionMeta.label }}</h1>
@@ -204,12 +199,8 @@ const activeEndpoint = computed(() => {
     </section>
 
     <!-- 统一模型供应商：保存后的启用模型直接进入对话/Coding 选择器。 -->
-    <section v-if="activeSection === 'provider' && !localInference" class="model-provider-section">
+    <section v-if="activeSection === 'provider'" class="model-provider-section">
       <ModelProvidersPanel @saved="onModelProfilesSaved" />
-    </section>
-
-    <section v-if="activeSection === 'provider' && localInference" class="setting-card wide">
-      <h2>本机模型</h2><p>当前使用本机模型推理；请在上方模型执行设置中修改协议、地址、模型及上下文容量。账号验证仍由服务器负责。</p>
     </section>
 
     <!-- MCP -->

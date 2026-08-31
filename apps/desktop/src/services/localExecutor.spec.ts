@@ -56,14 +56,17 @@ describe("connected desktop API routing", () => {
     }
   });
 
-  it("本机模型仅接管模型清单，账号仍请求固定服务器", async () => {
-    const { http, fetchMock } = await setup();
+  it("旧手动配置不再控制执行位置，统一模型清单仍由服务器提供", async () => {
     const { defaultConnectionProfile, saveConnectionProfile } = await import("./connectionProfile");
     saveConnectionProfile({ ...defaultConnectionProfile(), inference_mode: "local", model_name: "fixture" });
+    const { http, fetchMock } = await setup();
+    expect(host.invoke).toHaveBeenCalledWith("start_local_executor", { modelConfig: { inference_mode: "auto" } });
     await http.apiFetch("https://cloud.example.test/agent-model-profiles?enabled_only=true");
-    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43188/agent-model-profiles?enabled_only=true");
+    expect(fetchMock.mock.calls[0][0]).toBe("https://cloud.example.test/agent-model-profiles?enabled_only=true");
     await http.apiFetch("https://cloud.example.test/auth/login");
     expect(fetchMock.mock.calls[1][0]).toBe("https://cloud.example.test/auth/login");
+    await http.apiFetch("https://cloud.example.test/local-models/discover", { method: "POST", body: '{"protocol":"ollama","base_url":"http://127.0.0.1:11434"}' });
+    expect(fetchMock.mock.calls[2][0]).toBe("http://127.0.0.1:43188/local-models/discover");
   });
 
   it("授权撤销与上下文查询均留在本机执行器", async () => {

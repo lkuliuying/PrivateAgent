@@ -186,7 +186,7 @@ const cacheHitLabel = computed(() => {
         </div>
         <div class="popover-divider" />
         <div class="cache-row">
-          <span>{{ facts.cacheHitScope === "latest_request" ? "最近请求缓存命中率" : "平均缓存命中率" }}</span>
+          <span>平均缓存命中率</span>
           <strong data-testid="context-cache-hit">{{ cacheHitLabel }}</strong>
         </div>
       </template>

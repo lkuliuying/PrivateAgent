@@ -35,6 +35,7 @@ import {
   type ModelMetadataSource,
 } from "../api";
 import { useNotifications } from "../stores/notifications";
+import { isLocalModelEndpoint } from "../api/modelProviders";
 
 const emit = defineEmits<{ saved: [] }>();
 const notify = useNotifications();
@@ -290,6 +291,9 @@ async function save(): Promise<void> {
   const baseUrl = draft.value.baseUrl.trim().replace(/\/$/, "");
   if (!name) return setMessage("请填写供应商名称", "error");
   if (!baseUrl) return setMessage("请填写 Base URL", "error");
+  if (desktopRuntime && isLocalModelEndpoint(baseUrl) && draft.value.apiKey.trim()) {
+    return setMessage("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务", "error");
+  }
   if (!draft.value.models.length) return setMessage("请至少从模型列表中选择一个模型", "error");
   if (
     draft.value.protocol === "ollama" &&

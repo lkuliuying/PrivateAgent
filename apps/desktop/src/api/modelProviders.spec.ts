@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch, ensureApiBase } from "./http";
-import { probeModelProviderModel, type ModelProvider } from "./modelProviders";
+import { discoverModelProviderModels, probeModelProviderModel, type ModelProvider } from "./modelProviders";
+
+vi.mock("../services/localExecutor", () => ({ usesLocalExecutor: () => true }));
 
 vi.mock("./http", () => ({
   apiFetch: vi.fn(),
@@ -38,6 +40,25 @@ beforeEach(() => {
 });
 
 describe("供应商模型连接检查", () => {
+  it.each(["ollama", "openai"] as const)("%s 回环模型通过本机执行器获取列表", async (protocol) => {
+    await discoverModelProviderModels({ protocol, baseUrl: "http://127.0.0.1:9000" });
+    const [url, init] = vi.mocked(apiFetch).mock.calls[0];
+    expect(url).toBe("https://backend.example.test/local-models/discover");
+    expect(JSON.parse(init?.body as string)).toEqual({ protocol, base_url: "http://127.0.0.1:9000" });
+  });
+
+  it("本机模型发现拒绝携带密钥，不向任何服务发送", async () => {
+    await expect(discoverModelProviderModels({ protocol: "openai", baseUrl: "http://localhost:9000/v1", apiKey: "fixture" }))
+      .rejects.toThrow("本机模型暂不支持需要密钥");
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("本机模型保存了密钥时，连接检查也明确拒绝", async () => {
+    await expect(probeModelProviderModel({ ...provider, baseUrl: "http://localhost:9000/v1" }, "deepseek-v4-flash"))
+      .rejects.toThrow("本机模型暂不支持需要密钥");
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
   it("只请求现有供应商发现接口，用服务器保存的密钥检查指定模型", async () => {
     await expect(probeModelProviderModel(provider, "deepseek-v4-flash")).resolves.toBe(true);
 
@@ -82,6 +103,7 @@ describe("供应商模型连接检查", () => {
     const testProvider: ModelProvider = {
       ...provider,
       protocol,
+      apiKeyConfigured: false,
       models: [{ ...provider.models[0], modelId: "example" }],
     };
     vi.mocked(apiFetch).mockResolvedValue(modelList("example:latest"));

@@ -38,6 +38,7 @@ describe("ContextUsageRing", () => {
       max_context_tokens: 1_000_000,
       reserved_output_tokens: 1_024,
       cache_hit_percent: 97.9,
+      cache_hit_scope: "session",
       usage_percent: 20,
       source: "provider_usage",
       compaction_state: "idle",
@@ -55,6 +56,8 @@ describe("ContextUsageRing", () => {
     );
     expect(wrapper.get('[data-testid="context-cache-hit"]').text()).toBe("97.9%");
     const popover = wrapper.get('[data-testid="context-ring-popover"]').text();
+    expect(popover).toContain("平均缓存命中率");
+    expect(popover).not.toContain("最近请求缓存命中率");
     expect(popover).not.toContain("保留输出预算");
     expect(popover).not.toContain("压缩阈值");
     expect(popover).not.toContain("数据来源");

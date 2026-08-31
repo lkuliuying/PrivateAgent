@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ApiConnection } from "../api/tauri";
-import { getConnectionProfile, usesLocalInference } from "./connectionProfile";
+import { getConnectionProfile } from "./connectionProfile";
 import { getAccessToken } from "../auth/session";
 import { requestPrivateRuntime } from "./privateTransport";
 
@@ -16,8 +16,7 @@ export function usesLocalExecutor(): boolean {
 
 /** 本机项目、运行及授权接口不得回退到服务器文件系统。 */
 export function isLocalProjectPath(path: string): boolean {
-  if (path === "/agent-model-profiles" && usesLocalInference()) return true;
-  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|capabilities|chat)(\/|$)/.test(path);
+  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|local-models|capabilities|chat)(\/|$)/.test(path);
 }
 
 export async function startLocalExecutor(): Promise<void> {
@@ -25,8 +24,9 @@ export async function startLocalExecutor(): Promise<void> {
   if (starting) return starting;
   starting = (async () => {
     if (!isTauri()) throw new Error("本机文件执行需要安装桌面客户端，不能在浏览器中运行");
-    const profile = getConnectionProfile();
-    const result = await invoke<LocalConnection>("start_local_executor", { modelConfig: profile });
+    // 保留旧账号迁移检查，推理路由只由所选模型配置决定，旧手动开关不再生效。
+    getConnectionProfile();
+    const result = await invoke<LocalConnection>("start_local_executor", { modelConfig: { inference_mode: "auto" } });
     if ("transport" in result ? result.transport !== "stdio" || result.protocol !== 2
       : !Number.isInteger(result.port) || result.port < 1 || result.port > 65535 || result.token.length < 32) {
       throw new Error("本机执行器连接信息无效");

@@ -1,4 +1,10 @@
 import { apiFetch, ensureApiBase } from "./http";
+import { usesLocalExecutor } from "../services/localExecutor";
+
+export function isLocalModelEndpoint(baseUrl: string): boolean {
+  try { return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(baseUrl).hostname); }
+  catch { return false; }
+}
 
 export type ModelProviderProtocol = "ollama" | "openai" | "claude";
 export type ModelMetadataSource =
@@ -160,10 +166,14 @@ export async function discoverModelProviderModels(input: {
   credentialReference?: string | null;
   apiKey?: string;
 }): Promise<DiscoveredModel[]> {
-  const body = await requestJson<{ models: unknown }>("/model-providers/discover/models", {
+  const local = usesLocalExecutor() && (input.protocol === "ollama" || isLocalModelEndpoint(input.baseUrl));
+  if (local && (input.apiKey || input.credentialReference)) {
+    throw new Error("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务");
+  }
+  const body = await requestJson<{ models: unknown }>(local ? "/local-models/discover" : "/model-providers/discover/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+    body: JSON.stringify(local ? { protocol: input.protocol, base_url: input.baseUrl } : {
       provider_id: input.providerId ?? null,
       protocol: input.protocol,
       base_url: input.baseUrl,
@@ -209,6 +219,9 @@ export async function probeModelProviderModel(
   modelId: string
 ): Promise<boolean> {
   if (!provider.enabled) throw new Error("供应商已禁用，请先启用并保存配置");
+  if (usesLocalExecutor() && (provider.protocol === "ollama" || isLocalModelEndpoint(provider.baseUrl)) && provider.apiKeyConfigured) {
+    throw new Error("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务");
+  }
   if (!provider.models.some((model) => model.modelId === modelId)) {
     throw new Error("请先保存该模型配置，再测试连接");
   }

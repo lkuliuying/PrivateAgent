@@ -46,7 +46,7 @@ describe("旧版升级后的真实登录调用链", () => {
     expect(await auth.restoreSession()).toBe(false);
     expect(auth.user).toBeNull();
     expect(network).not.toHaveBeenCalled();
-    expect(runtime.invoke).toHaveBeenCalledWith("start_local_executor", { modelConfig: expect.objectContaining({ inference_mode: "local" }) });
+    expect(runtime.invoke).toHaveBeenCalledWith("start_local_executor", { modelConfig: { inference_mode: "auto" } });
     await auth.login({ identifier: "fixture", password: "fixture-password" });
     expect(auth.user).toEqual(user);
     expect(runtime.request).toHaveBeenCalledWith("/identity", expect.objectContaining({ method: "POST" }));
@@ -61,6 +61,7 @@ describe("旧版升级后的真实登录调用链", () => {
     expect(auth.isAuthenticated).toBe(true);
     expect(network.mock.calls.map(([url]) => String(url))).toEqual([
       "https://server.example.test/auth/login",
+      "https://server.example.test/agent-model-profiles",
       "https://server.example.test/auth/logout", "https://server.example.test/auth/login",
     ]);
     expect(runtime.request.mock.calls.every(([path]) => !String(path).startsWith("/auth"))).toBe(true);

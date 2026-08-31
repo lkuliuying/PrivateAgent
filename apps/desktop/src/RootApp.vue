@@ -128,7 +128,6 @@ onBeforeUnmount(() => {
         <div class="startup-gate__brand" aria-hidden="true">PA</div>
         <span class="startup-gate__spinner" aria-hidden="true" />
         <h1>正在启动 PrivateAgent</h1>
-        <p>正在连接本地服务，请稍候…</p>
       </section>
     </main>
     <main

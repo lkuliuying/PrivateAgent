@@ -110,6 +110,7 @@ describe("RootApp window close lifecycle", () => {
     const wrapper = await mountRoot();
 
     expect(wrapper.get(".startup-gate").text()).toContain("正在启动 PrivateAgent");
+    expect(wrapper.get(".startup-gate").text()).not.toContain("正在连接本地服务");
     expect(wrapper.find('[data-testid="router-view"]').exists()).toBe(false);
   });
 

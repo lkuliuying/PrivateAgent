@@ -94,6 +94,7 @@ const sampleProvider = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
   healthState.error = "";
   vi.mocked(hasConfiguredRemoteApi).mockReturnValue(false);
   vi.mocked(probeModelProviderModel).mockResolvedValue(true);
@@ -136,6 +137,23 @@ beforeEach(() => {
 });
 
 describe("SettingsView 统一模型设置", () => {
+  it("旧本机模式仍可管理供应商，当前模型与模型设置均无手动执行模块", async () => {
+    window.localStorage.setItem("privateagent.local-model.v1", JSON.stringify({
+      inference_mode: "local", model_protocol: "ollama", model_endpoint: "http://127.0.0.1:11434",
+      model_name: "old-model", context_tokens: 8192,
+    }));
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="model-provider-manager"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("模型执行设置");
+    await wrapper.setProps({ activeSection: "current-model" });
+    await flushPromises();
+    expect(wrapper.text()).toContain("glm-5");
+    expect(wrapper.text()).not.toContain("模型执行设置");
+    wrapper.unmount();
+    window.localStorage.clear();
+  });
+
   it("显示供应商双栏管理并移除项目模型区", async () => {
     const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
     await flushPromises();
