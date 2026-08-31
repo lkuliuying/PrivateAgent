@@ -4,32 +4,16 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, ClassVar, Protocol
+from typing import Any, ClassVar
 
 from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field
 
+from private_agent_core.verification import OutputVerification, OutputVerifier
+
 from ..agent_v2.domain.completion import CompletionContract, evaluate_completion
 from ..agent_v2.domain.effects import EffectClass, EffectRecord
 from .contracts import ModelOutputFormat
-
-
-class OutputVerification(BaseModel):
-    """One verifier decision; text is bounded before it enters events/prompts."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    passed: bool
-    code: str = Field(pattern=r"^[a-z0-9_]{1,64}$")
-    message: str = Field(min_length=1, max_length=2_000)
-    correction: str | None = Field(default=None, max_length=4_000)
-
-
-class OutputVerifier(Protocol):
-    name: str
-    output_schema: dict[str, Any] | None
-
-    async def verify(self, output: str, *, attempt: int) -> OutputVerification: ...
 
 
 class NonEmptyOutputVerifier:
