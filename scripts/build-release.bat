@@ -13,6 +13,8 @@ REM GitHub reachability: the first `tauri build` downloads the NSIS toolchain fr
 REM   If GitHub is unreachable, set HTTPS_PROXY before running this script, e.g.
 REM     set HTTPS_PROXY=http://127.0.0.1:10808
 setlocal
+REM 本入口只维护旧完整后端安装包；统一客户端使用 build-client.cmd。
+set "VITE_LOCAL_EXECUTOR=false"
 
 REM Derive project root from script location.
 set "PROJECT_ROOT=%~dp0.."

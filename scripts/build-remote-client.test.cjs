@@ -16,7 +16,7 @@ test("portable CLI remains unsigned and does not inherit installer identity or c
   assert.equal(config.identifier, undefined);
   assert.equal(config.plugins, undefined);
   assert.equal(config.bundle.createUpdaterArtifacts, false);
-  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local"]);
+  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local", "binaries/exec-host"]);
 });
 
 test("remote installers cannot replace the local edition or stop its sidecar", () => {
@@ -25,7 +25,7 @@ test("remote installers cannot replace the local edition or stop its sidecar", (
   assert.equal(config.version, "1.0.1");
   assert.equal(config.identifier, REMOTE_IDENTIFIER);
   assert.equal(config.mainBinaryName, "privateagent-remote");
-  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local"]);
+  assert.deepEqual(config.bundle.externalBin, ["binaries/private-agent-local", "binaries/exec-host"]);
   assert.equal(config.bundle.windows.nsis.installerHooks, null);
   assert.deepEqual(config.plugins.updater.endpoints, ["https://api.example.com/updates/remote/latest.json"]);
   assert.equal(config.bundle.createUpdaterArtifacts, true);
@@ -98,4 +98,18 @@ test("dry-run executes the real CLI without building or requiring signing materi
   assert.equal(plan.config.identifier, REMOTE_IDENTIFIER);
   assert.equal(plan.updateTarget, REMOTE_TARGET);
   assert.equal(plan.config.version, "1.0.1");
+});
+
+test("unified builds default to local mode and cannot inherit legacy update channels", () => {
+  const options = parseOptions(["--unified"]);
+  assert.equal(options.apiBaseUrl, "");
+  const config = bundleConfig(options, "web");
+  assert.equal(config.identifier, "com.personal-assistant.desktop");
+  assert.equal(config.mainBinaryName, "privateagent");
+  assert.deepEqual(config.plugins.updater.endpoints, []);
+  assert.throws(() => parseOptions(["--unified", "--release", "--version", "1.0.0"]), /independent/);
+  const signed = parseOptions(["--unified", "--release", "--version", "1.0.0", "--update-url", "https://updates.example.com/unified/latest.json"]);
+  assert.deepEqual(Object.keys(updateManifest(signed, "app-setup.exe", "fixture").platforms), ["unified-windows-x86_64"]);
+  const preview = parseOptions(["--unified", "--preview-installer", "--version", "1.0.0"]);
+  assert.deepEqual(bundleConfig(preview, "web").plugins.updater.endpoints, []);
 });
