@@ -6,9 +6,11 @@
 
 本说明及工具已在开发机验证，尚未在生产服务器完成首次切换。服务器之前加载的是虚拟环境内的安装副本，因此目前不能只执行 `git pull` 就认为运行代码已更新。先完成下述一次性整理。
 
+> 2026-08-31 服务器历史核对：收到 `server-history-20260831-104455.bundle`，其中服务器分支头为 `b7fccfbd3bfb68458fd85b5d7445b815d58e227e`。该提交已经合并服务器补丁 `43b63c0` 与远端 `1496153`，其完整 Git 文件树与 `1496153` 相同。此次收拢保留这两个服务器提交和开发机后续的更新工具，不改变业务代码。该服务器不必重复下述冲突处理和 bundle 导出；在包含 `b7fccfb` 的开发分支推送后，先 fetch 并确认可快进，再进入第 2 节。bundle 仅证明导出时的已提交历史，不证明当前工作区干净、服务已切换或生产验收通过。
+
 ## 1. 一次性整理服务器 Git 历史
 
-服务器曾有本地提交 `43b63c0`，并在合并远端时出现三个冲突。是否已完成合并，以服务器当前输出为准，不重复发起 merge。
+服务器曾有本地提交 `43b63c0`，并在合并远端时出现三个冲突；本次 bundle 已证实它们在 `b7fccfb` 中完成合并。以下步骤保留用于尚未完成整理的其他副本；已经包含该提交的服务器不重复发起 merge。
 
 在服务器 root 会话检查：
 
@@ -309,3 +311,15 @@ git diff --check
 Ruff、差异空白检查通过；入口返回 `SOURCE_ENTRY_OK`；最后一条用源码目录自身验证摘要工具返回 `PYTHON_FILES_MATCH`，**不是核对了服务器安装包**。指南的 Bash 命令块逐个通过 `bash -n`，PowerShell 块通过语法解析；新增本地链接有效。文档索引中原有 `vue-desktop-code/`、`webfront-code/` 目录链接缺失，已对照原 HEAD 确认为既有问题，本次未扩展修复。
 
 未在 Linux 生产环境运行 `update-connected-server.py check/apply`，未重启服务器、验证真实 `/proc`/Supervisor 交互、执行生产迁移或付费模型推理。运行账号、进程参数、超时信号及停服失败等使用隔离替身验证；真实 Git 快进、分叉和本地修改保护使用临时远端仓库验证。生产切换与真实账号验收仍按本指南由操作者完成。
+
+### 服务器历史收拢后的复验
+
+2026-08-31，在独立工作区合并服务器 `b7fccfb`；合并索引与开发机 `8645bdb` 的文件树一致，没有需要补入的业务代码。随后仅更新本文中的已确认状态。以下命令在无环境文件的 `E:\Program\Agent\.tmp\server-history-validation-20260831` 执行：
+
+```powershell
+$env:PYTHONPATH='E:\Program\Agent\.tmp\server-history-merge-20260831\src'
+$env:PYTHONDONTWRITEBYTECODE='1'
+& E:/Program/Agent/.venv/Scripts/python.exe -m pytest E:/Program/Agent/.tmp/server-history-merge-20260831/tests/unit/test_desktop_model.py E:/Program/Agent/.tmp/server-history-merge-20260831/tests/unit/test_admin_logs.py E:/Program/Agent/.tmp/server-history-merge-20260831/tests/unit/test_connected_runtime_repair.py E:/Program/Agent/.tmp/server-history-merge-20260831/tests/unit/test_connected_server_workflow.py E:/Program/Agent/.tmp/server-history-merge-20260831/tests/test_server_entry.py E:/Program/Agent/.tmp/server-history-merge-20260831/tests/unit/test_connected_backend_bundle.py --noconftest -p no:cacheprovider --basetemp E:/Program/Agent/.tmp/server-history-pytest-20260831-1 -q -rs
+```
+
+结果：**113 passed，3 skipped**；跳过项均为 Windows 真实符号链接权限限制，两个 Alembic 警告与前次相同。相关模型/日志模块及更新工具的 Ruff、Git 差异检查通过，源码入口检查返回 `SOURCE_ENTRY_OK`。bundle 验证及完整文件树比较通过；原开发目录未提交的 `README.md` 保持原样，未包含在此次合并中。这些结果仍不代表服务器已切换或真实账号验收通过。
