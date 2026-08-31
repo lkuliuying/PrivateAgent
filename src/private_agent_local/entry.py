@@ -2,28 +2,40 @@
 import argparse
 import asyncio
 import os
+import sys
 from pathlib import Path
 
 import uvicorn
 
 from private_agent_local.app import create_app
-from private_agent_local.cloud import Cloud
+from private_agent_local.connections import ConnectionProfile
+from private_agent_local.local_models import model_service
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--server", required=True)
+    parser.add_argument("--port", type=int)
+    parser.add_argument("--stdio", action="store_true")
+    parser.add_argument("--server")
+    parser.add_argument("--connection-json")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
+    if args.stdio == (args.port is not None):
+        parser.error("必须选择 --stdio 或旧版兼容参数 --port 之一")
     nonce = os.environ.pop("PRIVATEAGENT_LOCAL_NONCE", "")
     server = None
 
     def shutdown():
         server.should_exit = True
 
-    app = create_app(data_dir=args.data_dir, cloud=Cloud(args.server), nonce=nonce, port=args.port, shutdown=shutdown)
+    profile = ConnectionProfile.model_validate_json(args.connection_json) if args.connection_json else ConnectionProfile(mode="cloud", server_origin=args.server)
+    app = create_app(data_dir=args.data_dir, cloud=model_service(profile), nonce=nonce, port=args.port or 0, shutdown=shutdown)
+    if args.stdio:
+        from private_agent_local.ipc import serve as serve_pipe
+        asyncio.run(serve_pipe(app, nonce, sys.stdin.buffer, sys.stdout.buffer,
+                              parent_alive=(lambda: parent_alive(args.parent_pid)) if args.parent_pid else None))
+        return
     server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port, access_log=False,
                                           log_level="warning", loop="asyncio", http="h11", ws="none",
                                           timeout_graceful_shutdown=5))

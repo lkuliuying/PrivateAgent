@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-from urllib.parse import urlsplit
 
 import httpx
+
+from .connections import service_origin
 
 MODEL_ERROR_MESSAGES = {
     "not_configured": "当前账号未配置默认模型，请在模型配置中选择并启用模型",
@@ -32,11 +33,7 @@ class CloudError(Exception):
 
 class Cloud:
     def __init__(self, origin: str, *, transport=None):
-        url = urlsplit(origin)
-        if (url.scheme != "https" or not url.hostname or url.username or url.password
-                or url.path not in {"", "/"} or url.query or url.fragment):
-            raise ValueError("云端地址必须是不带路径和凭据的 HTTPS 源站")
-        self.origin = origin.rstrip("/")
+        self.origin = service_origin(origin)
         self.client = httpx.AsyncClient(base_url=self.origin, timeout=190,
                                        follow_redirects=False, trust_env=False, transport=transport)
 
@@ -85,6 +82,13 @@ class Cloud:
     async def complete(self, token: str, profile: str | None, request: dict) -> dict:
         return await self.request("POST", "/desktop/model/complete", token,
                                   {"model_profile_id": profile, "request": request})
+
+    async def profiles(self, token: str) -> list[dict]:
+        response = await self.request("GET", "/agent-model-profiles?enabled_only=true", token)
+        if not isinstance(response, list) or len(response) > 1000:
+            raise CloudError(502, "服务器模型配置响应无效")
+        keys = {"id", "model_name", "context_tokens", "is_default", "enabled"}
+        return [{key: item[key] for key in keys if key in item} for item in response if isinstance(item, dict)]
 
     async def close(self):
         await self.client.aclose()

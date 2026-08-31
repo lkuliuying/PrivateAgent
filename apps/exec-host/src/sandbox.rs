@@ -325,7 +325,7 @@ impl Drop for JobObject {
 
 // Host 级 Job：启动时对自身 Assign 一次，之后所有子进程经继承自动
 // 入 Job——消除对子进程的逐次 Assign（N1b/N1c 实证：本机沙箱链拒绝
-// 嵌套分配且会终止被分配子进程）。自分配被拒则降级 taskkill 兜底。
+// 嵌套分配且会终止被分配子进程）。自分配被拒则由宿主在握手前失败关闭。
 static HOST_JOB: std::sync::OnceLock<Option<JobObject>> = std::sync::OnceLock::new();
 
 pub fn host_job() -> &'static Option<JobObject> {

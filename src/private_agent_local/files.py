@@ -154,22 +154,31 @@ def apply_patch(root: Path, preview: dict, content: str) -> dict:
     return {**preview, "applied": True, "verified": True}
 
 
-async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> dict:
+def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
     if not args or len(args) > 40 or any(len(arg) > 2000 or "\x00" in arg for arg in args):
         raise ValueError("命令参数超出限制")
-    executable = shutil.which(args[0])
+    environment_names = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "HOME",
+                         "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "NUMBER_OF_PROCESSORS"}
+    env = {key: value for key, value in os.environ.items() if key.upper() in environment_names}
+    if getattr(sys, "frozen", False):
+        bundle = str(getattr(sys, "_MEIPASS", ""))
+        env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep)
+                                      if part and (not bundle or not part.casefold().startswith(bundle.casefold())))
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    executable = shutil.which(args[0], path=env.get("PATH", ""))
     if not executable:
         raise ValueError("本机尚未安装该命令所需的开发工具")
     command = [executable, *args[1:]]
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
-        # Never let cmd metacharacters enter its command string.
+        # 批处理只接收已经验证的参数，拒绝 shell 元字符。
         if any(any(c in arg for c in '&|<>^%!\r\n"') for arg in args[1:]):
             raise ValueError("命令参数包含不支持的 shell 字符")
-        command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", subprocess.list2cmdline([executable, *args[1:]])]
-    environment_names = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "HOME",
-                         "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "NUMBER_OF_PROCESSORS"}
-    env = {key: value for key, value in os.environ.items() if key.upper() in environment_names}
-    env["GIT_TERMINAL_PROMPT"] = "0"
+        command = [env.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", subprocess.list2cmdline([executable, *args[1:]])]
+    return command, env
+
+
+async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> dict:
+    command, env = prepare_process(args)
     job = None
     dll_search = nullcontext()
     if os.name == "nt":
@@ -177,9 +186,6 @@ async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> d
         job = ProcessJob()
         if getattr(sys, "frozen", False):
             dll_search = system_dll_search()
-            bundle = str(getattr(sys, "_MEIPASS", ""))
-            env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep)
-                                          if part and (not bundle or not part.casefold().startswith(bundle.casefold())))
     process = None
     try:
         with dll_search:

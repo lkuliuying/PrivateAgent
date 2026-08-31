@@ -80,7 +80,7 @@ async def run_local_request(tmp_path, provider: StrictProvider, permission_mode:
     (root / "other.txt").write_text("needle", encoding="utf-8")
     store = Store(tmp_path / "state.sqlite3")
     project = store.create("project", {"status": "active", "authorized": True})
-    workspace = store.create("workspace", {"project_id": project["id"], "root_path": str(root)})
+    workspace = store.create("workspace", {"project_id": project["id"], "root_path": str(root), "status": "active"})
     binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
     session = store.create("session", binding)
     async with httpx.AsyncClient(transport=httpx.MockTransport(provider.handle)) as client:

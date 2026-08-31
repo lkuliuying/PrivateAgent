@@ -30,6 +30,8 @@ class Server:
             if token == "Bearer invalid":
                 return httpx.Response(401)
             return httpx.Response(200, json={"id": 1 if token == "Bearer account-a" else 2})
+        if request.url.path == "/agent-model-profiles":
+            return httpx.Response(200, json=[{"id": "test-profile", "model_name": "test", "context_tokens": 32000, "is_default": True, "enabled": True}])
         assert request.url.path == "/desktop/model/complete"
         if not self.responses:
             await self.block.wait()
@@ -171,7 +173,7 @@ async def test_loopback_nonce_origin_identity_and_validation(tmp_path):
         preflight = await client.options("/projects", headers={"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,x-privateagent-local"})
         assert preflight.status_code == 200
         caps = (await client.get("/capabilities")).json()
-        assert caps["project_bound_runs_enabled"] and not caps["coding_full_access_supported"]
+        assert caps["project_bound_runs_enabled"] and caps["coding_full_access_supported"]
     finally:
         await close(app, client)
 

@@ -8,16 +8,18 @@ import json
 import time
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import files
+from . import files, migration
 from .cloud import Cloud, CloudError
+from .local_models import LocalModels
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import Store, now
 
@@ -28,11 +30,11 @@ CAPABILITIES = {
     "patch_workflow_enabled": True, "command_workflow_enabled": True,
     "http_workflow_enabled": False, "sql_readonly_workflow_enabled": False,
     "agent_runs_api_enabled": True, "coding_agent_ui_enabled": True,
-    "project_bound_runs_enabled": True, "coding_workspace_auto_approve": False,
-    "coding_full_access_supported": False, "coding_full_access_audit": False,
-    "coding_full_access_revoke": False, "coding_context_budget_enabled": False,
+    "project_bound_runs_enabled": True, "coding_workspace_auto_approve": True,
+    "coding_full_access_supported": True, "coding_full_access_audit": True,
+    "coding_full_access_revoke": True, "coding_context_budget_enabled": True,
     "coding_execution_detail_enabled": True, "coding_worktree_enabled": False,
-    "coding_diagnostic_commands_enabled": False, "product_timezone": "Asia/Shanghai",
+    "coding_diagnostic_commands_enabled": True, "product_timezone": "Asia/Shanghai",
 }
 
 
@@ -48,6 +50,10 @@ class ProjectInput(Input):
 class Binding(Input):
     project_id: int = Field(gt=0)
     workspace_id: int = Field(gt=0)
+
+
+class ProjectContextInput(Input):
+    project_id: int | None = Field(default=None, gt=0)
 
 
 class SessionInput(Binding):
@@ -66,14 +72,23 @@ class AttachmentInput(Input):
 class RunInput(Binding):
     session_id: int = Field(gt=0)
     message: str = Field(min_length=1, max_length=32000)
-    permission_mode: Literal["readonly", "confirm"] = "confirm"
+    permission_mode: Literal["readonly", "confirm", "workspace", "full_access"] = "confirm"
     model_profile_id: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     client_request_id: str | None = Field(default=None, max_length=100)
 
 
+class HistorySource(Input):
+    path: str = Field(min_length=1, max_length=4096)
+
+
+class HistoryImport(HistorySource):
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    mappings: dict[str, str] = Field(default_factory=dict, max_length=1000)
+
+
 class DesktopState:
-    def __init__(self, data_dir: Path, cloud: Cloud):
+    def __init__(self, data_dir: Path, cloud: Cloud | LocalModels):
         self.data_dir, self.cloud = data_dir, cloud
         self.runtime: Runtime | None = None
         self.lock = asyncio.Lock()
@@ -94,6 +109,7 @@ class DesktopState:
                 previous, self.runtime = self.runtime, None
                 await previous.close()
             self.runtime = Runtime(Store(self.data_dir / account / "projects.sqlite3"), self.cloud, token)
+            self.runtime.owner_id = identity["id"]
             self.verified_at = time.monotonic()
             return self.runtime
 
@@ -105,7 +121,7 @@ class DesktopState:
             self.verified_at = 0
 
 
-def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutdown=None) -> FastAPI:
+def create_app(*, data_dir: Path, cloud: Cloud | LocalModels, nonce: str, port: int = 0, shutdown=None) -> FastAPI:
     if len(nonce) < 32:
         raise ValueError("本机启动凭证过短")
     state = DesktopState(data_dir, cloud)
@@ -137,7 +153,7 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["GET", "POST", "PATCH"],
+    app.add_middleware(CORSMiddleware, allow_origins=ORIGINS, allow_methods=["GET", "POST", "PATCH", "DELETE"],
                        allow_headers=["Authorization", "Content-Type", "X-PrivateAgent-Local"])
 
     @app.exception_handler(KeyError)
@@ -173,6 +189,38 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     async def health():
         return {"status": "ok", "mode": "desktop-local", "protocol": 1}
 
+    @app.get("/")
+    async def info():
+        return {"mode": "desktop-local", "version": "unified", "optional_services": not isinstance(cloud, LocalModels)}
+
+    @app.post("/auth/local")
+    async def enter_local():
+        if not isinstance(cloud, LocalModels):
+            raise HTTPException(404, "此连接需要服务器账号登录")
+        await state.bind(cloud.token)
+        return {"access_token": cloud.token, "token_type": "bearer",
+                "expires_at": None, "user": cloud.user}
+
+    @app.get("/auth/me")
+    async def local_user(request: Request):
+        if not isinstance(cloud, LocalModels):
+            raise HTTPException(404)
+        return await cloud.identity(bearer(request))
+
+    @app.post("/auth/logout")
+    async def local_logout():
+        if not isinstance(cloud, LocalModels):
+            raise HTTPException(404)
+        await state.clear()
+        cloud.revoke_identity()
+        return {"logged_out": True}
+
+    @app.get("/agent-model-profiles")
+    async def local_profiles(request: Request, runtime: Runtime = Depends(local)):
+        if not getattr(cloud, "local_inference", False):
+            raise HTTPException(404)
+        return await cloud.profiles(bearer(request))
+
     @app.post("/identity")
     async def identity(request: Request):
         await state.bind(bearer(request))
@@ -193,6 +241,45 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.get("/capabilities")
     async def capabilities():
         return CAPABILITIES
+
+    @app.get("/local-history/export")
+    async def export_local_history(runtime: Runtime = Depends(local)):
+        archive = migration.archive_sqlite(runtime.store.path, authority=cloud.origin, owner_id=runtime.owner_id)
+        content = migration.encode_archive(archive)
+        return Response(content, media_type="application/json", headers={"Content-Disposition": 'attachment; filename="privateagent-history.json"'})
+
+    @app.post("/local-history/preview")
+    async def preview_local_history(data: HistorySource, runtime: Runtime = Depends(local)):
+        return migration.preview_history(data.path, authority=cloud.origin, owner_id=runtime.owner_id)
+
+    @app.post("/local-history/import")
+    async def import_local_history(data: HistoryImport, runtime: Runtime = Depends(local)):
+        return migration.apply_history(runtime.store, data.path, data.sha256, data.mappings, authority=cloud.origin, owner_id=runtime.owner_id)
+
+    @app.get("/local-history/imports")
+    async def imported_history(runtime: Runtime = Depends(local)):
+        return [json.loads(row[0]) for row in runtime.store.db.execute("SELECT data FROM history_imports ORDER BY rowid DESC")]
+
+    @app.post("/local-history/imports/{import_id}/rollback")
+    async def rollback_local_history(import_id: str, runtime: Runtime = Depends(local)):
+        return migration.rollback_history(runtime.store, import_id)
+
+    @app.get("/local-history/imports/{import_id}/records")
+    async def imported_records(import_id: str, kind: str, offset: int = Query(default=0, ge=0), limit: int = Query(default=50, ge=1, le=100), runtime: Runtime = Depends(local)):
+        if kind not in migration.FIELDS:
+            raise ValueError("未知历史类型")
+        row = runtime.store.db.execute("SELECT archive FROM history_imports WHERE id=?", (import_id,)).fetchone()
+        if not row:
+            raise KeyError("迁移记录不存在")
+        records = runtime.store._unpack(row[0])["records"][kind]
+        return {"total": len(records), "items": records[offset:offset + limit], "readonly": True}
+
+    @app.get("/local-history/imports/{import_id}/export")
+    async def export_imported_history(import_id: str, runtime: Runtime = Depends(local)):
+        row = runtime.store.db.execute("SELECT archive FROM history_imports WHERE id=?", (import_id,)).fetchone()
+        if not row:
+            raise KeyError("迁移记录不存在")
+        return Response(migration.encode_archive(runtime.store._unpack(row[0])), media_type="application/json")
 
     def workspace(runtime, project):
         candidates = [w for w in runtime.store.list("workspace") if w["project_id"] == project["id"]]
@@ -273,6 +360,11 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         files.apply_patch(root, preview, text)
         return {"rel_path": relative, "name": source.name, "language": source.suffix.lstrip(".") or None}
 
+    @app.post("/projects/context")
+    async def activate_project(data: ProjectContextInput, runtime: Runtime = Depends(local)):
+        await runtime.activate_project(data.project_id)
+        return {"project_id": data.project_id}
+
     def session_list(runtime, project_id=None, kind=None, q="", limit=1000):
         values = [s for s in runtime.store.list("session") if not s.get("archived_at")
                   and (project_id is None or s["project_id"] == project_id)
@@ -297,11 +389,49 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.get("/sessions/{session_id}/messages")
     async def messages(session_id: int, runtime: Runtime = Depends(local)):
         runtime.store.get("session", session_id)
-        return [m for m in reversed(runtime.store.list("message")) if m["session_id"] == session_id]
+        return list(reversed(runtime.store.list("message", session_id=session_id)))
 
     @app.get("/sessions/{session_id}/latest-agent-run")
     async def latest_run(session_id: int, runtime: Runtime = Depends(local)):
         return {"run_id": runtime.store.get("session", session_id)["last_run_id"]}
+
+    @app.get("/sessions/{session_id}/context-budget")
+    async def get_context_budget(session_id: int, model_profile_id: str | None = Query(default=None, max_length=128),
+                                 runtime: Runtime = Depends(local)):
+        return await runtime.context_budget(session_id, model_profile_id)
+
+    def grant_state(session, grant):
+        return {"active": grant is not None, "grant_id": grant["id"] if grant else None,
+                "session_id": session["id"], "project_id": session["project_id"],
+                "granted_at": grant["granted_at"] if grant else None, "expires_at": grant["expires_at"] if grant else None}
+
+    @app.get("/sessions/{session_id}/full-access-grant")
+    async def full_access_state(session_id: int, runtime: Runtime = Depends(local)):
+        session = runtime.store.get("session", session_id)
+        grant = runtime.store.active_grant(session_id)
+        if grant and grant["project_id"] != session["project_id"]:
+            runtime.store.revoke_grant(grant["id"], "project_switch")
+            grant = None
+        return grant_state(session, grant)
+
+    @app.post("/sessions/{session_id}/full-access-grant", status_code=201)
+    async def grant_full_access(session_id: int, runtime: Runtime = Depends(local)):
+        session = runtime.store.get("session", session_id)
+        if runtime.project_context_set and runtime.active_project_id != session["project_id"]:
+            raise ValueError("项目已切换，请重新选择当前会话后授权")
+        runtime.root(session["project_id"], session["workspace_id"])
+        grant = runtime.store.active_grant(session_id)
+        if grant and grant["project_id"] != session["project_id"]:
+            await runtime.revoke_grant(grant["id"])
+            grant = None
+        if grant is None:
+            expires = (datetime.now(timezone.utc) + timedelta(hours=4)).isoformat()
+            grant = runtime.store.grant(session_id, session["project_id"], expires)
+        return grant_state(session, grant)
+
+    @app.delete("/full-access-grants/{grant_id}")
+    async def revoke_full_access(grant_id: str, runtime: Runtime = Depends(local)):
+        return {"revoked": await runtime.revoke_grant(grant_id)}
 
     @app.patch("/sessions/{session_id}/title")
     async def rename_session(session_id: int, data: TitleInput, runtime: Runtime = Depends(local)):
@@ -318,7 +448,7 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
 
     @app.get("/agent-runs/{run_id}")
     async def get_run(run_id: str, runtime: Runtime = Depends(local)):
-        return snapshot(runtime.store.run(run_id))
+        return snapshot(runtime.store.run_state(run_id))
 
     @app.post("/agent-runs/{run_id}/cancel")
     async def cancel(run_id: str, runtime: Runtime = Depends(local)):
@@ -327,8 +457,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.get("/agent-runs/{run_id}/events")
     async def events(run_id: str, after_sequence: int = Query(default=0, ge=0),
                      limit: int = Query(default=1000, ge=1, le=1000), runtime: Runtime = Depends(local)):
-        run = runtime.store.run(run_id)
-        return {"items": [e for e in run["events"] if e["sequence"] > after_sequence][:limit], "last_sequence": run["last_event_sequence"]}
+        run = runtime.store.run_state(run_id)
+        return {"items": runtime.store.events(run_id, after_sequence, limit), "last_sequence": run["last_event_sequence"]}
 
     @app.get("/agent-runs/{run_id}/events/stream")
     async def stream(run_id: str, after_sequence: int = Query(default=0, ge=0), runtime: Runtime = Depends(local)):
@@ -337,8 +467,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         async def iterate():
             cursor = after_sequence
             while state.runtime is runtime:
-                run = runtime.store.run(run_id)
-                for event in run["events"]:
+                run = runtime.store.run_state(run_id)
+                for event in runtime.store.events(run_id, cursor):
                     if event["sequence"] > cursor:
                         yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                         cursor = event["sequence"]

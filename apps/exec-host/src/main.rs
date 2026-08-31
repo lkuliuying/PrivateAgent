@@ -145,6 +145,7 @@ struct ExecutionState {
 struct Host {
     writer: Mutex<BufWriter<std::io::Stdout>>,
     executions: Mutex<HashMap<String, ExecutionState>>,
+    notification_sequences: Mutex<HashMap<String, u64>>,
 }
 
 fn host() -> &'static Host {
@@ -152,6 +153,7 @@ fn host() -> &'static Host {
     HOST.get_or_init(|| Host {
         writer: Mutex::new(BufWriter::new(std::io::stdout())),
         executions: Mutex::new(HashMap::new()),
+        notification_sequences: Mutex::new(HashMap::new()),
     })
 }
 
@@ -177,8 +179,17 @@ impl Host {
             "trace_id": null}}));
     }
 
-    fn notify(&self, event: Value) {
+    fn notify(&self, mut event: Value) {
+        // 序号分配与发送共用锁，避免 stdout/stderr 两线程把事件倒序写入管道。
+        let mut sequences = self.notification_sequences.lock().unwrap();
+        let id = event.get("execution_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let sequence = sequences.entry(id.clone()).or_insert(0);
+        event["sequence"] = json!(*sequence);
+        *sequence += 1;
         self.send(&event);
+        if matches!(event.get("notification").and_then(Value::as_str), Some("execution/exited" | "execution/failed")) {
+            sequences.remove(&id);
+        }
     }
 
     fn health(&self) -> Value {
@@ -197,10 +208,13 @@ impl Host {
 fn main() {
     // 启动期自分配 Job：此后所有子进程经继承自动入 Job；
     // KILL_ON_JOB_CLOSE 在进程退出时兜底清理孤儿孙进程。
-    // 自分配被拒（沙箱链嵌套限制）→ 降级 taskkill /T 树级联。
+    // 无法建立进程树生命周期边界时拒绝启动，不依赖正常退出后的 PID 猜测清理。
     #[cfg(windows)]
     {
-        let _ = sandbox::host_job();
+        if sandbox::host_job().is_none() {
+            eprintln!("无法建立执行宿主 Job，命令执行已关闭");
+            std::process::exit(78);
+        }
     }
     let host = host();
     let stdin = std::io::stdin();
@@ -252,6 +266,9 @@ fn handle_start(request_id: u64, message: &Value) {
         return fail("bad_params", "缺少 execution_id");
     };
     let execution_id = execution_id_value.to_string();
+    if host.executions.lock().unwrap().contains_key(&execution_id) {
+        return fail("duplicate_execution", "执行 ID 已存在，不允许重复启动");
+    }
     let mode = params.get("mode").and_then(Value::as_str).unwrap_or("argv");
     if mode != "argv" && mode != "pty" {
         return fail("unsupported_mode", "仅支持 argv/pty 模式");
@@ -486,14 +503,15 @@ fn handle_start(request_id: u64, message: &Value) {
         }));
         host.respond(request_id, json!({ "accepted": true }));
 
+        let mut readers = Vec::new();
         for (stream, reader) in spawned.drain_streams() {
-            spawn_stream_reader(
+            readers.push(spawn_stream_reader(
                 execution_id.clone(),
                 stream,
                 reader,
                 Arc::clone(&sequence),
                 Arc::clone(&output_tail),
-            );
+            ));
         }
         spawn_waiter(
             execution_id,
@@ -501,6 +519,7 @@ fn handle_start(request_id: u64, message: &Value) {
             cancel_requested,
             sequence,
             Instant::now() + Duration::from_millis(timeout_ms),
+            readers,
         );
     }
 }
@@ -617,7 +636,7 @@ fn spawn_stream_reader(
     mut pipe: Box<dyn Read + Send>,
     sequence: Arc<AtomicU64>,
     output_tail: Arc<Mutex<OutputTail>>,
-) {
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut pending: Vec<u8> = Vec::with_capacity(DELTA_LIMIT);
         let mut chunk = [0u8; READ_CHUNK_SIZE];
@@ -640,7 +659,7 @@ fn spawn_stream_reader(
         if !pending.is_empty() {
             emit_delta(&execution_id, stream, &pending, &sequence);
         }
-    });
+    })
 }
 
 fn emit_delta(execution_id: &str, stream: &str, data: &[u8], sequence: &AtomicU64) {
@@ -662,6 +681,7 @@ fn spawn_waiter(
     cancel_requested: Arc<AtomicBool>,
     sequence: Arc<AtomicU64>,
     deadline: Instant,
+    readers: Vec<std::thread::JoinHandle<()>>,
 ) {
     std::thread::spawn(move || {
         let mut timed_out = false;
@@ -683,6 +703,21 @@ fn spawn_waiter(
             };
             match outcome {
                 Some(Ok(exit_code)) => {
+                    // 先排空输出再公布退出；后代持续持有管道时失败关闭，避免丢失末尾结果。
+                    let drain_deadline = Instant::now() + Duration::from_secs(1);
+                    while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < drain_deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    if readers.iter().any(|reader| !reader.is_finished()) {
+                        host().notify(json!({
+                            "notification": "execution/failed", "execution_id": execution_id,
+                            "sequence": sequence.fetch_add(1, Ordering::SeqCst),
+                            "error": {"code": "output_incomplete", "message": "进程退出但输出管道未关闭，请检查后台子进程",
+                                      "retryable": false, "details": null, "trace_id": null}
+                        }));
+                        host().executions.lock().unwrap().remove(&execution_id);
+                        break;
+                    }
                     let was_cancelled = cancel_requested.load(Ordering::SeqCst);
                     if was_cancelled {
                         host().notify(json!({

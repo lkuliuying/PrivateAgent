@@ -31,6 +31,7 @@ from .api.routes_chat import router as chat_router
 from .api.routes_coding import router as coding_router
 from .api.routes_commands import router as commands_router
 from .api.routes_context_budget import router as context_budget_router
+from .api.routes_desktop_history import router as desktop_history_router
 from .api.routes_desktop_model import router as desktop_model_router
 from .api.routes_diagnostics import router as diagnostics_router
 from .api.routes_document_collections import router as document_collections_router
@@ -261,6 +262,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(admin_logs_router)
 app.include_router(desktop_model_router)
+app.include_router(desktop_history_router)
 app.include_router(health_router)
 app.include_router(http_profiles_router)
 app.include_router(sql_profiles_router)
