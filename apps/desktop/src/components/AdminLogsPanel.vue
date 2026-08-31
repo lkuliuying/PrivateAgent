@@ -4,7 +4,7 @@ import {
   getServiceLogSources, getServiceLogTail,
   type ServiceLogSource, type ServiceLogTail,
 } from '../services/adminLogs';
-import { PRODUCT_TIMEZONE } from '../services/timeDisplay';
+import { formatAdminDateTime, PRODUCT_TIMEZONE } from '../services/timeDisplay';
 
 const sources = ref<ServiceLogSource[]>([]);
 const selected = ref('');
@@ -21,12 +21,7 @@ let disposed = false;
 let timer: ReturnType<typeof setInterval> | undefined;
 
 const content = computed(() => snapshot.value?.lines.join('\n') || '当前范围没有日志记录');
-const updatedAt = computed(() => {
-  if (!snapshot.value) return '--';
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: PRODUCT_TIMEZONE, dateStyle: 'short', timeStyle: 'medium', hour12: false,
-  }).format(new Date(snapshot.value.generated_at));
-});
+const updatedAt = computed(() => formatAdminDateTime(snapshot.value?.generated_at));
 
 /** 切换日志类型会取消旧请求，避免旧日志覆盖当前选择。 */
 async function loadTail(): Promise<void> {
@@ -121,7 +116,7 @@ onBeforeUnmount(() => {
     <div v-else-if="busy" class="admin-logs__empty" role="status">正在读取日志…</div>
     <pre v-else class="admin-logs__output" aria-label="日志内容" tabindex="0">{{ content }}</pre>
     <footer class="admin-logs__footer">
-      <span>更新时间：{{ updatedAt }}（上海时间）</span>
+      <span>更新时间：{{ updatedAt }}（{{ PRODUCT_TIMEZONE }}）</span>
       <span v-if="snapshot?.truncated">已截取最近记录；更早日志未返回</span>
       <span v-if="snapshot">{{ snapshot.lines.length }} 行 · 扫描 {{ Math.ceil(snapshot.scanned_bytes / 1024) }} KB</span>
     </footer>

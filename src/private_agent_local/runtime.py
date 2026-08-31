@@ -122,9 +122,16 @@ class Runtime:
         messages = [{"role": "system", "content": SYSTEM}]
         messages.extend({"role": m["role"], "content": m["content"][:16000]} for m in history)
         messages.append({"role": "user", "content": message})
-        definitions = [{"name": name, "description": description, "input_schema": model.model_json_schema()}
-                       for name, (model, description) in TOOLS.items()
-                       if run["permission_mode"] != "readonly" or name not in WRITE_TOOLS]
+        definitions = []
+        for name, (model, description) in TOOLS.items():
+            if run["permission_mode"] == "readonly" and name in WRITE_TOOLS:
+                continue
+            schema = model.model_json_schema()
+            # 严格模型工具协议要求所有属性必填；仅调整云端声明，保留本机参数默认值。
+            schema["required"] = list(schema["properties"])
+            for field_schema in schema["properties"].values():
+                field_schema.pop("default", None)
+            definitions.append({"name": name, "description": description, "input_schema": schema})
         try:
             run["status"] = "running"
             self.event(run, "run.started", permission_mode=run["permission_mode"])
@@ -170,7 +177,7 @@ class Runtime:
         except asyncio.CancelledError:
             self.finish(run, "cancelled", "cancelled", "任务已取消；已完成的文件修改会保留")
         except CloudError as error:
-            self.finish(run, "failed", "cloud_unavailable", str(error))
+            self.finish(run, "failed", error.code, str(error))
         except Exception:
             self.finish(run, "failed", "local_execution_failed", "本机执行失败，请检查项目状态后重试")
         finally:

@@ -1,7 +1,6 @@
 """Stateless cloud gateway: authenticated inference only, no project execution."""
 import asyncio
 import json
-from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -117,8 +116,9 @@ async def test_disconnected_desktop_cancels_provider_request(monkeypatch):
 async def test_resolver_uses_existing_profile_gateway_without_persisting_a_run(monkeypatch):
     from personal_assistant.api import routes_agent_runs
     from personal_assistant.core import model_profiles
+    from personal_assistant.core.models import ModelProfile
 
-    profile = SimpleNamespace(id="default-profile", enabled=True, is_default=True, reasoning_efforts=["low"])
+    profile = ModelProfile(id="default-profile", enabled=True, is_default=True, reasoning_efforts_json=["low"])
 
     class Profiles:
         def __init__(self, db):
@@ -148,3 +148,97 @@ async def test_resolver_uses_existing_profile_gateway_without_persisting_a_run(m
     with pytest.raises(HTTPException) as error:
         await routes.resolve_gateway(None, invalid)
     assert error.value.status_code == 422
+    assert len(captured) == 1
+
+    supported = routes.DesktopModelRequest.model_validate({"model_profile_id": "default-profile", "request": {
+        "messages": [{"role": "user", "content": "test"}], "reasoning_effort": "low"}})
+    assert await routes.resolve_gateway(None, supported) == "resolved"
+    assert len(captured) == 2
+    profile.reasoning_efforts_json = None
+    with pytest.raises(HTTPException) as error:
+        await routes.resolve_gateway(None, supported)
+    assert error.value.status_code == 422
+    assert len(captured) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("profiles", [[], [dict(enabled=False, is_default=True)], [dict(enabled=True, is_default=False)]])
+async def test_desktop_without_enabled_default_does_not_use_legacy_provider(monkeypatch, profiles):
+    from personal_assistant.api import routes_agent_runs
+    from personal_assistant.core import model_profiles
+    from personal_assistant.core.models import ModelProfile
+
+    class Profiles:
+        def __init__(self, db):
+            pass
+
+        async def list(self):
+            return [ModelProfile(id=str(index), **data) for index, data in enumerate(profiles)]
+
+    async def unexpected_gateway(db, run):
+        pytest.fail("缺少默认模型时不得调用旧全局模型")
+
+    monkeypatch.setattr(model_profiles, "ModelProfileService", Profiles)
+    monkeypatch.setattr(routes_agent_runs, "_model_gateway_for_run", unexpected_gateway)
+    payload = routes.DesktopModelRequest.model_validate({"request": {"messages": [{"role": "user", "content": "test"}]}})
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as error:
+        await routes.resolve_gateway(None, payload)
+    assert error.value.status_code == 422
+    assert error.value.headers["X-Model-Error-Code"] == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_invalid_model_configuration_is_safe_and_does_not_start_inference(monkeypatch):
+    from fastapi import HTTPException
+
+    from personal_assistant.api import routes_agent_runs
+
+    async def invalid_configuration(db, run):
+        raise ValueError("fixture-secret-url-or-setting")
+
+    monkeypatch.setattr(routes_agent_runs, "_model_gateway_for_run", invalid_configuration)
+    payload = routes.DesktopModelRequest.model_validate({
+        "model_profile_id": "fixture", "request": {"messages": [{"role": "user", "content": "test"}]},
+    })
+    with pytest.raises(HTTPException) as error:
+        await routes.resolve_gateway(None, payload)
+    assert error.value.status_code == 422
+    assert error.value.headers["X-Model-Error-Code"] == "invalid_configuration"
+    assert "fixture-secret" not in error.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code,status", [
+    ("missing_api_key", 503), ("unauthorized", 502), ("model_not_found", 422),
+    ("unsupported_capability", 422), ("provider_rejected_request", 502),
+    ("rate_limited", 429), ("network_error", 503), ("provider_unavailable", 503),
+    ("timeout", 504), ("invalid_response", 502), ("unknown-secret-code", 502),
+])
+async def test_gateway_preserves_safe_error_classification_and_releases_slot(monkeypatch, code, status):
+    from structlog.testing import capture_logs
+
+    from personal_assistant.llm.contracts import ModelGatewayError
+
+    app, gateway = app_for(monkeypatch)
+    slots = asyncio.Semaphore(1)
+    monkeypatch.setattr(routes, "_inference_slots", slots)
+
+    async def fail(request, *, cancellation):
+        raise ModelGatewayError("fixture-provider-secret", code=code, provider="fixture-provider-secret")
+
+    monkeypatch.setattr(gateway, "complete", fail)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://server.test",
+                                 headers={"Authorization": "Bearer test-account"}) as client:
+        with capture_logs() as logs:
+            response = await client.post("/desktop/model/complete", json={
+                "request": {"messages": [{"role": "user", "content": "fixture-prompt-secret"}]},
+            })
+        expected_code = "provider_error" if code == "unknown-secret-code" else code
+        assert response.status_code == status
+        assert response.headers["X-Model-Error-Code"] == expected_code
+        assert response.headers["Cache-Control"] == "no-store"
+        assert isinstance(response.json()["detail"], str)
+        assert "secret" not in response.text + str(response.headers) + json.dumps(logs)
+        assert logs[0]["error_code"] == expected_code
+        assert slots._value == 1

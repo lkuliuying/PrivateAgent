@@ -28,7 +28,7 @@ import {
   WarningOutlined,
 } from "@ant-design/icons-vue";
 
-import { PRODUCT_TIMEZONE } from "../services/timeDisplay";
+import { formatAdminDateTime, PRODUCT_TIMEZONE } from "../services/timeDisplay";
 import AdminLogsPanel from "../components/AdminLogsPanel.vue";
 import { useAdminStore } from "../stores/admin";
 import { useAuthStore } from "../stores/auth";
@@ -129,16 +129,6 @@ const auditColumns = [
   { title: "耗时", dataIndex: "duration_ms", key: "duration_ms", width: 90 },
   { title: "来源 IP", dataIndex: "client_ip", key: "client_ip", width: 140 },
 ];
-
-function formatDate(value: string | null): string {
-  if (!value) return "--";
-  return new Intl.DateTimeFormat("zh-CN", {
-    timeZone: PRODUCT_TIMEZONE,
-    dateStyle: "medium",
-    timeStyle: "medium",
-    hour12: false,
-  }).format(new Date(value));
-}
 
 async function refreshOverview(showFeedback = false): Promise<void> {
   try {
@@ -336,7 +326,7 @@ onBeforeUnmount(() => {
       </div>
       <div class="admin-topbar__actions">
         <span v-if="overview" class="admin-topbar__time">
-          更新于 {{ formatDate(overview.generated_at) }}
+          更新于 {{ formatAdminDateTime(overview.generated_at) }}（{{ PRODUCT_TIMEZONE }}）
         </span>
         <a-button
           class="admin-topbar__button"
@@ -534,7 +524,7 @@ onBeforeUnmount(() => {
             >
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key === 'created_at'">
-                  {{ formatDate(record.created_at) }}
+                  {{ formatAdminDateTime(record.created_at) }}
                 </template>
                 <template v-else-if="column.key === 'actor_user_id'">
                   {{ record.actor_user_id ?? "--" }}
@@ -617,7 +607,7 @@ onBeforeUnmount(() => {
                 />
               </template>
               <template v-else-if="column.key === 'last_login_at'">
-                {{ formatDate(record.last_login_at) }}
+                {{ formatAdminDateTime(record.last_login_at) }}
               </template>
               <template v-else-if="column.key === 'actions'">
                 <div class="admin-user-actions">

@@ -18,7 +18,29 @@ describe('AdminLogsPanel', () => {
     ]);
     api.getServiceLogTail.mockResolvedValue(tail('supervisor', 'POST /projects 422'));
   });
-  afterEach(() => { vi.useRealTimers(); });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); });
+
+  it.each([
+    '2026-08-30T16:08:04Z',
+    '2026-08-30T16:08:04.123456',
+    '2026-08-31T00:08:04+08:00',
+  ])('将日志快照更新时间 %s 统一显示为上海时间', async generatedAt => {
+    vi.stubEnv('TZ', 'Asia/Shanghai');
+    api.getServiceLogTail.mockResolvedValue({
+      ...tail('supervisor', '2026-08-30 16:08:04 原始日志内容'),
+      generated_at: generatedAt,
+    });
+    const wrapper = mount(AdminLogsPanel);
+    try {
+      await flushPromises();
+      expect(wrapper.get('.admin-logs__footer').text()).toContain(
+        '更新时间：2026年8月31日 00:08:04（Asia/Shanghai）'
+      );
+      expect(wrapper.get('pre').text()).toBe('2026-08-30 16:08:04 原始日志内容');
+    } finally {
+      wrapper.unmount();
+    }
+  });
 
   it('shows log text safely and only requests logs when mounted', async () => {
     api.getServiceLogTail.mockResolvedValue(tail('supervisor', '<img src=x onerror=alert(1)>'));

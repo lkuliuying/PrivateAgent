@@ -266,3 +266,58 @@ async def test_cloud_refuses_redirect_and_unsafe_origin():
         assert calls == ["cloud.example"]
     finally:
         await cloud.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,code,expected_code,message", [
+    (502, "unauthorized", "model_unauthorized", "模型供应商认证失败"),
+    (503, "missing_api_key", "model_missing_api_key", "未配置 API Key"),
+    (422, "not_configured", "model_not_configured", "未配置默认模型"),
+    (429, "rate_limited", "model_rate_limited", "请求限额"),
+    (504, "timeout", "model_timeout", "响应超时"),
+    (502, "fixture-secret-code", "cloud_unavailable", "HTTP 502"),
+    (422, "", "cloud_unavailable", "模型或请求参数不可用"),
+    (401, "unauthorized", "cloud_auth_required", "重新登录"),
+    (403, "", "cloud_auth_required", "重新登录"),
+    (404, "", "cloud_interface_missing", "升级服务器"),
+])
+async def test_cloud_uses_only_safe_error_codes_without_reading_error_body(status, code, expected_code, message):
+    class UnreadableBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            pytest.fail("错误正文可能包含凭据或代理页面，不应读取")
+            yield b"fixture-secret-body"
+
+    def handler(request):
+        return httpx.Response(status, headers={"X-Model-Error-Code": code}, stream=UnreadableBody())
+
+    cloud = Cloud("https://cloud.example", transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(CloudError) as error:
+            await cloud.complete("fixture-token", None, {})
+        assert error.value.code == expected_code
+        assert message in str(error.value)
+        assert "fixture" not in str(error.value)
+        assert error.value.status == ({403: 401, 404: 503}.get(status, status))
+    finally:
+        await cloud.close()
+
+
+@pytest.mark.asyncio
+async def test_model_error_classification_is_preserved_in_local_run_and_events(tmp_path, monkeypatch):
+    app, client, server, root, body = await setup(tmp_path)
+
+    async def fail(token, profile, request):
+        raise CloudError(502, "模型供应商认证失败", code="model_unauthorized")
+
+    monkeypatch.setattr(app.state.desktop.cloud, "complete", fail)
+    try:
+        created = (await client.post("/agent-runs", json=body)).json()
+        run = await until(client, created["id"], TERMINAL)
+        assert run["status"] == "failed"
+        assert run["error_code"] == "model_unauthorized"
+        assert run["error_message"] == "模型供应商认证失败"
+        assert run["tool_call_count"] == 0
+        events = (await client.get(f"/agent-runs/{created['id']}/events")).json()
+        assert events["items"][-1]["payload"]["error_code"] == "model_unauthorized"
+    finally:
+        await close(app, client)

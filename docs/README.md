@@ -2,11 +2,17 @@
 
 这里是项目文档的统一入口。根目录仅保留持续维护的产品、架构、开发和运维文档；阶段性计划、历史材料、版本检查点和二进制参考资料分别归档。
 
-> 文档状态：2026-08-20。`v0.5.0-rc.4` 已作为 Coding Agent 工程基线，当前可进入 `v0.6.0` 开发；自然日观察统一顺延到 `v1.0.0-rc.1` 功能开发完成后执行。检查点文档用于记录当时事实，不等同于正式发布公告。
+> 当前会话接手入口：[共享项目状态记忆](./project-state.md)（2026-08-31）。以下版本阶段说明保留历史，不代表当前联网版或生产部署状态。
+
+> 历史文档状态（2026-08-20）：当时 `v0.5.0-rc.4` 已作为 Coding Agent 工程基线，可进入 `v0.6.0` 开发；自然日观察统一顺延到 `v1.0.0-rc.1` 功能开发完成后执行。检查点文档用于记录当时事实，不等同于正式发布公告。
 
 ## 快速入口
 
+- 会话接手：[共享项目状态记忆](./project-state.md)、[仓库会话约定](../AGENTS.md)
 - 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
+- 本次故障修复：[1.0.3 模型与管理员日志修复总结](./solutions/2026-08-31-privateagent-1-0-3.md)、[服务器修复操作说明](./connected-runtime-1.0.3-repair.md)
+- 后续代码修复：[指令 HTTP 502 与管理员上海时间](./solutions/2026-08-31-model-502-admin-timezone.md)
+- 最新测试安装包：[联网版 1.0.4 手动安装交付记录](./releases/remote-v1.0.4-test.1-20260831.md)（已上传 GitHub 草稿；服务器由维护者更新，未完成生产验收）
 - 使用产品：[使用指南](./usage-guide.md)、[故障排查](./troubleshooting.md)
 - 搭建环境：[部署指南](./deployment-guide.md)、[跨平台说明](./cross-platform.md)
 - 参与开发：[需求说明](./requirements.md)、[目标架构](./target-architecture.md)、[测试指南](./testing-guide.md)、[Coding Agent 重构计划](./coding-agent-refactor-plan.md)
@@ -31,6 +37,7 @@
 | 目录 | 内容 |
 |---|---|
 | [`analysis/`](./analysis/) | 现代化审计、缺口分析等专题分析 |
+| [`solutions/`](./solutions/) | 故障根因、修复方案、验证结果与交付边界 |
 | [`releases/`](./releases/) | 按版本保存开发计划、契约、进度和检查点 |
 | [`archive/`](./archive/) | 已结束阶段计划、旧路线图、历史提示词和工具包 |
 | [`examples/`](./examples/) | 可复制使用的 JSON 配置与评估样例 |
