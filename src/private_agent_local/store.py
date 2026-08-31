@@ -270,6 +270,11 @@ class Store:
         ids = self.db.execute(f"SELECT id FROM runs{clause} ORDER BY rowid DESC").fetchall()
         return [self.run(row[0]) for row in ids]
 
+    def session_run_states(self, session_id: int):
+        """逐条读取会话运行摘要，不加载工具事件与文件正文集合。"""
+        for row in self.db.execute("SELECT data FROM runs WHERE session_id=? ORDER BY rowid DESC", (session_id,)):
+            yield self._unpack(row[0])
+
     def audit(self, kind: str, **data):
         with self.transaction():
             self.db.execute("INSERT INTO audit_events(created_at,kind,data) VALUES (?,?,?)", (now(), kind, encode(data)))

@@ -87,7 +87,7 @@ class Cloud:
         response = await self.request("GET", "/agent-model-profiles?enabled_only=true", token)
         if not isinstance(response, list) or len(response) > 1000:
             raise CloudError(502, "服务器模型配置响应无效")
-        keys = {"id", "model_name", "context_tokens", "is_default", "enabled"}
+        keys = {"id", "model_name", "context_tokens", "is_default", "enabled", "provider", "provider_id", "is_local"}
         return [{key: item[key] for key in keys if key in item} for item in response if isinstance(item, dict)]
 
     async def close(self):

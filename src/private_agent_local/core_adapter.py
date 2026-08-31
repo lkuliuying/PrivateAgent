@@ -31,6 +31,12 @@ class LocalRunAdapter:
             raise self.model_error
         try:
             raw = await self.owner.cloud.complete(self.owner.token, self.run["model_profile_id"], request.model_dump(mode="json"))
+            # 路由元数据只用于本机记录，不扩展共享模型响应契约。
+            selected_profile_id = raw.pop("model_profile_id", None)
+            if selected_profile_id is not None and (not isinstance(selected_profile_id, str)
+                    or not 1 <= len(selected_profile_id) <= 128
+                    or (self.run["model_profile_id"] and self.run["model_profile_id"] != selected_profile_id)):
+                raise ValueError("模型路由与当前运行不一致")
             result = ModelResponse.model_validate(raw)
             if len(result.tool_calls) > 8:
                 raise ValueError("模型工具请求超出限制")
@@ -45,6 +51,13 @@ class LocalRunAdapter:
         if token_count(usage.get("input_tokens")) == 0:
             usage = {}
         self.run["context_usage"] = {key: token_count(usage.get(key)) for key in ("input_tokens", "output_tokens", "cached_tokens")}
+        used, cached = (token_count(usage.get(key)) for key in ("input_tokens", "cached_tokens"))
+        totals = self.run.setdefault("cache_usage", {"input_tokens": 0, "cached_tokens": 0})
+        if used and cached is not None and cached <= used:
+            totals["input_tokens"] += used
+            totals["cached_tokens"] += cached
+        if selected_profile_id:
+            self.run["model_profile_id"] = selected_profile_id
         self.run.update(provider=result.provider, model=result.model)
         return result
 

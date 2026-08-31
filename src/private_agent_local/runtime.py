@@ -19,7 +19,7 @@ from private_agent_core.runtime import AgentRuntime
 
 from . import files, policy
 from .cloud import Cloud
-from .context import context_budget
+from .context import average_cache_hit_percent, context_budget, matches_profile
 from .core_adapter import LocalRunAdapter
 from .executor import run_command
 from .store import Store, now
@@ -108,10 +108,10 @@ class Runtime:
         run = self.store.run_state(session["last_run_id"]) if session.get("last_run_id") else None
         if run and profile:
             # 切换模型后不能把旧模型的上下文用量画到新模型容量上。
-            if ((run.get("model_profile_id") and run["model_profile_id"] != profile.get("id"))
-                    or (profile.get("model_name") and run.get("model") != profile["model_name"])):
+            if not matches_profile(profile, run):
                 run = None
-        return context_budget(profile, run)
+        average = average_cache_hit_percent(profile, self.store.session_run_states(session_id))
+        return context_budget(profile, run, cache_hit_percent=average)
 
     def event(self, run: dict, event_type: str, **payload):
         sequence = len(run["events"]) + 1

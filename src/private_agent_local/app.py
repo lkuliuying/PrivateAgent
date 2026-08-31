@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import files, migration
 from .cloud import Cloud, CloudError
+from .connections import ModelConfig
+from .local_models import LocalInference
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import Store, now
 
@@ -75,6 +77,11 @@ class RunInput(Binding):
     model_profile_id: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     client_request_id: str | None = Field(default=None, max_length=100)
+
+
+class LocalModelDiscoveryInput(Input):
+    protocol: Literal["ollama", "openai"]
+    base_url: str = Field(min_length=1, max_length=500)
 
 
 class HistorySource(Input):
@@ -189,6 +196,15 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         if not getattr(cloud, "local_inference", False):
             raise HTTPException(404, "当前使用服务器模型")
         return await cloud.profiles(runtime.token)
+
+    @app.post("/local-models/discover")
+    async def discover_local_models(data: LocalModelDiscoveryInput, runtime: Runtime = Depends(local)):
+        config = ModelConfig(model_protocol=data.protocol, model_endpoint=data.base_url)
+        models = LocalInference(config)
+        try:
+            return {"models": await models.discover()}
+        finally:
+            await models.close()
 
     @app.get("/health")
     async def health():

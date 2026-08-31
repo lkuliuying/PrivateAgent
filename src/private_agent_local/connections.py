@@ -18,7 +18,7 @@ def service_origin(value: str) -> str:
 class ModelConfig(BaseModel):
     """模型设置与服务器账号身份独立，不接受服务器地址或本机账号模式。"""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    inference_mode: Literal["service", "local"] = "service"
+    inference_mode: Literal["auto", "service", "local"] = "auto"
     model_protocol: Literal["ollama", "openai"] = "ollama"
     model_endpoint: str = "http://127.0.0.1:11434"
     model_name: str = Field(default="", max_length=200)
