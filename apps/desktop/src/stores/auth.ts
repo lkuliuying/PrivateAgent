@@ -9,6 +9,8 @@ import {
   registerAccount,
 } from "../services/auth";
 import type { AuthUser } from "../types/auth";
+import { bindLocalIdentity, clearLocalIdentity, usesLocalExecutor } from "../services/localExecutor";
+import { resetCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
 
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<AuthUser | null>(null);
@@ -25,6 +27,7 @@ export const useAuthStore = defineStore("auth", () => {
     loading.value = true;
     try {
       user.value = await getCurrentAccount();
+      await bindLocalIdentity(getAccessToken()!);
       return true;
     } catch {
       clearSession();
@@ -43,8 +46,12 @@ export const useAuthStore = defineStore("auth", () => {
     try {
       const response = await loginAccount(payload);
       setAccessToken(response.access_token);
+      await bindLocalIdentity(response.access_token);
       user.value = response.user;
       initialized.value = true;
+    } catch (error) {
+      clearSession();
+      throw error;
     } finally {
       loading.value = false;
     }
@@ -60,8 +67,12 @@ export const useAuthStore = defineStore("auth", () => {
     try {
       const response = await registerAccount(payload);
       setAccessToken(response.access_token);
+      await bindLocalIdentity(response.access_token);
       user.value = response.user;
       initialized.value = true;
+    } catch (error) {
+      clearSession();
+      throw error;
     } finally {
       loading.value = false;
     }
@@ -70,6 +81,7 @@ export const useAuthStore = defineStore("auth", () => {
   async function logout(): Promise<void> {
     loading.value = true;
     try {
+      await clearLocalIdentity();
       await logoutAccount();
     } finally {
       clearSession();
@@ -78,6 +90,8 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   function clearSession(): void {
+    if (usesLocalExecutor()) resetCodingWorkspace();
+    void clearLocalIdentity().catch(() => undefined);
     clearAccessToken();
     user.value = null;
     initialized.value = true;

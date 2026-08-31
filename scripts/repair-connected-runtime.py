@@ -30,6 +30,7 @@ FILES = {
         None, {
             "6cc944005325654c85a5c0c3ded180bcd1ea37f88b9ac1db3c674f17d47383b5",
             "e978968f313921c32de9c2a15b29505a222e4985830dd29866848f60109aaf55",
+            "9280dcbddcd64ef5ef74f44075973b35c99a7a84dd769e09dccc0aa308777d06",
         },
     ),
     "core/admin_logs.py": (
@@ -76,7 +77,8 @@ def check(source, package):
         desired, current = read_regular(src), read_regular(target)
         if desired is None or digest(desired) not in new_hashes:
             raise ValueError(f"源码摘要不匹配，停止：{relative}")
-        if relative == "api/routes_desktop_model.py":
+        if (relative == "api/routes_desktop_model.py"
+                and digest(desired) == "6cc944005325654c85a5c0c3ded180bcd1ea37f88b9ac1db3c674f17d47383b5"):
             # 已交接源码仍有旧字段名时，只在待安装副本中应用已验证的一行修复。
             desired = desired.replace(b"profile.reasoning_efforts or []", b"profile.reasoning_efforts_json or []")
             if digest(desired) != "e978968f313921c32de9c2a15b29505a222e4985830dd29866848f60109aaf55":
@@ -216,15 +218,34 @@ def rollback(package, backup):
     return "ROLLED_BACK_AND_VERIFIED"
 
 
+def validate_backup_dir(backup):
+    """备份只能放在部署根目录的独立一级目录，避免覆盖源码或运行环境。"""
+    if not backup.is_absolute() or backup.parent != BACKUP.parent:
+        raise ValueError("备份必须是部署根目录下的独立一级绝对路径")
+    if backup.resolve() != backup or backup.is_symlink():
+        raise ValueError("拒绝链接或非规范备份路径")
+    for protected in (SOURCE, PACKAGE):
+        if backup == protected or backup in protected.parents or protected in backup.parents:
+            raise ValueError("备份路径不能与源码或安装目录重叠")
+    if backup.exists() and not backup.is_dir():
+        raise ValueError("备份路径已存在且不是目录")
+    return backup
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("check", "apply", "rollback"))
+    parser.add_argument(
+        "--backup-dir", type=Path, default=BACKUP,
+        help=f"备份目录，必须为 {BACKUP.parent} 下的独立一级绝对路径（默认：%(default)s）",
+    )
     args = parser.parse_args()
     if sys.platform != "linux":
         parser.exit(1, "STOP: 此工具只能在已核对的 Linux 服务器执行。\n")
     if args.action != "check" and os.geteuid() != 0:
         parser.exit(1, "STOP: 写入及备份需要 root；应用本身仍使用 privateagent 运行。\n")
     try:
+        backup = validate_backup_dir(args.backup_dir)
         if args.action == "check":
             records = check(SOURCE, PACKAGE)
             result = {
@@ -232,9 +253,9 @@ def main():
                 "files": [{"path": record["path"], "change": digest(record["before"]) != digest(record["after"])} for record in records],
             }
         elif args.action == "apply":
-            result = {"status": apply(SOURCE, PACKAGE, BACKUP), "backup": str(BACKUP)}
+            result = {"status": apply(SOURCE, PACKAGE, backup), "backup": str(backup)}
         else:
-            result = {"status": rollback(PACKAGE, BACKUP), "backup": str(BACKUP)}
+            result = {"status": rollback(PACKAGE, backup), "backup": str(backup)}
     except (OSError, ValueError, SyntaxError, KeyError, TypeError, subprocess.TimeoutExpired) as error:
         # 不输出操作系统异常正文；源码校验错误只含固定文件名和受控提示。
         message = str(error) if type(error) is ValueError else type(error).__name__

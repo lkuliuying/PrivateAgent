@@ -111,7 +111,7 @@ describe("AdminPage layout", () => {
     vi.unstubAllEnvs();
   });
 
-  it("only exposes system and user modules and keeps the create form inside its modal", async () => {
+  it("exposes system, user and log modules and keeps the create form inside its modal", async () => {
     const pinia = createPinia();
     setActivePinia(pinia);
     const authStore = useAuthStore();
@@ -130,10 +130,11 @@ describe("AdminPage layout", () => {
     await flushPromises();
 
     const modules = wrapper.findAll(".admin-nav__item");
-    expect(modules).toHaveLength(2);
+    expect(modules).toHaveLength(3);
     expect(modules.map((item) => item.text())).toEqual([
       "系统运行监控与操作审计",
       "用户账号、角色与访问状态",
+      "日志Supervisor 与 Nginx",
     ]);
     expect(wrapper.get(".admin-content__heading h1").text()).toBe("系统总览");
     const healthPanel = wrapper.get(".admin-panel--health");
@@ -184,7 +185,7 @@ describe("AdminPage layout", () => {
       try {
         await flushPromises();
         expect(wrapper.get(".admin-topbar__time").text()).toBe(
-          "更新于 2026年8月31日 00:49:02"
+          "更新于 2026年8月31日 00:49:02（Asia/Shanghai）"
         );
         expect(wrapper.get('[data-time-field="created_at"]').text()).toBe(
           "2026年8月30日 14:49:00"
@@ -199,4 +200,38 @@ describe("AdminPage layout", () => {
       }
     }
   );
+
+  it("按 UTC 解释旧服务无时区时间，并在管理员各模块显示上海时间", async () => {
+    vi.stubEnv("TZ", "Asia/Shanghai");
+    const overview = await adminService.getAdminOverview();
+    adminService.getAdminOverview.mockResolvedValue({
+      ...overview,
+      generated_at: "2026-08-31T00:08:04.123456",
+    });
+    adminService.getAuditLogs.mockResolvedValue({
+      total: 1,
+      results: [{ id: 1, created_at: "2026-08-30T16:08:04" }],
+    });
+    adminService.getAdminUsers.mockResolvedValue({
+      total: 1,
+      results: [{ id: 1, last_login_at: "2026-08-30T16:08:04" }],
+    });
+
+    const wrapper = mountAdminPage();
+    try {
+      await flushPromises();
+      expect(wrapper.get(".admin-topbar__time").text()).toBe(
+        "更新于 2026年8月31日 08:08:04（Asia/Shanghai）"
+      );
+      expect(wrapper.get('[data-time-field="created_at"]').text()).toBe(
+        "2026年8月31日 00:08:04"
+      );
+      await wrapper.findAll(".admin-nav__item")[1].trigger("click");
+      expect(wrapper.get('[data-time-field="last_login_at"]').text()).toBe(
+        "2026年8月31日 00:08:04"
+      );
+    } finally {
+      wrapper.unmount();
+    }
+  });
 });

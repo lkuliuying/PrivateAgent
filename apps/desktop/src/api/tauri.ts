@@ -223,8 +223,8 @@ export async function cmdCheckForUpdates(): Promise<UpdateInfo | null> {
 }
 
 /** Download and install the available update; caller must relaunch afterwards. */
-export async function cmdDownloadAndInstallUpdate(): Promise<void> {
-  return invoke<void>("download_and_install_update");
+export async function cmdDownloadAndInstallUpdate(expectedVersion?: string): Promise<void> {
+  return invoke<void>("download_and_install_update", { expectedVersion });
 }
 
 /** Relaunch the desktop app after config or updater changes. */

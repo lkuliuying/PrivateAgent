@@ -1,19 +1,25 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onBeforeUnmount, ref } from "vue";
 import {
   cmdCheckForUpdates,
   cmdDownloadAndInstallUpdate,
   cmdRelaunchApp,
   type UpdateInfo,
 } from "../api";
+import { useNotifications } from "../stores/notifications";
 
+const { confirm } = useNotifications();
 const checking = ref(false);
+const confirming = ref(false);
 const installing = ref(false);
+const busy = computed(() => checking.value || confirming.value || installing.value);
 const update = ref<UpdateInfo | null>(null);
 const upToDate = ref(false);
 const error = ref("");
 const errorDetail = ref("");
 const note = ref("");
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
 
 type ErrorKind = "network" | "manifest" | "signature" | "unknown";
 
@@ -71,7 +77,7 @@ function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; de
     kind = "manifest";
   }
   const messages: Record<ErrorKind, string> = {
-    network: "无法连接更新服务器。请检查网络后重试（自动更新需访问 GitHub Release）。",
+    network: "无法连接更新服务器或下载安装包。请检查网络后重试。",
     manifest: "更新清单 (latest.json) 无效或未找到。可能是发布源尚未部署或版本号配置错误。",
     signature: "更新签名验证失败。安装包可能被篡改或签名密钥不匹配，已拒绝更新。",
     unknown: "操作失败，请稍后重试或手动下载新版本。",
@@ -80,6 +86,7 @@ function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; de
 }
 
 async function check() {
+  if (busy.value || disposed) return;
   checking.value = true;
   update.value = null;
   upToDate.value = false;
@@ -88,6 +95,7 @@ async function check() {
   note.value = "";
   try {
     const res = await cmdCheckForUpdates();
+    if (disposed) return;
     if (res) {
       update.value = res;
     } else {
@@ -103,14 +111,29 @@ async function check() {
 }
 
 async function install() {
+  if (busy.value || disposed || !update.value) return;
+  const version = update.value.version;
+  confirming.value = true;
+  try {
+    const accepted = await confirm({
+      title: `安装 PrivateAgent v${version}？`,
+      message: "下载并验证签名后，客户端将退出并安装新版。请先保存输入并结束正在进行的任务。",
+      impact: "更新当前客户端，不会重启远程服务器。安装完成后重新打开应用。",
+      confirmLabel: "下载并安装",
+      cancelLabel: "稍后更新",
+    });
+    if (!accepted || disposed) return;
+  } finally {
+    confirming.value = false;
+  }
   installing.value = true;
   note.value = "";
   error.value = "";
   errorDetail.value = "";
   try {
-    // 1) download + install (signature is verified here; sidecar is killed first by Rust).
+    // Rust verifies the complete download before stopping a sidecar or installing.
     try {
-      await cmdDownloadAndInstallUpdate();
+      await cmdDownloadAndInstallUpdate(version);
     } catch (e) {
       const c = classifyUpdateError(e);
       // Manifest was already validated during check(); an install-time failure is a
@@ -139,16 +162,16 @@ async function install() {
 <template>
   <div class="update-box">
     <div class="row">
-      <button class="ghost-btn" @click="check" :disabled="checking">
+      <button class="ghost-btn" @click="check" :disabled="busy">
         {{ checking ? "检查中…" : "检查更新" }}
       </button>
       <button
         v-if="update"
         class="primary-btn"
         @click="install"
-        :disabled="installing"
+        :disabled="busy"
       >
-        {{ installing ? "安装中…" : `下载并安装 v${update.version}` }}
+        {{ installing ? "下载、验证并安装中…" : `下载并安装 v${update.version}` }}
       </button>
     </div>
 

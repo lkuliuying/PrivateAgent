@@ -449,7 +449,12 @@ export function createCodingWorkspaceStore(
   };
 }
 
-const codingWorkspaceStore = createCodingWorkspaceStore();
+let codingWorkspaceStore = createCodingWorkspaceStore();
+
+/** A new account must never inherit project IDs, first-turn drafts or late responses. */
+export function resetCodingWorkspace(): void {
+  codingWorkspaceStore = createCodingWorkspaceStore();
+}
 
 export function useCodingWorkspace(): CodingWorkspaceStore {
   return codingWorkspaceStore;

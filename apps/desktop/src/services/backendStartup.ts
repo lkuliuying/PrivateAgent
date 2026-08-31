@@ -1,8 +1,10 @@
 import { reactive, readonly } from "vue";
+import { startLocalExecutor, usesLocalExecutor } from "./localExecutor";
 
 import { getApiInfo } from "../api";
 import {
   hasConfiguredRemoteApi,
+  ensureApiBase,
   setApiBase,
   setApiBaseDefault,
 } from "../api/http";
@@ -45,6 +47,7 @@ async function waitForApi(attempts: number): Promise<boolean> {
 async function startDesktopBackend(): Promise<void> {
   if (hasConfiguredRemoteApi() || !isDesktopRuntime()) {
     setApiBaseDefault();
+    if (hasConfiguredRemoteApi() && usesLocalExecutor()) await startLocalExecutor(await ensureApiBase());
     return;
   }
 
