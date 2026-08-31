@@ -18,6 +18,8 @@ from . import __version__
 from .api.audit import RequestAuditMiddleware, security_cleanup_loop
 from .api.routes_activities import router as activities_router
 from .api.routes_admin import router as admin_router
+from .api.routes_admin_logs import router as admin_logs_router
+from .api.routes_desktop_model import router as desktop_model_router
 from .api.routes_agent_runs import agent_run_coordinator
 from .api.routes_agent_runs import router as agent_runs_router
 from .api.routes_agent_tasks import router as agent_tasks_router
@@ -257,6 +259,8 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(admin_logs_router)
+app.include_router(desktop_model_router)
 app.include_router(health_router)
 app.include_router(http_profiles_router)
 app.include_router(sql_profiles_router)
