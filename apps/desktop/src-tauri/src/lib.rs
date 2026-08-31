@@ -19,6 +19,7 @@
 mod credential_prompt;
 mod credentials;
 mod local_executor;
+mod server;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -2008,7 +2009,7 @@ pub fn run() {
             prompt_sql_profile_secret,
             check_dependencies,
             test_connections,
-            start_sidecar,
+            server::account_server_origin,
             local_executor::start_local_executor,
             local_executor::stop_local_executor,
             local_executor::local_executor_request,

@@ -7,6 +7,7 @@ import type {
 
 async function responseJson<T>(response: Response): Promise<T> {
   if (response.ok) return response.json() as Promise<T>;
+  if (response.status === 404) throw new Error("服务器未提供账号接口（HTTP 404），请联系管理员检查服务器接口部署");
   const body = await response.json().catch(() => null);
   throw new Error(
     typeof body?.detail === "string" ? body.detail : `请求失败（${response.status}）`
@@ -43,7 +44,7 @@ export async function registerAccount(payload: {
   return responseJson<AuthResponse>(response);
 }
 
-/** 请求注册验证码；SMTP 凭据仅存在于 sidecar 配置中。 */
+/** 请求服务器发送注册验证码，客户端不保存 SMTP 凭据。 */
 export async function sendRegistrationVerificationCode(
   email: string
 ): Promise<EmailVerificationSent> {
@@ -59,12 +60,6 @@ export async function sendRegistrationVerificationCode(
 export async function getCurrentAccount(): Promise<AuthUser> {
   const base = await ensureApiBase();
   return responseJson<AuthUser>(await apiFetch(`${base}/auth/me`));
-}
-
-/** 本地模式使用当前桌面进程的临时身份，不要求云端注册或密码。 */
-export async function enterLocalAccount(): Promise<AuthResponse> {
-  const base = await ensureApiBase();
-  return responseJson<AuthResponse>(await apiFetch(`${base}/auth/local`, { method: "POST" }));
 }
 
 export async function logoutAccount(): Promise<void> {

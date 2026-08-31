@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { apiFetch, ensureApiBase } from "../api/http";
-import { isLocalConnection } from "../services/connectionProfile";
 import { useNotifications } from "../stores/notifications";
 
 interface Preview { sha256: string; counts: Record<string, number>; projects: { id: number; name: string; root_path: string }[]; warnings: string[] }
@@ -17,7 +16,6 @@ const selectedImport = ref("");
 const selectedKind = ref("agent_tasks");
 const offset = ref(0);
 const notify = useNotifications();
-const local = isLocalConnection();
 
 async function request<T>(url: string, body?: object): Promise<T> {
   const base = await ensureApiBase();
@@ -93,7 +91,7 @@ async function download(server = false, importId?: string): Promise<void> {
     <div class="actions">
       <button :disabled="busy" @click="chooseFile">选择旧 SQLite / 历史 JSON</button>
       <button :disabled="busy" @click="download(false)">导出当前工作记录</button>
-      <button v-if="!local" :disabled="busy" @click="download(true)">导出旧完整后端历史</button>
+      <button :disabled="busy" @click="download(true)">导出旧完整后端历史</button>
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
     <template v-if="preview">

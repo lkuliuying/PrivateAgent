@@ -1,87 +1,28 @@
-import { getApiConnection } from "./tauri";
 import { clearAccessToken, getAccessToken } from "../auth/session";
 import { fetchLocalProject, isLocalProjectPath, usesLocalExecutor } from "../services/localExecutor";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getConnectionProfile } from "../services/connectionProfile";
 
 let API_BASE: string | null = null;
-let API_TOKEN: string | null = null;
+/** 保留既有查询接口；当前客户端的业务账号始终由服务器提供。 */
+export function hasConfiguredRemoteApi(): boolean { return true; }
 
-function normalizeRemoteApi(value: string): string {
-  if (!value) throw new Error("服务器地址不能为空");
-  let url: URL;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("服务器地址必须是完整的 HTTP(S) 地址");
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("远程 API 仅支持 HTTP(S)");
-  }
-  if (url.username || url.password) {
-    throw new Error("服务器地址不能包含用户名或密码");
-  }
-  if (url.search || url.hash) {
-    throw new Error("服务器地址不能包含查询参数或片段");
-  }
-  const loopback = ["127.0.0.1", "localhost", "::1"].includes(url.hostname);
-  if (import.meta.env.PROD && url.protocol !== "https:" && !loopback) {
-    throw new Error("生产环境远程 API 必须使用 HTTPS");
-  }
-  return value.replace(/\/+$/, "");
-}
-
-function configuredRemoteApi(): string | null {
-  const profile = getConnectionProfile();
-  if (profile) return profile.mode === "local" ? "http://127.0.0.1" : profile.server_origin;
-  const value = String(import.meta.env.VITE_API_BASE_URL || "").trim();
-  return value ? normalizeRemoteApi(value) : null;
-}
-
-/** 运行时选择账号服务；本机模式的虚拟源站只用于路由，不发起直接网络请求。 */
-export function hasConfiguredRemoteApi(): boolean {
-  return configuredRemoteApi() !== null;
-}
-
-/**
- * Resolve backend API base.
- * - Desktop package: use the port negotiated by the Rust sidecar.
- * - Browser/dev mode: fall back to the manually started backend.
- */
+/** 地址缺失时明确失败，禁止登录请求回退到本机执行器或默认端口。 */
 export async function ensureApiBase(): Promise<string> {
   if (API_BASE) return API_BASE;
-  const remote = configuredRemoteApi();
-  if (remote) {
-    API_BASE = remote;
-    API_TOKEN = null;
-    return API_BASE;
+  getConnectionProfile();
+  const origin = isTauri()
+    ? await invoke<string>("account_server_origin")
+    : import.meta.env.DEV ? String(import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000") : "";
+  let url: URL;
+  try { url = new URL(origin); } catch { throw new Error("无法读取内置账号服务，请重新安装客户端或联系管理员"); }
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if ((url.protocol !== "https:" && !(import.meta.env.DEV && !isTauri() && loopback && url.protocol === "http:"))
+      || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error("内置账号服务地址无效，请联系管理员");
   }
-  try {
-    const connection = await getApiConnection();
-    if (connection) {
-      API_BASE = `http://127.0.0.1:${connection.port}`;
-      API_TOKEN = connection.token;
-      return API_BASE;
-    }
-  } catch {
-    // Tauri command failures fall back to the dev backend so browser mode remains usable.
-  }
-  API_BASE = "http://127.0.0.1:8000";
-  API_TOKEN = import.meta.env.VITE_API_TOKEN || null;
+  API_BASE = url.origin;
   return API_BASE;
-}
-
-/** Set backend port returned by start_sidecar and bypass cached negotiation. */
-export function setApiBase(port: number, token: string): void {
-  API_BASE = `http://127.0.0.1:${port}`;
-  API_TOKEN = token;
-}
-
-/** Fall back to the default manual backend used in dev mode. */
-export function setApiBaseDefault(): void {
-  API_BASE = configuredRemoteApi() || "http://127.0.0.1:8000";
-  API_TOKEN = API_BASE.startsWith("http://127.0.0.1:")
-    ? import.meta.env.VITE_API_TOKEN || null
-    : null;
 }
 
 function targetsConfiguredApi(input: RequestInfo | URL): boolean {
@@ -101,7 +42,7 @@ function targetsConfiguredApi(input: RequestInfo | URL): boolean {
   }
 }
 
-/** Fetch through the local API boundary with this process's bearer token. */
+/** 仅项目执行接口进入本机管道，账号和管理接口始终请求服务器，本机模型仅接管模型清单。 */
 export async function apiFetch(
   input: RequestInfo | URL,
   init: RequestInit = {}
@@ -110,10 +51,9 @@ export async function apiFetch(
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
   new Headers(init.headers).forEach((value, key) => headers.set(key, value));
   const accessToken = getAccessToken();
-  const authorizationToken = accessToken || API_TOKEN;
   const isApiRequest = targetsConfiguredApi(input);
-  if (authorizationToken && isApiRequest && !headers.has("Authorization")) {
-    headers.set("Authorization", `Bearer ${authorizationToken}`);
+  if (accessToken && isApiRequest && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${accessToken}`);
   }
   const url = new URL(input instanceof Request ? input.url : input.toString(), `${API_BASE}/`);
   let response: Response;
@@ -123,7 +63,7 @@ export async function apiFetch(
       : { ...init, headers };
     response = await fetchLocalProject(url.pathname + url.search, requestInit);
   } else {
-    response = await fetch(input, { ...init, headers });
+    response = await fetch(input, { ...init, headers, redirect: "error" });
   }
   if (response.status === 401 && accessToken && accessToken === getAccessToken() && isApiRequest) {
     clearAccessToken();
@@ -132,8 +72,7 @@ export async function apiFetch(
   return response;
 }
 
-/** Clear cached base so the next request negotiates again. */
+/** 清除源站缓存，由下一次请求重新读取内置服务器。 */
 export function resetApiBase(): void {
   API_BASE = null;
-  API_TOKEN = null;
 }

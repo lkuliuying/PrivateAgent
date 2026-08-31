@@ -16,7 +16,7 @@ struct Process {
     input: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     broken: Arc<AtomicBool>,
-    origin: String,
+    model_config_json: String,
 }
 
 #[derive(Default)]
@@ -70,16 +70,15 @@ fn terminate_owned_tree(child: &mut Child) {
 pub(crate) fn start_local_executor(
     app: AppHandle,
     state: State<'_, LocalExecutorState>,
-    server_origin: String,
-    connection_profile: Option<Value>,
+    model_config: Value,
 ) -> Result<LocalConnection, String> {
-    let config = connection_profile.unwrap_or_else(|| json!({"mode": "cloud", "server_origin": server_origin}));
-    let config_json = serde_json::to_string(&config).map_err(|_| "连接配置无效")?;
-    if config_json.len() > 8192 { return Err("连接配置超过大小限制".into()); }
+    let model_json = serde_json::to_string(&model_config).map_err(|_| "模型配置无效")?;
+    if !model_config.is_object() || model_json.len() > 4096 { return Err("模型配置无效".into()); }
+    let server_origin = crate::server::ACCOUNT_SERVER_ORIGIN;
     let mut guard = state.0.lock().map_err(|_| "本机执行器状态不可用")?;
     if let Some(process) = guard.as_mut() {
         if process.child.lock().map_err(|_| "无法检查本机执行器")?.try_wait().map_err(|_| "无法检查本机执行器")?.is_none() {
-            if process.origin != config_json || process.broken.load(Ordering::Acquire) {
+            if process.model_config_json != model_json || process.broken.load(Ordering::Acquire) {
                 return Err("运行时状态已改变，请先停止或重启客户端".into());
             }
             return Ok(LocalConnection { transport: "stdio", protocol: 2 });
@@ -95,7 +94,7 @@ pub(crate) fn start_local_executor(
         return Err("安装包缺少本机执行器，请重新安装完整客户端".into());
     }
     let mut command = Command::new(executable);
-    command.args(["--stdio", "--connection-json", &config_json,
+    command.args(["--stdio", "--server", server_origin, "--model-json", &model_json,
                   "--parent-pid", &std::process::id().to_string()])
         .arg("--data-dir").arg(&data).current_dir(&data)
         .env_clear().env("PRIVATEAGENT_LOCAL_NONCE", token)
@@ -139,7 +138,7 @@ pub(crate) fn start_local_executor(
         fail_pending(&reader_pending);
         if let Ok(mut process) = reader_child.lock() { terminate_owned_tree(&mut process); }
     });
-    *guard = Some(Process { child, input, pending, broken, origin: config_json });
+    *guard = Some(Process { child, input, pending, broken, model_config_json: model_json });
     Ok(LocalConnection { transport: "stdio", protocol: 2 })
 }
 

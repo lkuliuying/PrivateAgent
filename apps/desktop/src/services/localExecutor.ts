@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ApiConnection } from "../api/tauri";
-import { getConnectionProfile, isLocalConnection, usesLocalInference } from "./connectionProfile";
+import { getConnectionProfile, usesLocalInference } from "./connectionProfile";
 import { getAccessToken } from "../auth/session";
 import { requestPrivateRuntime } from "./privateTransport";
 
@@ -11,22 +11,22 @@ let identityQueue: Promise<void> = Promise.resolve();
 let projectContextQueue: Promise<void> = Promise.resolve();
 
 export function usesLocalExecutor(): boolean {
-  return getConnectionProfile() !== null || import.meta.env.VITE_LOCAL_EXECUTOR === "true";
+  return isTauri() || import.meta.env.VITE_LOCAL_EXECUTOR === "true";
 }
 
 /** 本机项目、运行及授权接口不得回退到服务器文件系统。 */
 export function isLocalProjectPath(path: string): boolean {
-  return isLocalConnection() || (usesLocalInference() && /^\/agent-model-profiles(\/|$)/.test(path))
-    || /^\/(projects|sessions|agent-runs|full-access-grants|local-history|capabilities|chat)(\/|$)/.test(path);
+  if (path === "/agent-model-profiles" && usesLocalInference()) return true;
+  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|capabilities|chat)(\/|$)/.test(path);
 }
 
-export async function startLocalExecutor(serverOrigin: string): Promise<void> {
+export async function startLocalExecutor(): Promise<void> {
   if (!usesLocalExecutor()) return;
   if (starting) return starting;
   starting = (async () => {
     if (!isTauri()) throw new Error("本机文件执行需要安装桌面客户端，不能在浏览器中运行");
     const profile = getConnectionProfile();
-    const result = await invoke<LocalConnection>("start_local_executor", { serverOrigin, connectionProfile: profile });
+    const result = await invoke<LocalConnection>("start_local_executor", { modelConfig: profile });
     if ("transport" in result ? result.transport !== "stdio" || result.protocol !== 2
       : !Number.isInteger(result.port) || result.port < 1 || result.port > 65535 || result.token.length < 32) {
       throw new Error("本机执行器连接信息无效");
@@ -37,7 +37,7 @@ export async function startLocalExecutor(serverOrigin: string): Promise<void> {
         const response = await localRequest("/health", { signal: AbortSignal.timeout(1000) });
         const health = await response.json();
         if (response.ok && health.mode === "desktop-local" && health.protocol === 1) return;
-      } catch { /* The bundled process may still be extracting/starting. */ }
+      } catch { /* 捆绑进程可能仍在解包或启动，按有界次数重试。 */ }
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     }
     throw new Error("本机执行器启动超时，请重试；项目请求不会发送到服务器");

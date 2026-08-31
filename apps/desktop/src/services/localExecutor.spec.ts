@@ -8,9 +8,10 @@ describe("connected desktop API routing", () => {
     vi.resetModules();
     vi.stubEnv("VITE_API_BASE_URL", "https://cloud.example.test");
     vi.stubEnv("VITE_LOCAL_EXECUTOR", "true");
-    host.invoke.mockResolvedValue({ port: 43188, token: "test-local-nonce-".repeat(4) });
+    host.invoke.mockImplementation(async (command: string) => command === "account_server_origin" ? "https://cloud.example.test" : { port: 43188, token: "test-local-nonce-".repeat(4) });
     host.isTauri.mockReturnValue(true);
     window.sessionStorage.clear();
+    window.localStorage.clear();
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -23,7 +24,7 @@ describe("connected desktop API routing", () => {
       new Response(JSON.stringify({ status: "ok", mode: "desktop-local", protocol: 1 }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const local = await import("./localExecutor");
-    await local.startLocalExecutor("https://cloud.example.test");
+    await local.startLocalExecutor();
     const session = await import("../auth/session");
     session.setAccessToken("test-account-session");
     await local.bindLocalIdentity("test-account-session");
@@ -47,12 +48,22 @@ describe("connected desktop API routing", () => {
 
   it("keeps accounts, models and administrator logs on the cloud without the local nonce", async () => {
     const { http, fetchMock } = await setup();
-    for (const path of ["/auth/me", "/agent-model-profiles", "/admin/logs/nginx-error"]) {
+    for (const path of ["/auth/login", "/auth/register", "/auth/email-verification/send", "/auth/logout", "/auth/me", "/agent-model-profiles", "/admin/logs/nginx-error"]) {
       await http.apiFetch(`https://cloud.example.test${path}`);
       const [url, init] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
       expect(url).toBe(`https://cloud.example.test${path}`);
       expect(new Headers(init?.headers).has("X-PrivateAgent-Local")).toBe(false);
     }
+  });
+
+  it("本机模型仅接管模型清单，账号仍请求固定服务器", async () => {
+    const { http, fetchMock } = await setup();
+    const { defaultConnectionProfile, saveConnectionProfile } = await import("./connectionProfile");
+    saveConnectionProfile({ ...defaultConnectionProfile(), inference_mode: "local", model_name: "fixture" });
+    await http.apiFetch("https://cloud.example.test/agent-model-profiles?enabled_only=true");
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43188/agent-model-profiles?enabled_only=true");
+    await http.apiFetch("https://cloud.example.test/auth/login");
+    expect(fetchMock.mock.calls[1][0]).toBe("https://cloud.example.test/auth/login");
   });
 
   it("授权撤销与上下文查询均留在本机执行器", async () => {
@@ -72,14 +83,14 @@ describe("connected desktop API routing", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("preserves Request bodies and keeps the full local edition on its existing backend", async () => {
+  it("保留 Request 正文，旧完整后端开关不能把本机项目发送到服务器", async () => {
     const { http, fetchMock } = await setup();
     await http.apiFetch(new Request("https://cloud.example.test/sessions", { method: "POST", body: '{"title":"任务"}' }));
     const [, init] = fetchMock.mock.calls[0];
     expect(new TextDecoder().decode(init?.body as ArrayBuffer)).toBe('{"title":"任务"}');
     vi.stubEnv("VITE_LOCAL_EXECUTOR", "false");
     await http.apiFetch("https://cloud.example.test/projects");
-    expect(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0]).toBe("https://cloud.example.test/projects");
+    expect(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0]).toBe("http://127.0.0.1:43188/projects");
   });
 
   it("clears the binding on logout and never routes an unrelated origin locally", async () => {

@@ -1,70 +1,54 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-
-import {
-  apiFetch,
-  resetApiBase,
-  setApiBase,
-} from "./http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { apiFetch, resetApiBase } from "./http";
 import { clearAccessToken, setAccessToken } from "../auth/session";
 
-describe("local API authentication", () => {
-  afterEach(() => {
+describe("服务器 API 认证边界", () => {
+  beforeEach(() => {
+    vi.stubEnv("VITE_API_BASE_URL", "https://server.example.test");
+    window.localStorage.clear();
     resetApiBase();
-    clearAccessToken();
-    vi.unstubAllGlobals();
   });
+  afterEach(() => { resetApiBase(); clearAccessToken(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
 
-  it("prefers the logged-in user token over the local service token", async () => {
+  it("将账号令牌发送到配置的服务器，禁止认证重定向", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    setApiBase(43123, "startup-secret");
-    setAccessToken("user-session-secret");
-
-    await apiFetch("http://127.0.0.1:43123/sessions");
-
+    setAccessToken("user-session");
+    await apiFetch("https://server.example.test/auth/me");
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("Authorization")).toBe(
-      "Bearer user-session-secret"
-    );
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer user-session");
+    expect(init.redirect).toBe("error");
   });
-
-  it("adds the per-startup bearer token to local API requests", async () => {
+  it("未登录时不向账号接口附加本机进程令牌", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    setApiBase(43123, "startup-secret");
-
-    await apiFetch("http://127.0.0.1:43123/sessions", { method: "GET" });
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("Authorization")).toBe(
-      "Bearer startup-secret"
-    );
+    vi.stubEnv("VITE_API_TOKEN", "unused-process-token");
+    await apiFetch("https://server.example.test/auth/login", { method: "POST" });
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).has("Authorization")).toBe(false);
   });
-
-  it("does not overwrite an explicit authorization header", async () => {
+  it("保留调用方明确提供的认证头", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    setApiBase(43123, "startup-secret");
-
-    await apiFetch("http://127.0.0.1:43123/sessions", {
-      headers: { Authorization: "Bearer explicit-secret" },
-    });
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).get("Authorization")).toBe(
-      "Bearer explicit-secret"
-    );
+    setAccessToken("user-session");
+    await apiFetch("https://server.example.test/auth/me", { headers: { Authorization: "Bearer explicit-session" } });
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization")).toBe("Bearer explicit-session");
   });
-
-  it("never sends an API bearer token to a different origin", async () => {
+  it("不向其他源站发送账号令牌", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
-    setApiBase(43123, "startup-secret");
-    setAccessToken("user-session-secret");
-
+    setAccessToken("user-session");
     await apiFetch("https://unrelated.example.test/resource");
-
-    const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(new Headers(init.headers).has("Authorization")).toBe(false);
+    expect(new Headers(fetchMock.mock.calls[0][1].headers).has("Authorization")).toBe(false);
+  });
+  it("服务器会话失效会清除令牌并通知界面", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 401 })));
+    const expired = vi.fn();
+    window.addEventListener("pa:session-expired", expired);
+    setAccessToken("expired");
+    try {
+      await apiFetch("https://server.example.test/auth/me");
+      expect(window.sessionStorage.getItem("pa_access_token")).toBeNull();
+      expect(expired).toHaveBeenCalledTimes(1);
+    } finally { window.removeEventListener("pa:session-expired", expired); }
   });
 });

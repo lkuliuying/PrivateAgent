@@ -15,9 +15,11 @@ import McpServersPanel from "./McpServersPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
 import ConnectionSettings from "./ConnectionSettings.vue";
+import { usesLocalInference } from "../services/connectionProfile";
+
+const localInference = usesLocalInference();
 import HistoryMigration from "./HistoryMigration.vue";
 import { usesLocalExecutor } from "../services/localExecutor";
-import { usesLocalInference } from "../services/connectionProfile";
 import {
   settingsSectionMeta,
   type SettingsSection,
@@ -56,7 +58,6 @@ async function onModelProfilesSaved(): Promise<void> {
   if (props.returnTo) emit("return");
 }
 const settings = ref<AppSettings | null>(null);
-const localInference = usesLocalInference();
 const localRuntime = usesLocalExecutor();
 const modelProviders = ref<ModelProvider[]>([]);
 const modelProfiles = ref<CodingModelProfileSummary[]>([]);
@@ -206,8 +207,9 @@ const activeEndpoint = computed(() => {
     <section v-if="activeSection === 'provider' && !localInference" class="model-provider-section">
       <ModelProvidersPanel @saved="onModelProfilesSaved" />
     </section>
+
     <section v-if="activeSection === 'provider' && localInference" class="setting-card wide">
-      <p>当前使用本机模型。请在上方「连接设置」配置模型名称、接口与实际上下文容量。</p>
+      <h2>本机模型</h2><p>当前使用本机模型推理；请在上方模型执行设置中修改协议、地址、模型及上下文容量。账号验证仍由服务器负责。</p>
     </section>
 
     <!-- MCP -->

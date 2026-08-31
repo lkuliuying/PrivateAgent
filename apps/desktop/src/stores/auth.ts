@@ -4,7 +4,6 @@ import { defineStore } from "pinia";
 import { clearAccessToken, getAccessToken, setAccessToken } from "../auth/session";
 import {
   getCurrentAccount,
-  enterLocalAccount,
   loginAccount,
   logoutAccount,
   registerAccount,
@@ -12,7 +11,7 @@ import {
 import type { AuthUser } from "../types/auth";
 import { bindLocalIdentity, clearLocalIdentity, usesLocalExecutor } from "../services/localExecutor";
 import { resetCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
-import { isLocalConnection } from "../services/connectionProfile";
+import { getConnectionProfile } from "../services/connectionProfile";
 
 export const useAuthStore = defineStore("auth", () => {
   const user = ref<AuthUser | null>(null);
@@ -21,25 +20,12 @@ export const useAuthStore = defineStore("auth", () => {
   const isAuthenticated = computed(() => user.value !== null);
   const isAdmin = computed(() => user.value?.role === "admin");
 
-  /** 应用启动时用持久 token 恢复服务端会话。 */
+  /** 只恢复服务器会话，首次启动和退出后均停留在登录页。 */
   async function restoreSession(): Promise<boolean> {
     if (initialized.value) return isAuthenticated.value;
     initialized.value = true;
-    if (isLocalConnection()) {
-      loading.value = true;
-      try {
-        const response = await enterLocalAccount();
-        setAccessToken(response.access_token);
-        user.value = response.user;
-        await bindLocalIdentity(response.access_token);
-        return true;
-      } catch {
-        clearSession();
-        return false;
-      } finally {
-        loading.value = false;
-      }
-    }
+    // 升级配置先清除旧本机身份，不能把它作为服务器令牌发送。
+    try { getConnectionProfile(); } catch { clearSession(); return false; }
     if (!getAccessToken()) return false;
     loading.value = true;
     try {

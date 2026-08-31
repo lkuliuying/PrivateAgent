@@ -89,8 +89,6 @@ export {
   apiFetch,
   ensureApiBase,
   resetApiBase,
-  setApiBase,
-  setApiBaseDefault,
 } from "./api/http";
 export {
   cmdCheckForUpdates,

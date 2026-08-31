@@ -13,7 +13,6 @@ import {
 import { sendRegistrationVerificationCode } from "../services/auth";
 import { ensureDesktopBackendReady } from "../services/backendStartup";
 import { useAuthStore } from "../stores/auth";
-import ConnectionSettings from "../components/ConnectionSettings.vue";
 
 type AuthMode = "login" | "register";
 interface AuthForm {
@@ -76,6 +75,7 @@ async function handleSendCode(): Promise<void> {
   error.value = "";
   sendingCode.value = true;
   try {
+    await ensureDesktopBackendReady();
     const result = await sendRegistrationVerificationCode(email);
     startCountdown(result.retry_after_seconds);
     message.success("验证码已发送，5 分钟内有效");
@@ -95,6 +95,7 @@ async function handleSubmit(): Promise<void> {
   }
   try {
     if (isRegister.value) {
+      await ensureDesktopBackendReady();
       await auth.register({
         username: form.value.username.trim(),
         email: form.value.email.trim(),
@@ -103,6 +104,7 @@ async function handleSubmit(): Promise<void> {
       });
       message.success("注册成功");
     } else {
+      await ensureDesktopBackendReady();
       await auth.login({
         identifier: form.value.identifier.trim(),
         password: form.value.password,
@@ -129,7 +131,7 @@ onMounted(async () => {
     await ensureDesktopBackendReady();
   } catch (reason) {
     error.value =
-      reason instanceof Error ? reason.message : "无法启动本地后端，请重启应用后重试";
+      reason instanceof Error ? reason.message : "客户端连接准备失败，请重试或联系管理员";
   } finally {
     backendStarting.value = false;
   }
@@ -146,7 +148,7 @@ onMounted(async () => {
       <div class="auth-visual__copy">
         <span class="auth-eyebrow">LOCAL-FIRST WORKSPACE</span>
         <h1>你的智能工作台，<br />数据始终由你掌控。</h1>
-        <p>当前版本默认连接本机服务；客户端、模型与个人数据在你的设备上协同工作。</p>
+        <p>使用服务器账号登录；项目文件和任务在本机管理，可选择服务器模型或本机模型推理。</p>
       </div>
       <div class="auth-signal" aria-hidden="true">
         <span />
@@ -157,7 +159,6 @@ onMounted(async () => {
 
     <section class="auth-panel">
       <div class="auth-card">
-        <ConnectionSettings />
         <div class="auth-card__head">
           <h2>{{ title }}</h2>
           <p>{{ subtitle }}</p>
@@ -168,7 +169,7 @@ onMounted(async () => {
           class="auth-alert"
           type="info"
           show-icon
-          message="正在连接本地服务…"
+          message="正在准备服务器连接与本机执行器…"
         />
         <a-alert
           v-else-if="error"

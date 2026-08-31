@@ -42,7 +42,7 @@ router.beforeEach(async (to) => {
   try {
     await ensureDesktopBackendReady();
   } catch {
-    // 公共登录页负责展示可重试的本地后端启动错误。
+    // 公共登录页展示服务器配置或本机执行器启动错误，不回退到其他连接方式。
     if (to.meta.requiresAuth) {
       return { name: "login", query: { redirect: to.fullPath } };
     }

@@ -1,74 +1,80 @@
 import { isTauri } from "@tauri-apps/api/core";
+import { clearAccessToken } from "../auth/session";
 
 export interface ConnectionProfile {
-  mode: "local" | "cloud" | "self_hosted";
-  server_origin: string;
-  inference_mode?: "service" | "local";
+  inference_mode: "service" | "local";
   model_protocol: "ollama" | "openai";
   model_endpoint: string;
   model_name: string;
   context_tokens: number | null;
 }
 
-const KEY = "privateagent.connection.v1";
+const KEY = "privateagent.local-model.v1";
+const LEGACY_KEYS = ["privateagent.connection.v1", "privateagent.server.v2"];
 
 export function validateConnectionProfile(profile: ConnectionProfile): ConnectionProfile {
-  if (!["local", "cloud", "self_hosted"].includes(profile.mode)) throw new Error("连接模式无效");
+  if (!["service", "local"].includes(profile.inference_mode)) throw new Error("模型执行位置无效");
   if (!["ollama", "openai"].includes(profile.model_protocol)) throw new Error("模型协议无效");
-  if (profile.inference_mode && !["service", "local"].includes(profile.inference_mode)) throw new Error("推理位置无效");
-  const validateUrl = (value: string, localOnly: boolean): URL => {
-    let url: URL;
-    try { url = new URL(value.trim()); } catch { throw new Error("请输入完整的服务地址"); }
-    const local = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
-      throw new Error("地址不能包含凭据、查询参数或片段");
-    }
-    if ((localOnly && !local) || (url.protocol === "http:" && !local)) throw new Error("本地模型限回环地址；远程服务必须使用 HTTPS");
-    return url;
-  };
-  const model = validateUrl(profile.model_endpoint, true);
-  if (profile.model_protocol === "ollama" && model.pathname !== "/") throw new Error("Ollama 地址不包含 /api 路径");
-  const server = profile.mode === "local" ? null : validateUrl(profile.server_origin, false);
-  if (server && server.pathname !== "/") throw new Error("账号服务地址必须为源站");
+  let url: URL;
+  try { url = new URL(profile.model_endpoint.trim()); } catch { throw new Error("请输入完整的本机模型地址"); }
+  const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname);
+  if (!loopback || url.port === "0" || !["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("本机模型仅允许回环地址，不能包含凭据、查询参数或片段");
+  }
+  if (profile.model_protocol === "ollama" && url.pathname !== "/") throw new Error("Ollama 地址不包含 /api 路径");
   if (profile.context_tokens !== null && (!Number.isInteger(profile.context_tokens) || profile.context_tokens < 1 || profile.context_tokens > 1_000_000_000)) {
     throw new Error("上下文容量必须为正整数；未知时留空");
   }
-  if (profile.model_name.trim().length > 200) throw new Error("模型名称过长");
+  if (typeof profile.model_name !== "string" || profile.model_name.trim().length > 200) throw new Error("模型名称无效");
   return {
-    mode: profile.mode, server_origin: server?.origin ?? "",
-    inference_mode: profile.inference_mode ?? "service",
-    model_protocol: profile.model_protocol, model_endpoint: model.href.replace(/\/$/, ""),
-    model_name: profile.model_name.trim(), context_tokens: profile.context_tokens,
+    inference_mode: profile.inference_mode, model_protocol: profile.model_protocol,
+    model_endpoint: url.href.replace(/\/$/, ""), model_name: profile.model_name.trim(), context_tokens: profile.context_tokens,
   };
 }
 
 export function defaultConnectionProfile(): ConnectionProfile {
-  const server = String(import.meta.env.VITE_API_BASE_URL || "").trim();
-  return { mode: server ? "cloud" : "local", server_origin: server, inference_mode: "service", model_protocol: "ollama",
-    model_endpoint: "http://127.0.0.1:11434", model_name: "", context_tokens: 8192 };
+  return { inference_mode: "service", model_protocol: "ollama", model_endpoint: "http://127.0.0.1:11434", model_name: "", context_tokens: 8192 };
 }
 
-export function getConnectionProfile(): ConnectionProfile | null {
-  if (!isTauri() || import.meta.env.VITE_LOCAL_EXECUTOR === "false") return null;
+/** 升级只保留模型参数，旧账号模式及可编辑服务器源站不再生效。 */
+export function getConnectionProfile(): ConnectionProfile {
   const saved = window.localStorage.getItem(KEY);
-  if (saved) {
-    try { return validateConnectionProfile(JSON.parse(saved) as ConnectionProfile); }
-    catch { throw new Error("保存的连接配置无效，请在连接设置中修正"); }
+  let profile = defaultConnectionProfile();
+  const legacy = window.localStorage.getItem(LEGACY_KEYS[0]);
+  if (legacy !== null) {
+    try {
+      const old = JSON.parse(legacy);
+      profile = validateConnectionProfile({ ...profile, ...old, inference_mode: old.mode === "local" ? "local" : old.inference_mode ?? "service" });
+    } catch {
+      // 模型配置损坏时暂停推理；不影响服务器登录，也不转发内容到另一服务。
+      profile = { ...defaultConnectionProfile(), inference_mode: "local" };
+    }
   }
-  // 统一客户端默认使用轻量运行时；旧完整后端仅由显式兼容构建保留。
-  return validateConnectionProfile(defaultConnectionProfile());
+  if (LEGACY_KEYS.some((key) => window.localStorage.getItem(key) !== null)) {
+    clearAccessToken();
+    LEGACY_KEYS.forEach((key) => window.localStorage.removeItem(key));
+    if (!saved) saveConnectionProfile(profile);
+  }
+  if (saved) {
+    try { return validateConnectionProfile(JSON.parse(saved)); }
+    catch { return { ...defaultConnectionProfile(), inference_mode: "local" }; }
+  }
+  return profile;
 }
 
-/** 仅保存白名单内的非敏感配置；不持久化访问令牌或模型密钥。 */
+/** 只保存模型参数，不允许混入服务器地址、账号模式或凭据。 */
 export function saveConnectionProfile(profile: ConnectionProfile): void {
   window.localStorage.setItem(KEY, JSON.stringify(validateConnectionProfile(profile)));
 }
 
-export function isLocalConnection(): boolean {
-  return getConnectionProfile()?.mode === "local";
+export function usesLocalInference(): boolean {
+  return (isTauri() || import.meta.env.VITE_LOCAL_EXECUTOR === "true") && getConnectionProfile().inference_mode === "local";
 }
 
-export function usesLocalInference(): boolean {
-  const profile = getConnectionProfile();
-  return profile?.mode === "local" || profile?.inference_mode === "local";
+/** 无效模型参数不能阻断服务器登录，设置页仍明确提示修复。 */
+export function modelConfigurationError(): string {
+  const saved = window.localStorage.getItem(KEY);
+  if (!saved) return "";
+  try { validateConnectionProfile(JSON.parse(saved)); return ""; }
+  catch { return "保存的本机模型配置无效，已暂停模型执行；请修正后重新保存"; }
 }

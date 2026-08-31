@@ -8,22 +8,14 @@ import SettingsView from "./components/SettingsView.vue";
 import SettingsModuleNav from "./components/SettingsModuleNav.vue";
 import DiagnosticsView from "./components/DiagnosticsView.vue";
 import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
-import ConfigWizard from "./components/ConfigWizard.vue";
+import { ensureDesktopBackendReady } from "./services/backendStartup";
 import ToastHost from "./components/ToastHost.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import CommandPalette from "./components/CommandPalette.vue";
 import GlobalSearch from "./components/GlobalSearch.vue";
 import {
-  setApiBase,
-  setApiBaseDefault,
-  cmdStartSidecar,
-  getApiConnection,
-  cmdConfigExists,
-  cmdRelaunchApp,
   isDesktopRuntime,
-  getApiInfo,
-  hasConfiguredRemoteApi,
 } from "./api";
 import type { View } from "./types";
 import type { SettingsSection } from "./models/settingsSections";
@@ -84,11 +76,9 @@ const commandPaletteOpen = ref(false);
 // 全局搜索开关（命令面板的「全局搜索」命令触发）
 const searchOpen = ref(false);
 
-// bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
-//   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
-type BootState = "checking" | "wizard" | "starting" | "done" | "dev" | "error";
+// 工作台只等待服务器配置和本机执行器，不再启动完整业务后端。
+type BootState = "checking" | "starting" | "done" | "error";
 const bootState = ref<BootState>("checking");
-const wizardMode = ref<"first" | "reconfigure">("first");
 const bootError = ref("");
 // 加载态延迟：长于 500ms 才展示，避免快速启动闪屏
 const bootLoadingVisible = ref(false);
@@ -161,7 +151,7 @@ useShortcuts({
 watch(
   bootState,
   async (state) => {
-    if (state !== "done" && state !== "dev") {
+    if (state !== "done") {
       pageAnimations?.destroy();
       pageAnimations = null;
       return;
@@ -177,140 +167,26 @@ watch(
 // ============ 启动引导 ============
 
 async function boot() {
-  // 远程部署：客户端直接连接配置的 HTTPS API，不再启动本地 sidecar。
-  if (hasConfiguredRemoteApi()) {
-    setApiBaseDefault();
-    bootState.value = "done";
-    await initializeConnectedWorkspace();
-    return;
-  }
-  // 浏览器开发：直接用默认端口。
-  if (!isDesktopRuntime()) {
-    setApiBaseDefault();
+  bootState.value = "starting";
+  bootError.value = "";
+  showBootLoadingAfterDelay();
+  try {
+    await ensureDesktopBackendReady();
     bootState.value = "done";
     if (modelSettingsPreviewMode) {
       history.navigate({ view: "settings" });
       settingsSection.value = "provider";
-      return;
-    }
-    if (codingPreviewKey) {
+    } else if (codingPreviewKey) {
       history.navigate({ view: "coding" });
-      return;
-    }
-    await initializeConnectedWorkspace();
-    return;
-  }
-
-  bootState.value = "checking";
-  showBootLoadingAfterDelay();
-  const existingConnection = await getApiConnection().catch(() => null);
-  if (existingConnection) {
-    setApiBase(existingConnection.port, existingConnection.token);
-    bootState.value = "starting";
-    if (await pollApiReady(5)) {
-      clearBootLoading();
-      bootState.value = "done";
-      await initializeConnectedWorkspace();
-      return;
-    }
-  }
-  let res;
-  try {
-    res = await cmdStartSidecar();
-  } catch {
-    clearBootLoading();
-    bootError.value = "无法与桌面壳通信";
-    bootState.value = "error";
-    return;
-  }
-
-  // dev 模式：sidecar 返回 dev_mode，回退手动后端 127.0.0.1:8000。
-  if (res.dev_mode) {
-    setApiBaseDefault();
-    bootState.value = "dev";
-    clearBootLoading();
-    await initializeConnectedWorkspace();
-    return;
-  }
-
-  // 打包模式：sidecar 已 spawn。
-  if (res.ok && res.port && res.token) {
-    bootState.value = "starting";
-    setApiBase(res.port, res.token);
-    const ready = await pollApiReady(90);
-    clearBootLoading();
-    if (ready) {
-      bootState.value = "done";
-      await initializeConnectedWorkspace();
     } else {
-      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
-      bootState.value = "error";
-    }
-    return;
-  }
-
-  // ok:false —— 通常尚未配置连接；也可能是 spawn 失败。
-  const exists = await cmdConfigExists().catch(() => false);
-  clearBootLoading();
-  if (!exists) {
-    wizardMode.value = "first";
-    bootState.value = "wizard";
-  } else {
-    bootError.value = res.error || "后端启动失败";
-    bootState.value = "error";
-  }
-}
-
-/** 轮询轻量 API 根路径直到后端 HTTP 服务可用。 */
-async function pollApiReady(seconds: number): Promise<boolean> {
-  for (let i = 0; i < seconds * 5; i++) {
-    try {
-      await getApiInfo();
-      return true;
-    } catch {
-      // HTTP 服务尚未绑定
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
-}
-
-/** 向导完成（配置已写入）后：首次运行→启动 sidecar；重新配置→重启应用。 */
-async function onWizardDone() {
-  if (wizardMode.value === "reconfigure") {
-    try {
-      await cmdRelaunchApp();
-    } catch {
-      bootError.value = "重启失败，请手动重启应用";
-      bootState.value = "error";
-    }
-    return;
-  }
-  bootState.value = "starting";
-  showBootLoadingAfterDelay();
-  const res = await cmdStartSidecar().catch(() => null);
-  if (res && res.ok && res.port && res.token) {
-    setApiBase(res.port, res.token);
-    const ready = await pollApiReady(90);
-    clearBootLoading();
-    if (ready) {
-      bootState.value = "done";
       await initializeConnectedWorkspace();
-    } else {
-      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
-      bootState.value = "error";
     }
-  } else {
-    clearBootLoading();
-    bootError.value = res?.error || "后端启动失败";
+  } catch (reason) {
+    bootError.value = reason instanceof Error ? reason.message : "客户端连接准备失败";
     bootState.value = "error";
+  } finally {
+    clearBootLoading();
   }
-}
-
-/** 从设置页触发重新配置。 */
-function reconfigure() {
-  wizardMode.value = "reconfigure";
-  bootState.value = "wizard";
 }
 
 async function retryBoot() {
@@ -416,35 +292,22 @@ async function initializeConnectedWorkspace() {
   <UiLab v-if="uiLabEnabled" />
 
   <!-- 启动引导覆盖层 -->
-  <div v-else-if="bootState !== 'done' && bootState !== 'dev'" class="boot">
+  <div v-else-if="bootState !== 'done'" class="boot">
     <div
       v-if="(bootState === 'checking' || bootState === 'starting') && bootLoadingVisible"
       class="boot-card"
     >
       <div class="spinner" />
-      <p>{{ bootState === "checking" ? "正在检测环境…" : "正在启动本地后端…" }}</p>
+      <p>正在准备服务器连接与本机执行器…</p>
       <p class="hint">首次启动可能需要数秒</p>
     </div>
-
-    <ConfigWizard
-      v-else-if="bootState === 'wizard'"
-      :mode="wizardMode"
-      @done="onWizardDone"
-    />
 
     <div v-else-if="bootState === 'error'" class="boot-card">
       <p class="boot-err">⚠ 启动失败</p>
       <p class="hint">{{ bootError }}</p>
-      <p class="hint">本地数据未受影响；你可以重试启动，或重新配置连接。</p>
+      <p class="hint">本机数据未受影响；可以重试或联系管理员。</p>
       <div class="boot-actions">
         <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
-        <button
-          v-if="isDesktopRuntime()"
-          class="pa-btn pa-btn--ghost"
-          @click="reconfigure"
-        >
-          重新配置连接
-        </button>
         <button
           v-if="isDesktopRuntime()"
           class="pa-btn pa-btn--ghost"
@@ -462,7 +325,7 @@ async function initializeConnectedWorkspace() {
     data-animation-root
     :view="workspaceView"
     :title="pageTitle"
-    :show-dev-tag="bootState === 'dev' || !!codingPreviewStore"
+    :show-dev-tag="!!codingPreviewStore"
     :rail-collapsed="railCollapsed"
     :rail-hidden="viewportWidth < CODING_RAIL_DRAWER_MAX"
     :can-go-back="history.state().canGoBack"
@@ -509,7 +372,6 @@ async function initializeConnectedWorkspace() {
       :active-section="settingsSection"
       :focus-section="settingsFocus?.section ?? null"
       :return-to="settingsFocus?.returnTo ?? null"
-      @reconfigure="reconfigure"
       @return="onSettingsReturn"
       @select-section="settingsSection = $event"
     />
