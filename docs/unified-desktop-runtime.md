@@ -29,7 +29,13 @@ flowchart LR
 
 客户端不再提供本机账号、自托管账号或账号服务器地址设置。服务器入口由 Tauri 后端内置；前端和运行时使用同一来源，旧环境开关与缓存地址不能覆盖安装包的账号入口。当前服务器 43.163.232.238 的裸 IP HTTP 路由返回 404，HTTPS 证书校验失败；用户已确认在后端固定使用指向该 IP 的 https://www.liuyingapi.top，详见修复说明。
 
-切换模型执行位置不改变账号记录库。模型设置只保存推理位置、协议、回环地址、模型名及容量，不保存账号服务器地址、令牌或模型密钥。本机模型仍需先登录服务器账号；不能使用模型配置绕过身份验证。
+当前客户端已移除独立的“模型执行设置”。“模型设置”统一维护模型协议、地址、模型名及容量；执行器按所选 Profile 与供应商配置自动选择推理位置，不再读取旧手动开关决定路由。账号仍来自固定服务器，切换模型不改变账号记录库，不能使用模型配置绕过身份验证。
+
+- Ollama、本地标记模型以及回环地址的 OpenAI 兼容模型由本机执行器调用；本机接口仍仅支持 `127.0.0.1`、`localhost`、`::1`，不支持需要密钥的接口。
+- 非回环供应商模型仍由服务器调用，供应商密钥不下载到客户端。配置不一致、禁用、缺失或本机服务不可用时明确报错，不改用另一服务。
+- 客户端启动使用 `inference_mode=auto`；每次推理读取当前账号配置，首轮解析出的 Profile ID 固定到运行记录。后续新任务可选择其他模型，无需保存执行位置或重启。旧 `service` / `local` 启动参数仅作为运行时兼容入口保留。
+- 本机模型的列表发现与连接检查走受账号绑定和私有传输保护的 `POST /local-models/discover`，不会读取服务器电脑上的回环模型。模型列表不声明容量时显示未知；使用模型行的“修正上下文窗口”填写实际容量，Ollama 推理要求容量明确。
+- 旧手动模型参数仍保留在本机缓存供兼容迁移，但不再覆盖统一配置；原先仅配置于旧模块的模型需在“模型设置”重新选择保存。旧会话中失效的 `local-model` ID 需重新选择有效模型，不自动猜测替代项。
 
 项目目录、文件修改、审批、运行和命令均由本机处理，失联时不回退到服务器执行。模型请求仍会把必要的对话、选中的代码及工具结果发送给所选模型服务；本机存储不等于远程模型看不到这些请求内容。
 
@@ -71,7 +77,9 @@ Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assist
 
 **安全边界：以上属于工具策略和进程生命周期控制，不是完整 OS 沙箱。** 获准的项目脚本可使用当前系统用户的文件和网络权限，间接行为不能仅靠命令白名单阻止。“完全访问”也不代表管理员权限。宿主实测报告 `sandbox_available=false`；未对外宣称网络沙箱。宿主与旁置摘要同时被系统用户篡改的情况不由 SHA 文件单独防护，正式发行仍需既有签名和可信安装链。
 
-上下文不再因为本机能力开关关闭而永久不可用。容量来自当前所选模型配置；占用来自该模型最近一次请求的供应商 input tokens，不使用整段对话累计 token 或字符估算。缓存命中率明确标为“最近请求”。切换模型后旧模型用量不混入新容量。未知容量、尚未请求或供应商不返回 usage 时显示具体原因；不会伪造一个精确比例。本地 Ollama 的配置容量同时发送为模型请求的 num_ctx。
+上下文不再因为本机能力开关关闭而永久不可用。容量来自当前所选模型配置；占用来自该模型最近一次请求的供应商 input tokens，不使用整段对话累计 token 或字符估算。缓存命中率显示“平均缓存命中率”，按当前会话、当前模型的有效请求计算 `累计 cached_tokens / 累计 input_tokens × 100%`，属于按输入 token 加权的平均值，不是各次百分比的算术平均。缺少缓存用量、无效或零输入的请求不计入；无有效数据时显示 `--`。旧记录没有有效累计字段时，仅使用仍保留的最后一次有效请求，不推算丢失历史。新增计数字段保存在既有运行 JSON 中，不修改 SQLite schema。
+
+切换模型后旧模型用量不混入新容量及缓存统计。未知容量、尚未请求或供应商不返回 usage 时显示具体原因；不会伪造一个精确比例。本地 Ollama 的配置容量同时发送为模型请求的 num_ctx。启动加载画面保留标识、动画和启动标题，移除“正在连接本地服务，请稍候…”副文案；启动失败提示与重试保留。
 
 ## 5. 两类旧历史如何迁移
 
@@ -255,3 +263,60 @@ Set-Location E:\Program\Agent\.run\unified-tests
 | 新增 | `tests/unit/test_local_store.py` |
 
 `README.md` 的 128 行新增、39 行删除是接手前已有改动，未由本次修改。已读 `AGENTS.md`、`docs/project-state.md` 与全局记忆中的接手约定，并以当前源码和实测为准。项目记忆中的 HEAD `0c170557` 是历史快照，当前实测 HEAD 为 `6241369`；新统一实现也不属于原快照。遵守项目入口“仅明确要求时更新项目记忆”的约定，未改写 `docs/project-state.md` 或全局记忆，本说明单独记录新的实现与验证范围。
+
+## 9. 2026-08-31 界面与自动模型路由验证
+
+本节对应删除启动副文案、显示平均缓存命中率、移除手动执行位置三项修改。接手时 HEAD 为 `9d0b235`，仅 `README.md` 存在原有未提交差异；该差异保留。此处记录本机源码与隔离验证，不表示已生成新安装包、替换已安装客户端、部署服务器或完成真实账号验收。
+
+本次实际文件清单（不包含原有 README 改动）：
+
+| 状态 | 文件 |
+| --- | --- |
+| 修改 | `apps/desktop/src/RootApp.vue`、`apps/desktop/src/RootApp.spec.ts` |
+| 修改 | `apps/desktop/src/api/modelProviders.ts`、`apps/desktop/src/api/modelProviders.spec.ts` |
+| 修改 | `apps/desktop/src/components/ModelProvidersPanel.vue` |
+| 修改 | `apps/desktop/src/components/SettingsView.vue`、`apps/desktop/src/components/SettingsView.spec.ts` |
+| 删除 | `apps/desktop/src/components/ConnectionSettings.vue`、`apps/desktop/src/components/ConnectionSettings.spec.ts` |
+| 修改 | `apps/desktop/src/features/agent/ContextUsageRing.vue`、`apps/desktop/src/features/agent/ContextUsageRing.spec.ts` |
+| 修改 | `apps/desktop/src/services/localExecutor.ts`、`apps/desktop/src/services/localExecutor.spec.ts`、`apps/desktop/src/services/serverLogin.integration.spec.ts` |
+| 修改 | `src/private_agent_local/app.py`、`src/private_agent_local/cloud.py`、`src/private_agent_local/connections.py` |
+| 修改 | `src/private_agent_local/context.py`、`src/private_agent_local/core_adapter.py`、`src/private_agent_local/runtime.py`、`src/private_agent_local/store.py` |
+| 修改 | `src/private_agent_local/local_models.py`、`tests/unit/test_local_context.py` |
+| 新增 | `tests/unit/test_local_model_routing.py` |
+| 修改 | `docs/unified-desktop-runtime.md` |
+
+实际验证：
+
+- 全量前端 Vitest：81 文件、484 项通过；最终新增密钥检查前还执行过 42 项定向和 483 项全量，新增后定向复测 24 项通过。
+- 全量 `tests/unit/test_local*.py`：103 项通过。覆盖自动默认/指定模型、本机 Ollama/OpenAI/IPv6、供应商转发、配置变化、禁用/缺失/不一致配置、不回退、账号绑定、发现接口拒绝重定向及缓存统计；未使用生产数据库和付费模型。
+- TypeScript 类型检查、Vite 生产构建、Ruff、`git diff --check` 通过。构建保留大依赖分块告警，没有为消除告警改造打包配置。
+- 使用 Browser 检查实际 Vue 组件的启动卡片、模型配置页、当前模型页和上下文弹窗；业务请求全部使用模拟数据。隔离预览已停止，不能代替 Tauri 安装后验收。
+
+最终验证命令如下；其中 `--basetemp` 为本轮新建的隔离目录，复跑时应换一个新目录名，以免 pytest 清理已有测试产物：
+
+```powershell
+Set-Location E:\Program\Agent\apps\desktop
+node node_modules/vitest/vitest.mjs run
+$env:VITE_LOCAL_EXECUTOR = 'true'
+node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
+node node_modules/vite/bin/vite.js build --outDir ../../.run/ui-model-config-tests/frontend-final
+
+Set-Location E:\Program\Agent\.run\ui-model-config-tests
+$env:PYTHONPATH = 'E:\Program\Agent\src'
+$env:PYTHONDONTWRITEBYTECODE = '1'
+$env:PYTHONIOENCODING = 'utf-8'
+$testFiles = @(Get-ChildItem E:\Program\Agent\tests\unit -Filter 'test_local*.py' | ForEach-Object FullName)
+& E:\Program\Agent\.venv\Scripts\python.exe -m pytest --noconftest -p no:cacheprovider --basetemp=E:\Program\Agent\.run\ui-model-config-tests\pytest-final @testFiles -q
+
+Set-Location E:\Program\Agent
+.\.venv\Scripts\python.exe -m ruff check src/private_agent_local tests/unit/test_local_model_routing.py tests/unit/test_local_context.py
+git diff --check
+```
+
+过程中的失败如实保留：初次 Vitest 因沙箱 `spawn EPERM` 无法启动 esbuild，初次 pytest 因隔离目录 `WinError 5` 失败，获准正常本机权限后重跑；自动路由初版将模型 ID 混入共享响应，引发 4 项测试失败，现于适配边界提取并校验路由元数据，保留共享契约严格校验，修复后 41 项定向通过；新增测试的 Ruff 导入格式问题已修正。临时视觉预览先后修正模块路径、虚拟模块后缀及重复 Vue 实例问题，之后检查了实际渲染结果，未把预览脚本错误归为产品失败。
+
+隔离测试、构建与预览材料保存在被 Git 忽略的 `.run/ui-model-config-tests/`，未加入产品源码。没有升级依赖、修改锁文件、数据库迁移、Git 提交、远程操作或部署。已读项目记忆 `docs/project-state.md`，其中 Git 及依赖记录已落后于当前工作区；通过当前 Git、源码和本轮测试核实。本文件第 1、4 节已用新行为替代旧手动模式和最近请求缓存口径，历史记录保留。按仓库明确边界，本次未改写 `docs/project-state.md` 或全局记忆。
+
+后续使用边界：已安装客户端需另行重新构建并安装才会获得这些修改；只有旧手动模块中存在的模型应在统一模型配置中重新选择保存，Ollama 窗口未知时填写实际容量。新前端应与本轮本机执行器一起交付，不单独替换前端去连接不支持 `auto` 的旧执行器。真实供应商、安装升级和正式发布均未验收。
+
+以上为源码修改阶段的记录。用户随后授权构建、提交、推送及 GitHub Release 发布；1.0.2 安装包、冻结执行器三种自动模型路由验证和更新边界见[1.0.2 模型配置预览版发行说明](./releases/remote-v1.0.2-model-config-preview.1.md)，不以源码测试代替安装或服务器验收。

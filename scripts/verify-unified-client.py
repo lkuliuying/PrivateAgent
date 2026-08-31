@@ -36,6 +36,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
     active = False
     server_calls = []
     profile_id = "server-profile" if model_mode == "service" else "local-model"
+    protocol = "ollama" if model_mode == "ollama" else "openai"
 
     class AccountFixture(BaseHTTPRequestHandler):
         def reply(self, data, status=200):
@@ -51,12 +52,24 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
 
         def do_GET(self):
             server_calls.append(self.path)
-            if not self.authorized():
+            if self.path in {"/api/tags", "/v1/models"}:
+                assert active and self.headers.get("Authorization") is None, "模型发现不得发送账号令牌"
+                self.reply({"models": [{"name": "fixture-model"}]} if self.path == "/api/tags"
+                           else {"data": [{"id": "fixture-model"}]})
+            elif not self.authorized():
                 self.reply({"detail": "fixture unauthorized"}, 401)
             elif self.path == "/auth/me":
                 self.reply({"id": 7, "username": "fixture"})
             elif self.path == "/agent-model-profiles?enabled_only=true":
-                self.reply([{"id": "server-profile", "model_name": "fixture-model", "context_tokens": 4096, "enabled": True, "is_default": True}])
+                self.reply([{"id": profile_id, "model_name": "fixture-model", "context_tokens": 4096,
+                             "provider": protocol, "provider_id": "fixture-provider", "is_local": model_mode != "service",
+                             "enabled": True, "is_default": True}])
+            elif self.path == "/model-providers":
+                self.reply([{"id": "fixture-provider", "protocol": protocol, "enabled": True,
+                             "api_format": "ollama_chat" if protocol == "ollama" else "chat_completions",
+                             "base_url": "https://model.example.invalid/v1" if model_mode == "service" else model_endpoint,
+                             "api_key_configured": model_mode == "service",
+                             "models": [{"profile_id": profile_id, "model_id": "fixture-model"}]}])
             else:
                 self.reply({"detail": "fixture route missing"}, 404)
 
@@ -86,7 +99,8 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
                 else:
                     self.reply({"model": "fixture-model", "choices": [{"message": {"role": "assistant", "content": result["text"],
                         "tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])}} for c in calls]},
-                        "finish_reason": "tool_calls" if calls else "stop"}], "usage": {"prompt_tokens": 1000, "completion_tokens": 25}})
+                        "finish_reason": "tool_calls" if calls else "stop"}], "usage": {"prompt_tokens": 1000, "completion_tokens": 25,
+                        "prompt_tokens_details": {"cached_tokens": 200}}})
             elif not self.authorized():
                 self.reply({"detail": "fixture unauthorized"}, 401)
             elif self.path == "/auth/logout":
@@ -119,8 +133,9 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
     allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
     env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
     env.update(PATH=str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", ""), PRIVATEAGENT_LOCAL_NONCE=secrets.token_urlsafe(48))
-    model_config = {} if model_mode == "service" else {"inference_mode": "local", "model_protocol": model_mode,
-        "model_endpoint": server_origin + ("/v1" if model_mode == "openai" else ""), "model_name": "fixture-model", "context_tokens": 4096}
+    model_endpoint = server_origin + ("/v1" if model_mode == "openai" else "")
+    # 与桌面入口一致，仅通过服务器模型配置自动决定推理位置。
+    model_config = {"inference_mode": "auto"}
     process = None
     token = None
     try:
@@ -173,6 +188,9 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
             assert login.status_code == 200
             token = login.json()["access_token"]
         assert (await request("/identity", "POST"))["ready"]
+        if model_mode != "service":
+            discovered = await request("/local-models/discover", "POST", {"protocol": protocol, "base_url": model_endpoint})
+            assert discovered["models"][0]["model_id"] == "fixture-model"
         created = await request("/projects", "POST", {"name": "打包隔离验证", "root_path": str(project)})
         workspace = (await request(f"/projects/{created['id']}/workspaces"))[0]
         binding = {"project_id": created["id"], "workspace_id": workspace["id"]}
@@ -192,6 +210,9 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         assert len(approvals) == 1 and approvals[0]["status"] == "consumed"
         budget = await request(f"/sessions/{session['id']}/context-budget?model_profile_id={profile_id}")
         assert budget["source"] == "provider_usage" and budget["used_tokens"] == 1000 and budget["max_context_tokens"] == 4096
+        assert budget["cache_hit_scope"] == "session"
+        if model_mode != "ollama":
+            assert budget["cache_hit_percent"] == 20.0
         grant = await request(f"/sessions/{session['id']}/full-access-grant", "POST", {})
         replies.extend([tool("run_project_command", {"command": "python fixture.py"}), finish()])
         run = await request("/agent-runs", "POST", {**binding, "permission_mode": "full_access"})
@@ -219,9 +240,10 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         assert "/auth/me" in server_calls
         model_path = "/desktop/model/complete" if model_mode == "service" else "/api/chat" if model_mode == "ollama" else "/v1/chat/completions"
         assert model_path in server_calls
+        assert "/model-providers" in server_calls and "/agent-model-profiles?enabled_only=true" in server_calls
         if model_mode != "service":
             assert "/desktop/model/complete" not in server_calls
-        return {"model_mode": model_mode, "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "manual_command_approval": True,
+        return {"model_mode": model_mode, "inference_mode": "auto", "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "manual_command_approval": True,
                 "full_access_script": True, "context_usage": budget["used_tokens"], "tampered_host_blocked": True,
                 "history_export_runs": 3, "sandbox_available": command_output["sandbox_available"], "real_model_called": False}
     finally:
