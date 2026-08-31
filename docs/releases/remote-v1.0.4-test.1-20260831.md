@@ -5,7 +5,7 @@
 ## 安装包与 GitHub
 
 - 版本：`PrivateAgentRemote 1.0.4`，Windows x64，手动安装测试包。
-- GitHub：[1.0.4 测试草稿](https://github.com/lkuliuying/PrivateAgent/releases/tag/untagged-9ce5587d254277200fef)，草稿 ID `379446339`，拟用标签 `remote-v1.0.4-test.1`。草稿附件仅仓库有权限的账号可访问，不是公开稳定版。
+- GitHub：[Releases 列表](https://github.com/lkuliuying/PrivateAgent/releases)，选择 `PrivateAgentRemote 1.0.4 测试版（HTTP 502 与上海时间修复）`；草稿 ID `379446339`，拟用标签 `remote-v1.0.4-test.1`。草稿的临时链接可能在更新时变化，因此此处保留列表入口。草稿附件仅仓库有权限的账号可访问，不是公开稳定版。
 - 安装包：`PrivateAgentRemote_1.0.4_x64-setup.exe`，25,118,488 字节；同时上传 `SHA256SUMS.txt`。GitHub 返回的两个附件大小和 SHA256 均与本地一致。
 - 本机产物：`E:\Program\Agent\.run\remote-client-bseYDI`，构建日志为 `.run/build-remote-1.0.4.log`；这些构建产物不进入 Git。
 - 保留旧附件、普通版版本和正式更新源。当前环境没有配置 Tauri updater 签名，本包没有 `.sig` 或 `latest.json`，Windows Authenticode 状态为 `NotSigned`；不可用于应用内自动更新，不应关闭安全软件或绕过组织安全策略。
