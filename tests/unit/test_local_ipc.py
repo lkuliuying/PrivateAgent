@@ -3,8 +3,10 @@ import asyncio
 import json
 import os
 import sys
+import threading
 import uuid
 from contextlib import asynccontextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -15,8 +17,29 @@ NONCE = "isolated-pipe-fixture-" * 3
 
 @asynccontextmanager
 async def runtime_pipe(tmp_path):
+    class AccountServer(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/auth/me" or self.headers.get("Authorization") != "Bearer fixture-server-session":
+                self.send_error(401)
+                return
+            body = b'{"id":7}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            self.send_error(409)
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AccountServer)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     process = await asyncio.create_subprocess_exec(sys.executable, "-m", "private_agent_local.entry", "--stdio",
-        "--connection-json", '{"mode":"local"}', "--data-dir", str(tmp_path / "records"),
+        "--server", f"http://127.0.0.1:{server.server_port}", "--data-dir", str(tmp_path / "records"),
         cwd=tmp_path, env={**os.environ, "PRIVATEAGENT_LOCAL_NONCE": NONCE},
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
@@ -31,6 +54,9 @@ async def runtime_pipe(tmp_path):
                 process.kill()
                 await process.wait()
                 raise
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
         assert process.returncode == 0, (await process.stderr.read()).decode(errors="replace")
 
 
@@ -68,8 +94,9 @@ async def test_private_pipe_auth_unicode_and_run_event_stream(tmp_path):
         assert health[0]["status"] == 200
         assert content(health)["mode"] == "desktop-local"
         assert (await request(process, "/projects"))[0]["status"] == 401
-        auth = content(await request(process, "/auth/local", method="POST"))
-        token = auth["access_token"]
+        assert (await request(process, "/auth/local", method="POST"))[0]["status"] == 404
+        token = "fixture-server-session"
+        assert (await request(process, "/identity", method="POST", token=token))[0]["status"] == 200
         root = tmp_path / "项目"
         root.mkdir()
         project = content(await request(process, "/projects", method="POST", body={"name": "管道项目", "root_path": str(root)}, token=token))

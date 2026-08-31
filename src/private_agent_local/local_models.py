@@ -1,7 +1,5 @@
-"""无云端账号的本地模型服务，复用共享模型适配器和执行核心。"""
+"""服务器认证与本机模型推理解耦，复用共享模型适配器。"""
 from __future__ import annotations
-
-import secrets
 
 import httpx
 
@@ -12,8 +10,7 @@ from private_agent_core.llm.gateway import ModelGateway
 from private_agent_core.runtime import CancellationToken
 
 from .cloud import MODEL_ERROR_MESSAGES, Cloud, CloudError
-from .connections import ConnectionProfile
-from .store import now
+from .connections import ModelConfig
 
 
 class BoundedStream(httpx.AsyncByteStream):
@@ -52,32 +49,14 @@ class BoundedTransport(httpx.AsyncBaseTransport):
         await self.transport.aclose()
 
 
-class LocalModels:
-    origin = "local://device"
-    is_local = True
-    local_inference = True
-
-    def __init__(self, profile: ConnectionProfile, *, transport=None):
-        if profile.mode != "local":
-            raise ValueError("本地模型服务仅接受本地连接配置")
+class LocalInference:
+    def __init__(self, profile: ModelConfig, *, transport=None):
         self.profile = profile
-        self.token = secrets.token_urlsafe(48)
-        self.user = {"id": 1, "email": "", "username": "本机用户", "display_name": "本机用户", "role": "user",
-                     "status": "active", "last_login_at": None, "created_at": now()}
         self.client = httpx.AsyncClient(timeout=180, follow_redirects=False, trust_env=False,
                                        headers={"Accept-Encoding": "identity"},
                                        transport=BoundedTransport(transport or httpx.AsyncHTTPTransport()))
 
-    async def identity(self, token: str) -> dict:
-        if not secrets.compare_digest(token, self.token):
-            raise CloudError(401, "本机会话已失效，请重新进入", code="local_auth_required")
-        return self.user
-
-    def revoke_identity(self):
-        self.token = secrets.token_urlsafe(48)
-
-    async def profiles(self, token: str) -> list[dict]:
-        await self.identity(token)
+    async def profiles(self) -> list[dict]:
         p = self.profile
         return [{"id": "local-model", "provider": p.model_protocol, "model_name": p.model_name,
                  "display_name": p.model_name or "请配置本地模型", "is_default": True, "is_local": True,
@@ -85,11 +64,10 @@ class LocalModels:
                  "supports_vision": False, "context_tokens": p.context_tokens, "reasoning_efforts": [],
                  "usage_reporting": True, "enabled": bool(p.model_name)}]
 
-    async def complete(self, token: str, profile: str | None, request: dict) -> dict:
-        await self.identity(token)
+    async def complete(self, profile: str | None, request: dict) -> dict:
         p = self.profile
         if profile not in {None, "local-model"} or not p.model_name:
-            raise CloudError(422, "请先在连接设置中填写本地模型名称", code="model_not_configured")
+            raise CloudError(422, "请先在模型设置中填写本地模型名称", code="model_not_configured")
         if p.model_protocol == "ollama":
             if p.context_tokens is None:
                 raise CloudError(422, "请填写 Ollama 请求的上下文容量", code="model_not_configured")
@@ -113,27 +91,27 @@ class LocalModels:
 
 
 class ConnectedLocalModels(Cloud):
-    """账号仍由原服务验证，仅把推理切到本机，SQLite 数据所有者保持不变。"""
+    """只替换推理服务，身份验证与 SQLite 账号归属始终来自服务器。"""
     local_inference = True
 
-    def __init__(self, profile: ConnectionProfile, *, transport=None, model_transport=None):
-        super().__init__(profile.server_origin, transport=transport)
-        self.models = LocalModels(profile.model_copy(update={"mode": "local"}), transport=model_transport)
+    def __init__(self, origin: str, profile: ModelConfig, *, transport=None, model_transport=None):
+        super().__init__(origin, transport=transport)
+        self.models = LocalInference(profile, transport=model_transport)
 
     async def profiles(self, token: str) -> list[dict]:
-        return await self.models.profiles(self.models.token)
+        return await self.models.profiles()
 
     async def complete(self, token: str, profile: str | None, request: dict) -> dict:
-        return await self.models.complete(self.models.token, profile, request)
+        return await self.models.complete(profile, request)
 
     async def close(self):
-        await self.models.close()
-        await super().close()
+        try:
+            await self.models.close()
+        finally:
+            await super().close()
 
 
-def model_service(profile: ConnectionProfile):
-    if profile.mode == "local":
-        return LocalModels(profile)
+def model_service(origin: str, profile: ModelConfig):
     if profile.inference_mode == "local":
-        return ConnectedLocalModels(profile)
-    return Cloud(profile.server_origin)
+        return ConnectedLocalModels(origin, profile)
+    return Cloud(origin)

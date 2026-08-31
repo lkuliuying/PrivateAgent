@@ -19,7 +19,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import files, migration
 from .cloud import Cloud, CloudError
-from .local_models import LocalModels
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import Store, now
 
@@ -88,7 +87,7 @@ class HistoryImport(HistorySource):
 
 
 class DesktopState:
-    def __init__(self, data_dir: Path, cloud: Cloud | LocalModels):
+    def __init__(self, data_dir: Path, cloud: Cloud):
         self.data_dir, self.cloud = data_dir, cloud
         self.runtime: Runtime | None = None
         self.lock = asyncio.Lock()
@@ -121,7 +120,7 @@ class DesktopState:
             self.verified_at = 0
 
 
-def create_app(*, data_dir: Path, cloud: Cloud | LocalModels, nonce: str, port: int = 0, shutdown=None) -> FastAPI:
+def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutdown=None) -> FastAPI:
     if len(nonce) < 32:
         raise ValueError("本机启动凭证过短")
     state = DesktopState(data_dir, cloud)
@@ -185,41 +184,19 @@ def create_app(*, data_dir: Path, cloud: Cloud | LocalModels, nonce: str, port: 
             raise HTTPException(401, "本机执行器尚未绑定当前账号，请重新登录")
         return await state.bind(token, existing_only=True)
 
+    @app.get("/agent-model-profiles")
+    async def model_profiles(runtime: Runtime = Depends(local)):
+        if not getattr(cloud, "local_inference", False):
+            raise HTTPException(404, "当前使用服务器模型")
+        return await cloud.profiles(runtime.token)
+
     @app.get("/health")
     async def health():
         return {"status": "ok", "mode": "desktop-local", "protocol": 1}
 
     @app.get("/")
     async def info():
-        return {"mode": "desktop-local", "version": "unified", "optional_services": not isinstance(cloud, LocalModels)}
-
-    @app.post("/auth/local")
-    async def enter_local():
-        if not isinstance(cloud, LocalModels):
-            raise HTTPException(404, "此连接需要服务器账号登录")
-        await state.bind(cloud.token)
-        return {"access_token": cloud.token, "token_type": "bearer",
-                "expires_at": None, "user": cloud.user}
-
-    @app.get("/auth/me")
-    async def local_user(request: Request):
-        if not isinstance(cloud, LocalModels):
-            raise HTTPException(404)
-        return await cloud.identity(bearer(request))
-
-    @app.post("/auth/logout")
-    async def local_logout():
-        if not isinstance(cloud, LocalModels):
-            raise HTTPException(404)
-        await state.clear()
-        cloud.revoke_identity()
-        return {"logged_out": True}
-
-    @app.get("/agent-model-profiles")
-    async def local_profiles(request: Request, runtime: Runtime = Depends(local)):
-        if not getattr(cloud, "local_inference", False):
-            raise HTTPException(404)
-        return await cloud.profiles(bearer(request))
+        return {"mode": "desktop-local", "version": "server-only"}
 
     @app.post("/identity")
     async def identity(request: Request):

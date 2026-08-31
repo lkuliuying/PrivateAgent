@@ -8,7 +8,7 @@ from pathlib import Path
 import uvicorn
 
 from private_agent_local.app import create_app
-from private_agent_local.connections import ConnectionProfile
+from private_agent_local.connections import ModelConfig
 from private_agent_local.local_models import model_service
 
 
@@ -16,8 +16,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int)
     parser.add_argument("--stdio", action="store_true")
-    parser.add_argument("--server")
-    parser.add_argument("--connection-json")
+    parser.add_argument("--server", required=True)
+    parser.add_argument("--model-json", default="{}")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--parent-pid", type=int)
     args = parser.parse_args()
@@ -29,8 +29,7 @@ def main():
     def shutdown():
         server.should_exit = True
 
-    profile = ConnectionProfile.model_validate_json(args.connection_json) if args.connection_json else ConnectionProfile(mode="cloud", server_origin=args.server)
-    app = create_app(data_dir=args.data_dir, cloud=model_service(profile), nonce=nonce, port=args.port or 0, shutdown=shutdown)
+    app = create_app(data_dir=args.data_dir, cloud=model_service(args.server, ModelConfig.model_validate_json(args.model_json)), nonce=nonce, port=args.port or 0, shutdown=shutdown)
     if args.stdio:
         from private_agent_local.ipc import serve as serve_pipe
         asyncio.run(serve_pipe(app, nonce, sys.stdin.buffer, sys.stdout.buffer,
