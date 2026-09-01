@@ -30,6 +30,21 @@ export interface CodingWorkspaceSummary {
   lastUsedAt: string | null;
 }
 
+/** 所选项目根目录中的本地 Git 分支；不包含远端分支或工作区外路径。 */
+export interface CodingBranchSummary {
+  name: string;
+  headSha: string | null;
+  current: boolean;
+}
+
+export interface CodingBranchState {
+  isGit: boolean;
+  currentBranch: string | null;
+  headSha: string | null;
+  dirty: boolean;
+  branches: CodingBranchSummary[];
+}
+
 /** 任务线程摘要（GET /sessions?project_id=&kind=coding） */
 export interface CodingThreadSummary {
   id: number;
@@ -208,6 +223,9 @@ export interface CodingWorkspaceFetchers {
   health: () => Promise<boolean>;
   createThread: (input: CodingThreadCreateInput) => Promise<CodingThreadSummary>;
   ensureRootWorkspace: (projectId: number) => Promise<CodingWorkspaceSummary>;
+  /** 本机根目录分支；旧 Runtime 不提供时保持可选并回落工作区展示。 */
+  branches?: (projectId: number) => Promise<CodingBranchState>;
+  switchBranch?: (projectId: number, branchName: string) => Promise<CodingBranchState>;
   /** v0.9.0 H1-A：/capabilities 能力位（权限选项可用性；失败按未提供处理） */
   capabilities?: () => Promise<Record<string, unknown> | null>;
 }

@@ -79,6 +79,26 @@ function readyFetchers(
       status: "active",
       lastUsedAt: null,
     }),
+    branches: async () => ({
+      isGit: true,
+      currentBranch: "dev",
+      headSha: "dev-sha",
+      dirty: false,
+      branches: [
+        { name: "dev", headSha: "dev-sha", current: true },
+        { name: "main", headSha: "main-sha", current: false },
+      ],
+    }),
+    switchBranch: async (_projectId, branchName) => ({
+      isGit: true,
+      currentBranch: branchName,
+      headSha: `${branchName}-sha`,
+      dirty: false,
+      branches: [
+        { name: "dev", headSha: "dev-sha", current: branchName === "dev" },
+        { name: "main", headSha: "main-sha", current: branchName === "main" },
+      ],
+    }),
     ...overrides,
   };
 }
@@ -103,6 +123,8 @@ describe("CodingHome", () => {
     expect(wrapper.find('[data-testid="coding-home-empty-chat"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="coding-home-project-select"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="coding-home-workspace-select"]').exists()).toBe(true);
+    expect(wrapper.text()).toContain("dev");
+    expect(wrapper.text()).toContain("main");
     expect(wrapper.find('[data-testid="coding-composer-input"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain("推荐任务");
   });

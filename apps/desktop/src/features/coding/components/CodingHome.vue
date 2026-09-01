@@ -133,6 +133,7 @@ async function onImportProfile(): Promise<void> {
 const projects = computed(() => props.store.projects.value);
 const selectedProjectId = computed(() => props.store.selectedProjectId.value);
 const selectedWorkspaceId = computed(() => props.store.selectedWorkspaceId.value);
+const selectedBranchName = computed(() => props.store.selectedBranchName.value);
 const selectedWorkspace = computed(() => props.store.selectedWorkspace.value);
 const loadError = computed(() => props.store.loadError.value);
 
@@ -143,6 +144,13 @@ const projectOptions = computed(() =>
 const workspaceOptions = computed(() => {
   const projectId = selectedProjectId.value;
   if (projectId === null) return [];
+  const branchState = props.store.branchesByProject.value[projectId];
+  if (branchState?.isGit && branchState.branches.length) {
+    return branchState.branches.map((branch) => ({
+      value: `branch:${branch.name}`,
+      label: branch.name,
+    }));
+  }
   return (props.store.workspacesByProject.value[projectId] ?? []).map((workspace) => ({
     value: workspace.id,
     label:
@@ -153,11 +161,31 @@ const workspaceOptions = computed(() => {
   }));
 });
 
+const workspaceSelection = computed(() =>
+  selectedBranchName.value ? `branch:${selectedBranchName.value}` : (selectedWorkspaceId.value ?? "")
+);
+
 function onProjectChange(value: string | number): void {
   props.store.selectProject(Number(value));
 }
 
-function onWorkspaceChange(value: string | number): void {
+const branchSwitching = ref(false);
+const branchSwitchError = ref("");
+
+async function onWorkspaceChange(value: string | number): Promise<void> {
+  if (typeof value === "string" && value.startsWith("branch:")) {
+    if (branchSwitching.value) return;
+    branchSwitching.value = true;
+    branchSwitchError.value = "";
+    try {
+      await props.store.selectBranch(value.slice("branch:".length));
+    } catch (cause) {
+      branchSwitchError.value = asCodingApiError(cause).message;
+    } finally {
+      branchSwitching.value = false;
+    }
+    return;
+  }
   props.store.selectWorkspace(Number(value));
 }
 
@@ -352,15 +380,23 @@ function asCodingApiError(cause: unknown): CodingApiError {
                 <PhGitBranch :size="16" aria-hidden="true" />
                 <span class="visually-hidden">工作区 / 分支</span>
                 <PaSelect
-                  :model-value="selectedWorkspaceId ?? ''"
+                  :model-value="workspaceSelection"
                   :options="workspaceOptions"
                   size="sm"
                   data-testid="coding-home-workspace-select"
                   aria-label="工作区 / 分支"
-                  @update:model-value="onWorkspaceChange"
+                  @update:model-value="void onWorkspaceChange($event)"
                 />
               </label>
             </div>
+            <PaInlineNotice
+              v-if="branchSwitchError"
+              tone="danger"
+              title="分支切换未完成"
+              data-testid="coding-home-branch-error"
+            >
+              {{ branchSwitchError }}
+            </PaInlineNotice>
             <CodingComposer
               :store="store"
               :thread-id="null"

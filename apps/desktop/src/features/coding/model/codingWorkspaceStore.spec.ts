@@ -81,6 +81,13 @@ function baseFetchers(
     health: async () => true,
     createThread: async (input) => thread(99, input.projectId, input.workspaceId, input.title),
     ensureRootWorkspace: async (projectId) => workspace(projectId * 100 + 1, projectId),
+    branches: async () => ({
+      isGit: false,
+      currentBranch: null,
+      headSha: null,
+      dirty: false,
+      branches: [],
+    }),
     ...overrides,
   };
 }
@@ -152,6 +159,42 @@ describe("codingWorkspaceStore", () => {
     store.startNewTask();
     expect(store.selectedThreadId.value).toBeNull();
     expect(store.selectedWorkspaceId.value).toBe(102);
+  });
+
+  it("读取本地分支并在切换成功后同步根工作区", async () => {
+    const switchBranch = vi.fn(async (_projectId: number, branchName: string) => ({
+      isGit: true,
+      currentBranch: branchName,
+      headSha: branchName === "main" ? "main-sha" : "dev-sha",
+      dirty: false,
+      branches: [
+        { name: "dev", headSha: "dev-sha", current: branchName === "dev" },
+        { name: "main", headSha: "main-sha", current: branchName === "main" },
+      ],
+    }));
+    const store = createCodingWorkspaceStore(baseFetchers({
+      branches: async () => ({
+        isGit: true,
+        currentBranch: "dev",
+        headSha: "dev-sha",
+        dirty: false,
+        branches: [
+          { name: "dev", headSha: "dev-sha", current: true },
+          { name: "main", headSha: "main-sha", current: false },
+        ],
+      }),
+      switchBranch,
+    }));
+    await store.bootstrap();
+    expect(store.selectedBranchName.value).toBe("dev");
+    await store.selectBranch("main");
+    expect(switchBranch).toHaveBeenCalledWith(1, "main");
+    expect(store.selectedBranchName.value).toBe("main");
+    expect(store.workspacesByProject.value[1][0]).toMatchObject({
+      branchName: "main",
+      headSha: "main-sha",
+      status: "active",
+    });
   });
 
   it("recordThreadRun 立即记录最近 run，切走再返回可直接恢复", async () => {

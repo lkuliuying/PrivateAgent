@@ -259,11 +259,11 @@ export const PERMISSION_MODE_META: Record<string, { label: string; hint: string 
   confirm: { label: "总是询问", hint: "写入或命令前逐次进入审批流" },
   workspace: {
     label: "替我批准",
-    hint: "已授权工作区内命中安全命令档案的操作自动执行；越界/高风险仍会询问",
+    hint: "项目内文件编辑和登记命令默认执行；模型可主动发起审批，越界操作始终拒绝",
   },
   full_access: {
     label: "完全访问",
-    hint: "普通本机文件与已登记开发命令免逐次审批；不获得管理员权限，项目脚本可访问用户文件并联网；需限时授权且可撤销",
+    hint: "限时授权内自动执行项目目录中的登记操作；不访问项目外路径，也不获得管理员权限",
   },
 };
 

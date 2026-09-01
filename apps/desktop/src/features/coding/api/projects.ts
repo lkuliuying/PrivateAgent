@@ -5,7 +5,11 @@
  * 从结构上剔除 root_path 等敏感字段（红线，contracts.ts 头注）。
  */
 import type { Project, ProjectWorkspace } from "../../../types";
-import type { CodingProjectSummary, CodingWorkspaceSummary } from "../model/contracts";
+import type {
+  CodingBranchState,
+  CodingProjectSummary,
+  CodingWorkspaceSummary,
+} from "../model/contracts";
 import type { CodingFileHint } from "../model/runContracts";
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
 
@@ -41,6 +45,48 @@ export async function fetchCodingWorkspaces(projectId: number): Promise<CodingWo
   return list
     .filter((dto) => dto.status !== "archived")
     .map((dto) => toWorkspaceSummary(dto, projectId));
+}
+
+interface CodingBranchStateDto {
+  is_git: boolean;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: boolean;
+  branches: Array<{ name: string; head_sha: string | null; current: boolean }>;
+}
+
+function toBranchState(dto: CodingBranchStateDto): CodingBranchState {
+  return {
+    isGit: dto.is_git,
+    currentBranch: dto.current_branch,
+    headSha: dto.head_sha,
+    dirty: dto.dirty,
+    branches: dto.branches.map((branch) => ({
+      name: branch.name,
+      headSha: branch.head_sha,
+      current: branch.current,
+    })),
+  };
+}
+
+/** 只读取所选项目根目录中的本地分支。 */
+export async function fetchCodingBranches(projectId: number): Promise<CodingBranchState> {
+  const dto = await codingFetchJson<CodingBranchStateDto>(
+    `/projects/${projectId}/git/branches`
+  );
+  return toBranchState(dto);
+}
+
+/** 用户从分支下拉框显式选择后切换本地分支。 */
+export async function switchCodingBranch(
+  projectId: number,
+  branchName: string
+): Promise<CodingBranchState> {
+  const dto = await codingFetchJson<CodingBranchStateDto>(
+    `/projects/${projectId}/git/branches/select`,
+    codingJsonInit("POST", { branch_name: branchName })
+  );
+  return toBranchState(dto);
 }
 
 /**

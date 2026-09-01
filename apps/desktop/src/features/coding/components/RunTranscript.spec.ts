@@ -118,7 +118,7 @@ describe("RunTranscript", () => {
     expect(wrapper.emitted("retry-stream")).toBeTruthy();
   });
 
-  it("完成结果默认独立展示，点击耗时后展开叙事式公开执行过程", async () => {
+  it("完成结果默认展开公开执行过程，并隐藏决策模板文案", async () => {
     const current = projection([
       [1, "run.started", { max_steps: 12, max_tool_calls: 8 }],
       [2, "context.prepared", { estimated_tokens: 1572, truncated: false }],
@@ -140,15 +140,16 @@ describe("RunTranscript", () => {
     expect(wrapper.find('[data-testid="terminal-output"]').text()).toContain("已创建 hello.txt");
     const duration = wrapper.find('[data-testid="run-duration-toggle"]');
     expect(duration.text()).toContain("用时 5.4 秒");
-    expect(duration.attributes("aria-expanded")).toBe("false");
-    expect(wrapper.find('[data-testid="transcript-decision-summary"]').isVisible()).toBe(false);
-
-    await duration.trigger("click");
     expect(duration.attributes("aria-expanded")).toBe("true");
     expect(wrapper.find('[data-testid="transcript-decision-summary"]').isVisible()).toBe(true);
-    expect(wrapper.find('[data-testid="transcript-decision-summary"]').text()).toContain("创建 hello.txt");
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').text()).toContain("调用工作区补丁工具");
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').text()).not.toContain("本轮决策");
+    expect(wrapper.find('[data-testid="transcript-decision-summary"]').text()).not.toContain("接下来");
     expect(wrapper.find('[data-testid="transcript-tool"]').text()).toContain("编辑了文件");
     expect(wrapper.find('[data-testid="process-footer"]').text()).toContain("编辑了文件");
+
+    await duration.trigger("click");
+    expect(duration.attributes("aria-expanded")).toBe("false");
   });
 
   it("失败终态在输出总结中直接显示可信失败原因", () => {

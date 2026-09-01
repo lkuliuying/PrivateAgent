@@ -180,7 +180,7 @@ const pendingApprovals = computed(() => props.approvals.filter((item) => item.st
 // 默认仅渲染最近 RENDER_BATCH 条，「显示更早」按批次扩展；切换 run 重置。
 const RENDER_BATCH = 200;
 const visibleCount = ref(RENDER_BATCH);
-const processOpen = ref(false);
+const processOpen = ref(true);
 const visibleEntries = computed(() =>
   entries.value.slice(Math.max(0, entries.value.length - visibleCount.value))
 );
@@ -202,7 +202,7 @@ watch(
   () => props.projection?.runId,
   () => {
     visibleCount.value = RENDER_BATCH;
-    processOpen.value = false;
+    processOpen.value = true;
   }
 );
 
@@ -334,6 +334,11 @@ function toolActionLabel(name: string): string {
   if (normalized.includes("read") || normalized.includes("file")) return "读取了文件";
   if (normalized.includes("search") || normalized.includes("find")) return "搜索了内容";
   return "调用了工具";
+}
+
+function decisionNarrative(method: string | null): string | null {
+  if (!method) return null;
+  return method.replace(/^本轮决策[：:]\s*/, "");
 }
 
 function shouldDisplayEntry(entry: TranscriptEntry): boolean {
@@ -549,13 +554,11 @@ const resultArtifactEntries = computed(() =>
             </span>
           </template>
 
-          <!-- v0.9.0 H0 §8：逐轮公开决策摘要（结构化公开事实，不含隐藏推理） -->
+          <!-- 仅展示公开行动摘要；具体命令、审批与结果由后续工具时间线呈现。 -->
           <template v-else-if="entry.kind === 'decision-summary'">
             <PhPath :size="14" class="entry-icon" aria-hidden="true" />
             <div class="narrative-message" data-testid="transcript-decision-summary">
-              <p>{{ entry.goal }}</p>
-              <p v-if="entry.method">{{ entry.method }}</p>
-              <p v-if="entry.nextSteps.length" class="narrative-next">接下来：{{ entry.nextSteps.join("、") }}。</p>
+              <p v-if="decisionNarrative(entry.method)">{{ decisionNarrative(entry.method) }}</p>
             </div>
           </template>
 
