@@ -1,9 +1,11 @@
 """本机命令通过真实 Rust 宿主执行的边界与资源清理。"""
 import asyncio
+import os
 import sys
 
 import pytest
 
+from private_agent_local import policy
 from private_agent_local.entry import parent_alive
 from private_agent_local.executor import host_path, run_command
 
@@ -58,3 +60,21 @@ async def test_real_host_drains_output_before_returning_exit_and_bounds_bytes(tm
         assert result["stderr"] == "END" and not result["truncated"]
     result = await run_command(tmp_path, [sys.executable, "-c", "print('x'*100000)"])
     assert result["truncated"] and len(result["stdout"]) == 32000
+
+
+@pytest.mark.skipif(os.name != "nt", reason="受控 PowerShell 只在 Windows 客户端提供")
+@pytest.mark.asyncio
+async def test_real_host_runs_registered_powershell_inside_project(tmp_path):
+    (tmp_path / "visible.txt").write_text("ok", encoding="utf-8")
+    plan = policy.powershell_plan(
+        tmp_path,
+        "Get-ChildItem",
+        ["-LiteralPath", ".", "-Name"],
+        "full_access",
+    )
+
+    result = await run_command(tmp_path, list(plan.argv))
+
+    assert result["returncode"] == 0
+    assert "visible.txt" in result["stdout"]
+    assert result["stderr"] == ""

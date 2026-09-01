@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import files, migration
+from . import files, git_workspace, migration
 from .cloud import Cloud, CloudError
 from .connections import ModelConfig
 from .local_models import LocalInference
@@ -35,7 +35,8 @@ CAPABILITIES = {
     "coding_full_access_supported": True, "coding_full_access_audit": True,
     "coding_full_access_revoke": True, "coding_context_budget_enabled": True,
     "coding_execution_detail_enabled": True, "coding_worktree_enabled": False,
-    "coding_diagnostic_commands_enabled": True, "product_timezone": "Asia/Shanghai",
+    "coding_diagnostic_commands_enabled": True, "coding_local_branches_enabled": True,
+    "coding_powershell_commands_enabled": True, "product_timezone": "Asia/Shanghai",
 }
 
 
@@ -55,6 +56,10 @@ class Binding(Input):
 
 class ProjectContextInput(Input):
     project_id: int | None = Field(default=None, gt=0)
+
+
+class BranchInput(Input):
+    branch_name: str = Field(min_length=1, max_length=255)
 
 
 class SessionInput(Binding):
@@ -280,6 +285,18 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
             "project_id": project["id"], "kind": "root", "root_path": project["root_path"], "branch_name": None,
             "head_sha": None, "status": "active", "last_used_at": now()})
 
+    def sync_workspace_git(runtime, item, state):
+        if item["kind"] != "root":
+            return item
+        values = {
+            "branch_name": state["current_branch"] if state["is_git"] else None,
+            "head_sha": state["head_sha"] if state["is_git"] else None,
+            "status": "dirty" if state["is_git"] and state["dirty"] else "active",
+        }
+        if any(item.get(key) != value for key, value in values.items()):
+            return runtime.store.update("workspace", item["id"], **values)
+        return item
+
     def project_create(runtime, name, root, authorized):
         root = str(files.authorize_root(str(root)))
         existing = next((p for p in runtime.store.list("project") if p["root_path"] == root), None)
@@ -323,6 +340,29 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     async def workspaces(project_id: int, runtime: Runtime = Depends(local)):
         runtime.store.get("project", project_id)
         return [w for w in runtime.store.list("workspace") if w["project_id"] == project_id]
+
+    @app.get("/projects/{project_id}/git/branches")
+    async def project_branches(project_id: int, runtime: Runtime = Depends(local)):
+        project = runtime.store.get("project", project_id)
+        item = workspace(runtime, project)
+        root = runtime.root(project_id, item["id"])
+        state = await asyncio.to_thread(git_workspace.inspect, root)
+        sync_workspace_git(runtime, item, state)
+        return state
+
+    @app.post("/projects/{project_id}/git/branches/select")
+    async def select_project_branch(project_id: int, data: BranchInput, runtime: Runtime = Depends(local)):
+        if runtime.store.has_active_run():
+            raise ValueError("本机仍有任务执行中，请等待任务结束或取消后再切换分支")
+        project = runtime.store.get("project", project_id)
+        item = workspace(runtime, project)
+        root = runtime.root(project_id, item["id"])
+        before = await asyncio.to_thread(git_workspace.inspect, root)
+        sync_workspace_git(runtime, item, before)
+        state = await asyncio.to_thread(git_workspace.switch, root, data.branch_name, before)
+        sync_workspace_git(runtime, item, state)
+        runtime.store.audit("git.branch_switched", project_id=project_id, branch_name=data.branch_name)
+        return state
 
     @app.post("/projects/{project_id}/workspaces/root/ensure", status_code=201)
     async def ensure_workspace(project_id: int, runtime: Runtime = Depends(local)):

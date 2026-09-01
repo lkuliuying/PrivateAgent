@@ -1,4 +1,5 @@
 """验证权限授予、审批审计与撤销后的执行边界。"""
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -20,11 +21,11 @@ async def test_inactive_workspace_cannot_start_a_run(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workspace_auto_writes_and_audits_but_project_scripts_still_wait(tmp_path):
+async def test_workspace_auto_writes_and_model_can_request_command_approval(tmp_path):
     app, client, server, root, body = await setup(tmp_path)
     try:
         server.responses = [response(call("write_project_file", {"rel_path": "safe.txt", "content": "自动批准"})),
-                            response(call("run_project_command", {"command": "npm test"})), response(text="停止")]
+                            response(call("run_project_command", {"command": "npm test", "require_approval": True})), response(text="停止")]
         created = (await client.post("/agent-runs", json={**body, "permission_mode": "workspace"})).json()
         await until(client, created["id"], {"waiting_approval"})
         assert (root / "safe.txt").read_text(encoding="utf-8") == "自动批准"
@@ -42,7 +43,7 @@ async def test_workspace_auto_writes_and_audits_but_project_scripts_still_wait(t
 
 
 @pytest.mark.asyncio
-async def test_full_access_is_distinct_requires_grant_and_can_write_regular_absolute_file(tmp_path):
+async def test_full_access_is_distinct_requires_grant_and_stays_inside_project(tmp_path):
     app, client, server, root, body = await setup(tmp_path)
     try:
         request = {**body, "permission_mode": "full_access"}
@@ -51,8 +52,8 @@ async def test_full_access_is_distinct_requires_grant_and_can_write_regular_abso
         grant = (await client.post(endpoint, json={})).json()
         assert grant["active"] and grant["project_id"] == body["project_id"]
         assert (await client.post(endpoint, json={})).json()["grant_id"] == grant["grant_id"]
-        target = tmp_path / "outside-project.txt"
-        server.responses = [response(call("write_project_file", {"rel_path": str(target), "content": "授权范围内"})), response(text="完成")]
+        target = root / "inside-project.txt"
+        server.responses = [response(call("write_project_file", {"rel_path": "inside-project.txt", "content": "授权范围内"})), response(text="完成")]
         created = (await client.post("/agent-runs", json=request)).json()
         final = await until(client, created["id"], TERMINAL)
         assert final["status"] == "completed"
@@ -107,12 +108,72 @@ def test_policy_rejects_traversal_secrets_shell_and_escalation(tmp_path):
                 policy.file_scope(tmp_path, path, mode)
     with pytest.raises(ValueError):
         policy.file_scope(tmp_path, str(tmp_path / "absolute.txt"), "workspace")
+    with pytest.raises(ValueError):
+        policy.file_scope(tmp_path, str(tmp_path / "absolute.txt"), "full_access")
     for command in ("cmd /c whoami", "powershell -Command ls", "sudo ls", "curl https://example.test", "npm test & whoami", "python -c 'print(1)'", "git push", "git diff --ext-diff", "pytest .env"):
         with pytest.raises(ValueError):
             policy.command_plan(command, "full_access")
     assert policy.command_plan("git status --short", "workspace").automatic
-    assert not policy.command_plan("npm test", "workspace").automatic
+    assert policy.command_plan("git branch", "workspace").automatic
+    assert not policy.command_plan("git branch", "confirm").automatic
+    assert policy.command_plan("npm test", "workspace").automatic
+    assert not policy.command_plan("npm test", "workspace", require_approval=True).automatic
     assert policy.command_plan("pytest tests/unit -q", "full_access").automatic
+
+
+@pytest.mark.skipif(os.name != "nt", reason="受控 PowerShell 只属于 Windows 客户端")
+def test_powershell_policy_is_project_relative_and_obeys_permission_modes(tmp_path):
+    confirm = policy.powershell_plan(tmp_path, "Get-ChildItem", ["-LiteralPath", ".", "-Force"], "confirm")
+    assert not confirm.automatic and confirm.argv[0] == "powershell.exe"
+    assert policy.powershell_plan(tmp_path, "Get-ChildItem", ["-LiteralPath", "."], "workspace").automatic
+    assert not policy.powershell_plan(
+        tmp_path,
+        "Get-ChildItem",
+        ["-LiteralPath", "."],
+        "workspace",
+        require_approval=True,
+    ).automatic
+    assert policy.powershell_plan(tmp_path, "Remove-Item", ["-LiteralPath", "generated.txt", "-Force"], "full_access").automatic
+    for command, arguments in (
+        ("Invoke-Expression", ["-Command", "whoami"]),
+        ("Get-Content", ["-LiteralPath", str(tmp_path.parent / "outside.txt")]),
+        ("Get-Content", ["../outside.txt"]),
+        ("Get-ChildItem", ["-LiteralPath", "Env:Path"]),
+    ):
+        with pytest.raises(ValueError):
+            policy.powershell_plan(tmp_path, command, arguments, "full_access")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="受控 PowerShell 只属于 Windows 客户端")
+async def test_workspace_runs_registered_powershell_and_records_display_command(tmp_path, monkeypatch):
+    app, client, server, root, body = await setup(tmp_path)
+    captured = []
+
+    async def fake_run_command(command_root, args, *, timeout=120):
+        captured.append((command_root, args, timeout))
+        return {"returncode": 0, "stdout": "ok\n", "stderr": "", "truncated": False}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", fake_run_command)
+    try:
+        server.responses = [
+            response(call("run_powershell_command", {
+                "command": "Get-ChildItem",
+                "arguments": ["-LiteralPath", ".", "-Force"],
+                "require_approval": False,
+            })),
+            response(text="完成"),
+        ]
+        created = (await client.post("/agent-runs", json={**body, "permission_mode": "workspace"})).json()
+        final = await until(client, created["id"], TERMINAL)
+        assert final["status"] == "completed"
+        assert captured and captured[0][0] == root and captured[0][1][0] == "powershell.exe"
+        executions = (await client.get(f"/agent-runs/{created['id']}/executions")).json()
+        assert executions[0]["output"]["args"] == ["powershell", "Get-ChildItem", "-LiteralPath", ".", "-Force"]
+        assert executions[0]["output"]["profile"] == "workspace-powershell"
+        assert (await client.get(f"/agent-runs/{created['id']}/approvals")).json() == []
+    finally:
+        await close(app, client)
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -46,20 +47,33 @@ class SearchArgs(Arguments):
 
 class WriteArgs(FileArgs):
     content: str = Field(max_length=files.MAX_FILE_BYTES)
+    require_approval: bool = False
 
 
 class CommandArgs(Arguments):
     command: str = Field(min_length=1, max_length=2000)
+    require_approval: bool = False
+
+
+class PowerShellArgs(Arguments):
+    command: str = Field(min_length=1, max_length=100)
+    arguments: list[str] = Field(default_factory=list, max_length=30)
+    require_approval: bool = False
 
 
 TOOLS = {
-    "list_project_directory": (DirectoryArgs, "List a local directory. Paths are project-relative unless an active full_access grant permits absolute paths."),
-    "read_code_file": (FileArgs, "Read a UTF-8 text file; credentials, protected directories and links are excluded. Absolute paths require full_access."),
+    "list_project_directory": (DirectoryArgs, "List a directory inside the selected project. All paths are project-relative in every permission mode."),
+    "read_code_file": (FileArgs, "Read a UTF-8 text file inside the selected project; credentials, protected directories and links are excluded."),
     "search_project_files": (SearchArgs, "Search names, or literal file content when content=true, inside the local project."),
-    "write_project_file": (WriteArgs, "Propose the complete new UTF-8 content of one file. The local policy decides whether user approval is required; the exact source SHA is checked before writing. Parent directory must exist."),
-    "run_project_command": (CommandArgs, "Request a registered developer command in the selected project. confirm allows pytest/python -m pytest, npm test/run test/build, cargo test/check with approval. workspace also auto-approves bounded Git diagnostics. full_access permits registered Git/Python/Node/package manager/Rust/Go/dotnet commands without inline evaluation or shell chaining. Scripts run as the current OS user."),
+    "write_project_file": (WriteArgs, "Propose the complete new UTF-8 content of one project file. Set require_approval=true when the model judges that even an auto-approval mode should ask the user. The exact source SHA is checked before writing. Parent directory must exist."),
+    "run_project_command": (CommandArgs, "Run a registered Git/Python/Node/package-manager/Rust/Go/dotnet command in the selected project. confirm always asks; workspace and full_access auto-approve unless require_approval=true. Shell chaining, inline evaluation and project-external path arguments are rejected."),
 }
-WRITE_TOOLS = {"write_project_file", "run_project_command"}
+if os.name == "nt":
+    TOOLS["run_powershell_command"] = (
+        PowerShellArgs,
+        "Run one registered Windows PowerShell cmdlet with named arguments inside the selected project. confirm always asks; workspace and full_access auto-approve unless require_approval=true. Scripts, pipelines, positional arguments and project-external paths are rejected.",
+    )
+WRITE_TOOLS = {"write_project_file", "run_project_command", "run_powershell_command"}
 SYSTEM = (
     "You are a coding assistant running on the user's computer. The cloud only provides inference. "
     "Use the available tools to inspect the selected project; use project-relative paths by default. "
@@ -124,7 +138,7 @@ class Runtime:
         project = self.store.get("project", project_id)
         workspace = self.store.get("workspace", workspace_id)
         if (project["status"] != "active" or not project["authorized"]
-                or workspace.get("status") != "active"
+                or workspace.get("status") not in {"active", "dirty"}
                 or workspace["project_id"] != project_id):
             raise ValueError("项目或工作区尚未授权")
         root = files.authorize_root(workspace["root_path"])
@@ -197,7 +211,8 @@ class Runtime:
         if run["permission_mode"] in {"workspace", "full_access"}:
             messages[0]["content"] += (
                 " The local permission policy may automatically authorize safe operations. "
-                "Only full_access with a current user grant permits absolute local file paths and expanded development commands. "
+                "All file and command path arguments remain inside the selected project, including full_access. "
+                "On Windows, use run_powershell_command only for its registered cmdlets and named project-relative arguments. "
                 "The local executor makes every permission decision; never bypass a denial."
             )
         messages.extend({"role": m["role"], "content": m["content"][:16000]} for m in history)
@@ -303,14 +318,20 @@ class Runtime:
                 if name == "write_project_file":
                     preview = files.patch_preview(scope, relative, args.content)
                     approval_preview = {"tool_name": name, "previewable": True, "reason": None, **preview}
-                    automatic = mode in {"workspace", "full_access"}
+                    automatic = mode in {"workspace", "full_access"} and not args.require_approval
                     profile = "project-write" if mode != "full_access" else "full-access-write"
-                else:
-                    plan = policy.command_plan(args.command, mode)
+                elif name == "run_project_command":
+                    plan = policy.command_plan(args.command, mode, require_approval=args.require_approval)
                     command = list(plan.argv)
                     automatic, profile = plan.automatic, plan.profile
                     approval_preview = {"tool_name": name, "previewable": False,
                                         "reason": "将在所选项目中以当前系统用户执行：" + args.command + "。项目脚本可读写该用户可访问的文件并联网；只批准可信项目。"}
+                else:
+                    plan = policy.powershell_plan(root, args.command, args.arguments, mode, require_approval=args.require_approval)
+                    command = list(plan.argv)
+                    automatic, profile = plan.automatic, plan.profile
+                    approval_preview = {"tool_name": name, "previewable": False,
+                                        "reason": "将在所选项目中执行受控 PowerShell 命令：" + " ".join(plan.display_argv) + "。"}
                 if not automatic and not await self.approve(run, call, approval_preview):
                     raise ValueError("用户拒绝或审批过期；未执行操作，请停止重试并询问用户")
                 self.root(run["project_id"], run["workspace_id"])
@@ -335,6 +356,7 @@ class Runtime:
                 if timeout <= 0:
                     raise ValueError("完全访问授权已过期")
                 output = await run_command(root, command, timeout=timeout)
+                output.update(args=list(plan.display_argv), profile=profile)
             execution.update(status="completed", output=output, completed_at=now())
             self.event(run, "tool.completed", name=name, tool_call_id=call["id"])
             return output
