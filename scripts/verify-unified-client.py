@@ -197,16 +197,25 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         session = await request("/sessions", "POST", {**binding, "title": "隔离验收"})
         binding.update(session_id=session["id"], message="fixture", model_profile_id=profile_id)
         replies.extend([tool("write_project_file", {"rel_path": "result.txt", "content": "本机验证"}),
-            tool("run_project_command", {"command": "python -m pytest"}), finish()])
+            tool("run_project_command", {"command": "python -m pytest"}),
+            tool("run_powershell_command", {"command": "Get-ChildItem", "arguments": ["-LiteralPath", ".", "-Name"]}),
+            finish()])
         run = await request("/agent-runs", "POST", {**binding, "permission_mode": "workspace"})
         assert (await terminal(run["id"], approve=True))["status"] == "completed"
         executions = await request(f"/agent-runs/{run['id']}/executions")
-        assert len(executions) == 2 and all(e["status"] == "completed" for e in executions)
+        assert len(executions) == 3 and all(e["status"] == "completed" for e in executions)
         assert (project / "result.txt").read_text(encoding="utf-8") == "本机验证"
         command_output = executions[1]["output"]
         assert command_output["returncode"] == 0 and "1 passed" in command_output["stdout"]
         assert command_output["execution_host_sha256"] == host_digest
-        approvals = await request(f"/agent-runs/{run['id']}/approvals")
+        powershell_output = executions[2]["output"]
+        assert powershell_output["returncode"] == 0 and "fixture.py" in powershell_output["stdout"]
+        assert powershell_output["args"] == ["powershell", "Get-ChildItem", "-LiteralPath", ".", "-Name"]
+        assert not await request(f"/agent-runs/{run['id']}/approvals")
+        replies.extend([tool("run_project_command", {"command": "python -m pytest"}), finish()])
+        confirm_run = await request("/agent-runs", "POST", {**binding, "permission_mode": "confirm"})
+        assert (await terminal(confirm_run["id"], approve=True))["status"] == "completed"
+        approvals = await request(f"/agent-runs/{confirm_run['id']}/approvals")
         assert len(approvals) == 1 and approvals[0]["status"] == "consumed"
         budget = await request(f"/sessions/{session['id']}/context-budget?model_profile_id={profile_id}")
         assert budget["source"] == "provider_usage" and budget["used_tokens"] == 1000 and budget["max_context_tokens"] == 4096
@@ -229,7 +238,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         assert execution["status"] == "failed" and "SHA-256" in execution["error_message"] and execution["output"] is None
         assert (await request(f"/full-access-grants/{grant['grant_id']}", "DELETE"))["revoked"]
         exported = await request("/local-history/export")
-        assert len(exported["records"]["runs"]) == 3 and exported["records"]["run_steps"]
+        assert len(exported["records"]["runs"]) == 4 and exported["records"]["run_steps"]
         assert not replies
         await request("/identity/clear", "POST")
         async with httpx.AsyncClient(base_url=server_origin, timeout=15, trust_env=False) as account:
@@ -243,9 +252,9 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         assert "/model-providers" in server_calls and "/agent-model-profiles?enabled_only=true" in server_calls
         if model_mode != "service":
             assert "/desktop/model/complete" not in server_calls
-        return {"model_mode": model_mode, "inference_mode": "auto", "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "manual_command_approval": True,
+        return {"model_mode": model_mode, "inference_mode": "auto", "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "workspace_auto_approval": True, "manual_command_approval": True, "powershell_command": True,
                 "full_access_script": True, "context_usage": budget["used_tokens"], "tampered_host_blocked": True,
-                "history_export_runs": 3, "sandbox_available": command_output["sandbox_available"], "real_model_called": False}
+                "history_export_runs": 4, "sandbox_available": command_output["sandbox_available"], "real_model_called": False}
     finally:
         if process is not None:
             if process.returncode is None:
