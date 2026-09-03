@@ -1,154 +1,311 @@
-# 在另一台 Windows 电脑继续开发
+# PrivateAgent 换机开发交接
 
-> 历史适用范围提示（2026-08-31 补充）：本文包含早期远程测试 EXE、草稿入口及原机工具版本。当前联网版 1.0.3 捆绑本机执行器，工作区也有未提交修复；接手先读 [共享项目状态记忆](./project-state.md)，不要直接套用旧产物入口或默认工作区干净。
+> 整理时间：2026-09-03（Asia/Shanghai）
+>
+> 适用场景：在另一台 Windows 电脑从 GitHub 重新克隆源码，并继续 PrivateAgent 开发。
+>
+> 本文只说明开发环境迁移，不授权服务器部署、发布、数据库迁移或生产配置变更。
 
-适用：本次 CentOS 服务端已部署，主要在 Windows x64 上修改 Tauri/Vue/Python 源码。先取得源码和工具，再按需配置独立开发后端。不要把生产数据库作为测试库。
+## 1. 交接基线
 
-## 1. 取得正确分支
+| 项目 | 本次核对结果 | 使用边界 |
+| --- | --- | --- |
+| 远程仓库 | `https://github.com/lkuliuying/PrivateAgent.git` | 不要改成来历不明的镜像地址 |
+| 开发分支 | `dev/1.0.0` | 默认 `main` 不是当前开发分支 |
+| 远程开发分支 | `ed71f564efbd49cd1f195d169f5f33ae3c47e92f` | 2026-09-03 通过 `git ls-remote` 实时核对；新电脑以克隆时的远程 HEAD 为准 |
+| 远程 `main` | `962a4f0bc6d7e054a0762687eca87305131d15d3` | 仅作分支识别，不要在换机时自行把开发分支切成 `main` |
+| 本机分支关系 | `HEAD...origin/dev/1.0.0` 为 `0 0` | 只证明本次核对时本地跟踪引用一致 |
+| 本机未提交内容 | `README.md` 有未提交修改；本文更新后也会成为未提交修改 | 未提交内容不会出现在另一台电脑 |
 
-安装 Git；如果要推送或下载草稿附件，再安装 GitHub CLI，并在新电脑通过 `gh auth login --web` 自己完成登录。不要复制旧机器的 GitHub token、SSH 私钥或凭据存储。
+提交哈希是交接时的核对基线，不是要求永久固定版本。如果远程分支后来继续更新，新电脑应使用克隆时取得的最新 `dev/1.0.0`，并记录实际 `git rev-parse HEAD` 结果。
+
+必须区分以下两类产品形态：
+
+- 普通版使用完整本机 FastAPI 后端，按功能需要配置 MySQL、Ollama、ChromaDB 等组件。
+- 联网版 `PrivateAgentRemote` 在用户电脑运行轻量本机执行器，项目文件与执行记录留在本机，账号和模型调用由服务器提供。它不是“把 Windows 项目目录交给 Linux 服务器执行”。
+
+## 2. 离开旧电脑前必须完成的 Git 检查
+
+新电脑只会取得已经提交并推送到远程仓库的内容。不要把“本机文件存在”理解为“远程仓库已有”。
+
+先在旧电脑的仓库根目录检查：
 
 ```powershell
-git clone --branch dev/1.0.0 https://github.com/lkuliuying/PrivateAgent.git
-Set-Location PrivateAgent
-git status --short
-git log -1 --oneline
+git status --short --branch
+git diff --stat
+git diff -- README.md
+git diff -- docs/new-computer-development.md
+git diff --staged
 ```
 
-当前改动保存在 `dev/1.0.0`，不是默认 main。开始新任务前保持工作区干净，再 `git pull --ff-only`。后续功能建议在此基础上新建自己的分支，不要改旧发布标签。
+本次编写交接文档时，`README.md` 的修改已经预先存在。先确认它的来源和内容，再决定是否随换机交付一起提交；不要为了让工作区变干净而丢弃、覆盖或盲目暂存它。
 
-若只需要使用客户端：登录 GitHub 后打开仓库的 Releases 页面，查看 `v1.0.0` 草稿；普通匿名访客看不到草稿。也可用：
+至少需要把本文提交并推送，另一台电脑才能从远程仓库读到它：
 
 ```powershell
-gh release view v1.0.0 --repo lkuliuying/PrivateAgent
-gh release download v1.0.0 --repo lkuliuying/PrivateAgent --dir .\release-download
+git add -- docs/new-computer-development.md
+
+# 仅在确认 README.md 的现有改动也属于本次交付后，才执行下一行。
+git add -- README.md
+
+git diff --cached --check
+git diff --cached
+git commit -m "docs: refresh cross-machine development handoff"
 ```
 
-使用新目录下载，不加覆盖选项。客户端压缩包附带校验值与使用说明；它是未签名测试 EXE，需要 WebView2，不包含 MySQL/Python。不要使用应用内更新覆盖此远程构建。
+提交后先核对远程变化，不要使用 `reset --hard`、`clean`、强制推送或历史重写来解决分支差异：
 
-## 2. 工具前置条件
+```powershell
+git fetch origin
+git rev-list --left-right --count HEAD...origin/dev/1.0.0
+```
 
-| 工具 | 用途与版本口径 |
-|---|---|
-| Git / GitHub CLI | 拉代码；推送和草稿下载需你自己的 GitHub 登录 |
-| Node.js / npm | 前端依赖和构建；本次实测 Node 24.14.0 / npm 11.9.0 |
-| Rust MSVC 工具链 | Tauri；本次实测 rustc/cargo 1.96.1，目标 `x86_64-pc-windows-msvc` |
-| Visual Studio 2022 Build Tools | “使用 C++ 的桌面开发”及 Windows SDK；脚本会查找 vcvars64.bat |
-| Microsoft Edge WebView2 Runtime | 运行 Windows Tauri 客户端 |
-| uv / Python | 修改后端与运行后端测试时使用；项目 Python >=3.12；本机测试 Python 3.13.13，服务器 Python 3.12 系列 |
-| MySQL 8.x | 仅完整本地后端/数据库集成测试需要，使用独立开发数据库 |
-| Ollama | 仅测试本地模型或相应 embedding 场景需要；远程客户端构建不需要 |
+输出的第一个数字是仅本地提交数，第二个数字是仅远程提交数：
 
-工具安装遵循 [Tauri 官方 Windows 前置条件](https://v2.tauri.app/start/prerequisites/#windows)。这些是开发机组件，不需要在 CentOS 上安装 Windows 构建工具。本次没有替新电脑安装软件，也没有升级当前项目依赖。
+- 第二个数字为 `0` 时，可继续推送当前提交。
+- 第二个数字大于 `0` 时，先确认工作区干净，再用 `git merge --no-edit origin/dev/1.0.0` 保留双方历史，处理冲突并重新验证。
+- 不确定冲突归属时停止操作，不要覆盖其他会话或其他开发者的改动。
 
-安装后新开 PowerShell 检查：
+推送并核对：
+
+```powershell
+git push origin dev/1.0.0
+git rev-parse HEAD
+git ls-remote --heads origin refs/heads/dev/1.0.0
+git status --short --branch
+```
+
+只有 `git rev-parse HEAD` 与 `git ls-remote` 返回的远程提交一致，且计划移交的文件都已提交，才能确认源码已通过 Git 交接。本文没有自动执行提交或推送。
+
+## 3. 新电脑开发工具
+
+### 3.1 基础工具
+
+| 工具 | 要求与用途 |
+| --- | --- |
+| Git | 克隆、同步和提交代码；需要推送时使用新电脑上自己的 GitHub 登录 |
+| Python | `>=3.12`；建议用 Python 3.12 作为共同开发基线 |
+| uv | 按 `uv.lock` 创建和同步 Python 环境 |
+| Node.js / npm | Node.js `>=20`；按 `apps/desktop/package-lock.json` 安装桌面端依赖 |
+| Rust stable | 编译 Tauri/Rust 组件，Windows 目标为 `x86_64-pc-windows-msvc` |
+| Visual Studio 2022 Build Tools | 安装“使用 C++ 的桌面开发”和 Windows SDK，提供 MSVC linker |
+| Microsoft Edge WebView2 Runtime | 运行 Tauri 桌面客户端 |
+
+按开发范围选装：
+
+- MySQL 8：完整本地后端、数据库迁移或数据库集成测试需要；必须使用开发库或专用测试库。
+- Ollama 和模型：仅本地模型、embedding 或对应 RAG 场景需要。
+- Playwright Chromium：仅运行浏览器端到端测试时需要。
+- GitHub CLI：仅需要额外的 GitHub Release 或仓库操作时使用；普通 `git clone` 不强制要求。
+
+安装后重新打开 PowerShell，检查工具是否进入 PATH：
 
 ```powershell
 git --version
+py -3.12 --version
+uv --version
 node --version
 npm.cmd --version
 rustc --version
 cargo --version
-uv --version
 ```
 
-## 3. 按锁文件安装依赖
+旧电脑本次核对到的工具版本为 Git `2.45.1.windows.1`、Node.js `24.14.0`、npm `11.9.0`、uv `0.11.32`、Rust `1.97.1`。这些只是可工作的参考组合，不是锁文件之外的强制精确版本。
 
-在新克隆的仓库根目录执行，任一命令失败就先解决该错误：
+### 3.2 凭据原则
+
+在新电脑使用自己的 GitHub 登录、应用账号和开发凭据。不要复制旧电脑的 GitHub token、SSH 私钥、Windows 凭据管理器内容、登录会话、生产环境文件或签名私钥。
+
+如果 HTTPS 克隆出现 `SEC_E_NO_CREDENTIALS`，优先在普通交互式 PowerShell/Git Credential Manager 中完成自己的 GitHub 登录后重试；不要把凭据写进仓库 URL、脚本或文档。
+
+## 4. 在新电脑克隆和核对源码
+
+在准备存放源码的父目录执行：
+
+```powershell
+git clone --branch dev/1.0.0 --single-branch https://github.com/lkuliuying/PrivateAgent.git PrivateAgent
+Set-Location PrivateAgent
+git status --short --branch
+git remote -v
+git log -5 --oneline
+git rev-parse HEAD
+git rev-list --left-right --count HEAD...origin/dev/1.0.0
+```
+
+预期分支为 `dev/1.0.0`，工作区初始状态干净，ahead/behind 为 `0 0`。如果远程提交已经晚于本文的基线，以新电脑实际取得的远程提交为准。
+
+开始开发前依次阅读：
+
+1. [`AGENTS.md`](../AGENTS.md)：仓库级工作约定、安全边界和交付要求。
+2. [`docs/project-state.md`](./project-state.md)：带日期的共享状态和未验收事项；它是历史事实索引，不是实时 Git 状态。
+3. [`README.md`](../README.md)：当前架构、普通版快速开始和构建入口。
+4. [`docs/testing-guide.md`](./testing-guide.md)：测试数据库隔离和各层验证命令。
+5. 当前任务直接涉及的源码、测试及专题文档。
+
+`docs/project-state.md` 当前整理日期为 2026-08-31，其中的 HEAD 快照早于本文核对到的远程提交。接手时应保留其故障和验收边界，但所有当前提交、工作区、构建和运行结论必须重新验证。
+
+## 5. 按锁文件恢复依赖
+
+### 5.1 Python
+
+在仓库根目录执行：
 
 ```powershell
 uv sync --locked --extra dev --python 3.12
 if ($LASTEXITCODE -ne 0) { throw 'Python dependency installation failed' }
+```
+
+`pyproject.toml` 是 Python 依赖规范，`uv.lock` 是锁定解析。换机初始化时不要随意改用 `uv lock --upgrade`，也不要从旧电脑复制 `.venv`。
+
+### 5.2 Vue / TypeScript
+
+```powershell
 Push-Location apps\desktop
 npm.cmd ci
 if ($LASTEXITCODE -ne 0) { throw 'Desktop dependency installation failed' }
 Pop-Location
 ```
 
-`--locked` 会检查并使用已有锁文件；不会悄悄更新版本解析。参见 [uv 锁定与同步](https://docs.astral.sh/uv/concepts/projects/sync/)。不要使用 `npm update`、删除锁文件或直接复制旧机的 `.venv/node_modules/target`。
+使用 `npm ci` 恢复 `package-lock.json` 中的依赖。不要使用 `npm update`，不要删除锁文件，也不要复制旧电脑的 `node_modules`。
 
-只改前端时可以暂不安装 Python/MySQL；只编译本次远程客户端无需 Python sidecar。完整后端集成测试需要另建本地数据库和测试配置，见 [测试指南](./testing-guide.md)。不要导出或复制生产秘密文件到源码目录。
+### 5.3 Rust / Tauri
 
-## 4. 最小验证
-
-下面的后端回归脚本预先替换配置与数据库模块，并只执行 Alembic 的 URL 赋值语句，不读取环境文件、不连库、不执行迁移：
+确认 Rust 默认目标和 MSVC 环境可用：
 
 ```powershell
-.\.venv\Scripts\python.exe -B scripts\verify-deployment-regressions.py
-.\.venv\Scripts\python.exe -m ruff check src/personal_assistant/api/routes_health.py tests/test_health_visibility.py scripts/verify-deployment-regressions.py
+rustup show
+rustup target list --installed
 ```
 
-预期：Alembic 编码/普通 URL 两个往返断言通过，健康权限 9 项通过。此脚本只用于部署回归，不能替代完整 pytest。
+Tauri 编译应在“Developer PowerShell for VS 2022”中运行，确保 `cl.exe` 和 `link.exe` 已加载。仓库当前的 `scripts/run-tauri-dev.bat` 和 `scripts/cargo-check-tauri.bat` 都含旧机器的绝对路径 `F:\Program\Agent`，换机后不要直接依赖这两个脚本；从新仓库的实际目录直接运行对应的 npm 或 Cargo 命令。
 
-`alembic/env.py` 另行纳入 Ruff 时会报告原有导入排序 `I001`；已用修改前的 Git 版本复现相同结果。本次仅修 URL 转义，没有顺手重排导入；回归脚本覆盖该行真实行为和语法。
+## 6. 按开发目标启动
 
-前端在 `apps/desktop` 执行：
-
-```powershell
-npm.cmd test -- src/components/SettingsView.spec.ts src/components/SettingsModuleNav.spec.ts src/pages/AdminPage.spec.ts src/router/index.spec.ts src/api/modelProviders.spec.ts src/api/http.spec.ts src/stores/health.spec.ts --maxWorkers=1 --minWorkers=1
-node node_modules/vue-tsc/bin/vue-tsc.js --noEmit
-```
-
-完整预期为 7 文件 32 项通过，类型检查退出码 0。本轮交接实测是 31 项通过、1 项路由测试默认 5 秒超时；修改前 `2d48efd` 的独立源码副本同样复现该超时，尚未修复。保留该测试，不提高阈值来掩盖失败；六个其他文件共 30 项通过。详见部署总结的验证范围。
-
-可选真实浏览器检查（第一次需为 Playwright 安装 Chromium）：
-
-```powershell
-npx.cmd playwright install chromium
-npm.cmd run e2e -- e2e/coding-workbench.spec.ts --grep '设置按模块切换' --retries=0
-```
-
-该用例使用模拟会话/API，不访问生产服务器；预期 1 项通过。
-
-## 5. 构建远程客户端
-
-本节为未签名便携测试包。需要客户端内“检查更新”的远程安装版，请使用[远程客户端更新流程](./remote-client-updates.md)，不要把便携 EXE 当作 updater 安装包发布。
-
-在仓库根目录运行，将示例地址替换为自己的 HTTPS API 域名；仅填 origin，不带路径、查询串、令牌或账号：
-
-```powershell
-.\scripts\build-remote-client.cmd "https://api.example.com"
-if ($LASTEXITCODE -ne 0) { throw 'Remote client build failed; do not run an old EXE' }
-```
-
-构建输出为新的 `.run/remote-client-*` 目录，其中包含：
-
-- `PrivateAgent-remote-windows-x64.exe`：远程客户端。
-- `SHA256SUMS.txt`：EXE 的 SHA256。
-- `build-info.json`：源码提交、工作区是否干净、远程地址、目标平台等非秘密来源信息。
-- `web/`：本次嵌入的前端资源，供排障。
-
-脚本先类型检查和 Vite 构建，再用锁定的 Cargo 依赖构建 x64 EXE，检查当前前端入口已嵌入。它不修改 Tauri 配置文件、不打包 sidecar、不读取签名私钥、不生成安装包或自动更新文件。共享 Cargo 构建缓存可能更新；以前输出目录中的客户端不会被覆盖。首次构建需要下载依赖并可能较慢，不要并行在同一个 checkout 构建多个 Tauri 包。
-
-正式交付应先提交源码，再从干净工作区构建，确认 `build-info.json` 中 `dirty=false`。哈希因工具链/时间等因素可能不同，不要求在另一台机器上按字节复现同一 EXE。
-
-不要把服务令牌设置为 `VITE_API_TOKEN`；前端构建变量可被用户从 EXE 中提取。脚本强制该变量为空，登录使用个人账号。
-
-## 6. 日常开发与远程联调
-
-最安全的第一步是前端本地预览：
+### 6.1 只开发或检查前端界面
 
 ```powershell
 Set-Location apps\desktop
 npm.cmd run dev
 ```
 
-打开 `http://127.0.0.1:1420/?workspace-preview=running` 可用预览数据检查工作台。没有必要为了改 UI 接入生产账号或数据库。
+访问 `http://127.0.0.1:1420/?workspace-preview=running`。该入口使用开发预览数据，不等于真实 Tauri、本机执行器、服务器账号或生产模型验收。
 
-完整本地功能调试使用独立本地 API、开发数据库和本地配置，按 [README 开发步骤](../README.md#快速开始) 配置；注册验证码和模型能力需要开发者自己的凭据。不要把生产备份导入随意运行的测试环境。
+### 6.2 开发普通版完整本机后端
 
-远程功能验收使用上节编译的客户端登录。开发浏览器的 `localhost:1420` Origin 不等于打包客户端的 `tauri.localhost`，生产服务不一定允许前者，不能通过关闭鉴权或放宽为任意 Origin 来绕过。
-
-新电脑需要重新登录应用，并按需重新输入自己的模型 Key。不要迁移浏览器本地存储、Windows 密钥库或复制旧会话当作登录方式。服务器端重启也可能清空运行时模型 Key，保存后再验收聊天。
-
-## 7. 提交和发布前
+返回仓库根目录：
 
 ```powershell
-git status --short
-git diff --check
-git diff --stat
+Copy-Item .env.example .env
 ```
 
-只显式暂存本次源码和测试文件，检查差异后提交推送。不要 `git add -f` 强行加入忽略目录；不要上传 `.env`、smtp.env、数据库、日志、用户文档、令牌文件或私钥。
+至少把 `.env` 中的 `PA_DB_URL` 改为新电脑上的专用开发库。不要使用生产数据库，不要把密码或 API key 提交到 Git。
 
-本次 `v1.0.0` 仍是草稿联调交付，不是新稳定版。公开发布会触发另一个签名安装流程，不能以点击 Publish 替代远程客户端验证。后续按 [发布清单](./release-checklist.md) 单独做发布工作。
+数据库迁移会修改所配置数据库，确认目标后再执行：
+
+```powershell
+uv run alembic upgrade head
+uv run alembic current
+uv run uvicorn personal_assistant.main_api:app --reload --host 127.0.0.1 --port 8000
+```
+
+另开“Developer PowerShell for VS 2022”，从新电脑的实际仓库路径启动桌面端：
+
+```powershell
+Set-Location <新电脑仓库路径>\apps\desktop
+npm.cmd run tauri dev
+```
+
+不要把示例占位符 `<新电脑仓库路径>` 原样执行。
+
+### 6.3 开发或构建联网版客户端
+
+联网版会打包轻量本机执行器，因此开发/构建机仍需要 Python 环境、PyInstaller 依赖、前端依赖、Rust/MSVC 和 WebView2。它不要求终端用户自行安装 MySQL 或 Ollama。
+
+先查看构建参数并做无产物检查：
+
+```powershell
+node scripts/build-remote-client.cjs --help
+node scripts/build-remote-client.cjs "https://api.example.com" --preview-installer --version 1.0.4 --dry-run
+```
+
+示例域名必须替换为已确认的 HTTPS API origin，不能包含路径、查询参数、令牌或账号。真正构建、签名、上传和发布是独立操作，按 [`docs/remote-client-updates.md`](./remote-client-updates.md) 执行，不要仅凭 dry-run 宣称安装包已生成或已发布。
+
+## 7. 新电脑首次验证
+
+先做不依赖生产服务的检查：
+
+```powershell
+git status --short --branch
+git diff --check
+uv run --with ruff ruff check src tests scripts
+uv run python -m compileall -q src scripts
+node --test scripts/build-remote-client.test.cjs
+
+Push-Location apps\desktop
+npm.cmd run test
+npm.cmd run build
+Pop-Location
+
+Push-Location apps\desktop\src-tauri
+cargo check --locked
+Pop-Location
+```
+
+逐条保留退出码和失败摘要。只有实际运行并通过的项目才能记为通过；本文不预填测试数量，也不把旧电脑的历史成绩当作新电脑成绩。
+
+全量 Python 测试和迁移往返需要先配置独立测试库：
+
+```powershell
+uv run pytest -q
+```
+
+执行前确认 `PA_TEST_DB_URL` 指向专用测试库，并与 `PA_DB_URL` 隔离。不要为了跑通测试而连接生产数据库、关闭鉴权、删除有效测试或放宽安全检查。
+
+Playwright 首次运行需要浏览器组件：
+
+```powershell
+Push-Location apps\desktop
+npx.cmd playwright install chromium
+npm.cmd run e2e
+Pop-Location
+```
+
+浏览器模拟测试通过不等于真实 Tauri 安装、自动更新、账号登录、付费模型调用或服务器部署验收通过。
+
+## 8. 不通过 Git 迁移的内容
+
+以下内容被忽略、与机器绑定或可能包含敏感数据，不应提交到远程仓库，也不应整目录复制到新电脑：
+
+| 内容 | 处理方式 |
+| --- | --- |
+| `.env`、`.env.local`、`.env.container`、`smtp.env`、`.secrets/` | 在新电脑按示例重新创建，只填写新环境自己的值 |
+| `.tauri/`、`*.key`、`*.pfx` 等签名材料 | 不复制、不提交；确需签名时走独立密钥交接流程 |
+| `.venv/`、`node_modules/`、各 Cargo `target/`、`dist/` | 从锁文件重新生成 |
+| `data/`、日志、数据库文件、`.run/`、`.tmp/`、缓存目录 | 默认不迁移；需要数据迁移时另行定义脱敏、备份和恢复方案 |
+| Windows 凭据管理器、GitHub 凭据、应用登录会话 | 在新电脑重新登录，不导出旧凭据 |
+| 联网版本机 SQLite 与用户项目目录 | 不随源码仓库同步；用户项目需要单独的安全备份/版本控制方案 |
+| 本机测试 EXE、安装包和旧 Release 下载目录 | 不作为源码基线；需要时从可信发布渠道重新取得并校验 |
+
+如果确实要迁移个人项目文件或开发数据库，应作为独立任务确认数据范围、敏感性、备份、校验和回滚；不要把它们塞进 PrivateAgent 源码提交。
+
+## 9. 当前项目边界与待确认项
+
+- 当前远程开发分支已经包含统一模型路由、联网版本机执行、服务器更新工具、Git/PowerShell 权限和执行时间线等后续提交；不要只按 2026-08-31 的旧 HEAD 判断功能是否存在。
+- `docs/project-state.md` 记录的联网版模型/管理员日志故障，本机修复、服务器运行副本、真实账号与生产验收状态属于不同证据层。没有新的服务器回执时继续标记“待确认”。
+- 当前本机 `README.md` 修改尚未提交；如果它未被提交并推送，新电脑看到的 README 会是远程版本。
+- 新电脑完成依赖安装、静态检查和本地测试，不代表服务器已更新，也不代表任何发布产物已重新构建或上传。
+- 不要从换机需求扩展到服务器部署、生产重启、GitHub Release、签名或远程数据库操作。
+
+## 10. 换机完成检查表
+
+- [ ] 旧电脑计划交接的修改已经逐文件复核、提交并推送。
+- [ ] 新电脑克隆的是 `dev/1.0.0`，并记录了实际 HEAD。
+- [ ] `git status --short --branch` 显示预期分支和干净初始状态。
+- [ ] 已阅读 `AGENTS.md`、`docs/project-state.md` 和当前任务相关文档。
+- [ ] Python、Node、Rust/MSVC 和 WebView2 已按开发范围安装。
+- [ ] Python 与前端依赖均从锁文件重新安装。
+- [ ] 本地配置使用开发环境自己的值，没有复制或提交秘密。
+- [ ] 已运行并记录与当前改动范围相匹配的验证命令。
+- [ ] 普通版、联网版、本机代码、安装包、服务器部署和真实账号验收结论没有混用。
+
+完成以上项目后，才可把“换机后的源码开发环境已恢复”作为结论；尚未执行的构建、测试、服务器操作和真实业务验收仍需分别记录为未验证。
