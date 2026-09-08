@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
+from private_agent_local import files
 from private_agent_local.instructions import InstructionError, InstructionLoader
 
 
@@ -38,8 +39,8 @@ def test_links_unreadable_and_deletion_invalidate_cache(tmp_path, monkeypatch):
     before = loader.load(tmp_path)[0]
     rule.write_text("after!", encoding="utf-8")
     assert loader.load(tmp_path)[0].sha256 != before.sha256
-    original = Path.is_symlink
-    monkeypatch.setattr(Path, "is_symlink", lambda path: path == rule or original(path))
+    original = files.linked
+    monkeypatch.setattr(files, "linked", lambda path: path == rule or original(path))
     with pytest.raises(InstructionError):
         loader.load(tmp_path)
     monkeypatch.undo()

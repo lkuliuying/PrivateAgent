@@ -133,7 +133,8 @@ def test_powershell_policy_is_project_relative_and_obeys_permission_modes(tmp_pa
         "workspace",
         require_approval=True,
     ).automatic
-    assert policy.powershell_plan(tmp_path, "Remove-Item", ["-LiteralPath", "generated.txt", "-Force"], "full_access").automatic
+    with pytest.raises(ValueError, match="统一补丁工具"):
+        policy.powershell_plan(tmp_path, "Remove-Item", ["-LiteralPath", "generated.txt", "-Force"], "full_access")
     for command, arguments in (
         ("Invoke-Expression", ["-Command", "whoami"]),
         ("Get-Content", ["-LiteralPath", str(tmp_path.parent / "outside.txt")]),

@@ -74,7 +74,7 @@ export async function fetchRunApprovalPreview(
   runId: string,
   approvalId: string
 ): Promise<RunApprovalPreviewRecord> {
-  const preview = (await getAgentApprovalPreview(runId, approvalId)) as AgentApprovalPreview;
+  const preview = (await getAgentApprovalPreview(runId, approvalId)) as AgentApprovalPreview & Partial<RunApprovalPreviewRecord>;
   return {
     tool_name: preview.tool_name,
     previewable: preview.previewable,
@@ -85,6 +85,10 @@ export async function fetchRunApprovalPreview(
     diff: preview.diff,
     truncated: preview.truncated,
     reason: preview.reason,
+    patch_set_id: preview.patch_set_id,
+    run_id: preview.run_id,
+    preview_sha256: preview.preview_sha256,
+    changes: preview.changes,
   };
 }
 

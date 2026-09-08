@@ -1,5 +1,7 @@
 # 测试与验证指南
 
+> **S3 仓库与补丁**：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite repository` 运行范围读取、搜索分页、实际文件补丁、故障恢复和 ASGI/SQLite 回归，已并入 `all`。前端覆盖 `PatchPreview.spec.ts`、`PatchReviewPanel.spec.ts`。支持边界、精确成绩和跳过原因见 [S3 验收报告](analysis/coding-agent-upgrade-20260908/s3-validation-report.md)。测试使用隔离数据，不触及业务数据库或真实模型。
+
 > **S2 项目指令与上下文**：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite context` 运行规则、历史与压缩边界，已并入 `all`。旧服务端隔离入口 `run_coding_legacy_validation.py` 追加 ModelGateway 与桌面模型 DTO 回归，仍禁止真实业务数据库/外部网络。前端新增 `LocalContextPanel.spec.ts`。实际成绩与保留的跳过项见 [S2 验收报告](analysis/coding-agent-upgrade-20260908/s2-validation-report.md)。
 
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
@@ -75,13 +75,15 @@ class Store:
             raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
         if version == SCHEMA_VERSION:
             return
-        if version in {2, 3}:
+        if version in {2, 3, 4}:
             backup = self._backup()
             with self.transaction():
                 if version == 2:
                     self._history_schema()
-                self._context_schema()
-                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "context_items_and_checkpoints"})))
+                if version < 4:
+                    self._context_schema()
+                self._patch_schema()
+                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "file_snapshots_and_patch_journal"})))
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
         names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -110,6 +112,7 @@ class Store:
             self.db.execute("CREATE TABLE audit_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL)")
             self._history_schema()
             self._context_schema()
+            self._patch_schema()
             counts = {"objects": 0, "runs": 0}
             if legacy:
                 for item_id, kind, data in self.db.execute("SELECT id,kind,data FROM legacy_objects_v1 ORDER BY id").fetchall():
@@ -141,9 +144,20 @@ class Store:
         self.db.execute("CREATE TABLE context_checkpoints(id TEXT PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(session_id,request_id))")
         self.db.execute("CREATE INDEX context_checkpoints_session ON context_checkpoints(session_id,state)")
 
+    def _patch_schema(self):
+        self.db.execute("CREATE TABLE file_snapshots(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), rel_path TEXT NOT NULL, sha256 TEXT NOT NULL, data TEXT NOT NULL)")
+        self.db.execute("CREATE INDEX file_snapshots_run ON file_snapshots(run_id,rel_path)")
+        self.db.execute("CREATE TABLE patch_sets(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), operation_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, data TEXT NOT NULL)")
+        self.db.execute("CREATE INDEX patch_sets_run ON patch_sets(run_id)")
+        self.db.execute("CREATE TABLE patch_journal(patch_set_id TEXT NOT NULL REFERENCES patch_sets(id), sequence INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(patch_set_id,sequence))")
+
     def _recover(self):
         """重启关闭授权并记录不确定的外部副作用，绝不重放命令或文件写入。"""
         with self.transaction():
+            for identifier, data in self.db.execute("SELECT id,data FROM patch_sets WHERE status='applying'").fetchall():
+                patch = self._unpack(data)
+                patch.update(status="interrupted", error="执行器中断；未重放。请查看逐项落盘日志与当前文件状态")
+                self.db.execute("UPDATE patch_sets SET status=?,data=? WHERE id=?", (patch["status"], self._pack(patch), identifier))
             for run in self.runs(active_only=True):
                 run.update(status="failed", active_in_process=False, error_code="desktop_restarted",
                            error_message="本机执行服务已重启；未自动重放操作，请检查项目后重试", completed_at=now())

@@ -81,3 +81,12 @@ S1 只接 RunOutcome 与命令业务结果；S2 接 ContextItem；S3 接 Workspa
 - SQLite 新表为 `context_items`、`context_checkpoints`，schema 2/3 先备份再事务升级到 4；运行/消息/原事件仍保留原有语义。检查点保存压缩前 ordinal、父版本、结构摘要与原始 source_item_ids，后续 S3 应复用这些 item/执行关联保存读取版本，不能另建无关联文件历史。
 - ModelRequest 加性支持 max_output_tokens，并接通网关能力检查、三类 Provider 的 complete/stream 与服务器 DTO。旧调用可省略；新版本机请求需要配套服务器代码。S2 没有部署服务器，也没有自动恢复授权或副作用。
 - 本机 API 和默认限制、失败边界、源与计量的展示见 [上下文设计](../../context-design.md)及 [S2 验收报告](./s2-validation-report.md)。S0 历史表中的 schema 3、24 轮限制保留为当时基线，不适用于 S2 主链。
+
+## 8. S3 接入补记（2026-09-08）
+
+- 本机运行使用冻结的 `WorkspaceIdentity` 保存项目/工作区、规范根路径、起始 Git HEAD 和 dirty 标记；根文件身份另以设备号/inode 绑定读快照及批准。内部绝对路径不进入新增补丁预览载荷。
+- `private_agent_core/patches.py` 定义严格结构化输入和纯文本变换，本机 Repository/PatchService 负责 I/O。保留 `read_code_file` 等工具名称；本轮文件工具、补丁工具和收缩后的 PowerShell 工具记录版本 2。私有传输和宿主协议未改变。
+- `file_snapshots` 关联 run/path/SHA，运行时读取另保存真实 execution/operation/tool_call ID，与 S2 ContextItem 来源对应。完整内容复用 Store 的有界内容引用，不另造无来源的模型历史。
+- `patch_set_id` 标识不可变预览；预览调用、应用调用、回滚各有自己的 operation ID，不将它们混成一次执行。应用执行记录引用 patch_set_id，逐项日志按补丁内 sequence 排序。重复消费同一个已应用补丁不重复落盘；失败或未知补丁拒绝重放。
+- 当前 SQLite schema 5 新增 `file_snapshots`、`patch_sets`、`patch_journal`；schema 2/3/4 备份后事务迁移，重启将 applying 标为 interrupted，保留意图和结果。S5 自动恢复尚未接入。
+- S1 从持久化日志与当前磁盘状态生成文件证据，包括删除/目录/移动。用户回滚使原运行完成结论转 unknown，避免沿用已失效证据。实际状态机、限制及验证见 [S3 验收报告](./s3-validation-report.md)。

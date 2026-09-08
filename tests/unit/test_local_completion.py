@@ -83,7 +83,7 @@ async def test_s1_t03_search_empty_is_normal(api):
 
 
 async def test_s1_t04_fake_file_result_is_not_evidence(api, monkeypatch):
-    monkeypatch.setattr("private_agent_local.files.apply_patch", lambda *args: {"applied": True, "verified": True})
+    monkeypatch.setattr("private_agent_local.patchsets.replace_one", lambda *args: {"applied": True, "verified": True})
     run = await create_run(api, "创建 hello.py", [response(call("write_project_file", {"rel_path": "hello.py", "content": "print('hello')"})),
                                                *[response(text="文件已经创建") for _ in range(3)]])
     assert run["goal_outcome"] == "unmet" and not (api[3] / "hello.py").exists()

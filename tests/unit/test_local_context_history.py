@@ -57,6 +57,8 @@ def test_v3_context_migration_backup_and_failure_rollback(tmp_path, monkeypatch,
     path = store.path
     store.db.execute("DROP TABLE context_items")
     store.db.execute("DROP TABLE context_checkpoints")
+    for table in ("patch_journal", "patch_sets", "file_snapshots"):
+        store.db.execute(f"DROP TABLE {table}")
     store.db.execute("DELETE FROM schema_migrations")
     store.db.execute("PRAGMA user_version=3")
     store.db.commit()
@@ -83,7 +85,7 @@ def test_v3_context_migration_backup_and_failure_rollback(tmp_path, monkeypatch,
             assert current.get("message", original["id"]) == original
         finally:
             current.db.close()
-    backups = list(tmp_path.glob("*.pre-v4-*.sqlite3"))
+    backups = list(tmp_path.glob(f"*.pre-v{SCHEMA_VERSION}-*.sqlite3"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 3

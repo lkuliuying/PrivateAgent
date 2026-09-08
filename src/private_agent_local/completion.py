@@ -22,7 +22,7 @@ from . import files, policy
 SCAN_IGNORED = files.IGNORED | {".pytest_cache", ".ruff_cache", ".mypy_cache", ".privateagent", ".codex"}
 MAX_SCAN_FILES = 10_000
 MAX_SCAN_BYTES = 64 * 1024 * 1024
-BLOCKING_CODES = {"operation_denied", "approval_expired", "permission_blocked", "environment_unavailable", "local_tool_rejected"}
+BLOCKING_CODES = {"operation_denied", "approval_expired", "permission_blocked", "environment_unavailable", "local_tool_rejected", "patch_conflicted"}
 
 
 def content_ref(value: dict | str) -> ContentRef:
@@ -95,9 +95,11 @@ def denied_operation(run: dict, scope: dict, *, collection: str = "denied_operat
         old = denial["scope"]
         if old["kind"] == "command" or scope["kind"] == "command":
             return True
-        first, second = old["path"], scope["path"]
-        if first == second or first.startswith(second + "/") or second.startswith(first + "/"):
-            return True
+        for first in old.get("paths", [old.get("path", "")]):
+            for second in scope.get("paths", [scope.get("path", "")]):
+                first, second = first.casefold(), second.casefold()
+                if first == second or first.startswith(second + "/") or second.startswith(first + "/"):
+                    return True
     return False
 
 
@@ -178,6 +180,9 @@ class LocalCompletionVerifier:
             if execution.get("scope", {}).get("kind") == "file":
                 target = execution.get("target_path", "")
                 add_requirement("file_changed", target, f"文件写入核对：{target}", "disk")
+            elif execution.get("scope", {}).get("kind") == "files":
+                for target in execution["scope"]["paths"]:
+                    add_requirement("file_changed", target, f"补丁落盘核对：{target}", "disk")
             if execution.get("command"):
                 kind = "test" if (execution.get("execution_result") or {}).get("command_kind") == "test" else "command"
                 add_requirement(kind, execution["command"], f"{'测试结果' if kind == 'test' else '命令结果'}：{execution['command']}",
@@ -226,11 +231,22 @@ class LocalCompletionVerifier:
                 else:
                     status, message = "failed", f"产物不存在或不能安全回读：{requirement.scope}"
             elif requirement.kind == "file_changed":
-                matching = [item for item in executions if (not requirement.scope or item.get("target_path") == requirement.scope)
-                            and item.get("scope", {}).get("kind") == "file"]
+                matching = [item for item in executions if
+                            (item.get("scope", {}).get("kind") == "file" and (not requirement.scope or item.get("target_path") == requirement.scope))
+                            or (item.get("scope", {}).get("kind") == "files" and (not requirement.scope or requirement.scope in item["scope"]["paths"]))]
                 candidates = matching[-1:] if requirement.scope else list(reversed(matching))
                 status, message = "failed", f"缺少实际文件变化证据：{requirement.scope or '所选项目'}"
                 for item in candidates:
+                    if item.get("patch_set_id"):
+                        patch_facts = self.owner.patches.facts(persisted["id"], item["patch_set_id"], self.root)
+                        selected = [fact for fact in patch_facts if not requirement.scope or fact["rel_path"] == requirement.scope]
+                        if selected and all(fact["verified"] and fact["changed"] for fact in selected):
+                            ids = evidence(item, {"patch_set_id": item["patch_set_id"], "files": patch_facts})
+                            if ids:
+                                status, message = "passed", f"补丁日志与当前磁盘状态一致：{requirement.scope or '所选项目'}（不代表功能正确）"
+                                break
+                        message = "补丁记录缺失、文件被后续修改或操作尚未全部验证"
+                        continue
                     facts = item.get("file_evidence") or {}
                     actual = await asyncio.to_thread(file_digest, self.root, item["target_path"])
                     if (facts.get("verified") and actual is not None and actual == facts.get("sha256")

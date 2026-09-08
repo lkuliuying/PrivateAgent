@@ -221,6 +221,10 @@ export type RunConnectionPhase =
 
 /** GET /agent-runs/{id}/approvals/{aid}/preview（W3：审批完整影响范围） */
 export interface RunApprovalPreviewRecord {
+  patch_set_id?: string;
+  run_id?: string;
+  preview_sha256?: string;
+  changes?: import("../api/patches").PatchChange[];
   tool_name: string;
   previewable: boolean;
   rel_path: string | null;

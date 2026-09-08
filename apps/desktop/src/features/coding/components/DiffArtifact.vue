@@ -9,6 +9,7 @@
 import { computed, ref } from "vue";
 import { PhCaretDown, PhFilePlus, PhGitDiff, PhWarning } from "@phosphor-icons/vue";
 import type { RunApprovalPreviewRecord } from "../model/runContracts";
+import PatchPreview from "./PatchPreview.vue";
 
 const props = defineProps<{
   preview: RunApprovalPreviewRecord | null;
@@ -92,6 +93,8 @@ const renderedLines = computed(() => diffLines.value.slice(0, MAX_RENDER_LINES))
       diff 过长，仅渲染前 {{ MAX_RENDER_LINES }} 行
     </div>
     <div v-if="preview?.truncated" class="diff-truncated">后端已截断（diff 超出预览上限）</div>
+    <PatchPreview v-if="preview?.patch_set_id && preview.run_id && preview.preview_sha256 && preview.changes"
+      :run-id="preview.run_id" :patch-id="preview.patch_set_id" :preview-sha="preview.preview_sha256" :changes="preview.changes" />
   </div>
 </template>
 

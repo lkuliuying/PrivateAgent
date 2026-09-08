@@ -1,5 +1,7 @@
 # 统一客户端实现与验收说明
 
+> **2026-09-08 S3 仓库与补丁**：已接入范围/列续读、版本快照、分页检索、结构化多文件补丁、逐项日志和受保护回滚，桌面可按文件查看完整 diff 与起始 Git dirty。SQLite 当前为 **5**；schema 2/3/4 先备份再迁移，不能用旧程序覆盖新库降级。现有文件须先读取再修改；PowerShell 直接文件写入已关闭，统一使用补丁工具。实际接口、测试与限制见 [S3 验收报告](analysis/coding-agent-upgrade-20260908/s3-validation-report.md)。下文 schema 3/4 和旧工具能力为历史阶段记录。
+
 > **2026-09-08 S2 项目指令与上下文**：本机已接入显式规则信任、有序工具历史、请求预算、输出上限、自动/手动压缩和统一循环预算；SQLite 升为 4。新建项目或上下文面板可设置规则信任，运行中信任变化阻断后续写入，压缩不恢复授权。详见 [上下文契约](context-design.md)和 [S2 验收报告](analysis/coding-agent-upgrade-20260908/s2-validation-report.md)。下文 S1 的“schema 3”是当时阶段记录；S2 未打包、安装或部署服务器。
 
 > **2026-09-08 源码基线**：当前工作区 `F:\Program\Agent`、HEAD `8dcfa7f` 的调用链、能力状态及隔离测试见 [S0 执行基线](analysis/coding-agent-upgrade-20260908/s0-execution-baseline.md)和 [S0 验证报告](analysis/coding-agent-upgrade-20260908/s0-validation-report.md)。下文安装与发布记录保留其原有时间和环境，不代替本轮验收。
@@ -64,7 +66,7 @@ Windows 默认数据位置为当前用户的 `%LOCALAPPDATA%\com.personal-assist
 
 当前 SQLite schema 为 4：项目、工作区、会话、消息、运行、追加事件、审批、执行、限时授权、审计、迁移批次、有序上下文与压缩检查点分别保存。采用 WAL、foreign_keys、5 秒 busy timeout 和 FULL 同步。较大的内容存入同目录 `artifacts/<SHA-256>`，读取时校验长度及摘要。SQLite 不加密；账号目录是应用层隔离，不阻止同一系统用户自行读取磁盘。不要把它当作多用户操作系统安全隔离。
 
-旧轻量 `objects/runs` 表在首次打开时事务迁移，原始表保留为 legacy 表；schema 2/3 升级到 4 同样先生成备份，命名为 `*.pre-v4-<唯一标识>.sqlite3`，实际原版本以备份内的 `PRAGMA user_version` 为准。迁移记录包含备份摘要与完整性检查结果。原始消息和授权不被压缩重写；旧版本程序必须先核对 schema 兼容性，不能删除新表降级。
+旧轻量 `objects/runs` 表在首次打开时事务迁移，原始表保留为 legacy 表；schema 2/3/4 升级到 5 同样先生成备份，命名为 `*.pre-v5-<唯一标识>.sqlite3`，实际原版本以备份内的 `PRAGMA user_version` 为准。迁移记录包含备份摘要与完整性检查结果。原始消息和授权不被压缩重写；旧版本程序必须先核对 schema 兼容性，不能删除新表降级。
 
 启动恢复不会重放命令：未完成运行标记失败，待审批记录取消，执行中的命令记为结果未知，完全访问授权撤销。未知结果应人工检查项目文件后再决定下一步，不自动重试副作用操作。
 

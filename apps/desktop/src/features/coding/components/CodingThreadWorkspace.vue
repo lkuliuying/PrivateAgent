@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import PatchReviewPanel from "./PatchReviewPanel.vue";
 /**
  * CodingThreadWorkspace · v0.8.0 W3
  *
@@ -682,6 +683,9 @@ function navigateToInstruction(instructionId: string): void {
             @load-output="loadOutput"
             @instruction-markers-change="onInstructionMarkersChange"
           />
+
+          <PatchReviewPanel v-if="projection?.runId && store.capabilities.value?.coding_patchsets_enabled === true"
+            :run-id="projection.runId" :revision="projection.status ?? ''" :active="runActive" />
 
           <!-- v0.9.0 H1-B（§5.6）：创建失败阻塞卡片（具体阻塞项 + 恢复入口） -->
           <div

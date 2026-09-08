@@ -136,6 +136,18 @@ class ContextHistory:
     @staticmethod
     def project(item: dict) -> ModelMessage:
         message = ModelMessage.model_validate(item["message"])
+        if message.role == "tool" and message.name == "read_code_file":
+            try:
+                body = json.loads(message.content)
+            except ValueError:
+                body = {}
+            output = body.get("output") if isinstance(body, dict) else None
+            if isinstance(output, dict) and output.get("schema_version") == "2" and len(output.get("content", "")) > 1200:
+                # 版本元数据保留；大段代码按 S2 原始条目续读，避免重复传输挤掉必要历史。
+                projected = {key: value for key, value in output.items() if key not in {"content", "line_numbers"}}
+                projected.update(excerpt=output["content"][:1200], truncated=True, content_ref=item["item_id"],
+                                 read_tool="read_context_content", excerpt_only=True)
+                return message.model_copy(update={"content": json.dumps({**body, "output": projected}, ensure_ascii=False)})
         if message.role == "tool" and len(message.content) > 6000:
             message = message.model_copy(update={"content": json.dumps({"excerpt": message.content[:3000],
                 "truncated": True, "content_ref": item["item_id"], "read_tool": "read_context_content"}, ensure_ascii=False)})
@@ -181,7 +193,7 @@ class ContextHistory:
                 facts.append(fact)
                 if not success:
                     failures.append(result["item_id"])
-                if call["name"] == "write_project_file" and success:
+                if call["name"] in {"write_project_file", "apply_project_patch"} and success:
                     changes.append({"result_item_id": result["item_id"], "call_item_id": first["item_id"]})
         summary = {"original_goal": "保留的首条用户原文", "active_constraints": "全部用户原文保持不变，现行权限由执行器重新检查",
                    "completed_work": facts, "changed_files": changes, "verification_state": "以原始工具结果及运行验收记录为准",

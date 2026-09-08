@@ -28,6 +28,8 @@ class LocalContext:
         self.version: str | None = None
         self.scope = "."
         self.sources: dict[str, list[dict]] = {}
+        self.pending_scopes: list[str] = []
+        self.delivered_rules: set[tuple[str, str]] = set()
         self.rounds = 0
         self.cost = 0.0
         self.cost_known = True
@@ -87,7 +89,8 @@ class LocalContext:
             self.run["instructions_invalidated"] = True
         if before_write and self.run.get("instructions_invalidated"):
             raise InstructionError("活动任务中的规则或信任状态已变化；本轮写入停止，请确认规则后重新发起任务")
-        return rules, old is None
+        unseen = any(rule.trusted and (rule.path, rule.sha256) not in self.delivered_rules for rule in rules)
+        return rules, unseen
 
     async def prepare(self, request: ModelRequest) -> ModelRequest:
         self.check_limits()
@@ -108,11 +111,15 @@ class LocalContext:
             self.version = version
         target = self.scope
         self.instructions(".")
-        rules, _ = self.instructions(target)
         system = [message for message in request.messages if message.role == "system"]
-        text = instruction_message(rules)
-        if text:
-            system.append(ModelMessage(role="system", content=text))
+        delivered = []
+        for scope in self.pending_scopes or [target]:
+            rules, _ = self.instructions(scope)
+            text = instruction_message(rules)
+            if text:
+                system.append(ModelMessage(role="system", content=f"以下规则仅用于目标 {scope} 的适用子树：\n{text}"))
+            delivered.extend(rules)
+        self.delivered_rules.update((rule.path, rule.sha256) for rule in delivered if rule.trusted)
 
         def assemble(checkpoint=None):
             return request.model_copy(update={"messages": tuple([*system, *self.history.messages(self.run["session_id"], compacted=checkpoint)]),

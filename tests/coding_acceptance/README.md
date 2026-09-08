@@ -1,17 +1,19 @@
-# Coding S0–S1 可复现验收入口
+# Coding S0–S3 可复现验收入口
 
 在仓库根目录使用现有 Python 环境，无需安装依赖：
 
 ```powershell
 .venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all
 .venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite completion
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite context
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite repository
 .venv/Scripts/python.exe -B scripts/run_coding_legacy_validation.py
 .venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite duration
 ```
 
 每次自动新建 `.run/coding-agent-validation/<suite>-<uuid>`，保留 `invocation.json`、`pytest-result.json` 和 `observations/*.json`。不复用或递归删除旧目录，不使用 pytest 会清理目标目录的 `--basetemp`。
 
-`all` 包含 local、contracts、baseline、host、tooling、completion；`duration` 是独立约 120 秒的真实超时探针。每个子套件都可单独运行。首轮启动失败、收集错误和用例失败均非零退出；严格 xfail 和 PTY 不可用单独列出，不能计入产品通过率。意外 XPASS 会失败，要求后续修复阶段重新审查基线。S1 已将 G01/G02 改为正常回归；当前剩余两个 G10 严格 xfail，S0 的四个 xfail 是历史成绩。
+`all` 包含 local、contracts、baseline、host、tooling、completion、context、repository；`duration` 是独立约 120 秒的真实超时探针。每个子套件都可单独运行。首轮启动失败、收集错误和用例失败均非零退出；严格 xfail 和 PTY 不可用单独列出，不能计入产品通过率。意外 XPASS 会失败，要求后续修复阶段重新审查基线。S1 已将 G01/G02 改为正常回归；当前剩余两个 G10 严格 xfail，S0 的四个 xfail 是历史成绩。
 
 ## 测试隔离
 
@@ -57,3 +59,9 @@ npm run build
 ```
 
 完整成绩、环境阻塞与剩余 S4 限制见 [S1 验收报告](../../docs/analysis/coding-agent-upgrade-20260908/s1-validation-report.md)。
+
+## S3 文件操作与故障边界
+
+`repository` 包含 `test_local_file_ranges.py`、`test_local_search_pagination.py`、`test_local_patchsets.py`。使用临时真实文件、Git 仓库、SQLite 和本机 ASGI；注入文件系统/日志故障，不假装执行过真实断电或填满磁盘。Windows junction 使用真实目录联接，symlink 创建缺权限时明确 skip。旧写入测试先读取版本；PowerShell 直接文件写 cmdlet 在所有权限档位拒绝，项目脚本的间接副作用仍由 S4 处理。
+
+PY07 回归从固定任务夹具重建大文件，先确认判定器失败，再通过读取末尾和局部补丁修正，最后判定通过并核对前文及用户文件。它验证工具机制，不计作真实模型完成率。完整差异分页、失败重试、回滚确认和跨任务隔离由两个 Patch 组件测试验证。最新成绩与证据目录见 [S3 验收报告](../../docs/analysis/coding-agent-upgrade-20260908/s3-validation-report.md)。

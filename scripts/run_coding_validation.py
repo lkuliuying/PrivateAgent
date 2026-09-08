@@ -13,6 +13,7 @@ from coding_validation_process import managed_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {
+    "repository": [f"tests/unit/test_local_{name}.py" for name in ("file_ranges", "search_pagination", "patchsets")],
     "context": [f"tests/unit/test_local_{name}.py" for name in ("instructions", "context_history", "compaction")],
     "completion": ["tests/unit/test_local_completion.py"],
     "local": [f"tests/unit/test_local_{name}.py" for name in (

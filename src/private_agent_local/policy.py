@@ -90,6 +90,9 @@ POWERSHELL_RULES = {
     ),
 }
 
+# 文件副作用统一经过读取版本、补丁预览和日志；项目脚本的间接写入仍由执行策略约束。
+POWERSHELL_FILE_WRITES = frozenset({"set-content", "add-content", "clear-content", "new-item", "remove-item", "copy-item", "move-item", "rename-item"})
+
 
 @dataclass(frozen=True)
 class CommandPlan:
@@ -117,6 +120,11 @@ def file_scope(root: Path, value: str, mode: str) -> tuple[Path, str]:
     candidate = files.within(scope, relative, allow_missing=True)
     if protected(candidate):
         raise ValueError("凭据、客户端内部数据和系统目录不允许通过文件工具访问")
+    for directory in [candidate, *candidate.parents]:
+        if directory == root:
+            break
+        if directory.is_dir() and (directory / ".git").exists():
+            raise ValueError("项目工具不进入子模块或嵌套 Git 仓库，请单独授权该项目")
     return scope, relative
 
 
@@ -190,6 +198,8 @@ def powershell_plan(
     if os.name != "nt":
         raise ValueError("受控 PowerShell 工具只在 Windows 客户端可用")
     normalized = command.casefold()
+    if normalized in POWERSHELL_FILE_WRITES:
+        raise ValueError("PowerShell 直接文件写入已收敛到统一补丁工具；请使用 read_code_file、propose_project_patch 和 apply_project_patch")
     rule = POWERSHELL_RULES.get(normalized)
     if rule is None:
         raise ValueError("该 PowerShell 命令未登记；请使用项目文件工具或已登记的开发命令")

@@ -112,7 +112,8 @@ async def test_s0_t06_cancel_approval_then_restart(api, tmp_path):
     app, client, server, root, body = api
     target = root / "cancel.txt"
     target.write_text("before", encoding="utf-8")
-    server.responses = [response(call("write_project_file", {"rel_path": "cancel.txt", "content": "after"}))]
+    server.responses = [response(call("read_code_file", {"rel_path": "cancel.txt"})),
+                        response(call("write_project_file", {"rel_path": "cancel.txt", "content": "after"}))]
     run_id = (await client.post("/agent-runs", json=body)).json()["id"]
     await until(client, run_id, {"waiting_approval"})
     approval = (await client.get(f"/agent-runs/{run_id}/approvals")).json()[0]
@@ -139,7 +140,8 @@ async def test_s0_t07_preserves_user_change_after_preview(api):
     app, client, server, root, body = api
     target = root / "dirty.txt"
     target.write_text("user change", encoding="utf-8")
-    server.responses = [response(call("write_project_file", {"rel_path": "dirty.txt", "content": "model change"})), response(text="停止")]
+    server.responses = [response(call("read_code_file", {"rel_path": "dirty.txt"})),
+                        response(call("write_project_file", {"rel_path": "dirty.txt", "content": "model change"})), response(text="停止")]
     run_id = (await client.post("/agent-runs", json=body)).json()["id"]
     await until(client, run_id, {"waiting_approval"})
     target.write_text("new user change", encoding="utf-8")

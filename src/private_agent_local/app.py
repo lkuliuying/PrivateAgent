@@ -5,6 +5,8 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
+import shutil
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -39,13 +41,24 @@ CAPABILITIES = {
     "coding_full_access_revoke": True, "coding_context_budget_enabled": True,
     "coding_execution_detail_enabled": True, "coding_worktree_enabled": False,
     "coding_diagnostic_commands_enabled": True, "coding_local_branches_enabled": True,
-    "coding_powershell_commands_enabled": True, "product_timezone": "Asia/Shanghai",
+    "coding_powershell_commands_enabled": os.name == "nt", "product_timezone": "Asia/Shanghai",
     "coding_context_compaction_enabled": True, "coding_project_instructions_enabled": True,
+    "coding_patchsets_enabled": True, "coding_repository_tools_version": "2",
+    "coding_powershell_file_writes_enabled": False,
+    "coding_rg_available": shutil.which("rg") is not None,
 }
 
 
 class Input(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class PatchDecisionInput(Input):
+    preview_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class RollbackPreviewInput(Input):
+    operation_id: str = Field(min_length=1, max_length=128)
 
 
 class ProjectInput(Input):
@@ -575,6 +588,62 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.get("/agent-runs/{run_id}/approvals")
     async def approvals(run_id: str, runtime: Runtime = Depends(local)):
         return [{k: v for k, v in a.items() if k != "preview"} for a in runtime.store.run(run_id)["approvals"]]
+
+    def patch_run(runtime, run_id):
+        run = runtime.store.run(run_id)
+        root = runtime.root(run["project_id"], run["workspace_id"])
+        return run, root
+
+    @app.get("/agent-runs/{run_id}/patches")
+    async def patches(run_id: str, runtime: Runtime = Depends(local)):
+        run, root = patch_run(runtime, run_id)
+        return {"patches": runtime.patches.list(run_id), "baseline": run.get("git_baseline"),
+                "current_git": await asyncio.to_thread(git_workspace.inspect, root),
+                "ownership_note": "本任务补丁以操作日志为依据；当前 Git 状态还可能包含用户或外部程序修改"}
+
+    @app.get("/agent-runs/{run_id}/patches/{patch_id}/files/{change_id}")
+    async def patch_content(run_id: str, patch_id: str, change_id: str, offset: int = Query(default=0, ge=0),
+                            limit: int = Query(default=8000, ge=1, le=16000), runtime: Runtime = Depends(local)):
+        patch_run(runtime, run_id)
+        return runtime.patches.diff_page(run_id, patch_id, change_id, offset, limit)
+
+    @app.get("/agent-runs/{run_id}/patches/{patch_id}/facts")
+    async def patch_facts(run_id: str, patch_id: str, runtime: Runtime = Depends(local)):
+        _, root = patch_run(runtime, run_id)
+        return runtime.patches.facts(run_id, patch_id, root)
+
+    @app.post("/agent-runs/{run_id}/patches/{patch_id}/rollback-preview")
+    async def rollback_preview(run_id: str, patch_id: str, data: RollbackPreviewInput, runtime: Runtime = Depends(local)):
+        run, root = patch_run(runtime, run_id)
+        if runtime.store.has_active_run():
+            raise ValueError("请先结束当前任务再预览回滚")
+        return runtime.patches.rollback_preview(run, root, patch_id, data.operation_id)
+
+    @app.post("/agent-runs/{run_id}/patches/{patch_id}/apply")
+    async def apply_patch_set(run_id: str, patch_id: str, data: PatchDecisionInput, runtime: Runtime = Depends(local)):
+        run, root = patch_run(runtime, run_id)
+        patch = runtime.patches.get(run_id, patch_id)
+        # 运行中应用只能沿 Runtime 审批链；按钮入口只消费明确展示过的终态回滚预览。
+        if runtime.store.has_active_run() or patch["kind"] != "rollback":
+            raise ValueError("此入口仅用于任务结束后的已预览回滚")
+        async def guard():
+            await runtime.cloud.identity(runtime.token)
+            runtime.root(run["project_id"], run["workspace_id"])
+            runtime.require_grant(run)
+            if runtime.store.has_active_run():
+                raise ValueError("已有新任务运行，回滚已停止")
+        result = await runtime.patches.apply(run, root, patch_id, data.preview_sha256, guard)
+        with runtime.store.transaction():
+            run = runtime.store.run(run_id)
+            recorded = run.setdefault("recorded_rollbacks", [])
+            if patch_id not in recorded:
+                recorded.append(patch_id)
+                run["workspace_version"] = run.get("workspace_version", 0) + 1
+                from .completion import unknown_outcome
+                run["run_outcome"] = unknown_outcome(run_id, "用户发起补丁回滚，原运行完成证据需重新验证")
+                runtime.event(run, "patch.rollback_finished", patch_set_id=patch_id, status=result["status"])
+                runtime.store.audit("patch_rollback", run_id=run_id, patch_set_id=patch_id, status=result["status"])
+        return result
 
     @app.get("/agent-runs/{run_id}/approvals/{approval_id}/preview")
     async def preview(run_id: str, approval_id: str, runtime: Runtime = Depends(local)):

@@ -7,16 +7,27 @@ import hashlib
 import os
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
 
+from private_agent_core.patches import relative_path
+
 MAX_FILE_BYTES = 1024 * 1024
 MAX_OUTPUT = 32_000
 IGNORED = {".git", "node_modules", ".venv", "venv", "target", "dist", "__pycache__"}
 SECRET_SUFFIXES = {".pem", ".key", ".pfx", ".p12"}
+
+
+def linked(path: Path) -> bool:
+    try:
+        value = path.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(value.st_mode) or bool(getattr(value, "st_file_attributes", 0) & 0x400)
 
 
 def secret_path(path: Path) -> bool:
@@ -29,12 +40,14 @@ def authorize_root(value: str) -> Path:
     root = Path(value).expanduser()
     if not root.is_absolute() or not root.is_dir():
         raise ValueError("请选择本机上确实存在的绝对目录")
-    if root.is_symlink() or getattr(root, "is_junction", lambda: False)():
+    if linked(root):
         raise ValueError("请直接选择实际目录，不使用链接目录")
     return root.resolve(strict=True)
 
 
 def within(root: Path, relative: str, *, allow_missing: bool = False) -> Path:
+    if relative != ".":
+        relative_path(relative)
     path = Path(relative)
     windows = PureWindowsPath(relative)
     if path.is_absolute() or windows.drive or windows.root or ".." in path.parts or "\\" in relative or ":" in relative:
@@ -44,13 +57,49 @@ def within(root: Path, relative: str, *, allow_missing: bool = False) -> Path:
     target = root / path
     current = target
     while current != root:
-        if current.is_symlink() or getattr(current, "is_junction", lambda: False)():
+        if linked(current):
             raise ValueError("项目工具不访问符号链接或目录联接")
+        if current.parent.is_dir():
+            aliases = [child.name for child in current.parent.iterdir() if child.name.casefold() == current.name.casefold()]
+            if any(name != current.name for name in aliases):
+                raise ValueError("文件路径与现有名称存在大小写别名，请使用目录中显示的精确名称")
         current = current.parent
     resolved = target.resolve(strict=not allow_missing)
     if not resolved.is_relative_to(root):
         raise ValueError("文件路径超出授权项目")
     return resolved
+
+
+def file_identity(path: Path) -> dict:
+    value = path.lstat()
+    if linked(path):
+        raise ValueError("项目工具不访问链接或重解析点")
+    return {"device": value.st_dev, "inode": value.st_ino}
+
+
+def safe_bytes(root: Path, relative: str) -> tuple[bytes, dict]:
+    """有界读取并核对打开句柄与路径身份，拒绝链接和读取期间的修改。"""
+    path = within(root, relative)
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > MAX_FILE_BYTES:
+        raise ValueError("只支持 1 MiB 以内、无硬链接的普通文本文件")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    with os.fdopen(descriptor, "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or opened.st_nlink != 1:
+            raise ValueError("打开的文件身份已变化")
+        raw = stream.read(MAX_FILE_BYTES + 1)
+        after = os.fstat(stream.fileno())
+    current = within(root, relative).stat()
+    # Python 3.12/Windows 的 stat 与 fstat 对 ctime 语义可能不同，只在同类采样间比较。
+    if (any((s.st_dev, s.st_ino, s.st_size, s.st_mtime_ns, s.st_nlink) !=
+            (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, 1) for s in (opened, after, current))
+            or current.st_ctime_ns != before.st_ctime_ns or after.st_ctime_ns != opened.st_ctime_ns):
+        raise ValueError("文件在读取期间发生变化，请重新读取")
+    if len(raw) > MAX_FILE_BYTES or b"\x00" in raw:
+        raise ValueError("文件过大或包含二进制内容")
+    raw.decode("utf-8-sig")
+    return raw, {"device": before.st_dev, "inode": before.st_ino, "mode": stat.S_IMODE(before.st_mode)}
 
 
 def read_text(path: Path) -> str:
@@ -177,7 +226,8 @@ def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
     return command, env
 
 
-async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> dict:
+async def run_process(root: Path, args: list[str], *, timeout: float = 120, stdin_data: bytes | None = None,
+                      output_limit: int = MAX_OUTPUT) -> dict:
     command, env = prepare_process(args)
     job = None
     dll_search = nullcontext()
@@ -190,6 +240,7 @@ async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> d
     try:
         with dll_search:
             process = await asyncio.create_subprocess_exec(*command, cwd=root, env=env,
+                stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
                 **({"creationflags": subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}))
         if job:
@@ -205,10 +256,21 @@ async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> d
 
     async def drain(stream, output):
         while chunk := await stream.read(4096):
-            if len(output) < MAX_OUTPUT:
-                output.extend(chunk[:MAX_OUTPUT - len(output)])
+            if len(output) < output_limit:
+                output.extend(chunk[:output_limit - len(output)])
 
-    readers = [asyncio.create_task(drain(process.stdout, buffers[0])), asyncio.create_task(drain(process.stderr, buffers[1]))]
+    async def feed():
+        if process.stdin is not None:
+            try:
+                process.stdin.write(stdin_data)
+                await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                process.stdin.close()
+
+    readers = [asyncio.create_task(drain(process.stdout, buffers[0])), asyncio.create_task(drain(process.stderr, buffers[1])),
+               asyncio.create_task(feed())]
     try:
         async with asyncio.timeout(timeout):
             await process.wait()
@@ -232,7 +294,7 @@ async def run_process(root: Path, args: list[str], *, timeout: float = 120) -> d
             reader.cancel()
         await asyncio.gather(*readers, return_exceptions=True)
     return {"returncode": process.returncode, "stdout": buffers[0].decode("utf-8", errors="replace"),
-            "stderr": buffers[1].decode("utf-8", errors="replace"), "truncated": any(len(b) >= MAX_OUTPUT for b in buffers)}
+            "stderr": buffers[1].decode("utf-8", errors="replace"), "truncated": any(len(b) >= output_limit for b in buffers)}
 
 
 def parse_command(command: str) -> list[str]:

@@ -121,7 +121,8 @@ async def test_write_denial_stale_preview_and_cancel_never_overwrite(tmp_path, d
     try:
         target = root / "test.txt"
         target.write_text("original", encoding="utf-8")
-        server.responses = [response(call("write_project_file", {"rel_path": "test.txt", "content": "model edit"})), response(text="stopped")]
+        server.responses = [response(call("read_code_file", {"rel_path": "test.txt"})),
+                            response(call("write_project_file", {"rel_path": "test.txt", "content": "model edit"})), response(text="stopped")]
         run_id = (await client.post("/agent-runs", json=body)).json()["id"]
         await until(client, run_id, {"waiting_approval"})
         approval = (await client.get(f"/agent-runs/{run_id}/approvals")).json()[0]

@@ -26,6 +26,8 @@ def _git(root: Path, *arguments: str, check: bool = True) -> subprocess.Complete
             command,
             cwd=root,
             env=environment,
+            stdin=subprocess.DEVNULL,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}),
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -62,7 +64,17 @@ def inspect(root: Path) -> dict:
     current = current_result.stdout.strip() if current_result.returncode == 0 else ""
     head_result = _git(root, "rev-parse", "--verify", "HEAD", check=False)
     head_sha = head_result.stdout.strip() if head_result.returncode == 0 else None
-    dirty_result = _git(root, "status", "--porcelain=v1", "--untracked-files=normal")
+    dirty_result = _git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    dirty_entries = []
+    tokens = iter(dirty_result.stdout.split("\x00"))
+    for token in tokens:
+        if not token:
+            continue
+        entry = {"status": token[:2], "rel_path": token[3:].replace("\\", "/")}
+        if "R" in token[:2] or "C" in token[:2]:
+            entry["original_path"] = next(tokens, "")
+        if not files.secret_path(Path(entry["rel_path"])):
+            dirty_entries.append(entry)
     refs = _git(
         root,
         "for-each-ref",
@@ -80,6 +92,7 @@ def inspect(root: Path) -> dict:
         "current_branch": current or None,
         "head_sha": head_sha,
         "dirty": bool(dirty_result.stdout),
+        "dirty_entries": dirty_entries,
         "branches": branches,
     }
 
