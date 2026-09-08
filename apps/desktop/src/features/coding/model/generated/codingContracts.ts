@@ -5,7 +5,7 @@ export type CapabilitySnapshot = { "protocol_version"?: "1.0"; "tools"?: Array<T
 
 export type ContentRef = { "sha256": string; "bytes": number };
 
-export type ContextItem = { "item_id": string; "session_id": number; "run_id": string; "ordinal": number; "role": "system" | "user" | "assistant" | "tool"; "kind": "message" | "instruction" | "tool_call" | "tool_result" | "summary"; "content_ref": ContentRef; "source": "user" | "project_instruction" | "model" | "tool" | "summary" | "legacy"; "created_at": string; "tool_call_id"?: string | null; "summary_of"?: Array<string> };
+export type ContextItem = { "item_id": string; "session_id": number; "run_id": string; "ordinal": number; "role": "system" | "user" | "assistant" | "tool"; "kind": "message" | "instruction" | "tool_call" | "tool_result" | "summary"; "content_ref": ContentRef; "source": "user" | "project_instruction" | "model" | "tool" | "summary" | "legacy"; "created_at": string; "tool_call_id"?: string | null; "execution_id"?: string | null; "operation_id"?: string | null; "source_sequence"?: number | null; "summary_of"?: Array<string> };
 
 export type EventEnvelope = { "schema_version"?: "1.0"; "run_id": string; "sequence": number; "type": string; "payload"?: Record<string, unknown> };
 

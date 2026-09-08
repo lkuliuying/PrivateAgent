@@ -129,7 +129,7 @@ const capacityLabel = computed(() => {
   const f = facts.value;
   const percent = preciseUsagePercent.value;
   if (percent === null) return f.limitTokens > 0 ? `容量 ${formatCompactTokens(f.limitTokens)}，用量待上报` : "不可用";
-  return `${formatCompactTokens(f.usedTokens)}/${formatCompactTokens(f.limitTokens)}（${percent.toFixed(1)}%）`;
+  return `${f.source === "estimated" ? "估算 " : ""}${formatCompactTokens(f.usedTokens)}/${formatCompactTokens(f.limitTokens)}（${percent.toFixed(1)}%）`;
 });
 
 const cacheHitLabel = computed(() => {

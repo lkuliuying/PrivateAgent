@@ -1,6 +1,10 @@
 """把本机模型、工具与 SQLite 事件接入共享 AgentRuntime。"""
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+
 from pydantic import ValidationError
 
 from private_agent_core.contracts import (
@@ -14,23 +18,36 @@ from private_agent_core.runtime import CancellationToken
 
 from .cloud import CloudError
 from .context import token_count
+from .context_manager import LocalContext
+from .instructions import InstructionError
 
 
 class LocalRunAdapter:
     def __init__(self, owner, run: dict, root):
         self.owner, self.run, self.root = owner, run, root
-        self.rounds = 0
         self.model_error: CloudError | None = None
         self.terminal_payload: dict = {}
+        self.context = LocalContext(owner, run, root)
+        owner.contexts[run["id"]] = self.context
 
     async def complete(self, request: ModelRequest, *, cancellation: CancellationToken) -> ModelResponse:
         cancellation.raise_if_cancelled()
-        self.rounds += 1
-        if self.rounds > 24 or len(request.messages) > 90 or len(request.model_dump_json().encode()) > 1_500_000:
-            self.model_error = CloudError(422, "本机上下文或模型轮次达到上限，请缩小任务范围", code="context_limit")
-            raise self.model_error
         try:
-            raw = await self.owner.cloud.complete(self.owner.token, self.run["model_profile_id"], request.model_dump(mode="json"))
+            request = await self.context.prepare(request)
+            self.context.check_limits()
+        except CloudError as error:
+            self.model_error = error
+            raise
+        except InstructionError as error:
+            self.model_error = CloudError(422, str(error), code="instructions_unavailable")
+            raise self.model_error from None
+        except ValueError:
+            self.model_error = CloudError(422, "上下文历史或配置无效，请检查当前会话", code="context_invalid")
+            raise self.model_error from None
+        try:
+            self.context.rounds += 1
+            async with asyncio.timeout(max(0.001, self.context.remaining_seconds())):
+                raw = await self.owner.cloud.complete(self.owner.token, self.run["model_profile_id"], request.model_dump(mode="json"))
             # 路由元数据只用于本机记录，不扩展共享模型响应契约。
             selected_profile_id = raw.pop("model_profile_id", None)
             if selected_profile_id is not None and (not isinstance(selected_profile_id, str)
@@ -46,6 +63,9 @@ class LocalRunAdapter:
         except CloudError as error:
             self.model_error = error
             raise
+        except TimeoutError:
+            self.model_error = CloudError(422, "有效执行时长预算已耗尽", code="max_active_seconds")
+            raise self.model_error from None
         usage = raw.get("usage") or {}
         # 每次请求都含系统提示；旧服务补出的全零 usage 不能充当真实计量。
         if token_count(usage.get("input_tokens")) == 0:
@@ -59,11 +79,21 @@ class LocalRunAdapter:
         if selected_profile_id:
             self.run["model_profile_id"] = selected_profile_id
         self.run.update(provider=result.provider, model=result.model)
+        self.context.observe_usage(result.usage)
         return result
 
     async def execute(self, call: ToolCall, *, cancellation: CancellationToken) -> ToolResult:
         cancellation.raise_if_cancelled()
         output = await self.owner.tool(self.run, self.root, call.model_dump(mode="json"))
+        # 只有相同参数、相同失败和相同结果反复出现才累计；成功读取不视为停滞。
+        if "error" in output:
+            fingerprint = hashlib.sha256(json.dumps([call.name, call.arguments, output, self.run.get("workspace_version", 0)], sort_keys=True).encode()).hexdigest()
+            self.context.failure_count = self.context.failure_count + 1 if fingerprint == self.context.failure_key else 1
+            self.context.failure_key = fingerprint
+            if self.context.failure_count == 3:
+                output = {**output, "loop_warning": "相同失败已出现三次，请改变方案；再次无进展将停止"}
+        else:
+            self.context.failure_key, self.context.failure_count = None, 0
         if "error" in output:
             return ToolResult(tool_call_id=call.id, name=call.name, success=False, error=output["error"],
                               error_code=output.get("error_code", "local_tool_rejected"),

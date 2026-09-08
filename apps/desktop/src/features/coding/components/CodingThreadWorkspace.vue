@@ -740,6 +740,8 @@ function navigateToInstruction(instructionId: string): void {
 
         <ContextDrawer
           v-if="contextOpen"
+          :session-id="thread?.id"
+          :context-enabled="store.capabilities.value?.coding_context_compaction_enabled === true"
           :projection="projection"
           :previews="approvalPreviews"
           :permission-mode="lastPermissionMode"

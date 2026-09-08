@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from private_agent_core.coding_contracts import Requirement
+from private_agent_core.context import ContextLimits
 
 from . import files, git_workspace, migration
 from .cloud import Cloud, CloudError
@@ -39,6 +40,7 @@ CAPABILITIES = {
     "coding_execution_detail_enabled": True, "coding_worktree_enabled": False,
     "coding_diagnostic_commands_enabled": True, "coding_local_branches_enabled": True,
     "coding_powershell_commands_enabled": True, "product_timezone": "Asia/Shanghai",
+    "coding_context_compaction_enabled": True, "coding_project_instructions_enabled": True,
 }
 
 
@@ -49,6 +51,15 @@ class Input(BaseModel):
 class ProjectInput(Input):
     name: str = Field(min_length=1, max_length=255)
     root_path: str = Field(min_length=1, max_length=4096)
+    trust_instructions: bool = False
+
+
+class InstructionTrustInput(Input):
+    trusted: bool
+
+
+class CompactInput(Input):
+    client_request_id: str = Field(min_length=1, max_length=100)
 
 
 class Binding(Input):
@@ -86,6 +97,7 @@ class RunInput(Binding):
     client_request_id: str | None = Field(default=None, max_length=100)
     completion_contract_version: Literal["1.0"] | None = None
     completion_requirements: list[Requirement] = Field(default_factory=list, max_length=32)
+    context_limits: ContextLimits = Field(default_factory=ContextLimits)
 
 
 class LocalModelDiscoveryInput(Input):
@@ -316,7 +328,21 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
 
     @app.post("/projects", status_code=201)
     async def create_project(data: ProjectInput, runtime: Runtime = Depends(local)):
-        return project_create(runtime, data.name, data.root_path, True)
+        project = project_create(runtime, data.name, data.root_path, True)
+        if data.trust_instructions:
+            project = runtime.store.update("project", project["id"], trust_instructions=True)
+        return project
+
+    @app.post("/projects/{project_id}/instruction-trust")
+    async def instruction_trust(project_id: int, data: InstructionTrustInput, runtime: Runtime = Depends(local)):
+        project = runtime.store.get("project", project_id)
+        if not project.get("authorized"):
+            raise ValueError("项目尚未授权")
+        result = runtime.store.update("project", project_id, trust_instructions=data.trusted)
+        for context in runtime.contexts.values():
+            if context.run["project_id"] == project_id:
+                context.run["instructions_invalidated"] = True
+        return {"project_id": result["id"], "trusted": data.trusted}
 
     def home_candidate(runtime, create=False):
         root = str(Path.home().resolve())
@@ -434,8 +460,37 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
 
     @app.get("/sessions/{session_id}/context-budget")
     async def get_context_budget(session_id: int, model_profile_id: str | None = Query(default=None, max_length=128),
-                                 runtime: Runtime = Depends(local)):
+                                runtime: Runtime = Depends(local)):
         return await runtime.context_budget(session_id, model_profile_id)
+
+    @app.get("/sessions/{session_id}/context")
+    async def session_context(session_id: int, runtime: Runtime = Depends(local)):
+        session = runtime.store.get("session", session_id)
+        project = runtime.store.get("project", session["project_id"])
+        root = runtime.root(session["project_id"], session["workspace_id"])
+        run = runtime.store.run_state(session["last_run_id"]) if session.get("last_run_id") else {}
+        rules = runtime.instructions.load(root, run.get("instruction_scope", "."), trusted=project.get("trust_instructions") is True)
+        checkpoint = runtime.store.context.checkpoint(session_id)
+        latest = runtime.store.context.latest(session_id)
+        pending = runtime.store.context.pending(session_id)
+        return {"project_id": project["id"], "trusted": project.get("trust_instructions") is True,
+                "sources": [rule.model_dump() for rule in rules], "active_sources": [rule.model_dump(exclude={"content"}) for rule in rules],
+                "checkpoint": {key: checkpoint[key] for key in ("id", "state", "completed_at", "through_ordinal")} if checkpoint else None,
+                "pending": {key: pending[key] for key in ("id", "state")} if pending else None,
+                "compaction_error": (latest or {}).get("error"), "loop_budget": run.get("loop_budget")}
+
+    @app.post("/sessions/{session_id}/context/compact", status_code=202)
+    async def compact_context(session_id: int, data: CompactInput, runtime: Runtime = Depends(local)):
+        session = runtime.store.get("session", session_id)
+        runtime.root(session["project_id"], session["workspace_id"])
+        runtime.store.context.import_legacy(session_id)
+        checkpoint = runtime.store.context.begin(session_id, data.client_request_id)
+        if checkpoint["state"] != "pending":
+            return {key: checkpoint.get(key) for key in ("id", "state", "error")}
+        if not any(context.run["session_id"] == session_id for context in runtime.contexts.values()) and not any(
+                run["session_id"] == session_id for run in runtime.store.runs(active_only=True)):
+            checkpoint = runtime.compact_idle(session_id, checkpoint)
+        return {key: checkpoint.get(key) for key in ("id", "state", "error")}
 
     def grant_state(session, grant):
         return {"active": grant is not None, "grant_id": grant["id"] if grant else None,

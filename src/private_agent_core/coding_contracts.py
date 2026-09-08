@@ -161,7 +161,10 @@ class ContextItem(CodingContract):
     content_ref: ContentRef
     source: Literal["user", "project_instruction", "model", "tool", "summary", "legacy"]
     created_at: datetime
-    tool_call_id: Identifier | None = None
+    tool_call_id: str | None = Field(default=None, min_length=1, max_length=200)
+    execution_id: Identifier | None = None
+    operation_id: Identifier | None = None
+    source_sequence: int | None = Field(default=None, ge=1, le=9007199254740991)
     summary_of: list[Identifier] = Field(default_factory=list, max_length=256)
 
     @model_validator(mode="after")
@@ -170,6 +173,9 @@ class ContextItem(CodingContract):
             raise ValueError("上下文时间必须包含时区")
         if self.role == "tool" and not self.tool_call_id:
             raise ValueError("工具上下文必须关联调用标识")
+        if any(value is not None for value in (self.execution_id, self.operation_id, self.source_sequence)):
+            if self.role != "tool" or not all(value is not None for value in (self.execution_id, self.operation_id, self.source_sequence)):
+                raise ValueError("工具执行来源必须完整关联实际执行、操作和事件序号")
         if self.source == "summary" and not self.summary_of:
             raise ValueError("摘要必须保留来源条目标识")
         if self.source != "summary" and self.summary_of:

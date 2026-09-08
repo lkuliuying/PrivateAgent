@@ -1,6 +1,6 @@
 # S2：项目指令与上下文管理开发计划
 
-> 状态：待实施。依赖：S1 完成、S0 上下文契约已冻结。预计：8–12 人日。
+> 状态：2026-09-08 本机 S2 开发已接入，证据与边界见 [S2 验收报告](./s2-validation-report.md)。S0/S1 前置已核对。原预计 8–12 人日不是实际耗时记录；本轮不含打包、安装或付费模型验收。
 > 返回：[总体路线](./README.md)。上一阶段：[S1](./s1-completion-and-verification.md)。下一阶段：[S3](./s3-repository-and-patches.md)。
 
 ## 1. 阶段目标
@@ -10,6 +10,8 @@
 本阶段不建设通用长期记忆系统，不导入整仓代码或全部 RAG，不把自动压缩视为用户授权，也不承诺小模型通过扩大窗口获得更强推理能力。
 
 ## 2. 当前限制与可复用实现
+
+本节保留开工前限制；下列拟议设计以 [已实现上下文契约](../../context-design.md) 和验收报告为准。实际采用程序化结构摘要、SQLite schema 4、64/128 次默认模型/工具预算及独立输出上限，没有整体移入旧 RAG/业务服务。
 
 [本机 Runtime](../../../src/private_agent_local/runtime.py)仅取最近 12 条消息并截取正文；[适配器](../../../src/private_agent_local/core_adapter.py)最多允许 24 次模型请求、90 条消息和有界请求体；[本机 context](../../../src/private_agent_local/context.py)主要计算最近 usage 展示。
 

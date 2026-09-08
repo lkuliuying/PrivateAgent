@@ -323,6 +323,7 @@ class AgentRuntime:
         max_verification_retries: int | None = None,
         # v0.7.0 验收修复（P0-1）：run 绑定的 reasoning_effort 透传到模型请求
         reasoning_effort: str | None = None,
+        context_sink: Callable[[ModelMessage], Awaitable[None]] | None = None,
     ) -> None:
         effective_verification_retries = (
             1
@@ -356,6 +357,14 @@ class AgentRuntime:
         )
         self._max_verification_retries = effective_verification_retries
         self._reasoning_effort = reasoning_effort
+        self._context_sink = context_sink
+
+    async def _record_context(self, message: ModelMessage) -> None:
+        if self._context_sink is not None:
+            try:
+                await self._context_sink(message)
+            except Exception as error:
+                raise EventSinkError("上下文持久化失败，停止后续操作") from error
 
     async def run(
         self,
@@ -703,6 +712,7 @@ class AgentRuntime:
                     },
                 )
 
+            await self._record_context(self._tool_message(result))
             conversation.append(self._tool_message(result))
             if result.success:
                 context.finish_step(tool_step, AgentStepStatus.SUCCEEDED)
@@ -768,6 +778,7 @@ class AgentRuntime:
                 cancellation=cancellation,
             )
             response = completed_turn.response
+            await self._record_context(ModelMessage(role="assistant", content=response.text, tool_calls=response.tool_calls))
             context.add_usage(response.usage)
             context.finish_step(model_step, AgentStepStatus.SUCCEEDED)
             await context.emit(
@@ -863,6 +874,7 @@ class AgentRuntime:
                         content=self._verification_feedback(verification),
                     )
                 )
+                await self._record_context(conversation[-1])
                 continue
 
             if (
@@ -979,6 +991,7 @@ class AgentRuntime:
                         },
                     )
 
+                await self._record_context(tool_message)
                 conversation.append(tool_message)
 
     async def _complete_model(

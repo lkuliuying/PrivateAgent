@@ -19,6 +19,7 @@ import {
   type UserHomeCandidate,
 } from "../api/projects";
 import type { CodingApiError } from "../model/contracts";
+import { usesLocalExecutor } from "../../../services/localExecutor";
 
 /** 把抛出的 CodingApiError/未知异常收敛为可呈现文案（不猜具体原因）。 */
 function toErrorMessage(error: unknown, fallback: string): string {
@@ -39,6 +40,7 @@ type Mode = "directory" | "user-home";
 const mode = ref<Mode>("directory");
 const name = ref("");
 const rootPath = ref("");
+const trustInstructions = ref(false);
 const busy = ref(false);
 const directoryPicking = ref(false);
 const errorMessage = ref<string | null>(null);
@@ -88,7 +90,7 @@ async function submit(): Promise<void> {
       pendingHome.value = candidate;
       return;
     }
-    const project = await createCodingProject(
+    const project = trustInstructions.value ? await createCodingProject(name.value.trim(), rootPath.value.trim(), true) : await createCodingProject(
       name.value.trim(),
       rootPath.value.trim()
     );
@@ -247,6 +249,10 @@ async function confirmHomeScope(): Promise<void> {
         >
           {{ errorMessage }}
         </p>
+        <label v-if="mode === 'directory' && usesLocalExecutor()" class="field-hint">
+          <input v-model="trustInstructions" type="checkbox" :disabled="busy" />
+          信任此项目的 AGENTS.md 规则（不增加操作权限）；未勾选时仅展示规则。
+        </label>
 
         <footer class="dialog-foot">
           <button type="button" class="btn btn-ghost" @click="emit('close')">

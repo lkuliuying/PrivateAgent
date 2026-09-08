@@ -12,12 +12,15 @@ import type { RunApprovalPreviewRecord } from "../model/runContracts";
 import { runResultMeta } from "../model/runOutcome";
 import type { RunProjection } from "../model/runProjector";
 import { PERMISSION_MODE_META } from "../model/runContracts";
+import LocalContextPanel from "./LocalContextPanel.vue";
 
 const props = withDefaults(
   defineProps<{
     projection: RunProjection | null;
     previews: Record<string, RunApprovalPreviewRecord | null>;
     permissionMode?: string | null;
+    sessionId?: number | null;
+    contextEnabled?: boolean;
   }>(),
   {
     permissionMode: null,
@@ -107,6 +110,7 @@ const usage = computed(() => props.projection?.usage);
           <div class="meta-row"><dt>输出 tokens</dt><dd>{{ (usage?.outputTokens ?? 0).toLocaleString() }}</dd></div>
           <div class="meta-row"><dt>计划版本</dt><dd>{{ projection?.plan ? `v${projection.plan.version} · ${projection.plan.items.length} 项` : "无" }}</dd></div>
         </dl>
+        <LocalContextPanel v-if="contextEnabled && sessionId" :session-id="sessionId" />
       </div>
 
       <!-- Sources -->

@@ -160,6 +160,6 @@ export function contextRingAriaLabel(facts: ContextRingFacts): string {
     case "near":
       return `上下文用量 ${facts.percent}%，接近压缩阈值`;
     default:
-      return `上下文用量 ${facts.percent}%`;
+      return `${facts.source === "estimated" ? "上下文估算" : "上下文用量"} ${facts.percent}%`;
   }
 }

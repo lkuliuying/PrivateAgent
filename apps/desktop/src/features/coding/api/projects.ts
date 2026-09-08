@@ -12,6 +12,7 @@ import type {
 } from "../model/contracts";
 import type { CodingFileHint } from "../model/runContracts";
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
+import { usesLocalExecutor } from "../../../services/localExecutor";
 
 export function toProjectSummary(dto: Project): CodingProjectSummary {
   return {
@@ -219,11 +220,12 @@ export async function authorizeProjectScope(projectId: number): Promise<void> {
  */
 export async function createCodingProject(
   name: string,
-  rootPath: string
+  rootPath: string,
+  trustInstructions?: boolean
 ): Promise<CodingProjectSummary> {
   const dto = await codingFetchJson<Project>(
     "/projects",
-    codingJsonInit("POST", { name, root_path: rootPath })
+    codingJsonInit("POST", { name, root_path: rootPath, ...(usesLocalExecutor() && trustInstructions !== undefined ? { trust_instructions: trustInstructions } : {}) })
   );
   return toProjectSummary(dto);
 }

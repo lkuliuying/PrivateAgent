@@ -49,13 +49,14 @@ def app_for(monkeypatch):
 async def test_gateway_requires_account_and_forwards_model_contract(monkeypatch):
     app, gateway = app_for(monkeypatch)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://server.test") as client:
-        payload = {"model_profile_id": "test", "request": {"messages": [{"role": "user", "content": "hello"}]}}
+        payload = {"model_profile_id": "test", "request": {"messages": [{"role": "user", "content": "hello"}], "max_output_tokens": 512}}
         assert (await client.post("/desktop/model/complete", json=payload)).status_code == 401
         assert gateway.requests == []
         response = await client.post("/desktop/model/complete", json=payload, headers={"Authorization": "Bearer test-account"})
         assert response.status_code == 200, response.text
         assert response.json()["text"] == "cloud reply"
         assert gateway.requests[0].messages[0].content == "hello"
+        assert gateway.requests[0].max_output_tokens == 512
         assert response.headers["cache-control"] == "no-store"
 
 

@@ -58,6 +58,12 @@ class GatewayCloud:
     def __init__(self, gateway: ModelGateway):
         self.gateway = gateway
 
+    async def profiles(self, token):
+        return [{"id": "fixture-profile", "model_name": "fixture-model", "enabled": True, "context_tokens": 32000}]
+
+    async def identity(self, token):
+        return {"id": "fixture-account"}
+
     async def complete(self, token: str, profile: str | None, request: dict) -> dict:
         assert token == "fixture-session"
         assert profile == "fixture-profile"

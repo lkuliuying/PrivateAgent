@@ -12,6 +12,8 @@ from coding_validation_process import managed_process
 from run_coding_validation import ROOT, isolated_environment, new_directory
 
 NODES = {
+    "unit/test_desktop_model.py": None,
+    "test_model_gateway.py": None,
     "test_agent_runtime.py": None,
     "test_agent_verification.py": [
         "json_schema_verifier_reports_parse_and_schema_failures", "composite_verifier_stops_on_first_real_failure",

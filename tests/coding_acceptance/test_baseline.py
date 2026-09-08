@@ -76,7 +76,7 @@ async def test_s0_t04_model_round_limit_and_store_cost(api):
     store = app.state.desktop.runtime.store
     store.db.set_trace_callback(statements.append)
     try:
-        run_id = (await client.post("/agent-runs", json=body)).json()["id"]
+        run_id = (await client.post("/agent-runs", json={**body, "context_limits": {"max_model_requests": 24}})).json()["id"]
         run = await until(client, run_id, TERMINAL)
     finally:
         store.db.set_trace_callback(None)
@@ -87,7 +87,7 @@ async def test_s0_t04_model_round_limit_and_store_cost(api):
            run_row_writes=sum(s.startswith("INSERT INTO runs") for s in statements),
            execution_row_reads=sum(s.startswith("SELECT data FROM executions") for s in statements),
            blob_count=len(list(store.blobs.glob("*"))) if store.blobs.exists() else 0)
-    assert calls == 24 and run["status"] == "limit_exceeded" and run["error_code"] == "context_limit"
+    assert calls == 24 and run["status"] == "limit_exceeded" and run["error_code"] == "max_model_requests"
     assert [event["sequence"] for event in persisted["events"]] == list(range(1, len(persisted["events"]) + 1))
 
 

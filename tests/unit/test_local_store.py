@@ -40,7 +40,7 @@ def test_migration_preserves_ids_content_backup_and_is_idempotent(tmp_path):
     store.db.close()
     restarted = Store(path)
     assert restarted.run(run["id"]) == run
-    assert len(list(tmp_path.glob("*.pre-v2-*.sqlite3"))) == 1
+    assert len(list(tmp_path.glob(f"*.pre-v{SCHEMA_VERSION}-*.sqlite3"))) == 1
     assert restarted.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     restarted.db.close()
 
@@ -62,15 +62,17 @@ def test_v2_upgrade_backs_up_and_preserves_records(tmp_path):
     original = Store(path)
     project = original.create("project", {"name": "原项目", "root_path": "fixture"})
     original.db.execute("DROP TABLE history_imports")
-    original.db.execute("DELETE FROM schema_migrations WHERE version=3")
+    original.db.execute("DROP TABLE context_items")
+    original.db.execute("DROP TABLE context_checkpoints")
+    original.db.execute("DELETE FROM schema_migrations WHERE version=?", (SCHEMA_VERSION,))
     original.db.execute("PRAGMA user_version=2")
     original.db.commit()
     original.db.close()
     current = Store(path)
     try:
         assert current.get("project", project["id"]) == project
-        assert current.db.execute("PRAGMA user_version").fetchone()[0] == 3
-        evidence = json.loads(current.db.execute("SELECT evidence FROM schema_migrations WHERE version=3").fetchone()[0])
+        assert current.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        evidence = json.loads(current.db.execute("SELECT evidence FROM schema_migrations WHERE version=?", (SCHEMA_VERSION,)).fetchone()[0])
         backup = tmp_path / evidence["backup"]["filename"]
         assert hashlib.sha256(backup.read_bytes()).hexdigest() == evidence["backup"]["sha256"]
         with sqlite3.connect(backup) as db:

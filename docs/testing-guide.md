@@ -1,5 +1,7 @@
 # 测试与验证指南
 
+> **S2 项目指令与上下文**：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite context` 运行规则、历史与压缩边界，已并入 `all`。旧服务端隔离入口 `run_coding_legacy_validation.py` 追加 ModelGateway 与桌面模型 DTO 回归，仍禁止真实业务数据库/外部网络。前端新增 `LocalContextPanel.spec.ts`。实际成绩与保留的跳过项见 [S2 验收报告](analysis/coding-agent-upgrade-20260908/s2-validation-report.md)。
+
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。
 
 > **本机 Coding（2026-09-08）**：使用 `.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all`，每次自动新建隔离目录，禁止加载业务 conftest/配置。真实 120 秒探针单独使用 `--suite duration`。详见 [复跑说明](../tests/coding_acceptance/README.md)及 [S0 实际成绩](analysis/coding-agent-upgrade-20260908/s0-validation-report.md)；下文历史业务数据库套件不作为本机 Coding 的默认入口。

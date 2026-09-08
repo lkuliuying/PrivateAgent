@@ -231,6 +231,7 @@ class ModelRequest(ContractModel):
     # v0.7.0 验收修复（P0-1）：run 的 reasoning_effort 透传到模型请求
     # （additive；OpenAI 系请求体透传，Ollama/Claude 由 adapter 自行决定）。
     reasoning_effort: str | None = Field(default=None, max_length=32)
+    max_output_tokens: int | None = Field(default=None, ge=1, le=131072, strict=True)
 
     @model_validator(mode="after")
     def require_unique_tool_names(self) -> ModelRequest:

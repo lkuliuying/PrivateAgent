@@ -12,7 +12,7 @@ from pathlib import Path
 
 from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
@@ -38,6 +38,8 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self._migrate()
+            from .context_history import ContextHistory
+            self.context = ContextHistory(self)
             self._recover()
         except BaseException:
             self.db.close()
@@ -57,7 +59,7 @@ class Store:
             raise
 
     def _backup(self) -> dict:
-        backup = self.path.with_name(f"{self.path.stem}.pre-v2-{uuid.uuid4().hex}.sqlite3")
+        backup = self.path.with_name(f"{self.path.stem}.pre-v{SCHEMA_VERSION}-{uuid.uuid4().hex}.sqlite3")
         target = sqlite3.connect(backup)
         try:
             self.db.backup(target)
@@ -73,11 +75,13 @@ class Store:
             raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
         if version == SCHEMA_VERSION:
             return
-        if version == 2:
+        if version in {2, 3}:
             backup = self._backup()
             with self.transaction():
-                self._history_schema()
-                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "history_imports"})))
+                if version == 2:
+                    self._history_schema()
+                self._context_schema()
+                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "context_items_and_checkpoints"})))
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
         names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -105,6 +109,7 @@ class Store:
             self.db.execute("CREATE INDEX grants_session ON grants(session_id,expires_at)")
             self.db.execute("CREATE TABLE audit_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL)")
             self._history_schema()
+            self._context_schema()
             counts = {"objects": 0, "runs": 0}
             if legacy:
                 for item_id, kind, data in self.db.execute("SELECT id,kind,data FROM legacy_objects_v1 ORDER BY id").fetchall():
@@ -130,6 +135,12 @@ class Store:
     def _history_schema(self):
         self.db.execute("CREATE TABLE history_imports(id TEXT PRIMARY KEY, sha256 TEXT UNIQUE NOT NULL, data TEXT NOT NULL, archive TEXT NOT NULL)")
 
+    def _context_schema(self):
+        self.db.execute("CREATE TABLE context_items(item_id TEXT PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), run_id TEXT NOT NULL, ordinal INTEGER NOT NULL, source_key TEXT NOT NULL, data TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE(session_id,ordinal), UNIQUE(session_id,source_key))")
+        self.db.execute("CREATE INDEX context_items_run ON context_items(run_id,ordinal)")
+        self.db.execute("CREATE TABLE context_checkpoints(id TEXT PRIMARY KEY, session_id INTEGER NOT NULL REFERENCES sessions(id), request_id TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL, UNIQUE(session_id,request_id))")
+        self.db.execute("CREATE INDEX context_checkpoints_session ON context_checkpoints(session_id,state)")
+
     def _recover(self):
         """重启关闭授权并记录不确定的外部副作用，绝不重放命令或文件写入。"""
         with self.transaction():
@@ -154,6 +165,12 @@ class Store:
                                                   **({"run_outcome": run["run_outcome"]} if run.get("run_outcome") else {})}})
                 run["last_event_sequence"] = sequence
                 self.save_run(run)
+                if run.get("session_id"):
+                    self.context.close_pending(run["session_id"], run["id"])
+            for identifier, session_id, data in self.db.execute("SELECT id,session_id,data FROM context_checkpoints WHERE state IN ('pending','compacting')").fetchall():
+                checkpoint = self._unpack(data)
+                checkpoint.update(state="failed", error="执行器重启，未提交压缩；原历史保持可读")
+                self.context.save_checkpoint(session_id, checkpoint)
             for (grant_id,) in self.db.execute("SELECT id FROM grants WHERE revoked_at IS NULL").fetchall():
                 self.revoke_grant(grant_id, "app_exit")
 

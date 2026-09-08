@@ -84,6 +84,20 @@
           "title": "Created At",
           "type": "string"
         },
+        "execution_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Id"
+        },
         "item_id": {
           "maxLength": 128,
           "minLength": 1,
@@ -100,6 +114,20 @@
           ],
           "title": "Kind",
           "type": "string"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
         },
         "ordinal": {
           "maximum": 9007199254740991,
@@ -140,6 +168,20 @@
           "title": "Source",
           "type": "string"
         },
+        "source_sequence": {
+          "anyOf": [
+            {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Sequence"
+        },
         "summary_of": {
           "items": {
             "maxLength": 128,
@@ -153,7 +195,7 @@
         "tool_call_id": {
           "anyOf": [
             {
-              "maxLength": 128,
+              "maxLength": 200,
               "minLength": 1,
               "type": "string"
             },

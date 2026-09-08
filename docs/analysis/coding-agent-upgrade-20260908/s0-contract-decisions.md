@@ -73,3 +73,11 @@ S1 只接 RunOutcome 与命令业务结果；S2 接 ContextItem；S3 接 Workspa
 - 验证沿用 `output.validation_*`，最多两次纠偏共享原任务预算。六类真实本机 ASGI 载荷位于 `tests/coding_acceptance/s1-wire-examples.json`，Python 与 Vue 测试共同消费。
 
 实际成绩、证据扫描范围和未验证项见 [S1 验收报告](./s1-validation-report.md)。
+
+## 7. S2 接入补记（2026-09-08）
+
+- ContextItem 已接入 schema 4 的 `context_items`；原始模型消息由可选 `AgentRuntime.context_sink` 写入，以会话 ordinal 排序和 source_key 去重。压缩检查点为原始条目的派生视图，不从 events 再生成一套不同工具历史。
+- `content_ref` 继续只有 SHA-256 和 bytes；受控续读使用 ContextItem.item_id。工具结果加性关联实际 `execution_id`、`operation_id`、`source_sequence`，三者必须成组存在；旧记录可省略。tool_call_id 上限统一到共享模型契约的 200 字符，未知结果不补造执行。
+- SQLite 新表为 `context_items`、`context_checkpoints`，schema 2/3 先备份再事务升级到 4；运行/消息/原事件仍保留原有语义。检查点保存压缩前 ordinal、父版本、结构摘要与原始 source_item_ids，后续 S3 应复用这些 item/执行关联保存读取版本，不能另建无关联文件历史。
+- ModelRequest 加性支持 max_output_tokens，并接通网关能力检查、三类 Provider 的 complete/stream 与服务器 DTO。旧调用可省略；新版本机请求需要配套服务器代码。S2 没有部署服务器，也没有自动恢复授权或副作用。
+- 本机 API 和默认限制、失败边界、源与计量的展示见 [上下文设计](../../context-design.md)及 [S2 验收报告](./s2-validation-report.md)。S0 历史表中的 schema 3、24 轮限制保留为当时基线，不适用于 S2 主链。

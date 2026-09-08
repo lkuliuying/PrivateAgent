@@ -13,6 +13,7 @@ class ModelCapabilities:
     usage_reporting: bool
     cancellation: bool
     max_context_tokens: int | None = None
+    output_token_limit: bool = False
 
 
 @dataclass(frozen=True, slots=True)

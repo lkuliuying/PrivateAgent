@@ -133,6 +133,8 @@ class ModelGateway:
         return self.adapter.capabilities
 
     def _require_capabilities(self, request: ModelRequest) -> None:
+        if request.max_output_tokens is not None and not self.capabilities.output_token_limit:
+            raise ModelGatewayError("模型适配器未声明输出 token 上限能力", code="unsupported_capability", provider=self.adapter.provider_name)
         if (
             request.output_format is not None
             and not self.capabilities.structured_output

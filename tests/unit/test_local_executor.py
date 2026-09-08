@@ -22,6 +22,7 @@ class Server:
         self.calls = []
         self.responses = []
         self.block = asyncio.Event()
+        self.profiles = [{"id": "test-profile", "model_name": "test", "context_tokens": 32000, "is_default": True, "enabled": True}]
 
     async def handle(self, request):
         self.calls.append((request.url.path, request.content))
@@ -31,7 +32,7 @@ class Server:
                 return httpx.Response(401)
             return httpx.Response(200, json={"id": 1 if token == "Bearer account-a" else 2})
         if request.url.path == "/agent-model-profiles":
-            return httpx.Response(200, json=[{"id": "test-profile", "model_name": "test", "context_tokens": 32000, "is_default": True, "enabled": True}])
+            return httpx.Response(200, json=self.profiles)
         assert request.url.path == "/desktop/model/complete"
         if not self.responses:
             await self.block.wait()

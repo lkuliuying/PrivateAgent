@@ -252,7 +252,12 @@ export interface ContextBudgetResponse {
   cache_hit_percent: number | null;
   cache_hit_scope?: "latest_request" | "session";
   usage_percent: number | null;
-  source: "provider_usage" | "tokenizer" | "runtime_count" | "unavailable";
+  source: "provider_usage" | "tokenizer" | "runtime_count" | "estimated" | "unavailable";
+  estimated_input_tokens?: number;
+  input_budget_tokens?: number;
+  measurement_source?: string;
+  model_config_version?: string;
+  compaction_error?: string | null;
   compaction_state: "idle" | "compacting" | "compacted" | "failed";
   last_compacted_at: string | null;
   error_code: string | null;

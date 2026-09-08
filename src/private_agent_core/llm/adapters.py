@@ -225,6 +225,7 @@ class OpenAIChatAdapter(_HttpAdapter):
         self.strict_tools = strict_tools
         self.require_api_key = require_api_key
         self.capabilities = ModelCapabilities(
+            output_token_limit=True,
             streaming=True,
             native_tool_calls=True,
             structured_output=True,
@@ -258,6 +259,8 @@ class OpenAIChatAdapter(_HttpAdapter):
         # v0.7.0 验收修复（P0-1）：OpenAI 系请求体透传 reasoning_effort
         if request.reasoning_effort:
             payload["reasoning_effort"] = request.reasoning_effort
+        if request.max_output_tokens is not None:
+            payload["max_completion_tokens" if self.base_url.startswith("https://api.openai.com/") else "max_tokens"] = request.max_output_tokens
         if request.tools:
             payload["tools"] = _tool_definitions_openai(
                 request,
@@ -329,6 +332,8 @@ class OpenAIChatAdapter(_HttpAdapter):
         # v0.7.0 验收修复（P0-1）：OpenAI 系请求体透传 reasoning_effort
         if request.reasoning_effort:
             payload["reasoning_effort"] = request.reasoning_effort
+        if request.max_output_tokens is not None:
+            payload["max_completion_tokens" if self.base_url.startswith("https://api.openai.com/") else "max_tokens"] = request.max_output_tokens
         if request.tools:
             payload["tools"] = _tool_definitions_openai(
                 request,
@@ -538,6 +543,7 @@ class OllamaChatAdapter(_HttpAdapter):
             usage_reporting=True,
             cancellation=True,
             max_context_tokens=context_length,
+            output_token_limit=True,
         )
 
     async def complete(
@@ -557,6 +563,8 @@ class OllamaChatAdapter(_HttpAdapter):
                 "num_ctx": self.context_length,
             },
         }
+        if request.max_output_tokens is not None:
+            payload["options"]["num_predict"] = request.max_output_tokens
         if request.tools:
             payload["tools"] = _tool_definitions_openai(request, strict=False)
         if request.output_format is not None:
@@ -610,6 +618,8 @@ class OllamaChatAdapter(_HttpAdapter):
                 "num_ctx": self.context_length,
             },
         }
+        if request.max_output_tokens is not None:
+            payload["options"]["num_predict"] = request.max_output_tokens
         if request.tools:
             payload["tools"] = _tool_definitions_openai(request, strict=False)
         if request.output_format is not None:
@@ -761,6 +771,7 @@ class ClaudeMessagesAdapter(_HttpAdapter):
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.capabilities = ModelCapabilities(
+            output_token_limit=True,
             streaming=True,
             native_tool_calls=True,
             structured_output=True,
@@ -786,7 +797,7 @@ class ClaudeMessagesAdapter(_HttpAdapter):
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": request.max_output_tokens or self.max_output_tokens,
             "temperature": self.temperature,
         }
         if system:
@@ -869,7 +880,7 @@ class ClaudeMessagesAdapter(_HttpAdapter):
         payload: dict[str, Any] = {
             "model": self.model_name,
             "messages": messages,
-            "max_tokens": self.max_output_tokens,
+            "max_tokens": request.max_output_tokens or self.max_output_tokens,
             "temperature": self.temperature,
             "stream": True,
         }

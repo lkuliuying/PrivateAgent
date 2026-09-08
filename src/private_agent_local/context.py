@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from private_agent_core.context import configuration_version
+
 
 def token_count(value) -> int | None:
     return value if type(value) is int and 0 <= value <= 1_000_000_000 else None
@@ -30,15 +32,26 @@ def average_cache_hit_percent(profile: dict | None, runs: Iterable[dict]) -> flo
 def context_budget(profile: dict | None, run: dict | None, *, cache_hit_percent: float | None = None) -> dict:
     capacity = token_count((profile or {}).get("context_tokens")) or 0
     usage = (run or {}).get("context_usage") or {}
+    estimate = (run or {}).get("context_budget") or {}
+    if estimate and estimate.get("model_config_version") != configuration_version(profile or {}):
+        usage, estimate = {}, {}
     used = token_count(usage.get("input_tokens"))
     result = {"used_tokens": used or 0, "max_context_tokens": capacity, "reserved_output_tokens": 0,
               "cache_hit_percent": cache_hit_percent,
               "cache_hit_scope": "session", "source": "unavailable", "usage_percent": None, "compaction_state": "idle",
               "last_compacted_at": None, "error_code": None, "error_reason": None}
+    result.update({key: value for key, value in estimate.items() if key not in {"max_context_tokens"}})
+    result.update(compaction_state=(run or {}).get("compaction_state", "idle"),
+                  last_compacted_at=(run or {}).get("last_compacted_at"),
+                  compaction_error=(run or {}).get("compaction_error"), loop_budget=(run or {}).get("loop_budget"))
     if not capacity:
         result.update(error_code="context_capacity_unknown", error_reason="所选模型未配置上下文容量，请在模型配置中填写服务实际支持的容量")
     elif used is None:
-        result.update(error_code="context_usage_unavailable", error_reason="容量已配置；尚无该模型的供应商用量，完成一次请求后更新")
+        if estimate:
+            result.update(source="estimated", used_tokens=estimate["estimated_input_tokens"],
+                          usage_percent=min(100, round(estimate["estimated_input_tokens"] / capacity * 100)))
+        else:
+            result.update(error_code="context_usage_unavailable", error_reason="容量已配置；尚无该模型的供应商用量，完成一次请求后更新")
     else:
         result.update(source="provider_usage", usage_percent=min(100, round(used / capacity * 100)))
         if used >= capacity:
