@@ -61,7 +61,7 @@ async def setup(tmp_path):
     assert workspace["status"] == "active"
     binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
     session = (await client.post("/sessions", json={**binding, "title": "test", "kind": "coding"})).json()
-    return app, client, server, project_dir, {**binding, "session_id": session["id"], "message": "Inspect and update the project"}
+    return app, client, server, project_dir, {**binding, "session_id": session["id"], "message": "检查所选项目"}
 
 
 async def until(client, run_id, status):

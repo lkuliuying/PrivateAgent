@@ -219,9 +219,101 @@
       "title": "EventEnvelope",
       "type": "object"
     },
+    "EvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "content_ref": {
+          "$ref": "#/$defs/ContentRef"
+        },
+        "evidence_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Evidence Id",
+          "type": "string"
+        },
+        "execution_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Execution Id"
+        },
+        "operation_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "source_sequence": {
+          "maximum": 9007199254740991,
+          "minimum": 1,
+          "title": "Source Sequence",
+          "type": "integer"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "title": "Verified At",
+          "type": "string"
+        },
+        "workspace_version": {
+          "minimum": 0,
+          "title": "Workspace Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evidence_id",
+        "run_id",
+        "operation_id",
+        "source_sequence",
+        "content_ref",
+        "verified_at",
+        "workspace_version"
+      ],
+      "title": "EvidenceRef",
+      "type": "object"
+    },
     "ExecutionResult": {
       "additionalProperties": false,
       "properties": {
+        "command_kind": {
+          "default": "unclassified",
+          "enum": [
+            "test",
+            "search",
+            "development",
+            "unclassified"
+          ],
+          "title": "Command Kind",
+          "type": "string"
+        },
         "execution_id": {
           "maxLength": 128,
           "minLength": 1,
@@ -273,6 +365,16 @@
           "default": "1.0",
           "title": "Schema Version",
           "type": "string"
+        },
+        "validation_outcome": {
+          "default": "unknown",
+          "enum": [
+            "succeeded",
+            "failed",
+            "unknown"
+          ],
+          "title": "Validation Outcome",
+          "type": "string"
         }
       },
       "required": [
@@ -292,6 +394,42 @@
           "title": "Description",
           "type": "string"
         },
+        "evidence_policy": {
+          "default": "manual",
+          "enum": [
+            "disk",
+            "exit",
+            "test_exit",
+            "response",
+            "manual"
+          ],
+          "title": "Evidence Policy",
+          "type": "string"
+        },
+        "kind": {
+          "default": "manual",
+          "enum": [
+            "file_changed",
+            "command",
+            "test",
+            "artifact",
+            "preview",
+            "manual"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "origin": {
+          "default": "legacy",
+          "enum": [
+            "user",
+            "intent_rule",
+            "tool",
+            "legacy"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
         "required": {
           "default": true,
           "title": "Required",
@@ -301,6 +439,12 @@
           "maxLength": 128,
           "minLength": 1,
           "title": "Requirement Id",
+          "type": "string"
+        },
+        "scope": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Scope",
           "type": "string"
         }
       },
@@ -322,6 +466,14 @@
           },
           "maxItems": 256,
           "title": "Evidence Ids",
+          "type": "array"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          },
+          "maxItems": 256,
+          "title": "Evidence Refs",
           "type": "array"
         },
         "goal_outcome": {
@@ -414,6 +566,12 @@
           "maxItems": 128,
           "title": "Evidence Ids",
           "type": "array"
+        },
+        "message": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Message",
+          "type": "string"
         },
         "requirement_id": {
           "maxLength": 128,

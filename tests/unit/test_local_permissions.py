@@ -150,7 +150,7 @@ async def test_workspace_runs_registered_powershell_and_records_display_command(
     app, client, server, root, body = await setup(tmp_path)
     captured = []
 
-    async def fake_run_command(command_root, args, *, timeout=120):
+    async def fake_run_command(command_root, args, *, timeout=120, execution_id=None):
         captured.append((command_root, args, timeout))
         return {"returncode": 0, "stdout": "ok\n", "stderr": "", "truncated": False}
 

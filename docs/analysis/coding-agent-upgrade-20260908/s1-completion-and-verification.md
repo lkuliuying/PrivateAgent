@@ -1,6 +1,6 @@
 # S1：可信完成与验证闭环开发计划
 
-> 状态：待实施。依赖：S0 验收通过，其中 S0-01 至 S0-04 是本阶段实现的关键输入。预计：5–8 人日。
+> 状态：2026-09-08 已完成本机 S1 开发及阶段隔离验证，见 [S1 验收报告](./s1-validation-report.md)。S0 已验收；原预计工作量为 5–8 人日，不作为实际耗时记录。尚未打包、安装或使用真实付费模型验收。
 > 返回：[总体路线](./README.md)。上一阶段：[S0](./s0-baseline-and-contracts.md)。下一阶段：[S2](./s2-instructions-and-context.md)。
 
 ## 1. 阶段目标与边界
@@ -10,6 +10,8 @@
 完成验证约束的是产品声明和运行结果，不可能证明任意自然语言需求完全正确。无法自动判断的条件必须保留为待人工检查，不能伪装成机器验证通过。
 
 ## 2. 现有资产与接入点
+
+本节资产状态是开工前基线；已实现接入及实际变更以验收报告为准。下文未被实现说明覆盖的后续能力仍是设计目标，不能据此声明上线或自动开展下一阶段。
 
 | 资产 | 当前状态 | 本阶段动作 |
 | --- | --- | --- |
@@ -37,7 +39,7 @@
 
 ### 4.1 结果分层
 
-拟议 ExecutionResult 保留原始 `exit_code` 和输出引用，并增加 `outcome`：`succeeded | failed | cancelled | timed_out | unknown`。宿主成功运行程序不代表程序验证通过。协议失败通过既有错误路径返回，不能制造 exit_code=0。
+实现遵循 S0 冻结契约：ExecutionResult 的 `outcome` 为 `exited | timed_out | cancelled | failed | unknown`，正常非零退出仍是 `exited`；另用 `command_kind` 和 `validation_outcome=succeeded | failed | unknown` 解释命令业务结果。保留真实 `exit_code` 和输出引用，协议失败不能制造 exit_code=0。此决议替代草案把 succeeded 混入进程事实的方案。
 
 命令类别决定退出码规则：pytest 的 1 代表测试失败；搜索工具的 1 可表示正常无匹配；普通开发命令默认 0 成功。规则由受审查的工具定义或项目验证配置确定，模型不能临时把失败码加入“允许成功”。对无法解释的命令保留原始结果并标未验证。
 
@@ -55,7 +57,7 @@
 
 ### 4.2 最小任务完成要求
 
-拟议 `CompletionRequirement` 字段：`id`、`kind`、`scope`、`required`、`origin`、`evidence_policy`。初期只支持明确且可验证的类型：文件实际变化、指定命令执行、测试结果、产物存在、仅预览。
+实现扩展 S0 的 `Requirement`，保持 `requirement_id`、`description`、`required`，增加 `kind`、`scope`、`origin`、`evidence_policy`；未另建重名契约。支持文件实际变化、指定命令执行、测试结果、产物存在、仅预览及不能自动确认的 manual 条件。manual 保留 unverified，本阶段未实现人工验收记录界面。
 
 要求来源优先为用户显式约束和界面明确选项；模型可提出要求草稿，但不能自行取消用户要求。自然语言意图规则存在误判，必须提供可见的任务理解摘要；不明确时允许询问，不用关键词强制生成破坏性动作或虚构隐藏验收。
 
@@ -63,7 +65,7 @@
 
 ### 4.3 证据模型
 
-拟议 `EvidenceRef`：关联 `run_id`、`operation_id`、工具调用、来源事件序号、内容摘要和验证时间。文件证据核对实际存在、写后摘要及当前状态；命令证据核对真实退出、是否超时/取消、验证目标及其输入代码版本。
+已实现 `EvidenceRef`：关联 `run_id`、`operation_id`、来源事件序号、内容摘要、验证时间及工作区版本；工具证据携带真实工具调用和 execution ID，纯回答/产物检查不伪造执行 ID。文件证据核对实际存在、写后摘要及当前状态；命令证据核对真实退出、是否超时/取消、验证目标及其输入代码版本。
 
 测试通过后如果相关代码再次变化，旧测试证据失效或明确标记过期，不能被后续最终完成判断重复使用。先按保守的工作区变更版本处理，后续再优化依赖粒度。
 
@@ -83,9 +85,9 @@
 
 S1 优先在现有运行/执行 JSON 中增加带版本字段和结构化业务结果，避免只为少量字段立即重建表。若需要按证据查询的独立索引，按 S0 冻结的迁移机制加入，不预设当前数据库已升级。
 
-拟议结果载荷包括 `goal_outcome`、`requirements`、`verification_results`、`evidence_ids`、`unverified_items`。GET 运行快照和现有终态事件同步携带，不新建另一个独立完成接口。
+结果以 `run_outcome` 携带 `goal_outcome`、`requirements`、`verification_results`、`evidence_ids`、`evidence_refs`、`unverified_items`；GET 运行快照和现有终态事件同步携带。创建运行接受可选 `completion_contract_version=1.0` 和用户要求，拒绝未知版本；SQLite 保持 3，仅扩展 JSON，不增加完成接口。
 
-拟议事件 `verification.started`、`verification.completed`、`verification.failed` 应优先映射既有验证事件名，避免同时发送两套意义相同的事件。准确名字由 S0 schema 决议确定。
+沿用共享核心已有 `output.validation_started`、`output.validation_passed`、`output.validation_failed`，没有新增一套平行验证事件。结果、最终消息和持久终态在现有事务中提交。
 
 旧运行没有结果字段时映射 unknown。导入历史不补造证据，不更改已有审批和授权。旧服务端消费者保留兼容入口并通过回归。
 

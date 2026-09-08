@@ -51,6 +51,20 @@ def test_execution_facts_do_not_infer_business_success():
     for value in ({"outcome": "exited"}, {"outcome": "unknown", "exit_code": 0}):
         with pytest.raises(ValidationError):
             ExecutionResult(execution_id="e", operation_id="o", **value)
+    with pytest.raises(ValidationError):
+        ExecutionResult(execution_id="e", operation_id="o", outcome="exited", exit_code=True)
+
+
+def test_s1_wire_examples_have_valid_bound_evidence():
+    examples = json.loads((Path(__file__).parent / "s1-wire-examples.json").read_text(encoding="utf-8"))
+    for sample in examples.values():
+        snapshot = sample["snapshot"]
+        outcome = RunOutcome.model_validate(snapshot["run_outcome"])
+        assert outcome.goal_outcome == snapshot["goal_outcome"]
+        assert sample["events"][-1]["payload"]["run_outcome"] == snapshot["run_outcome"]
+        for execution in sample["executions"]:
+            if execution.get("execution_result"):
+                ExecutionResult.model_validate(execution["execution_result"])
 
 
 def test_context_and_capabilities_fail_closed():

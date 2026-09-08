@@ -16,6 +16,7 @@ import type {
   RunExecutionRecord,
 } from "../model/runContracts";
 import { redactCommandArgs, redactSecretText } from "../model/redaction";
+import { parseExecutionResult } from "../model/runOutcome";
 
 const props = withDefaults(
   defineProps<{
@@ -61,6 +62,25 @@ const commandText = computed(() => {
 const cwdLabel = computed(() => outputFacts.value?.cwd ?? null);
 
 const exitCode = computed(() => outputFacts.value?.returncode ?? null);
+const executionResult = computed(() => parseExecutionResult(props.execution.execution_result, props.execution.id));
+const statusLabel = computed(() => {
+  const result = executionResult.value;
+  if (result) {
+    if (result.outcome === "timed_out") return "命令超时";
+    if (result.outcome === "cancelled") return "已取消";
+    if (result.outcome === "failed") return "启动或执行失败";
+    if (result.outcome === "unknown") return "结果未知";
+    if (result.validation_outcome === "failed") return result.command_kind === "test" ? "测试失败" : "命令失败";
+    if (result.validation_outcome === "succeeded") return result.command_kind === "test" ? "测试通过" : "命令通过";
+    return "已退出，结果未验证";
+  }
+  if (props.execution.status === "running") return "执行中";
+  if (props.execution.status === "cancelled") return "已取消";
+  if (props.execution.status === "failed") return "失败";
+  return "结果未验证";
+});
+const exitFailed = computed(() => executionResult.value?.validation_outcome === "failed"
+  || (!executionResult.value && exitCode.value !== null && exitCode.value !== 0));
 
 /** 耗时：执行记录 created_at → completed_at（durable 事实） */
 const durationLabel = computed(() => {
@@ -135,13 +155,13 @@ function redactLine(text: string): string {
     <div class="output-head">
       <PhTerminalWindow :size="14" aria-hidden="true" />
       <span class="mono output-tool">{{ execution.tool_name }}</span>
-      <span class="output-status" :class="{ failed: execution.status !== 'succeeded' }">
-        {{ execution.status === "succeeded" ? "成功" : execution.status === "failed" ? "失败" : execution.status }}
+      <span class="output-status" :class="{ failed: execution.status === 'failed' || exitFailed }">
+        {{ statusLabel }}
       </span>
       <span
         v-if="exitCode !== null"
         class="output-fact"
-        :class="{ bad: exitCode !== 0 }"
+        :class="{ bad: exitFailed }"
         data-testid="command-exit-code"
       >退出码 {{ exitCode }}</span>
       <span v-if="durationLabel" class="output-fact" data-testid="command-duration">耗时 {{ durationLabel }}</span>

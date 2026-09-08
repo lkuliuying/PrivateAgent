@@ -20,7 +20,8 @@ import {
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { AgentRunStatus } from "../model/runContracts";
-import { RUN_STATUS_META } from "../model/runContracts";
+import type { RunOutcome } from "../model/generated/codingContracts";
+import { runResultMeta } from "../model/runOutcome";
 
 const props = withDefaults(
   defineProps<{
@@ -33,6 +34,8 @@ const props = withDefaults(
     headSha?: string | null;
     gitDirty?: boolean | null;
     runStatus?: AgentRunStatus | null;
+    runOutcome?: RunOutcome | null;
+    verifying?: boolean;
     planAvailable?: boolean;
     planOpen?: boolean;
     contextOpen?: boolean;
@@ -80,7 +83,7 @@ const shortHead = computed(() => {
   return sha ? sha.slice(0, 8) : "";
 });
 
-const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runStatus] : null));
+const statusMeta = computed(() => (props.runStatus ? runResultMeta(props.runStatus, props.runOutcome, props.verifying) : null));
 const titleTooltip = computed(() =>
   props.workspacePath ? `工作目录：${props.workspacePath}` : props.title
 );

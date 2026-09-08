@@ -19,6 +19,20 @@ from private_agent_core.execution.exec_host_client import (
 from . import files
 
 
+class ExecutionFailure(ValueError):
+    """传递安全错误类别和已收集输出，不伪造进程退出。"""
+
+    def __init__(self, message: str, *, outcome: str, output: dict):
+        super().__init__(message)
+        self.outcome, self.output = outcome, output
+
+
+class ExecutionTimeout(TimeoutError):
+    def __init__(self, output: dict):
+        super().__init__("本机命令超时，进程已停止")
+        self.output = output
+
+
 def host_path() -> Path:
     name = "exec-host.exe" if os.name == "nt" else "exec-host"
     if getattr(sys, "frozen", False):
@@ -37,15 +51,23 @@ def verify_host(path: Path) -> str:
     return digest
 
 
-async def run_command(root: Path, args: list[str], *, timeout: float = 120, executable: Path | None = None) -> dict:
+async def run_command(root: Path, args: list[str], *, timeout: float = 120, executable: Path | None = None,
+                      execution_id: str | None = None) -> dict:
     path = executable or host_path()
     host_sha256 = verify_host(path)
     command, env = files.prepare_process(args)
     # 宿主环境也采用同一白名单；模型与账号凭据从不进入子进程环境。
     client = ExecHostClient([str(path)], cwd=str(root), env=env)
-    execution_id = str(uuid.uuid4())
+    execution_id = execution_id or str(uuid.uuid4())
     buffers = {"stdout": bytearray(), "stderr": bytearray()}
     truncated = False
+    submitted = False
+    cancelled = False
+
+    def collected():
+        return {**{key: value.decode("utf-8", errors="replace") for key, value in buffers.items()},
+                "truncated": truncated, "execution_host_sha256": host_sha256}
+
     try:
         dll_search = nullcontext()
         if os.name == "nt" and getattr(sys, "frozen", False):
@@ -56,6 +78,7 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 120, exec
         if "argv" not in health.modes:
             raise ExecutorUnavailable("执行宿主未提供 argv 能力")
         binding = json.dumps({"cwd": str(root), "argv": command, "network_policy": "approved"}, sort_keys=True).encode()
+        submitted = True
         await client.start_execution(ExecStartParams(execution_id=execution_id, argv=command, cwd=str(root), env_diff=env,
             timeout_ms=max(1, min(600000, int(timeout * 1000))), output_limit_bytes=files.MAX_OUTPUT,
             sandbox_policy_hash=hashlib.sha256(binding).hexdigest(), network_policy="approved"))
@@ -73,17 +96,27 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 120, exec
                     truncated |= len(current) + len(data) > files.MAX_OUTPUT
                     current.extend(data[:max(0, files.MAX_OUTPUT - len(current))])
                 if event.notification.value == "execution/failed":
-                    raise ExecutorUnavailable("执行宿主报告失败，请检查项目状态后重试")
+                    raise ExecutionFailure("执行宿主无法确认进程或完整输出，结果未知", outcome="unknown", output=collected())
+                if event.notification.value == "execution/cancelled":
+                    # 宿主先发取消通知，随后 exited 才携带超时原因；等待终态并收齐输出。
+                    cancelled = True
                 if event.notification.value == "execution/exited":
                     if event.cancelled_by_timeout:
                         raise TimeoutError("本机命令超时")
+                    if cancelled:
+                        raise ExecutionFailure("命令已取消", outcome="cancelled", output=collected())
                     if event.exit_code is None:
                         raise ExecutorUnavailable("执行宿主未报告退出码")
-                    output = {key: value.decode("utf-8", errors="replace") for key, value in buffers.items()}
-                    return {"returncode": event.exit_code, **output, "truncated": truncated,
-                            "execution_host_sha256": host_sha256, "sandbox_available": health.sandbox_available}
+                    return {"returncode": event.exit_code, **collected(), "sandbox_available": health.sandbox_available}
     except ExecutorUnavailable as error:
-        raise ValueError(str(error)) from None
+        failed_to_start = not submitted or error.code in {"spawn_failed", "bad_params", "unsupported_mode", "sandbox_policy_unavailable"}
+        raise ExecutionFailure("执行宿主无法启动，命令未执行" if failed_to_start else "执行宿主通信中断，执行结果未知",
+                               outcome="failed" if failed_to_start else "unknown", output=collected()) from error
+    except TimeoutError:
+        raise ExecutionTimeout(collected()) from None
+    except asyncio.CancelledError as error:
+        error.execution_output = collected()
+        raise
     finally:
         # 每次命令独立宿主；关闭宿主会回收其 Job 内残留后代，不留下后台脚本。
         await client.close()

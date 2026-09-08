@@ -26,7 +26,6 @@ async def api(tmp_path):
         await close(values[0], values[1])
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="G01：桌面主链未接入任务完成验证器")
 async def test_s0_t01_false_completion(api):
     app, client, server, root, body = api
     target = root / "source.txt"
@@ -39,7 +38,6 @@ async def test_s0_t01_false_completion(api):
     assert run.get("goal_outcome") == "unmet"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="G02：非零测试退出仍被包装为工具成功")
 async def test_s0_t02_failed_test(api, monkeypatch):
     app, client, server, root, body = api
 

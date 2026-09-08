@@ -10,6 +10,7 @@ class OutputVerification(BaseModel):
     code: str = Field(pattern=r"^[a-z0-9_]{1,64}$")
     message: str = Field(min_length=1, max_length=2_000)
     correction: str | None = Field(default=None, max_length=4_000)
+    retryable: bool = True
 
 
 class OutputVerifier(Protocol):

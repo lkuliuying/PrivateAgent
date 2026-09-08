@@ -65,7 +65,9 @@ class LocalRunAdapter:
         cancellation.raise_if_cancelled()
         output = await self.owner.tool(self.run, self.root, call.model_dump(mode="json"))
         if "error" in output:
-            return ToolResult(tool_call_id=call.id, name=call.name, success=False, error=output["error"], error_code="local_tool_rejected")
+            return ToolResult(tool_call_id=call.id, name=call.name, success=False, error=output["error"],
+                              error_code=output.get("error_code", "local_tool_rejected"),
+                              output={key: value for key, value in output.items() if key not in {"error", "error_code"}})
         return ToolResult(tool_call_id=call.id, name=call.name, success=True, output=output)
 
     async def emit(self, event: AgentEvent):
@@ -76,6 +78,12 @@ class LocalRunAdapter:
             return
         if kind == "run.started":
             self.run["status"] = "running"
+        if kind == "output.validation_started":
+            self.run["verification_state"] = "started"
+        if kind == "run.started":
+            self.owner.event(self.run, kind, **event.payload, completion_contract_version="1.0",
+                             completion_requirements=self.run.get("completion_requirements", []))
+            return
         if kind == "model.completed":
             for key in ("input_tokens", "output_tokens", "cached_tokens"):
                 self.run[key] += event.payload.get(key) or 0

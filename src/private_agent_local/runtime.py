@@ -11,6 +11,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from private_agent_core.coding_contracts import Requirement
+from private_agent_core.completion import (
+    canonical_command,
+    interpret_execution,
+    task_requirements,
+)
 from private_agent_core.contracts import (
     AgentRunLimits,
     ModelMessage,
@@ -20,9 +26,18 @@ from private_agent_core.runtime import AgentRuntime
 
 from . import files, policy
 from .cloud import Cloud
+from .completion import (
+    LocalCompletionVerifier,
+    content_ref,
+    denied_operation,
+    file_digest,
+    operation_scope,
+    unknown_outcome,
+    workspace_state,
+)
 from .context import average_cache_hit_percent, context_budget, matches_profile
 from .core_adapter import LocalRunAdapter
-from .executor import run_command
+from .executor import ExecutionFailure, run_command
 from .store import Store, now
 
 TERMINAL = {"completed", "failed", "cancelled", "timed_out", "limit_exceeded"}
@@ -85,8 +100,10 @@ SYSTEM = (
 
 
 def snapshot(run: dict) -> dict:
-    return {key: value for key, value in run.items()
-            if key not in {"events", "approvals", "executions", "client_request_id"}}
+    value = {key: value for key, value in run.items()
+             if key not in {"events", "approvals", "executions", "client_request_id", "denied_operations", "uncertain_operations", "completion_policy"}}
+    outcome = run.get("run_outcome") or unknown_outcome(run["id"])
+    return {**value, "run_outcome": outcome, "goal_outcome": outcome["goal_outcome"]}
 
 
 class Runtime:
@@ -169,6 +186,11 @@ class Runtime:
             if not grant or grant["project_id"] != data["project_id"]:
                 raise ValueError("完全访问需要先确认当前会话的限时授权")
         stamp = now()
+        requirements, completion_policy = task_requirements(data["message"], [Requirement.model_validate(item)
+                                                          for item in data.get("completion_requirements", [])])
+        for requirement in requirements:
+            if requirement.kind in {"file_changed", "artifact"} and requirement.scope:
+                policy.file_scope(root, requirement.scope, mode)
         run = {"id": str(uuid.uuid4()), "session_id": session["id"], "project_id": data["project_id"],
                "workspace_id": data["workspace_id"], "model_profile_id": data.get("model_profile_id"),
                "full_access_grant_id": grant["id"] if grant else None,
@@ -180,6 +202,8 @@ class Runtime:
                "started_at": stamp, "completed_at": None, "created_at": stamp, "updated_at": stamp,
                "base_head_sha": None, "base_branch_name": None, "base_git_dirty": None,
                "steps": [], "plan": None, "artifacts": [], "events": [], "approvals": [], "executions": []}
+        run.update(completion_contract_version="1.0", completion_requirements=[item.model_dump(mode="json") for item in requirements],
+                   completion_policy=completion_policy, denied_operations=[], workspace_version=0, verification_state="pending")
         history = list(reversed(self.store.list("message", session_id=session["id"]))) [-12:]
         with self.store.transaction():
             self.store.create("message", {"session_id": session["id"], "role": "user", "content": data["message"]})
@@ -217,6 +241,11 @@ class Runtime:
             )
         messages.extend({"role": m["role"], "content": m["content"][:16000]} for m in history)
         messages.append({"role": "user", "content": message})
+        messages[0]["content"] += "\n本次最低验收要求（不增加操作权限）：" + json.dumps(run["completion_requirements"], ensure_ascii=False)
+        if run["completion_policy"]["commands_forbidden"]:
+            messages[0]["content"] += "\n用户要求本轮不运行命令；保留未执行的验证项，不得绕过。"
+        if run["completion_policy"]["preview_only"]:
+            messages[0]["content"] += "\n本轮仅提供方案或预览，不允许写入。"
         definitions = []
         for name, (model, description) in TOOLS.items():
             if run["permission_mode"] == "readonly" and name in WRITE_TOOLS:
@@ -228,7 +257,9 @@ class Runtime:
                 field_schema.pop("default", None)
             definitions.append({"name": name, "description": description, "input_schema": schema})
         adapter = LocalRunAdapter(self, run, root)
-        core = AgentRuntime(adapter, adapter, event_sink=adapter, reasoning_effort=run["reasoning_effort"])
+        verifier = LocalCompletionVerifier(self, run, root)
+        core = AgentRuntime(adapter, adapter, event_sink=adapter, reasoning_effort=run["reasoning_effort"],
+                            output_verifier=verifier, max_verification_retries=2)
         try:
             result = await core.run(
                 [ModelMessage.model_validate(item) for item in messages],
@@ -243,24 +274,39 @@ class Runtime:
             if error and error.code == "context_limit":
                 status = "limit_exceeded"
             with self.store.transaction():
-                if status == "completed":
-                    self.store.create("message", {"session_id": run["session_id"], "role": "assistant", "content": result.output or ""})
+                outcome = verifier.last_outcome
+                if outcome and (status == "completed" or adapter.terminal_payload.get("error_code") == "output_validation_failed"):
+                    if outcome.goal_outcome in {"blocked", "unknown"} and not verifier.failed_with_error and verifier.last_candidate_nonempty:
+                        status = "completed"
+                    run["run_outcome"] = outcome.model_dump(mode="json")
+                    if outcome.goal_outcome not in {"answered", "verified"}:
+                        run["output"] = "任务结果：" + {"unmet": "未完成", "blocked": "受阻", "unknown": "未确认"}[outcome.goal_outcome]
+                        run["output"] += "\n" + "\n".join("- " + item for item in outcome.unverified_items)
+                if run["output"]:
+                    self.store.create("message", {"session_id": run["session_id"], "role": "assistant", "content": run["output"]})
                 self.finish(run, status, error.code if error else adapter.terminal_payload.get("error_code"),
                             str(error) if error else result.error)
         except asyncio.CancelledError:
             self.finish(run, "cancelled", "cancelled", "任务已取消；已完成的文件修改会保留")
         except Exception:
+            # 事务回滚后重新读取，不能把内存中未提交的成功事件或输出再次保存。
+            run = self.store.run(run["id"])
+            run["output"] = None
+            run["run_outcome"] = unknown_outcome(run["id"], "本机结果持久化失败，结果未确认")
             self.finish(run, "failed", "local_execution_failed", "本机执行失败，请检查项目状态后重试")
         finally:
             self.tasks.pop(run["id"], None)
 
     def finish(self, run: dict, status: str, code=None, message=None):
         run.update(status=status, error_code=code, error_message=message, completed_at=now(), active_in_process=False)
+        if not run.get("run_outcome") or status in {"cancelled", "timed_out", "limit_exceeded"}:
+            run["run_outcome"] = unknown_outcome(run["id"], message or "任务未完成验证")
         for approval in run["approvals"]:
             if approval["status"] == "pending":
                 approval["status"] = "cancelled"
         self.event(run, f"run.{status}", output=run["output"], error_code=code, error=message,
-                   tool_call_count=run["tool_call_count"], input_tokens=run["input_tokens"], output_tokens=run["output_tokens"])
+                   tool_call_count=run["tool_call_count"], input_tokens=run["input_tokens"], output_tokens=run["output_tokens"],
+                   run_outcome=run["run_outcome"], goal_outcome=run["run_outcome"]["goal_outcome"])
         self.store.update("session", run["session_id"])
 
     async def approve(self, run: dict, call: dict, preview: dict) -> bool:
@@ -274,6 +320,8 @@ class Runtime:
         binding = {"arguments": call["arguments"], "preview": preview,
                    "root": str(self.root(run["project_id"], run["workspace_id"])), "tool": call["name"]}
         approval["operation_sha256"] = files.digest(json.dumps(binding, sort_keys=True).encode())
+        execution = run["executions"][-1]
+        approval.update(operation_id=execution["operation_id"], scope=execution["scope"])
         run["approvals"].append(approval)
         future = asyncio.get_running_loop().create_future()
         self.decisions[approval_id] = future
@@ -289,6 +337,9 @@ class Runtime:
         finally:
             self.decisions.pop(approval_id, None)
         run["status"] = "running"
+        if not accepted:
+            run.setdefault("denied_operations", []).append({"operation_id": execution["operation_id"],
+                "arguments_sha256": execution["arguments_sha256"], "scope": execution["scope"], "approval_id": approval_id})
         self.event(run, "tool.approval_resolved", tool_call_id=call["id"], name=call["name"], approval_id=approval_id)
         if accepted:
             current_binding = {"arguments": call["arguments"], "preview": preview,
@@ -300,12 +351,33 @@ class Runtime:
     async def tool(self, run: dict, root: Path, call: dict) -> dict:
         name = call["name"]
         run["tool_call_count"] += 1
-        self.event(run, "tool.requested", name=name, tool_call_id=call["id"], tool_call_count=run["tool_call_count"])
-        execution = {"id": str(uuid.uuid4()), "tool_name": name, "tool_version": "1", "status": "running",
+        execution = {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "tool_call_id": call["id"],
+                     "arguments_sha256": content_ref(call["arguments"]).sha256,
+                     "tool_name": name, "tool_version": "1", "status": "running",
                      "error_code": None, "error_message": None, "output": None, "created_at": now(), "completed_at": None}
         run["executions"].append(execution)
+        self.event(run, "tool.requested", name=name, tool_call_id=call["id"], execution_id=execution["id"],
+                   operation_id=execution["operation_id"], tool_call_count=run["tool_call_count"])
+        error_code, command, invoked = "local_tool_rejected", [], False
         try:
             args = TOOLS[name][0].model_validate(call["arguments"])
+            if name in WRITE_TOOLS:
+                execution["scope"] = operation_scope(name, call["arguments"])
+                if name == "write_project_file":
+                    execution["target_path"] = Path(args.rel_path).as_posix()
+                else:
+                    execution["command"] = canonical_command(args.command) if name == "run_project_command" else canonical_command(
+                        " ".join([args.command, *[json.dumps(value, ensure_ascii=False) for value in args.arguments]]))
+                if denied_operation(run, execution["scope"]):
+                    error_code = "operation_denied"
+                    raise ValueError("该操作与本轮已拒绝范围重叠；不得换工具或参数重试，请等待用户新指令")
+                if denied_operation(run, execution["scope"], collection="uncertain_operations"):
+                    error_code = "execution_unknown"
+                    raise ValueError("该范围存在结果未知的副作用；请先人工检查，禁止自动重放")
+                restrictions = run.get("completion_policy", {})
+                if restrictions.get("preview_only") or (name != "write_project_file" and restrictions.get("commands_forbidden")):
+                    error_code = "permission_blocked"
+                    raise ValueError("用户限定本轮仅预览或不运行命令，该操作未执行")
             # 每次操作重新核对项目根目录和限时授权，审批等待后再次核对。
             if self.root(run["project_id"], run["workspace_id"]) != root:
                 raise ValueError("项目位置已变化")
@@ -314,6 +386,7 @@ class Runtime:
             scope, relative = policy.file_scope(root, args.rel_path, mode) if isinstance(args, FileArgs | DirectoryArgs) else (root, ".")
             if name in WRITE_TOOLS:
                 if mode == "readonly":
+                    error_code = "permission_blocked"
                     raise ValueError("只读模式不允许写入或运行命令")
                 if name == "write_project_file":
                     preview = files.patch_preview(scope, relative, args.content)
@@ -333,14 +406,15 @@ class Runtime:
                     approval_preview = {"tool_name": name, "previewable": False,
                                         "reason": "将在所选项目中执行受控 PowerShell 命令：" + " ".join(plan.display_argv) + "。"}
                 if not automatic and not await self.approve(run, call, approval_preview):
+                    error_code = "operation_denied" if run["approvals"][-1]["status"] == "rejected" else "approval_expired"
                     raise ValueError("用户拒绝或审批过期；未执行操作，请停止重试并询问用户")
                 self.root(run["project_id"], run["workspace_id"])
                 self.require_grant(run)
                 if automatic:
                     self.event(run, "tool.auto_approved", tool_call_id=call["id"], name=name, policy_profile=profile,
-                               grant_id=run.get("full_access_grant_id"), arguments_sha256=files.digest(json.dumps(call["arguments"], sort_keys=True).encode()),
+                               grant_id=run.get("full_access_grant_id"), arguments_sha256=execution["arguments_sha256"],
                                preview=approval_preview)
-            self.event(run, "tool.started", name=name, tool_call_id=call["id"])
+            self.event(run, "tool.started", name=name, tool_call_id=call["id"], execution_id=execution["id"])
             if name == "list_project_directory":
                 output = files.list_directory(scope, relative)
             elif name == "read_code_file":
@@ -350,26 +424,83 @@ class Runtime:
                 output = files.search_files(root, args.query, content=args.content)
             elif name == "write_project_file":
                 output = files.apply_patch(scope, preview, args.content)
+                actual = await asyncio.to_thread(file_digest, scope, relative)
+                execution["file_evidence"] = {"sha256": preview["new_sha256"], "verified": actual == preview["new_sha256"],
+                                              "changed": preview["creates_file"] or preview["old_sha256"] != preview["new_sha256"]}
+                run["workspace_version"] = run.get("workspace_version", 0) + 1
+                execution["workspace_version"] = run["workspace_version"]
+                if actual != preview["new_sha256"]:
+                    error_code = "file_verification_failed"
+                    raise ValueError("文件写入未通过独立磁盘回读，不能声明已修改")
             else:
                 grant = self.require_grant(run)
                 timeout = min(120, (datetime.fromisoformat(grant["expires_at"]) - datetime.now(timezone.utc)).total_seconds()) if grant else 120
                 if timeout <= 0:
                     raise ValueError("完全访问授权已过期")
-                output = await run_command(root, command, timeout=timeout)
+                before = await asyncio.to_thread(workspace_state, root)
+                execution["workspace_version"] = run.get("workspace_version", 0)
+                execution["workspace_digest"] = before["digest"]
+                invoked = True
+                output = await run_command(root, command, timeout=timeout, execution_id=execution["id"])
                 output.update(args=list(plan.display_argv), profile=profile)
+                after = await asyncio.to_thread(workspace_state, root)
+                execution["workspace_changed"] = before["digest"] != after["digest"] or before["digest"] is None
+                if execution["workspace_changed"]:
+                    run["workspace_version"] = run.get("workspace_version", 0) + 1
+                raw_exit = output.get("returncode")
+                result = interpret_execution(execution_id=execution["id"], operation_id=execution["operation_id"], argv=command,
+                                             outcome="exited" if type(raw_exit) is int else "unknown",
+                                             exit_code=raw_exit if type(raw_exit) is int else None, output_ref=content_ref(output))
+                execution["execution_result"] = result.model_dump(mode="json")
+                if result.validation_outcome == "failed" or result.outcome == "unknown":
+                    error_code = "command_failed" if result.outcome == "exited" else "execution_unknown"
+                    message = f"命令退出码 {raw_exit}，验证失败" if result.outcome == "exited" else "执行结果未知，未获得真实退出码"
+                    execution.update(output=output, status="failed", error_code=error_code, error_message=message, completed_at=now())
+                    self.complete_tool(run, call, execution, failed=True)
+                    return {"error": message, "error_code": error_code, **output}
             execution.update(status="completed", output=output, completed_at=now())
-            self.event(run, "tool.completed", name=name, tool_call_id=call["id"])
+            self.complete_tool(run, call, execution, failed=False)
             return output
-        except (ValidationError, OSError, UnicodeError):
-            message = "工具参数无效，或目标文件不可访问；未执行请求的操作"
-        except (ValueError, TimeoutError) as error:
-            message = str(error) if isinstance(error, ValueError) else "本机命令超时，进程已停止"
-        except asyncio.CancelledError:
-            execution.update(status="cancelled", completed_at=now())
+        except (ValidationError, UnicodeError):
+            message = "工具参数无效，或目标文件不可访问；请检查项目状态"
+        except (ValueError, TimeoutError, OSError) as error:
+            message = (str(error) if isinstance(error, ValueError) else "本机命令超时，进程已停止"
+                       if isinstance(error, TimeoutError) else "目标文件或开发工具不可访问，请检查本机环境")
+            if invoked:
+                outcome = "timed_out" if isinstance(error, TimeoutError) else error.outcome if isinstance(error, ExecutionFailure) else "failed"
+                error_code = {"timed_out": "command_timed_out", "unknown": "execution_unknown",
+                              "cancelled": "command_cancelled", "failed": "environment_unavailable"}[outcome]
+                output = {**getattr(error, "output", {}), "args": list(plan.display_argv), "profile": profile}
+                execution["output"] = output
+                execution["execution_result"] = interpret_execution(
+                    execution_id=execution["id"], operation_id=execution["operation_id"], argv=command, outcome=outcome,
+                    output_ref=content_ref(output)).model_dump(mode="json")
+        except asyncio.CancelledError as error:
+            output = getattr(error, "execution_output", {})
+            execution.update(status="cancelled", output=output, error_code="command_cancelled", completed_at=now())
+            if invoked:
+                execution["execution_result"] = interpret_execution(
+                    execution_id=execution["id"], operation_id=execution["operation_id"], argv=command, outcome="cancelled",
+                    output_ref=content_ref(output)).model_dump(mode="json")
+            self.complete_tool(run, call, execution, failed=True)
             raise
-        execution.update(status="failed", error_code="local_tool_rejected", error_message=message, completed_at=now())
-        self.event(run, "tool.failed", name=name, tool_call_id=call["id"], error=message, error_type="local_tool_rejected")
-        return {"error": message}
+        except Exception:
+            # 未预期的宿主或文件故障不能留下一条永久 running 的执行记录。
+            message, error_code = "工具执行结果未知，请检查项目；未自动重放操作", "execution_unknown"
+        execution.update(status="failed", error_code=error_code, error_message=message, completed_at=now())
+        if invoked and "execution_result" not in execution:
+            execution["execution_result"] = interpret_execution(
+                execution_id=execution["id"], operation_id=execution["operation_id"], argv=command, outcome="unknown").model_dump(mode="json")
+        self.complete_tool(run, call, execution, failed=True)
+        return {"error": message, "error_code": error_code, **(execution.get("output") or {})}
+
+    def complete_tool(self, run: dict, call: dict, execution: dict, *, failed: bool):
+        if execution.get("error_code") == "execution_unknown" and execution.get("scope"):
+            run.setdefault("uncertain_operations", []).append({"operation_id": execution["operation_id"], "scope": execution["scope"]})
+        execution["source_sequence"] = run["last_event_sequence"] + 1
+        self.event(run, "tool.failed" if failed else "tool.completed", name=call["name"], tool_call_id=call["id"],
+                   execution_id=execution["id"], operation_id=execution["operation_id"],
+                   error=execution.get("error_message"), error_type=execution.get("error_code"))
 
     def decide(self, run_id: str, approval_id: str, accepted: bool):
         run = self.store.run(run_id)

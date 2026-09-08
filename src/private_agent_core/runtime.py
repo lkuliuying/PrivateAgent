@@ -837,7 +837,7 @@ class AgentRuntime:
                     )
                     return response.text
 
-                will_retry = retry_count < self._max_verification_retries
+                will_retry = verification.retryable and retry_count < self._max_verification_retries
                 await context.emit(
                     AgentEventType.OUTPUT_VALIDATION_FAILED,
                     step_id=model_step.id,

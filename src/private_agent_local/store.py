@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
+
 SCHEMA_VERSION = 3
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
@@ -140,9 +142,16 @@ class Store:
                 for execution in run["executions"]:
                     if execution["status"] == "running":
                         execution.update(status="unknown", error_code="desktop_restarted", completed_at=now())
+                        if execution.get("operation_id") and execution.get("command"):
+                            execution["execution_result"] = ExecutionResult(execution_id=execution["id"],
+                                operation_id=execution["operation_id"], outcome="unknown").model_dump(mode="json")
+                if run.get("completion_contract_version"):
+                    run["run_outcome"] = RunOutcome(run_id=run["id"], goal_outcome="unknown",
+                        unverified_items=["执行服务重启，副作用结果未确认，未自动重放"]).model_dump(mode="json")
                 sequence = len(run["events"]) + 1
                 run["events"].append({"sequence": sequence, "type": "run.failed", "step_id": None, "created_at": now(),
-                                      "payload": {"error_code": "desktop_restarted", "replayed": False}})
+                                      "payload": {"error_code": "desktop_restarted", "replayed": False,
+                                                  **({"run_outcome": run["run_outcome"]} if run.get("run_outcome") else {})}})
                 run["last_event_sequence"] = sequence
                 self.save_run(run)
             for (grant_id,) in self.db.execute("SELECT id FROM grants WHERE revoked_at IS NULL").fetchall():

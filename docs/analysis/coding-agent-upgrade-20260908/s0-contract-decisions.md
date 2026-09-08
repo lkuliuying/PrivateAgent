@@ -1,6 +1,6 @@
 # S0 跨阶段契约决议
 
-日期：2026-09-08。范围：S0-04。当前已实现**纯类型、生成及校验**，尚未写入业务快照、增加路由或迁移 SQLite。S1–S5 接入必须使用这里的含义；不能因为类型存在就打开能力声明。
+日期：2026-09-08。范围：S0-04。S0 交付时仅实现**纯类型、生成及校验**；S1 后续接入状态见第 6 节。S1–S5 接入必须使用这里的含义；不能因为类型存在就打开能力声明。
 
 ## 1. 唯一来源与兼容边界
 
@@ -62,3 +62,14 @@ S0 未实现新版握手。当前旧版本错误关闭已有前端测试，本�
 ## 5. 接入顺序与变更门禁
 
 S1 只接 RunOutcome 与命令业务结果；S2 接 ContextItem；S3 接 WorkspaceIdentity/operation 关联；S4 接事件和实际 CapabilitySnapshot；S5 复用这些字段处理恢复。新增枚举、必需字段或限制必须同步 Pydantic、codegen、样例与调用端测试。扩展不代表对生产或付费测试的授权。
+
+## 6. S1 接入补记（2026-09-08）
+
+- 本机应用边界已持久化 `run_outcome`，快照和终态携带同一结果；严格共享 `AgentRunResult`、旧服务端领域完成入口及 SQLite schema 3 保持兼容。
+- `Requirement` 加性扩展最低验收元数据；模型不能删除初始要求。新要求的 passed 证据必须同时存在于证据索引和完整 `EvidenceRef`，带来源事件、摘要、时区时间与工作区版本；旧 S0 最小实例保留 legacy 默认值。
+- `ExecutionResult.outcome` 保持原枚举；`command_kind` 和 `validation_outcome` 表达退出码含义。未知或未分类的结果不回填成功，退出码拒绝布尔值。
+- 本机在每个工具调用审批前分配 operation/execution ID，命令调用把 execution ID 传给宿主。模型纠偏产生新的操作，拒绝及未知操作通过语义范围约束后续调用；S1 不自动重试未知副作用，也未实现 S3/S5 的可恢复操作日志。
+- 创建运行接受可选完成契约版本 1.0，未知版本在本机 API 返回 422；旧调用可省略，旧记录展示 unknown。此扩展不是 S4 的全能力协商，私有传输和宿主协议版本不变。
+- 验证沿用 `output.validation_*`，最多两次纠偏共享原任务预算。六类真实本机 ASGI 载荷位于 `tests/coding_acceptance/s1-wire-examples.json`，Python 与 Vue 测试共同消费。
+
+实际成绩、证据扫描范围和未验证项见 [S1 验收报告](./s1-validation-report.md)。

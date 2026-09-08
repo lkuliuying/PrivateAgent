@@ -19,6 +19,8 @@ import type {
   RunStreamFrame,
 } from "./runContracts";
 import { isTerminalRunStatus } from "./runContracts";
+import type { Requirement, RunOutcome } from "./generated/codingContracts";
+import { parseRequirements, parseRunOutcome, unknownRunOutcome } from "./runOutcome";
 
 export type ToolActivityState =
   | "requested"
@@ -136,6 +138,9 @@ export interface RunUsage {
 }
 
 export interface RunProjection {
+  runOutcome: RunOutcome;
+  completionRequirements: Requirement[];
+  verifying: boolean;
   runId: string;
   status: AgentRunStatus;
   /** durable 游标：已应用的最大 sequence */
@@ -156,6 +161,9 @@ export interface RunProjection {
 export function createRunProjection(runId: string, userMessage: string | null = null): RunProjection {
   return {
     runId,
+    runOutcome: unknownRunOutcome(runId),
+    completionRequirements: [],
+    verifying: false,
     status: "created",
     lastSequence: 0,
     plan: null,
@@ -275,6 +283,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
 
   switch (frame.type) {
     case "run.started": {
+      projection.completionRequirements = parseRequirements(payload.completion_requirements);
       projection.status = "running";
       projection.startedAt = null; // 时间戳以快照为准（SSE 帧不含）
       upsertEntry(projection, {
@@ -355,6 +364,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
     case "output.validation_started":
     case "output.validation_passed":
     case "output.validation_failed": {
+      projection.verifying = frame.type === "output.validation_started";
       const verifier = str(payload, "verifier");
       const attempt = num(payload, "attempt", 1);
       const state =
@@ -559,6 +569,8 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
     case "run.timed_out":
     case "run.limit_exceeded": {
       const status = TERMINAL_EVENT_STATUS[frame.type];
+      projection.runOutcome = parseRunOutcome(payload.run_outcome, projection.runId);
+      projection.verifying = false;
       applyTerminal(projection, status, frame.sequence, {
         output: typeof payload.output === "string" ? payload.output : null,
         errorCode: str(payload, "error_code") || null,
@@ -659,6 +671,9 @@ export function reconcileRunWithSnapshot(
     return projection; // 旧快照：不回退已应用事实
   }
   projection.status = snapshot.status;
+  projection.runOutcome = parseRunOutcome(snapshot.run_outcome, projection.runId);
+  projection.completionRequirements = parseRequirements(snapshot.completion_requirements);
+  projection.verifying = snapshot.verification_state === "started" && !isTerminalRunStatus(snapshot.status);
   projection.output = snapshot.output ?? projection.output;
   projection.error = snapshot.error_code
     ? { code: snapshot.error_code, message: snapshot.error_message ?? null }

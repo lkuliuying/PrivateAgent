@@ -20,14 +20,14 @@ describe("S0 当前桌面显示基线", () => {
     }
   });
 
-  it("本机非零退出仍显示 completed，但保留失败退出码", () => {
+  it("本机非零退出旧记录保留退出码，并明确未验证", () => {
     const wrapper = mount(CommandOutput, { props: { page: null, execution: {
       id: "s0-execution", tool_name: "run_project_command", tool_version: "1", status: "completed",
       error_code: null, error_message: null, created_at: "2026-09-08T00:00:00Z", completed_at: "2026-09-08T00:00:01Z",
       output: { args: ["python", "-m", "pytest"], returncode: 1, stdout: "1 failed", stderr: "", truncated: false },
     } } });
     try {
-      expect(wrapper.get(".output-status").text()).toBe("completed");
+      expect(wrapper.get(".output-status").text()).toBe("结果未验证");
       expect(wrapper.get('[data-testid="command-exit-code"]').text()).toBe("退出码 1");
       expect(wrapper.get('[data-testid="command-exit-code"]').classes()).toContain("bad");
     } finally {

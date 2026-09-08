@@ -17,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from private_agent_core.coding_contracts import Requirement
+
 from . import files, git_workspace, migration
 from .cloud import Cloud, CloudError
 from .connections import ModelConfig
@@ -82,6 +84,8 @@ class RunInput(Binding):
     model_profile_id: str | None = Field(default=None, max_length=128)
     reasoning_effort: str | None = Field(default=None, max_length=32)
     client_request_id: str | None = Field(default=None, max_length=100)
+    completion_contract_version: Literal["1.0"] | None = None
+    completion_requirements: list[Requirement] = Field(default_factory=list, max_length=32)
 
 
 class LocalModelDiscoveryInput(Input):

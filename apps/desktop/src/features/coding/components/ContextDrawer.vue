@@ -9,7 +9,7 @@
 import { computed, ref } from "vue";
 import { PhSidebarSimple, PhX } from "@phosphor-icons/vue";
 import type { RunApprovalPreviewRecord } from "../model/runContracts";
-import { RUN_STATUS_META } from "../model/runContracts";
+import { runResultMeta } from "../model/runOutcome";
 import type { RunProjection } from "../model/runProjector";
 import { PERMISSION_MODE_META } from "../model/runContracts";
 
@@ -55,7 +55,7 @@ const artifacts = computed(() =>
 
 const statusMeta = computed(() => {
   const status = props.projection?.status;
-  return status ? RUN_STATUS_META[status] : null;
+  return status ? runResultMeta(status, props.projection?.runOutcome, props.projection?.verifying) : null;
 });
 
 const usage = computed(() => props.projection?.usage);

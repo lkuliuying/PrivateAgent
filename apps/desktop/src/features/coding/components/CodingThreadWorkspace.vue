@@ -361,18 +361,23 @@ async function onReject(approvalId: string): Promise<void> {
 
 // ============ 工具执行输出（W3：按需加载 + finished 前轮询，卸载清理） ============
 const executions = shallowRef<RunExecutionRecord[]>([]);
-const executionsLoadedForRun = ref<string | null>(null);
+let executionRequestSeq = 0;
+let executionsRunId: string | null = null;
 const outputPages = shallowRef<Record<string, RunExecutionOutputPage | null>>({});
 const outputLoading = ref<string[]>([]);
 let outputPollTimer: number | null = null;
 
-/** executions 无 tool_call_id：按工具名 + 完成顺序与 transcript 工具条目关联 */
+/** 新记录直接关联工具调用；历史记录保留按工具名和顺序的兼容映射。 */
 const executionByTool = computed<Record<string, RunExecutionRecord>>(() => {
   const current = projection.value;
   const map: Record<string, RunExecutionRecord> = {};
-  if (!current) return map;
+  if (!current || (!previewMode.value && executionsRunId !== current.runId)) return map;
   const byName = new Map<string, number>();
   for (const execution of executions.value) {
+    if (execution.tool_call_id) {
+      map[execution.tool_call_id] = execution;
+      continue;
+    }
     const nextIndex = byName.get(execution.tool_name) ?? 0;
     byName.set(execution.tool_name, nextIndex + 1);
     const matches = current.entries.filter(
@@ -388,18 +393,24 @@ const executionByTool = computed<Record<string, RunExecutionRecord>>(() => {
 
 async function loadExecutions(): Promise<void> {
   const runId = stream.projection.value?.runId;
-  if (!runId || executionsLoadedForRun.value === runId) return;
-  executionsLoadedForRun.value = runId;
-  try {
-    executions.value = await fetchRunExecutions(runId);
-  } catch {
+  if (!runId) return;
+  if (executionsRunId !== runId) {
     executions.value = [];
+    executionsRunId = runId;
+  }
+  const sequence = ++executionRequestSeq;
+  try {
+    const records = await fetchRunExecutions(runId);
+    if (sequence === executionRequestSeq && stream.projection.value?.runId === runId) executions.value = records;
+  } catch {
+    // 保留已加载事实；后续工具状态或终态变化会重新读取。
   }
 }
 
-// 终态或出现已完成工具时拉取一次执行结果（脱敏持久层，不依赖流）
+// 每次工具结束与终态都重新获取事实，纠偏后的成功不能被首次缓存遮蔽。
 watch(
-  () => [projection.value?.status, projection.value?.entries.filter((e) => e.kind === "tool" && e.state === "completed").length] as const,
+  () => [projection.value?.runId, projection.value?.status,
+    projection.value?.entries.filter((e) => e.kind === "tool" && (e.state === "completed" || e.state === "failed")).map(e => e.sequence).join(",")] as const,
   () => {
     if (!previewMode.value && projection.value?.runId) void loadExecutions();
   },
@@ -442,6 +453,7 @@ function scheduleOutputPoll(): void {
 }
 
 onBeforeUnmount(() => {
+  executionRequestSeq += 1;
   hydrationSeq += 1;
   workspacePathSeq += 1;
   if (outputPollTimer !== null) {
@@ -610,6 +622,8 @@ function navigateToInstruction(instructionId: string): void {
         :head-sha="workspace?.headSha ?? null"
         :git-dirty="workspace ? workspace.status === 'dirty' : null"
         :run-status="runStatus"
+        :run-outcome="projection?.runOutcome"
+        :verifying="projection?.verifying"
         :plan-available="projection?.plan != null"
         :plan-open="planOpen"
         :context-open="contextOpen"

@@ -4,6 +4,8 @@
 
 > **本机 Coding（2026-09-08）**：使用 `.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all`，每次自动新建隔离目录，禁止加载业务 conftest/配置。真实 120 秒探针单独使用 `--suite duration`。详见 [复跑说明](../tests/coding_acceptance/README.md)及 [S0 实际成绩](analysis/coding-agent-upgrade-20260908/s0-validation-report.md)；下文历史业务数据库套件不作为本机 Coding 的默认入口。
 
+> **S1 完成验证**：定向入口为 `.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite completion`，已加入 `all`。共享核心涉及的旧服务端纯单测单独运行 `.venv/Scripts/python.exe -B scripts/run_coding_legacy_validation.py`，使用清理后的环境、固定不可连接的测试数据库地址和网络审计，不加载根 conftest，也不执行依赖 MySQL/client 夹具的集成用例。两类启动器的隔离策略不同，不能混称“全部业务模块禁止导入”。最新成绩与未执行范围见 [S1 验收报告](analysis/coding-agent-upgrade-20260908/s1-validation-report.md)。
+
 > **当前状态（2026-08-06）**：应用主库为 Alembic `0021 (head)`（2026-08-06 新增
 > `compatibility_telemetry` 表）；versioned RAG indexing/retrieval 已生产启用；RAG 证据充分性
 > 策略（`rag-evidence-v1`）已生产开启；Agent Runtime **批 A**（Agent API、只读工具、

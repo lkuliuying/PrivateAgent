@@ -1,4 +1,4 @@
-"""Coding 跨阶段 v1 纯契约的唯一类型源；业务接入由后续阶段完成。"""
+"""Coding 跨阶段 v1 契约的唯一类型源；本机在应用边界投影扩展。"""
 from __future__ import annotations
 
 from datetime import datetime
@@ -24,13 +24,35 @@ class Requirement(CodingContract):
     requirement_id: Identifier
     description: str = Field(min_length=1, max_length=4000)
     required: bool = True
-
+    kind: Literal["file_changed", "command", "test", "artifact", "preview", "manual"] = "manual"
+    scope: str = Field(default="", max_length=2000)
+    origin: Literal["user", "intent_rule", "tool", "legacy"] = "legacy"
+    evidence_policy: Literal["disk", "exit", "test_exit", "response", "manual"] = "manual"
 
 
 class VerificationResult(CodingContract):
     requirement_id: Identifier
     status: Literal["passed", "failed", "blocked", "unverified"]
     evidence_ids: list[Identifier] = Field(default_factory=list, max_length=128)
+    message: str = Field(default="", max_length=2000)
+
+
+class EvidenceRef(CodingContract):
+    evidence_id: Identifier
+    run_id: Identifier
+    operation_id: Identifier
+    tool_call_id: str | None = Field(default=None, min_length=1, max_length=200)
+    execution_id: Identifier | None = None
+    source_sequence: int = Field(ge=1, le=9007199254740991)
+    content_ref: ContentRef
+    verified_at: datetime
+    workspace_version: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_time(self):
+        if self.verified_at.utcoffset() is None:
+            raise ValueError("证据时间必须包含时区")
+        return self
 
 
 class RunOutcome(CodingContract):
@@ -41,6 +63,7 @@ class RunOutcome(CodingContract):
     verification_results: list[VerificationResult] = Field(default_factory=list, max_length=128)
     evidence_ids: list[Identifier] = Field(default_factory=list, max_length=256)
     unverified_items: list[str] = Field(default_factory=list, max_length=128)
+    evidence_refs: list[EvidenceRef] = Field(default_factory=list, max_length=256)
 
     @model_validator(mode="after")
     def validate_evidence(self):
@@ -55,6 +78,13 @@ class RunOutcome(CodingContract):
                 raise ValueError("验证证据必须在运行证据索引内")
             if item.status == "passed" and not item.evidence_ids:
                 raise ValueError("通过的验证必须关联证据")
+        refs = {item.evidence_id for item in self.evidence_refs}
+        if len(refs) != len(self.evidence_refs) or any(item.run_id != self.run_id for item in self.evidence_refs):
+            raise ValueError("证据标识必须唯一且属于本次运行")
+        if not refs.issubset(self.evidence_ids):
+            raise ValueError("证据引用必须属于运行证据索引")
+        if any(item.origin != "legacy" for item in self.requirements) and not set(self.evidence_ids).issubset(refs):
+            raise ValueError("新增完成要求必须携带可定位的完整证据引用")
         if self.goal_outcome == "verified":
             required = [item.requirement_id for item in self.requirements if item.required]
             if not required or self.unverified_items or any(
@@ -69,8 +99,10 @@ class ExecutionResult(CodingContract):
     execution_id: Identifier
     operation_id: Identifier
     outcome: Literal["exited", "timed_out", "cancelled", "failed", "unknown"]
-    exit_code: int | None = None
+    exit_code: int | None = Field(default=None, strict=True)
     output_ref: ContentRef | None = None
+    command_kind: Literal["test", "search", "development", "unclassified"] = "unclassified"
+    validation_outcome: Literal["succeeded", "failed", "unknown"] = "unknown"
 
     @model_validator(mode="after")
     def validate_exit(self):
@@ -78,6 +110,11 @@ class ExecutionResult(CodingContract):
             raise ValueError("正常退出必须记录真实退出码，包括非零退出码")
         if self.outcome == "unknown" and self.exit_code is not None:
             raise ValueError("未知结果不能推定退出码")
+        if self.validation_outcome == "succeeded" and (
+            self.outcome != "exited" or self.command_kind == "unclassified"
+            or self.exit_code not in ({0, 1} if self.command_kind == "search" else {0})
+        ):
+            raise ValueError("命令通过必须有对应类别允许的真实退出码")
         return self
 
 

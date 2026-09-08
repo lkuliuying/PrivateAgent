@@ -50,7 +50,7 @@ def generate() -> dict[str, str]:
         definitions[model.__name__] = schema
     bundle = {"$schema": "https://json-schema.org/draft/2020-12/schema",
               "$id": "urn:private-agent:coding:1.0", "$defs": definitions}
-    header = "// 由 scripts/protocol_codegen.py 生成，禁止手改。\n// 唯一类型源：private_agent_core/coding_contracts.py；S0 仅冻结类型，尚未接入业务快照。\n"
+    header = "// 由 scripts/protocol_codegen.py 生成，禁止手改。\n// 唯一类型源：private_agent_core/coding_contracts.py；应用边界提供版本化扩展。\n"
     types = [f"export type {name} = {typescript_type(value)};" for name, value in sorted(definitions.items())]
     return {
         str(ROOT / "src/private_agent_core/coding_contracts.schema.json"): json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True) + "\n",

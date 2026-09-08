@@ -32,7 +32,7 @@ import type {
   RunExecutionOutputPage,
   RunExecutionRecord,
 } from "../model/runContracts";
-import { RUN_STATUS_META } from "../model/runContracts";
+import { runResultMeta } from "../model/runOutcome";
 import { redactCommandArgs, redactSecretText } from "../model/redaction";
 import DiffArtifact from "./DiffArtifact.vue";
 import CommandOutput from "./CommandOutput.vue";
@@ -108,7 +108,7 @@ const commandExecutionByTool = computed<Record<string, RunExecutionRecord>>(() =
       Array.isArray(output?.args) ||
       typeof output?.returncode === "number" ||
       typeof output?.exit_code === "number";
-    if (execution.tool_name === "run_whitelisted_command" || hasCommandFacts) {
+    if (["run_whitelisted_command", "run_project_command", "run_powershell_command"].includes(execution.tool_name) || hasCommandFacts) {
       result[toolCallId] = execution;
     }
   }
@@ -408,7 +408,7 @@ function toolDetail(entry: Extract<TranscriptEntry, { kind: "tool" }>): ToolDeta
 function terminalMeta(): { label: string; tone: string } | null {
   const status = props.projection?.status;
   if (!status) return null;
-  const meta = RUN_STATUS_META[status];
+  const meta = runResultMeta(status, props.projection?.runOutcome, props.projection?.verifying);
   return { label: meta.label, tone: meta.tone };
 }
 
@@ -494,6 +494,11 @@ const resultArtifactEntries = computed(() =>
           <div class="user-avatar"><PhUser :size="14" weight="fill" aria-hidden="true" /></div>
           <div class="user-copy">{{ projection.userMessage }}</div>
         </div>
+        <aside v-if="projection.completionRequirements?.length" class="terminal-no-evidence" data-testid="completion-requirements">
+          <strong>本次任务理解与最低验收</strong>
+          <ul><li v-for="requirement in projection.completionRequirements" :key="requirement.requirement_id">{{ requirement.description }}</li></ul>
+          <span>自动提取的要求不代表额外操作授权；理解有误时可停止任务并补充说明。</span>
+        </aside>
 
         <button
           type="button"
@@ -707,12 +712,17 @@ const resultArtifactEntries = computed(() =>
               <span v-for="label in processSummaryLabels" :key="label">{{ label }}</span>
             </div>
 
-            <div v-if="entry.status !== 'completed'" class="result-state" :class="`tone-${terminalMeta()?.tone}`">
+            <div class="result-state" :class="`tone-${terminalMeta()?.tone}`">
               <PhWarningCircle v-if="entry.status === 'failed' || entry.status === 'timed_out'" :size="18" aria-hidden="true" />
               <PhCheckCircle v-else :size="18" aria-hidden="true" />
               <strong>{{ terminalMeta()?.label }}</strong>
               <code v-if="entry.errorCode" class="mono terminal-code">{{ entry.errorCode }}</code>
             </div>
+            <ul v-if="projection.runOutcome?.verification_results?.length" class="terminal-no-evidence" data-testid="verification-results">
+              <li v-for="result in projection.runOutcome.verification_results" :key="result.requirement_id">
+                {{ result.message }}
+              </li>
+            </ul>
             <!-- v0.9.0 H1-B（§5.5/§5.6）：无工具/命令事件的完成态如实标注，
                  不把无执行证据的回答呈现为“已完成的可执行任务”。 -->
             <p

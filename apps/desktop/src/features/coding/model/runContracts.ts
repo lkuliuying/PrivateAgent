@@ -10,6 +10,8 @@
  * 隐藏推理）本契约一律不声明；工具结果走 executions API（W3）。
  */
 
+import type { ExecutionResult, Requirement, RunOutcome } from "./generated/codingContracts";
+
 export type AgentRunStatus =
   | "created"
   | "running"
@@ -134,6 +136,10 @@ export interface RunStepRecord {
 
 /** GET /agent-runs/{id} 快照（重连纠偏事实源；plan/artifacts 为 durable 快照） */
 export interface RunSnapshot {
+  completion_contract_version?: "1.0";
+  completion_requirements?: Requirement[];
+  verification_state?: "pending" | "started" | "passed" | "failed";
+  run_outcome?: RunOutcome;
   id: string;
   session_id: number | null;
   status: AgentRunStatus;
@@ -169,6 +175,8 @@ export interface RunSnapshot {
 
 /** POST /agent-runs 创建输入（coding 判定：project_id+workspace_id 成对） */
 export interface CodingRunCreateInput {
+  completion_contract_version?: "1.0";
+  completion_requirements?: Requirement[];
   session_id: number;
   message: string;
   project_id: number;
@@ -224,8 +232,11 @@ export interface RunApprovalPreviewRecord {
   reason: string | null;
 }
 
-/** GET /agent-runs/{id}/executions 项（脱敏有界 output；无 tool_call_id，按工具名+完成顺序关联） */
+/** GET /agent-runs/{id}/executions 项；新记录按 tool_call_id 关联，旧记录兼容工具名与顺序。 */
 export interface RunExecutionRecord {
+  tool_call_id?: string;
+  operation_id?: string;
+  execution_result?: ExecutionResult;
   id: string;
   tool_name: string;
   tool_version: string;
@@ -275,7 +286,7 @@ export const RUN_STATUS_META: Record<
   created: { label: "已创建", tone: "neutral" },
   running: { label: "执行中", tone: "info" },
   waiting_approval: { label: "等待审批", tone: "warning" },
-  completed: { label: "已完成", tone: "success" },
+  completed: { label: "已结束", tone: "neutral" },
   failed: { label: "失败", tone: "danger" },
   cancelled: { label: "已取消", tone: "neutral" },
   timed_out: { label: "超时", tone: "danger" },

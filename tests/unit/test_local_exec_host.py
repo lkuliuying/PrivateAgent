@@ -2,12 +2,20 @@
 import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 import pytest
 
+from private_agent_core.execution.contracts import ExecEvent
+from private_agent_core.execution.exec_host_client import ExecutorUnavailable
 from private_agent_local import policy
 from private_agent_local.entry import parent_alive
-from private_agent_local.executor import host_path, run_command
+from private_agent_local.executor import (
+    ExecutionFailure,
+    ExecutionTimeout,
+    host_path,
+    run_command,
+)
 
 
 @pytest.mark.asyncio
@@ -40,16 +48,56 @@ async def test_real_host_returns_complete_output_and_kills_background_descendant
 
 @pytest.mark.asyncio
 async def test_real_host_timeout_and_cancel_stop_process(tmp_path):
-    code = "import os,time; from pathlib import Path; Path('parent.pid').write_text(str(os.getpid())); time.sleep(60)"
-    with pytest.raises(TimeoutError):
+    code = "import os,time; from pathlib import Path; Path('parent.pid').write_text(str(os.getpid())); print('before-timeout', flush=True); time.sleep(60)"
+    with pytest.raises(ExecutionTimeout) as failure:
         await run_command(tmp_path, [sys.executable, "-c", code], timeout=1)
+    assert "before-timeout" in failure.value.output["stdout"]
+    assert "returncode" not in failure.value.output
     assert not parent_alive(int((tmp_path / "parent.pid").read_text()))
+    (tmp_path / "parent.pid").unlink()
     task = asyncio.create_task(run_command(tmp_path, [sys.executable, "-c", code]))
     await asyncio.sleep(0.5)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not parent_alive(int((tmp_path / "parent.pid").read_text()))
+
+
+@pytest.mark.asyncio
+async def test_real_host_nonzero_exit_is_preserved(tmp_path):
+    result = await run_command(tmp_path, [sys.executable, "-c", "import sys; print('1 failed'); sys.exit(1)"])
+    assert result["returncode"] == 1 and result["stdout"].strip() == "1 failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,expected", [("spawn_failed", "failed"), ("connection_lost", "unknown"), ("output_incomplete", "unknown")])
+async def test_protocol_failure_classification_and_close(tmp_path, monkeypatch, kind, expected):
+    class Client:
+        closed = False
+
+        async def start(self):
+            return SimpleNamespace(modes=["argv"], sandbox_available=False)
+
+        async def start_execution(self, params):
+            if kind != "output_incomplete":
+                raise ExecutorUnavailable("private-protocol-error", code=kind)
+
+        async def next_event(self, **kwargs):
+            return ExecEvent(notification="execution/failed", execution_id="execution-123", sequence=1,
+                             error={"code": "output_incomplete", "message": "private-protocol-error"})
+
+        async def close(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr("private_agent_local.executor.ExecHostClient", lambda *args, **kwargs: client)
+    monkeypatch.setattr("private_agent_local.executor.verify_host", lambda path: "a" * 64)
+    monkeypatch.setattr("private_agent_local.files.prepare_process", lambda args: (args, {}))
+    with pytest.raises(ExecutionFailure) as failure:
+        await run_command(tmp_path, ["pytest"], execution_id="execution-123")
+    assert failure.value.outcome == expected and client.closed
+    assert "private-protocol-error" not in str(failure.value)
+    assert "returncode" not in failure.value.output
 
 
 @pytest.mark.asyncio

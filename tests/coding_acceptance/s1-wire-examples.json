@@ -1,0 +1,1983 @@
+{
+  "answered": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:23.442662+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:23.423527+00:00",
+      "error_code": null,
+      "error_message": null,
+      "full_access_grant_id": null,
+      "id": "e9dbf3d2-8123-409b-acc4-2363a831ca08",
+      "input_tokens": 3,
+      "last_event_sequence": 7,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "函数返回一个数字",
+      "output_tokens": 2,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [],
+        "evidence_refs": [],
+        "goal_outcome": "answered",
+        "requirements": [],
+        "run_id": "e9dbf3d2-8123-409b-acc4-2363a831ca08",
+        "schema_version": "1.0",
+        "unverified_items": [],
+        "verification_results": []
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:23.423527+00:00",
+      "status": "completed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:23.431140Z",
+          "error": null,
+          "id": "b58ecb93-2e6c-47b8-8cc4-e2c0116871c0",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:23.428635Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 0,
+      "updated_at": "2026-09-08T07:45:23.442662+00:00",
+      "verification_state": "passed",
+      "workspace_id": 2,
+      "workspace_version": 0,
+      "goal_outcome": "answered"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:23.426634+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.428635+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.431140+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.433149+00:00",
+        "payload": {
+          "goal": "解释函数的返回值",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.434654+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 5,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.441674+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "answer_only",
+          "max_retries": 2,
+          "message": "已回答，未声明执行修改",
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 6,
+        "step_id": null,
+        "type": "output.validation_passed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.442662+00:00",
+        "payload": {
+          "error": null,
+          "error_code": null,
+          "goal_outcome": "answered",
+          "input_tokens": 3,
+          "output": "函数返回一个数字",
+          "output_tokens": 2,
+          "run_outcome": {
+            "evidence_ids": [],
+            "evidence_refs": [],
+            "goal_outcome": "answered",
+            "requirements": [],
+            "run_id": "e9dbf3d2-8123-409b-acc4-2363a831ca08",
+            "schema_version": "1.0",
+            "unverified_items": [],
+            "verification_results": []
+          },
+          "tool_call_count": 0
+        },
+        "sequence": 7,
+        "step_id": null,
+        "type": "run.completed"
+      }
+    ],
+    "executions": []
+  },
+  "blocked": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:24.012085+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [
+        {
+          "description": "在最后一次修改后运行测试并通过",
+          "evidence_policy": "test_exit",
+          "kind": "test",
+          "origin": "intent_rule",
+          "required": true,
+          "requirement_id": "requirement-1",
+          "scope": ""
+        }
+      ],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:23.990823+00:00",
+      "error_code": "output_validation_failed",
+      "error_message": "用户要求暂不运行命令，验证受阻",
+      "full_access_grant_id": null,
+      "id": "14bde558-8ad9-4b72-a476-763cd1e9ed20",
+      "input_tokens": 3,
+      "last_event_sequence": 7,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "任务结果：受阻\n- 用户要求暂不运行命令，验证受阻",
+      "output_tokens": 2,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [],
+        "evidence_refs": [],
+        "goal_outcome": "blocked",
+        "requirements": [
+          {
+            "description": "在最后一次修改后运行测试并通过",
+            "evidence_policy": "test_exit",
+            "kind": "test",
+            "origin": "intent_rule",
+            "required": true,
+            "requirement_id": "requirement-1",
+            "scope": ""
+          }
+        ],
+        "run_id": "14bde558-8ad9-4b72-a476-763cd1e9ed20",
+        "schema_version": "1.0",
+        "unverified_items": [
+          "用户要求暂不运行命令，验证受阻"
+        ],
+        "verification_results": [
+          {
+            "evidence_ids": [],
+            "message": "用户要求暂不运行命令，验证受阻",
+            "requirement_id": "requirement-1",
+            "status": "blocked"
+          }
+        ]
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:23.990823+00:00",
+      "status": "completed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:23.999352Z",
+          "error": null,
+          "id": "220e8c29-92a1-4875-b39b-fd562b3cef2a",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:23.997351Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 0,
+      "updated_at": "2026-09-08T07:45:24.012085+00:00",
+      "verification_state": "failed",
+      "workspace_id": 2,
+      "workspace_version": 0,
+      "goal_outcome": "blocked"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:23.994321+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [
+            {
+              "description": "在最后一次修改后运行测试并通过",
+              "evidence_policy": "test_exit",
+              "kind": "test",
+              "origin": "intent_rule",
+              "required": true,
+              "requirement_id": "requirement-1",
+              "scope": ""
+            }
+          ],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.997351+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.999352+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.002865+00:00",
+        "payload": {
+          "goal": "运行测试，但不允许运行命令",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.004371+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 5,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.011378+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "completion_blocked",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：用户要求暂不运行命令，验证受阻",
+          "max_retries": 2,
+          "message": "用户要求暂不运行命令，验证受阻",
+          "retry_count": 0,
+          "verifier": "local_completion",
+          "will_retry": false
+        },
+        "sequence": 6,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.012085+00:00",
+        "payload": {
+          "error": "用户要求暂不运行命令，验证受阻",
+          "error_code": "output_validation_failed",
+          "goal_outcome": "blocked",
+          "input_tokens": 3,
+          "output": "任务结果：受阻\n- 用户要求暂不运行命令，验证受阻",
+          "output_tokens": 2,
+          "run_outcome": {
+            "evidence_ids": [],
+            "evidence_refs": [],
+            "goal_outcome": "blocked",
+            "requirements": [
+              {
+                "description": "在最后一次修改后运行测试并通过",
+                "evidence_policy": "test_exit",
+                "kind": "test",
+                "origin": "intent_rule",
+                "required": true,
+                "requirement_id": "requirement-1",
+                "scope": ""
+              }
+            ],
+            "run_id": "14bde558-8ad9-4b72-a476-763cd1e9ed20",
+            "schema_version": "1.0",
+            "unverified_items": [
+              "用户要求暂不运行命令，验证受阻"
+            ],
+            "verification_results": [
+              {
+                "evidence_ids": [],
+                "message": "用户要求暂不运行命令，验证受阻",
+                "requirement_id": "requirement-1",
+                "status": "blocked"
+              }
+            ]
+          },
+          "tool_call_count": 0
+        },
+        "sequence": 7,
+        "step_id": null,
+        "type": "run.completed"
+      }
+    ],
+    "executions": []
+  },
+  "test_failed": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:23.866662+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [
+        {
+          "description": "测试通过：pytest",
+          "evidence_policy": "test_exit",
+          "kind": "test",
+          "origin": "intent_rule",
+          "required": true,
+          "requirement_id": "requirement-1",
+          "scope": "pytest"
+        }
+      ],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:23.796864+00:00",
+      "error_code": "output_validation_failed",
+      "error_message": "测试失败：pytest（退出码 1）",
+      "full_access_grant_id": null,
+      "id": "b0a0d7ce-932f-4e01-b277-5a69a10fc60f",
+      "input_tokens": 12,
+      "last_event_sequence": 24,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "任务结果：未完成\n- 测试失败：pytest（退出码 1）",
+      "output_tokens": 8,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [
+          "evidence-7d175d17-804f-4b28-8e91-00918f488a7a"
+        ],
+        "evidence_refs": [
+          {
+            "content_ref": {
+              "bytes": 338,
+              "sha256": "3057648d62aded03af0b3ae9a4ac97ac3a9b00fd324176243e6811ecb2db7a42"
+            },
+            "evidence_id": "evidence-7d175d17-804f-4b28-8e91-00918f488a7a",
+            "execution_id": "7d175d17-804f-4b28-8e91-00918f488a7a",
+            "operation_id": "3fe770fa-84b3-406a-8394-ce5d4d6a46d9",
+            "run_id": "b0a0d7ce-932f-4e01-b277-5a69a10fc60f",
+            "source_sequence": 8,
+            "tool_call_id": "call-run_project_command",
+            "verified_at": "2026-09-08T07:45:23.861098Z",
+            "workspace_version": 0
+          }
+        ],
+        "goal_outcome": "unmet",
+        "requirements": [
+          {
+            "description": "测试通过：pytest",
+            "evidence_policy": "test_exit",
+            "kind": "test",
+            "origin": "intent_rule",
+            "required": true,
+            "requirement_id": "requirement-1",
+            "scope": "pytest"
+          }
+        ],
+        "run_id": "b0a0d7ce-932f-4e01-b277-5a69a10fc60f",
+        "schema_version": "1.0",
+        "unverified_items": [
+          "测试失败：pytest（退出码 1）"
+        ],
+        "verification_results": [
+          {
+            "evidence_ids": [
+              "evidence-7d175d17-804f-4b28-8e91-00918f488a7a"
+            ],
+            "message": "测试失败：pytest（退出码 1）",
+            "requirement_id": "requirement-1",
+            "status": "failed"
+          }
+        ]
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:23.796864+00:00",
+      "status": "failed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:23.805374Z",
+          "error": null,
+          "id": "1f8e170f-9b74-4f83-8c39-963e56fdd6c6",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:23.802856Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.821303Z",
+          "error": "命令退出码 1，验证失败",
+          "id": "baeb05f4-645e-4928-a342-a3b95beef8ca",
+          "kind": "tool",
+          "name": "run_project_command",
+          "ordinal": 2,
+          "started_at": "2026-09-08T07:45:23.808366Z",
+          "status": "failed",
+          "tool_call_id": "call-run_project_command"
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.823300Z",
+          "error": null,
+          "id": "efbd5d86-09ac-4141-9146-271f67900d0b",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3,
+          "started_at": "2026-09-08T07:45:23.821303Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.837838Z",
+          "error": null,
+          "id": "bea93001-170f-4617-9fa1-245345475427",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 4,
+          "started_at": "2026-09-08T07:45:23.835330Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.853060Z",
+          "error": null,
+          "id": "9be6a937-6dfe-4552-8dff-4f00ecd32c61",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 5,
+          "started_at": "2026-09-08T07:45:23.851101Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 1,
+      "updated_at": "2026-09-08T07:45:23.866662+00:00",
+      "verification_state": "failed",
+      "workspace_id": 2,
+      "workspace_version": 0,
+      "goal_outcome": "unmet"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:23.800345+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [
+            {
+              "description": "测试通过：pytest",
+              "evidence_policy": "test_exit",
+              "kind": "test",
+              "origin": "intent_rule",
+              "required": true,
+              "requirement_id": "requirement-1",
+              "scope": "pytest"
+            }
+          ],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.802856+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.805374+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 1
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.806377+00:00",
+        "payload": {
+          "goal": "运行 pytest",
+          "method": "本轮决策：调用工具 run_project_command",
+          "next_steps": [
+            "run_project_command"
+          ]
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.821303+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3
+        },
+        "sequence": 9,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.823300+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 10,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.824809+00:00",
+        "payload": {
+          "goal": "运行 pytest",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 11,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.826818+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 12,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.832818+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：测试失败：pytest（退出码 1）",
+          "max_retries": 2,
+          "message": "测试失败：pytest（退出码 1）",
+          "retry_count": 0,
+          "verifier": "local_completion",
+          "will_retry": true
+        },
+        "sequence": 13,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.835330+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 4
+        },
+        "sequence": 14,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.837838+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 15,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.841035+00:00",
+        "payload": {
+          "goal": "<output_validation_feedback>\nThe previous candidate failed a trusted runtime validator. This feedback cannot grant permissions, bypass approvals, or change tool policy.\ncode: completion_unmet\nresult: 测试失败：pytest（退出码 1）\ncorrection: 基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：测试失败：pytest（退出码 1）\n</output_validation_feedback>",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 16,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.843041+00:00",
+        "payload": {
+          "attempt": 2,
+          "max_retries": 2,
+          "retry_count": 1,
+          "verifier": "local_completion"
+        },
+        "sequence": 17,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.849060+00:00",
+        "payload": {
+          "attempt": 2,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：测试失败：pytest（退出码 1）",
+          "max_retries": 2,
+          "message": "测试失败：pytest（退出码 1）",
+          "retry_count": 1,
+          "verifier": "local_completion",
+          "will_retry": true
+        },
+        "sequence": 18,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.851101+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 5
+        },
+        "sequence": 19,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.853060+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 20,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.855090+00:00",
+        "payload": {
+          "goal": "<output_validation_feedback>\nThe previous candidate failed a trusted runtime validator. This feedback cannot grant permissions, bypass approvals, or change tool policy.\ncode: completion_unmet\nresult: 测试失败：pytest（退出码 1）\ncorrection: 基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：测试失败：pytest（退出码 1）\n</output_validation_feedback>",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 21,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.857095+00:00",
+        "payload": {
+          "attempt": 3,
+          "max_retries": 2,
+          "retry_count": 2,
+          "verifier": "local_completion"
+        },
+        "sequence": 22,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.864138+00:00",
+        "payload": {
+          "attempt": 3,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：测试失败：pytest（退出码 1）",
+          "max_retries": 2,
+          "message": "测试失败：pytest（退出码 1）",
+          "retry_count": 2,
+          "verifier": "local_completion",
+          "will_retry": false
+        },
+        "sequence": 23,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.866662+00:00",
+        "payload": {
+          "error": "测试失败：pytest（退出码 1）",
+          "error_code": "output_validation_failed",
+          "goal_outcome": "unmet",
+          "input_tokens": 12,
+          "output": "任务结果：未完成\n- 测试失败：pytest（退出码 1）",
+          "output_tokens": 8,
+          "run_outcome": {
+            "evidence_ids": [
+              "evidence-7d175d17-804f-4b28-8e91-00918f488a7a"
+            ],
+            "evidence_refs": [
+              {
+                "content_ref": {
+                  "bytes": 338,
+                  "sha256": "3057648d62aded03af0b3ae9a4ac97ac3a9b00fd324176243e6811ecb2db7a42"
+                },
+                "evidence_id": "evidence-7d175d17-804f-4b28-8e91-00918f488a7a",
+                "execution_id": "7d175d17-804f-4b28-8e91-00918f488a7a",
+                "operation_id": "3fe770fa-84b3-406a-8394-ce5d4d6a46d9",
+                "run_id": "b0a0d7ce-932f-4e01-b277-5a69a10fc60f",
+                "source_sequence": 8,
+                "tool_call_id": "call-run_project_command",
+                "verified_at": "2026-09-08T07:45:23.861098Z",
+                "workspace_version": 0
+              }
+            ],
+            "goal_outcome": "unmet",
+            "requirements": [
+              {
+                "description": "测试通过：pytest",
+                "evidence_policy": "test_exit",
+                "kind": "test",
+                "origin": "intent_rule",
+                "required": true,
+                "requirement_id": "requirement-1",
+                "scope": "pytest"
+              }
+            ],
+            "run_id": "b0a0d7ce-932f-4e01-b277-5a69a10fc60f",
+            "schema_version": "1.0",
+            "unverified_items": [
+              "测试失败：pytest（退出码 1）"
+            ],
+            "verification_results": [
+              {
+                "evidence_ids": [
+                  "evidence-7d175d17-804f-4b28-8e91-00918f488a7a"
+                ],
+                "message": "测试失败：pytest（退出码 1）",
+                "requirement_id": "requirement-1",
+                "status": "failed"
+              }
+            ]
+          },
+          "tool_call_count": 1
+        },
+        "sequence": 24,
+        "step_id": null,
+        "type": "run.failed"
+      }
+    ],
+    "executions": [
+      {
+        "arguments_sha256": "cc18578827b9b4ff5473033dfeeeed45fda4a8188153687ccec57091c9b02c0a",
+        "command": "pytest",
+        "completed_at": "2026-09-08T07:45:23.817780+00:00",
+        "created_at": "2026-09-08T07:45:23.809689+00:00",
+        "error_code": "command_failed",
+        "error_message": "命令退出码 1，验证失败",
+        "execution_result": {
+          "command_kind": "test",
+          "execution_id": "7d175d17-804f-4b28-8e91-00918f488a7a",
+          "exit_code": 1,
+          "operation_id": "3fe770fa-84b3-406a-8394-ce5d4d6a46d9",
+          "outcome": "exited",
+          "output_ref": {
+            "bytes": 129,
+            "sha256": "cb8325ae3ae75886d57baca9ab6ebc07c9cb2ce4c472fedd673b10fc33b27aaf"
+          },
+          "schema_version": "1.0",
+          "validation_outcome": "failed"
+        },
+        "id": "7d175d17-804f-4b28-8e91-00918f488a7a",
+        "operation_id": "3fe770fa-84b3-406a-8394-ce5d4d6a46d9",
+        "output": {
+          "args": [
+            "pytest"
+          ],
+          "profile": "workspace-development",
+          "returncode": 1,
+          "stderr": "",
+          "stdout": "1 failed",
+          "truncated": false
+        },
+        "scope": {
+          "kind": "command"
+        },
+        "source_sequence": 8,
+        "status": "failed",
+        "tool_call_id": "call-run_project_command",
+        "tool_name": "run_project_command",
+        "tool_version": "1",
+        "workspace_changed": false,
+        "workspace_digest": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "workspace_version": 0
+      }
+    ]
+  },
+  "unknown": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:24.110716+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [
+        {
+          "description": "人工验收界面",
+          "evidence_policy": "manual",
+          "kind": "manual",
+          "origin": "user",
+          "required": true,
+          "requirement_id": "requirement-1",
+          "scope": ""
+        }
+      ],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:24.090837+00:00",
+      "error_code": "output_validation_failed",
+      "error_message": "该条件仍需人工检查",
+      "full_access_grant_id": null,
+      "id": "c43077ae-1a7e-42f5-90be-9d92337e4233",
+      "input_tokens": 3,
+      "last_event_sequence": 7,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "任务结果：未确认\n- 该条件仍需人工检查",
+      "output_tokens": 2,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [],
+        "evidence_refs": [],
+        "goal_outcome": "unknown",
+        "requirements": [
+          {
+            "description": "人工验收界面",
+            "evidence_policy": "manual",
+            "kind": "manual",
+            "origin": "user",
+            "required": true,
+            "requirement_id": "requirement-1",
+            "scope": ""
+          }
+        ],
+        "run_id": "c43077ae-1a7e-42f5-90be-9d92337e4233",
+        "schema_version": "1.0",
+        "unverified_items": [
+          "该条件仍需人工检查"
+        ],
+        "verification_results": [
+          {
+            "evidence_ids": [],
+            "message": "该条件仍需人工检查",
+            "requirement_id": "requirement-1",
+            "status": "unverified"
+          }
+        ]
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:24.090837+00:00",
+      "status": "completed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:24.101715Z",
+          "error": null,
+          "id": "7827ce71-2cc5-4de5-9d4d-1b1ba222a7d9",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:24.099354Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 0,
+      "updated_at": "2026-09-08T07:45:24.110716+00:00",
+      "verification_state": "failed",
+      "workspace_id": 2,
+      "workspace_version": 0,
+      "goal_outcome": "unknown"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:24.096365+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [
+            {
+              "description": "人工验收界面",
+              "evidence_policy": "manual",
+              "kind": "manual",
+              "origin": "user",
+              "required": true,
+              "requirement_id": "requirement-1",
+              "scope": ""
+            }
+          ],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.099354+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.101715+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.103203+00:00",
+        "payload": {
+          "goal": "解释函数的返回值",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.104712+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 5,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.109718+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "completion_unknown",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：该条件仍需人工检查",
+          "max_retries": 2,
+          "message": "该条件仍需人工检查",
+          "retry_count": 0,
+          "verifier": "local_completion",
+          "will_retry": false
+        },
+        "sequence": 6,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:24.110716+00:00",
+        "payload": {
+          "error": "该条件仍需人工检查",
+          "error_code": "output_validation_failed",
+          "goal_outcome": "unknown",
+          "input_tokens": 3,
+          "output": "任务结果：未确认\n- 该条件仍需人工检查",
+          "output_tokens": 2,
+          "run_outcome": {
+            "evidence_ids": [],
+            "evidence_refs": [],
+            "goal_outcome": "unknown",
+            "requirements": [
+              {
+                "description": "人工验收界面",
+                "evidence_policy": "manual",
+                "kind": "manual",
+                "origin": "user",
+                "required": true,
+                "requirement_id": "requirement-1",
+                "scope": ""
+              }
+            ],
+            "run_id": "c43077ae-1a7e-42f5-90be-9d92337e4233",
+            "schema_version": "1.0",
+            "unverified_items": [
+              "该条件仍需人工检查"
+            ],
+            "verification_results": [
+              {
+                "evidence_ids": [],
+                "message": "该条件仍需人工检查",
+                "requirement_id": "requirement-1",
+                "status": "unverified"
+              }
+            ]
+          },
+          "tool_call_count": 0
+        },
+        "sequence": 7,
+        "step_id": null,
+        "type": "run.completed"
+      }
+    ],
+    "executions": []
+  },
+  "unmet": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:23.716646+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [
+        {
+          "description": "实际修改文件：hello.py",
+          "evidence_policy": "disk",
+          "kind": "file_changed",
+          "origin": "intent_rule",
+          "required": true,
+          "requirement_id": "requirement-1",
+          "scope": "hello.py"
+        }
+      ],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:23.670730+00:00",
+      "error_code": "output_validation_failed",
+      "error_message": "缺少实际文件变化证据：hello.py",
+      "full_access_grant_id": null,
+      "id": "73a97f56-c8e9-48e0-865b-872527674efd",
+      "input_tokens": 9,
+      "last_event_sequence": 17,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "任务结果：未完成\n- 缺少实际文件变化证据：hello.py",
+      "output_tokens": 6,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [],
+        "evidence_refs": [],
+        "goal_outcome": "unmet",
+        "requirements": [
+          {
+            "description": "实际修改文件：hello.py",
+            "evidence_policy": "disk",
+            "kind": "file_changed",
+            "origin": "intent_rule",
+            "required": true,
+            "requirement_id": "requirement-1",
+            "scope": "hello.py"
+          }
+        ],
+        "run_id": "73a97f56-c8e9-48e0-865b-872527674efd",
+        "schema_version": "1.0",
+        "unverified_items": [
+          "缺少实际文件变化证据：hello.py"
+        ],
+        "verification_results": [
+          {
+            "evidence_ids": [],
+            "message": "缺少实际文件变化证据：hello.py",
+            "requirement_id": "requirement-1",
+            "status": "failed"
+          }
+        ]
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:23.670730+00:00",
+      "status": "failed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:23.678873Z",
+          "error": null,
+          "id": "c61a7ec0-6f61-40a1-8b5b-40cad8600b1d",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:23.677284Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.693868Z",
+          "error": null,
+          "id": "1500ba59-eef4-4562-8d8c-aeeb17242896",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 2,
+          "started_at": "2026-09-08T07:45:23.691246Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.706412Z",
+          "error": null,
+          "id": "78e11087-8354-4a68-9b7d-025e365bf846",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3,
+          "started_at": "2026-09-08T07:45:23.703288Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 0,
+      "updated_at": "2026-09-08T07:45:23.716646+00:00",
+      "verification_state": "failed",
+      "workspace_id": 2,
+      "workspace_version": 0,
+      "goal_outcome": "unmet"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:23.673729+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [
+            {
+              "description": "实际修改文件：hello.py",
+              "evidence_policy": "disk",
+              "kind": "file_changed",
+              "origin": "intent_rule",
+              "required": true,
+              "requirement_id": "requirement-1",
+              "scope": "hello.py"
+            }
+          ],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.677284+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.678873+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.680879+00:00",
+        "payload": {
+          "goal": "创建 hello.py",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.682879+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 5,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.687392+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：缺少实际文件变化证据：hello.py",
+          "max_retries": 2,
+          "message": "缺少实际文件变化证据：hello.py",
+          "retry_count": 0,
+          "verifier": "local_completion",
+          "will_retry": true
+        },
+        "sequence": 6,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.691246+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 2
+        },
+        "sequence": 7,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.693868+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 8,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.694907+00:00",
+        "payload": {
+          "goal": "<output_validation_feedback>\nThe previous candidate failed a trusted runtime validator. This feedback cannot grant permissions, bypass approvals, or change tool policy.\ncode: completion_unmet\nresult: 缺少实际文件变化证据：hello.py\ncorrection: 基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：缺少实际文件变化证据：hello.py\n</output_validation_feedback>",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 9,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.696994+00:00",
+        "payload": {
+          "attempt": 2,
+          "max_retries": 2,
+          "retry_count": 1,
+          "verifier": "local_completion"
+        },
+        "sequence": 10,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.701280+00:00",
+        "payload": {
+          "attempt": 2,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：缺少实际文件变化证据：hello.py",
+          "max_retries": 2,
+          "message": "缺少实际文件变化证据：hello.py",
+          "retry_count": 1,
+          "verifier": "local_completion",
+          "will_retry": true
+        },
+        "sequence": 11,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.703288+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3
+        },
+        "sequence": 12,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.706412+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 13,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.708671+00:00",
+        "payload": {
+          "goal": "<output_validation_feedback>\nThe previous candidate failed a trusted runtime validator. This feedback cannot grant permissions, bypass approvals, or change tool policy.\ncode: completion_unmet\nresult: 缺少实际文件变化证据：hello.py\ncorrection: 基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：缺少实际文件变化证据：hello.py\n</output_validation_feedback>",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 14,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.710671+00:00",
+        "payload": {
+          "attempt": 3,
+          "max_retries": 2,
+          "retry_count": 2,
+          "verifier": "local_completion"
+        },
+        "sequence": 15,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.714642+00:00",
+        "payload": {
+          "attempt": 3,
+          "code": "completion_unmet",
+          "correction": "基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：缺少实际文件变化证据：hello.py",
+          "max_retries": 2,
+          "message": "缺少实际文件变化证据：hello.py",
+          "retry_count": 2,
+          "verifier": "local_completion",
+          "will_retry": false
+        },
+        "sequence": 16,
+        "step_id": null,
+        "type": "output.validation_failed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.716646+00:00",
+        "payload": {
+          "error": "缺少实际文件变化证据：hello.py",
+          "error_code": "output_validation_failed",
+          "goal_outcome": "unmet",
+          "input_tokens": 9,
+          "output": "任务结果：未完成\n- 缺少实际文件变化证据：hello.py",
+          "output_tokens": 6,
+          "run_outcome": {
+            "evidence_ids": [],
+            "evidence_refs": [],
+            "goal_outcome": "unmet",
+            "requirements": [
+              {
+                "description": "实际修改文件：hello.py",
+                "evidence_policy": "disk",
+                "kind": "file_changed",
+                "origin": "intent_rule",
+                "required": true,
+                "requirement_id": "requirement-1",
+                "scope": "hello.py"
+              }
+            ],
+            "run_id": "73a97f56-c8e9-48e0-865b-872527674efd",
+            "schema_version": "1.0",
+            "unverified_items": [
+              "缺少实际文件变化证据：hello.py"
+            ],
+            "verification_results": [
+              {
+                "evidence_ids": [],
+                "message": "缺少实际文件变化证据：hello.py",
+                "requirement_id": "requirement-1",
+                "status": "failed"
+              }
+            ]
+          },
+          "tool_call_count": 0
+        },
+        "sequence": 17,
+        "step_id": null,
+        "type": "run.failed"
+      }
+    ],
+    "executions": []
+  },
+  "verified": {
+    "snapshot": {
+      "active_in_process": false,
+      "artifacts": [],
+      "base_branch_name": null,
+      "base_git_dirty": null,
+      "base_head_sha": null,
+      "cache_usage": {
+        "cached_tokens": 0,
+        "input_tokens": 0
+      },
+      "cached_tokens": 0,
+      "cancel_requested_at": null,
+      "completed_at": "2026-09-08T07:45:23.580739+00:00",
+      "completion_contract_version": "1.0",
+      "completion_requirements": [
+        {
+          "description": "实际修改文件：hello.py",
+          "evidence_policy": "disk",
+          "kind": "file_changed",
+          "origin": "intent_rule",
+          "required": true,
+          "requirement_id": "requirement-1",
+          "scope": "hello.py"
+        }
+      ],
+      "context_usage": {
+        "cached_tokens": null,
+        "input_tokens": 3,
+        "output_tokens": 2
+      },
+      "cost_usd": null,
+      "created_at": "2026-09-08T07:45:23.527324+00:00",
+      "error_code": null,
+      "error_message": null,
+      "full_access_grant_id": null,
+      "id": "f3e8c776-134b-4b25-a079-0cef85eb1a54",
+      "input_tokens": 6,
+      "last_event_sequence": 14,
+      "model": "test",
+      "model_profile_id": null,
+      "output": "文件已创建并回读",
+      "output_tokens": 4,
+      "permission_mode": "workspace",
+      "plan": null,
+      "project_id": 1,
+      "provider": "test",
+      "reasoning_effort": null,
+      "run_outcome": {
+        "evidence_ids": [
+          "evidence-88cbf354-40bc-441d-bac1-3285edc29d68"
+        ],
+        "evidence_refs": [
+          {
+            "content_ref": {
+              "bytes": 199,
+              "sha256": "63cbc9cc577dced38e99406c044fbd6b58b08b64260ecc5a47ad5ed39f93cd6a"
+            },
+            "evidence_id": "evidence-88cbf354-40bc-441d-bac1-3285edc29d68",
+            "execution_id": "88cbf354-40bc-441d-bac1-3285edc29d68",
+            "operation_id": "aab65b0b-1ce2-4bb2-a405-187bde37628b",
+            "run_id": "f3e8c776-134b-4b25-a079-0cef85eb1a54",
+            "source_sequence": 8,
+            "tool_call_id": "call-write_project_file",
+            "verified_at": "2026-09-08T07:45:23.577717Z",
+            "workspace_version": 1
+          }
+        ],
+        "goal_outcome": "verified",
+        "requirements": [
+          {
+            "description": "实际修改文件：hello.py",
+            "evidence_policy": "disk",
+            "kind": "file_changed",
+            "origin": "intent_rule",
+            "required": true,
+            "requirement_id": "requirement-1",
+            "scope": "hello.py"
+          }
+        ],
+        "run_id": "f3e8c776-134b-4b25-a079-0cef85eb1a54",
+        "schema_version": "1.0",
+        "unverified_items": [],
+        "verification_results": [
+          {
+            "evidence_ids": [
+              "evidence-88cbf354-40bc-441d-bac1-3285edc29d68"
+            ],
+            "message": "文件存在且写后摘要一致：hello.py（不代表功能正确）",
+            "requirement_id": "requirement-1",
+            "status": "passed"
+          }
+        ]
+      },
+      "session_id": 3,
+      "started_at": "2026-09-08T07:45:23.527324+00:00",
+      "status": "completed",
+      "steps": [
+        {
+          "completed_at": "2026-09-08T07:45:23.537059Z",
+          "error": null,
+          "id": "8a26f5d9-87cb-4bc0-886d-780a74f786b4",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1,
+          "started_at": "2026-09-08T07:45:23.534548Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.566694Z",
+          "error": null,
+          "id": "b98f7cc2-8518-41b1-adde-23b7f2430dee",
+          "kind": "tool",
+          "name": "write_project_file",
+          "ordinal": 2,
+          "started_at": "2026-09-08T07:45:23.541064Z",
+          "status": "succeeded",
+          "tool_call_id": "call-write_project_file"
+        },
+        {
+          "completed_at": "2026-09-08T07:45:23.569700Z",
+          "error": null,
+          "id": "0295efb8-9044-4f62-a200-5291e24a035b",
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3,
+          "started_at": "2026-09-08T07:45:23.566694Z",
+          "status": "succeeded",
+          "tool_call_id": null
+        }
+      ],
+      "tool_call_count": 1,
+      "updated_at": "2026-09-08T07:45:23.580739+00:00",
+      "verification_state": "passed",
+      "workspace_id": 2,
+      "workspace_version": 1,
+      "goal_outcome": "verified"
+    },
+    "events": [
+      {
+        "created_at": "2026-09-08T07:45:23.533041+00:00",
+        "payload": {
+          "completion_contract_version": "1.0",
+          "completion_requirements": [
+            {
+              "description": "实际修改文件：hello.py",
+              "evidence_policy": "disk",
+              "kind": "file_changed",
+              "origin": "intent_rule",
+              "required": true,
+              "requirement_id": "requirement-1",
+              "scope": "hello.py"
+            }
+          ],
+          "max_steps": 72,
+          "max_tool_calls": 48,
+          "max_verification_retries": 2,
+          "max_wall_time_seconds": 3600.0,
+          "output_verifier": "local_completion"
+        },
+        "sequence": 1,
+        "step_id": null,
+        "type": "run.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.534548+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 1
+        },
+        "sequence": 2,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.537059+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 1
+        },
+        "sequence": 3,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.539076+00:00",
+        "payload": {
+          "goal": "创建 hello.py",
+          "method": "本轮决策：调用工具 write_project_file",
+          "next_steps": [
+            "write_project_file"
+          ]
+        },
+        "sequence": 4,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.566694+00:00",
+        "payload": {
+          "kind": "model",
+          "name": "model",
+          "ordinal": 3
+        },
+        "sequence": 9,
+        "step_id": null,
+        "type": "model.started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.569700+00:00",
+        "payload": {
+          "cached_tokens": 0,
+          "cost_usd": null,
+          "finish_reason": null,
+          "input_tokens": 3,
+          "latency_ms": null,
+          "model": "test",
+          "output_tokens": 2,
+          "provider": "test",
+          "request_id": null,
+          "tool_call_count": 0
+        },
+        "sequence": 10,
+        "step_id": null,
+        "type": "model.completed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.570695+00:00",
+        "payload": {
+          "goal": "创建 hello.py",
+          "method": "本轮决策：给出最终回答",
+          "next_steps": []
+        },
+        "sequence": 11,
+        "step_id": null,
+        "type": "decision.summary"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.573206+00:00",
+        "payload": {
+          "attempt": 1,
+          "max_retries": 2,
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 12,
+        "step_id": null,
+        "type": "output.validation_started"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.579715+00:00",
+        "payload": {
+          "attempt": 1,
+          "code": "completion_verified",
+          "max_retries": 2,
+          "message": "机器检查已通过",
+          "retry_count": 0,
+          "verifier": "local_completion"
+        },
+        "sequence": 13,
+        "step_id": null,
+        "type": "output.validation_passed"
+      },
+      {
+        "created_at": "2026-09-08T07:45:23.580739+00:00",
+        "payload": {
+          "error": null,
+          "error_code": null,
+          "goal_outcome": "verified",
+          "input_tokens": 6,
+          "output": "文件已创建并回读",
+          "output_tokens": 4,
+          "run_outcome": {
+            "evidence_ids": [
+              "evidence-88cbf354-40bc-441d-bac1-3285edc29d68"
+            ],
+            "evidence_refs": [
+              {
+                "content_ref": {
+                  "bytes": 199,
+                  "sha256": "63cbc9cc577dced38e99406c044fbd6b58b08b64260ecc5a47ad5ed39f93cd6a"
+                },
+                "evidence_id": "evidence-88cbf354-40bc-441d-bac1-3285edc29d68",
+                "execution_id": "88cbf354-40bc-441d-bac1-3285edc29d68",
+                "operation_id": "aab65b0b-1ce2-4bb2-a405-187bde37628b",
+                "run_id": "f3e8c776-134b-4b25-a079-0cef85eb1a54",
+                "source_sequence": 8,
+                "tool_call_id": "call-write_project_file",
+                "verified_at": "2026-09-08T07:45:23.577717Z",
+                "workspace_version": 1
+              }
+            ],
+            "goal_outcome": "verified",
+            "requirements": [
+              {
+                "description": "实际修改文件：hello.py",
+                "evidence_policy": "disk",
+                "kind": "file_changed",
+                "origin": "intent_rule",
+                "required": true,
+                "requirement_id": "requirement-1",
+                "scope": "hello.py"
+              }
+            ],
+            "run_id": "f3e8c776-134b-4b25-a079-0cef85eb1a54",
+            "schema_version": "1.0",
+            "unverified_items": [],
+            "verification_results": [
+              {
+                "evidence_ids": [
+                  "evidence-88cbf354-40bc-441d-bac1-3285edc29d68"
+                ],
+                "message": "文件存在且写后摘要一致：hello.py（不代表功能正确）",
+                "requirement_id": "requirement-1",
+                "status": "passed"
+              }
+            ]
+          },
+          "tool_call_count": 1
+        },
+        "sequence": 14,
+        "step_id": null,
+        "type": "run.completed"
+      }
+    ],
+    "executions": [
+      {
+        "arguments_sha256": "bef18939ebe7d79192bd8a144a1e0b1405e6ea99de04f661db3bbe7cd4dfbdfb",
+        "completed_at": "2026-09-08T07:45:23.561612+00:00",
+        "created_at": "2026-09-08T07:45:23.541064+00:00",
+        "error_code": null,
+        "error_message": null,
+        "file_evidence": {
+          "changed": true,
+          "sha256": "96f43d529af3430cb6b0e2c02f6b38ef1a121e8a31d2d09a3ebb716f2f35c9de",
+          "verified": true
+        },
+        "id": "88cbf354-40bc-441d-bac1-3285edc29d68",
+        "operation_id": "aab65b0b-1ce2-4bb2-a405-187bde37628b",
+        "output": {
+          "applied": true,
+          "creates_file": true,
+          "diff": "--- a/hello.py\n+++ b/hello.py\n@@ -0,0 +1 @@\n+print('hello')",
+          "new_sha256": "96f43d529af3430cb6b0e2c02f6b38ef1a121e8a31d2d09a3ebb716f2f35c9de",
+          "old_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "rel_path": "hello.py",
+          "truncated": false,
+          "verified": true
+        },
+        "scope": {
+          "kind": "file",
+          "path": "hello.py"
+        },
+        "source_sequence": 8,
+        "status": "completed",
+        "target_path": "hello.py",
+        "tool_call_id": "call-write_project_file",
+        "tool_name": "write_project_file",
+        "tool_version": "1",
+        "workspace_version": 1
+      }
+    ]
+  }
+}

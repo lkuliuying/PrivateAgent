@@ -1,16 +1,17 @@
-# Coding S0 可复现验收入口
+# Coding S0–S1 可复现验收入口
 
 在仓库根目录使用现有 Python 环境，无需安装依赖：
 
 ```powershell
 .venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all
-.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite completion
+.venv/Scripts/python.exe -B scripts/run_coding_legacy_validation.py
 .venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite duration
 ```
 
 每次自动新建 `.run/coding-agent-validation/<suite>-<uuid>`，保留 `invocation.json`、`pytest-result.json` 和 `observations/*.json`。不复用或递归删除旧目录，不使用 pytest 会清理目标目录的 `--basetemp`。
 
-`all` 包含 local、contracts、baseline、host、tooling；`duration` 是独立约 120 秒的真实超时探针。每个子套件都可单独运行。首轮启动失败、收集错误和用例失败均非零退出；严格 xfail 和 PTY 不可用单独列出，不能计入产品通过率。意外 XPASS 会失败，要求后续修复阶段重新审查基线。
+`all` 包含 local、contracts、baseline、host、tooling、completion；`duration` 是独立约 120 秒的真实超时探针。每个子套件都可单独运行。首轮启动失败、收集错误和用例失败均非零退出；严格 xfail 和 PTY 不可用单独列出，不能计入产品通过率。意外 XPASS 会失败，要求后续修复阶段重新审查基线。S1 已将 G01/G02 改为正常回归；当前剩余两个 G10 严格 xfail，S0 的四个 xfail 是历史成绩。
 
 ## 测试隔离
 
@@ -40,4 +41,19 @@
 
 ## 契约维护
 
-从 `private_agent_core/coding_contracts.py` 修改类型，再运行 `scripts/protocol_codegen.py`。`--check` 校验旧协议与新 Coding 生成物，`test_contracts.py` 校验 Schema、实例及业务不变量。新类型尚未接入业务 DTO；准确接入责任见 [S0 契约决议](../../docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md)。
+从 `private_agent_core/coding_contracts.py` 修改类型，再运行 `scripts/protocol_codegen.py`。`--check` 校验旧协议与新 Coding 生成物，`test_contracts.py` 校验 Schema、实例及业务不变量。S1 已接通本机完成要求、运行结果和命令结果；其他类型不代表能力已启用。准确责任见 [契约决议](../../docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md)。
+
+## S1 事实、前端与兼容回归
+
+`tests/unit/test_local_completion.py` 使用真实本机 ASGI、临时 SQLite 和磁盘，只替代模型端与专用命令故障。`test_s1_wire_examples_from_real_api` 导出六类运行到当次隔离目录的 `s1-wire/*.json`；仓库 `s1-wire-examples.json` 合并自真实导出，用于 Python 契约、Vue 投影和组件校验。更新时重新运行 completion，再合并该目录六个文件；禁止手编全部成功的 UI 载荷。原始输出位置记录在 S1 报告。
+
+旧服务端兼容入口 `run_coding_legacy_validation.py` 只复跑脚本内冻结的原有纯单测，不修改原测试，也不替换业务模块。它允许导入必要业务类型，但使用新建临时用户目录、固定不可连接的测试 DB 配置及网络审计，禁止外部连接和业务数据库连接；Windows asyncio 的本机 socketpair 仍可用。它不等于业务 API/MySQL 集成验收，不能作为任意测试节点执行器。
+
+在 `apps/desktop` 下运行：
+
+```powershell
+npm run test -- src/features/coding src/services/localExecutor.spec.ts src/services/privateTransport.spec.ts
+npm run build
+```
+
+完整成绩、环境阻塞与剩余 S4 限制见 [S1 验收报告](../../docs/analysis/coding-agent-upgrade-20260908/s1-validation-report.md)。

@@ -15,6 +15,8 @@ import {
   rejectAgentRunTool,
 } from "../../../api/agentRuns";
 import type { AgentApprovalPreview, AgentToolExecution } from "../../../types";
+import { usesLocalExecutor } from "../../../services/localExecutor";
+import { parseExecutionResult } from "../model/runOutcome";
 import type {
   CodingRunCreateInput,
   RunApprovalPreviewRecord,
@@ -28,7 +30,8 @@ import type {
 } from "../model/runContracts";
 
 export async function createCodingRun(input: CodingRunCreateInput): Promise<RunSnapshot> {
-  return codingFetchJson<RunSnapshot>("/agent-runs", codingJsonInit("POST", input));
+  const body = usesLocalExecutor() ? { ...input, completion_contract_version: "1.0" } : input;
+  return codingFetchJson<RunSnapshot>("/agent-runs", codingJsonInit("POST", body));
 }
 
 export async function fetchRunSnapshot(runId: string): Promise<RunSnapshot> {
@@ -87,9 +90,12 @@ export async function fetchRunApprovalPreview(
 
 /** 已脱敏有界的工具执行结果（命令输出 parsed 摘要在此） */
 export async function fetchRunExecutions(runId: string): Promise<RunExecutionRecord[]> {
-  const list = (await listAgentRunExecutions(runId)) as AgentToolExecution[];
+  const list = (await listAgentRunExecutions(runId)) as (AgentToolExecution & Partial<RunExecutionRecord>)[];
   return list.map((item) => ({
     id: item.id,
+    tool_call_id: typeof item.tool_call_id === "string" ? item.tool_call_id : undefined,
+    operation_id: typeof item.operation_id === "string" ? item.operation_id : undefined,
+    execution_result: parseExecutionResult(item.execution_result, item.id),
     tool_name: item.tool_name,
     tool_version: item.tool_version,
     status: item.status,
