@@ -199,7 +199,12 @@ impl Host {
             // Job Object 级联终止 + Low MIC 写拦截已落地；
             // 网络强制边界（ADR-004 S4）未闭环前仍如实上报 false。
             "sandbox_available": false,
-            "modes": ["argv", "pty"],
+            "modes": if cfg!(windows) { vec!["argv", "pty"] } else { vec!["argv"] },
+            "session_protocol": 1,
+            "file_read_isolation": false,
+            "file_write_isolation": false,
+            "network_isolation": false,
+            "process_tree_termination": cfg!(windows),
             "active_sessions": active
         })
     }
@@ -323,7 +328,7 @@ fn handle_start(request_id: u64, message: &Value) {
             .get("timeout_ms")
             .and_then(Value::as_u64)
             .unwrap_or(120_000)
-            .min(600_000);
+            .min(86_400_000);
         // 红线（§22.3）：环境变量 allowlist + explicit diff——不继承 host 环境。
         let mut env_pairs: Vec<(String, String)> = Vec::new();
         if let Some(env_diff) = params.get("env_diff").and_then(Value::as_object) {
@@ -553,7 +558,22 @@ fn spawn_std(
     want_stdin: bool,
 ) -> std::io::Result<Spawned> {
     let mut command = std::process::Command::new(&program[0]);
-    command.args(&program[1..]).current_dir(cwd);
+    command.current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let is_cmd = std::path::Path::new(&program[0]).file_name()
+            .map(|name| name.to_string_lossy().eq_ignore_ascii_case("cmd.exe")).unwrap_or(false);
+        if is_cmd && program.len() == 5 && program[1..4] == ["/d", "/s", "/c"] {
+            // 这里只接收策略层完成参数验证后的批处理调用，避免二次套用 C argv 转义。
+            command.args(&program[1..4]).raw_arg(format!("\"{}\"", program[4]));
+        } else {
+            command.args(&program[1..]);
+        }
+        command.creation_flags(0x08000000);
+    }
+    #[cfg(not(windows))]
+    command.args(&program[1..]);
     // 环境变量显式集合（allowlist），不继承 host 环境。
     command.env_clear();
     for (key, value) in env_pairs {
@@ -647,10 +667,15 @@ fn spawn_stream_reader(
                     pending.extend_from_slice(&chunk[..n]);
                     // 续读窗口每次读取即入环（不等分帧边界，§11.4 实时性）。
                     output_tail.lock().unwrap().push(&chunk[..n]);
-                    while pending.len() >= DELTA_LIMIT {
-                        let rest = pending.split_off(DELTA_LIMIT);
-                        emit_delta(&execution_id, stream, &pending, &sequence);
-                        pending = rest;
+                    // 每次读取立即发送完整 UTF-8 前缀；只保留尚未收齐的码点。
+                    let ready = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                        Err(_) => pending.len(),
+                    };
+                    if ready > 0 {
+                        emit_delta(&execution_id, stream, &pending[..ready], &sequence);
+                        pending.drain(..ready);
                     }
                 }
                 Err(_) => break,
@@ -694,6 +719,8 @@ fn spawn_waiter(
                         if !timed_out && Instant::now() >= deadline {
                             timed_out = true;
                             cancel_requested.store(true, Ordering::SeqCst);
+                            #[cfg(windows)]
+                            let _ = sandbox::taskkill_tree(guard.pid());
                             guard.kill();
                         }
                         None
@@ -724,7 +751,6 @@ fn spawn_waiter(
                             "notification": "execution/cancelled",
                             "execution_id": execution_id,
                             "sequence": sequence.fetch_add(1, Ordering::SeqCst),
-                            "processes_remaining": 0,
                         }));
                     }
                     host().notify(json!({
@@ -733,7 +759,6 @@ fn spawn_waiter(
                         "sequence": sequence.fetch_add(1, Ordering::SeqCst),
                         "exit_code": exit_code,
                         "cancelled_by_timeout": timed_out,
-                        "processes_remaining": 0,
                     }));
                     // 移除 → ExecutionState.job Drop → KILL_ON_JOB_CLOSE 兜底。
                     host().executions.lock().unwrap().remove(&execution_id);

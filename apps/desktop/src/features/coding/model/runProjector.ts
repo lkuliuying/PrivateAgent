@@ -54,6 +54,7 @@ export type TranscriptEntry =
       finishReason: string | null;
       inputTokens: number;
       outputTokens: number;
+      usageComplete?: boolean;
       latencyMs: number | null;
     }
   | {
@@ -138,6 +139,7 @@ export interface RunUsage {
 }
 
 export interface RunProjection {
+  modelOutput?: { attemptId: string; text: string; state: "streaming" | "finished" | "interrupted" } | null;
   runOutcome: RunOutcome;
   completionRequirements: Requirement[];
   verifying: boolean;
@@ -185,6 +187,7 @@ export function createRunProjection(runId: string, userMessage: string | null = 
 export function cloneRunProjection(source: RunProjection): RunProjection {
   return {
     ...source,
+    modelOutput: source.modelOutput ? { ...source.modelOutput } : null,
     entries: [...source.entries],
     plan: source.plan ? { ...source.plan, items: [...source.plan.items] } : null,
     error: source.error ? { ...source.error } : null,
@@ -275,6 +278,7 @@ const TERMINAL_EVENT_STATUS: Record<string, AgentRunStatus> = {
 };
 
 export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame): RunProjection {
+  if (frame.type === "run.terminal") return projection;
   if (frame.sequence <= projection.lastSequence) {
     return projection; // 幂等：重复/迟到帧跳过
   }
@@ -282,6 +286,21 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
   const payload = frame.payload ?? {};
 
   switch (frame.type) {
+    case "model.output.delta": {
+      const attemptId = str(payload, "attempt_id");
+      if (!attemptId) break;
+      const previous = projection.modelOutput?.attemptId === attemptId ? projection.modelOutput.text : "";
+      projection.modelOutput = { attemptId, text: (previous + str(payload, "delta")).slice(-64000), state: "streaming" };
+      break;
+    }
+    case "model.output.finished":
+    case "model.output.interrupted": {
+      if (projection.modelOutput?.attemptId === str(payload, "attempt_id")) projection.modelOutput.state = frame.type === "model.output.finished" ? "finished" : "interrupted";
+      break;
+    }
+    case "execution.output":
+    case "execution.terminal":
+      break;
     case "run.started": {
       projection.completionRequirements = parseRequirements(payload.completion_requirements);
       projection.status = "running";
@@ -331,6 +350,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       if (existing) {
         existing.state = "completed";
         existing.finishReason = str(payload, "finish_reason") || null;
+        existing.usageComplete = payload.usage_complete !== false;
         existing.inputTokens = num(payload, "input_tokens", existing.inputTokens);
         existing.outputTokens = num(payload, "output_tokens", existing.outputTokens);
         existing.latencyMs = nullableNum(payload, "latency_ms") ?? existing.latencyMs;

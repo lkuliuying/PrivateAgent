@@ -12,7 +12,7 @@ from pathlib import Path
 
 from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
@@ -40,6 +40,9 @@ class Store:
             self._migrate()
             from .context_history import ContextHistory
             self.context = ContextHistory(self)
+            from .execution_store import ExecutionStore
+            self.execution_sessions = ExecutionStore(self)
+            self.execution_sessions.recover()
             self._recover()
         except BaseException:
             self.db.close()
@@ -75,15 +78,17 @@ class Store:
             raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
         if version == SCHEMA_VERSION:
             return
-        if version in {2, 3, 4}:
+        if version in {2, 3, 4, 5}:
             backup = self._backup()
             with self.transaction():
                 if version == 2:
                     self._history_schema()
                 if version < 4:
                     self._context_schema()
-                self._patch_schema()
-                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "file_snapshots_and_patch_journal"})))
+                if version < 5:
+                    self._patch_schema()
+                self._execution_schema()
+                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "managed_execution_output"})))
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
         names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -113,6 +118,7 @@ class Store:
             self._history_schema()
             self._context_schema()
             self._patch_schema()
+            self._execution_schema()
             counts = {"objects": 0, "runs": 0}
             if legacy:
                 for item_id, kind, data in self.db.execute("SELECT id,kind,data FROM legacy_objects_v1 ORDER BY id").fetchall():
@@ -150,6 +156,27 @@ class Store:
         self.db.execute("CREATE TABLE patch_sets(id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id), operation_id TEXT NOT NULL UNIQUE, status TEXT NOT NULL, data TEXT NOT NULL)")
         self.db.execute("CREATE INDEX patch_sets_run ON patch_sets(run_id)")
         self.db.execute("CREATE TABLE patch_journal(patch_set_id TEXT NOT NULL REFERENCES patch_sets(id), sequence INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(patch_set_id,sequence))")
+
+    def _execution_schema(self):
+        from .execution_store import create_schema
+        create_schema(self.db)
+
+    def emit(self, run, event_type, payload, *, lightweight=False):
+        """事务内分配唯一序号；高频输出只追加引用，不重复保存工具历史。"""
+        with self.transaction():
+            sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM events WHERE run_id=?", (run["id"],)).fetchone()[0]
+            event = {"sequence": sequence, "type": event_type, "payload": payload, "step_id": None, "created_at": now()}
+            if lightweight:
+                self.db.execute("INSERT INTO events VALUES (?,?,?)", (run["id"], sequence, encode(event)))
+                state = self.run_state(run["id"])
+                state["last_event_sequence"] = sequence
+                self.db.execute("UPDATE runs SET data=? WHERE id=?", (self._pack(state), run["id"]))
+            else:
+                run["last_event_sequence"] = sequence
+                self._save_run(run, appended_event=event)
+        run["last_event_sequence"] = sequence
+        run.setdefault("events", []).append(event)
+        return event
 
     def _recover(self):
         """重启关闭授权并记录不确定的外部副作用，绝不重放命令或文件写入。"""

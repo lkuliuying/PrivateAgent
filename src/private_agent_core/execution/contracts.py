@@ -78,7 +78,7 @@ class ExecStartParams(BaseModel):
     argv: list[str] = Field(min_length=1, max_length=64)
     cwd: str = Field(min_length=1, max_length=2048)
     env_diff: dict[str, str] = Field(default_factory=dict, max_length=64)
-    timeout_ms: int = Field(default=120_000, ge=1, le=600_000)
+    timeout_ms: int = Field(default=600_000, ge=1, le=86_400_000)
     output_limit_bytes: int = Field(default=512 * 1024, ge=1024, le=32 * 1024 * 1024)
     sandbox_policy_hash: str = Field(min_length=8, max_length=128)
     network_policy: Literal["none", "allowlist", "approved"] = "none"
@@ -149,3 +149,8 @@ class ExecHealth(BaseModel):
     sandbox_available: bool
     modes: tuple[Literal["argv", "pty"], ...] = ("argv",)
     active_sessions: int = Field(default=0, ge=0)
+    session_protocol: int = 0
+    file_read_isolation: bool = False
+    file_write_isolation: bool = False
+    network_isolation: bool = False
+    process_tree_termination: bool = False

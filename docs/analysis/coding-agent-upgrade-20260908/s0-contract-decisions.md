@@ -90,3 +90,13 @@ S1 只接 RunOutcome 与命令业务结果；S2 接 ContextItem；S3 接 Workspa
 - `patch_set_id` 标识不可变预览；预览调用、应用调用、回滚各有自己的 operation ID，不将它们混成一次执行。应用执行记录引用 patch_set_id，逐项日志按补丁内 sequence 排序。重复消费同一个已应用补丁不重复落盘；失败或未知补丁拒绝重放。
 - 当前 SQLite schema 5 新增 `file_snapshots`、`patch_sets`、`patch_journal`；schema 2/3/4 备份后事务迁移，重启将 applying 标为 interrupted，保留意图和结果。S5 自动恢复尚未接入。
 - S1 从持久化日志与当前磁盘状态生成文件证据，包括删除/目录/移动。用户回滚使原运行完成结论转 unknown，避免沿用已失效证据。实际状态机、限制及验证见 [S3 验收报告](./s3-validation-report.md)。
+
+## 9. S4 接入补记（2026-09-08）
+
+- Store 在同一 SQLite 事务内分配 run 的 durable sequence；宿主 sequence 从 0 开始，输出 chunk sequence 从 1 开始，三者独立。`execution.output` 只引用输出仓库游标；模型公开文本使用 `model.output.delta/finished/interrupted`，不产生另一套最终消息来源。合成 `run.terminal` 复用最后 durable sequence，仅关闭传输。
+- 运行输入增加可选 `execution_contract_version=1.0`。新桌面在服务声明 API 支持时发送；新可写运行创建前探测宿主能力，缺失则拒绝。旧调用省略时保留旧工具集合；只读任务仍可使用文件工具。执行前仍检查实际宿主 `session_protocol=1` 与进程树终止能力。
+- 复用 CapabilitySnapshot，未通过的 `pty/recovery` 保持 false；执行能力接口另报文件读/写隔离和网络隔离均 false。PTY 只能在实际启动探针成功后使用。模型流能力由当前 Profile 与服务器 `stream_protocol=1.0` 单独协商，不能从执行能力推导。
+- SQLite 升为 schema 6，新增 `managed_executions` 和 `execution_chunks`；旧 schema 2/3/4/5 在一致性备份后事务升级。重启将活动执行记为 unknown、stopped=false，禁止重放。
+- 执行会话绑定账号、项目、工作区、会话、operation、执行 ID、专用宿主和私有 nonce。每活动执行独占宿主，避免共享 Windows Job 的清理影响其他命令。账号最多 4 个、每工作区最多 2 个；会话保留必须明确批准且可关闭。
+- 新命令与 stdin 均逐次审批。可信项目执行意味着当前系统用户可访问的文件及网络范围，不是原生沙箱；restricted/network=none 请求不静默降级。旧客户端命令语义保留，不能将其历史自动批准视为新执行授权。
+- `ExecutionResult` 在专用宿主关闭且有界工作区核对后更新原执行记录；没有可靠退出事实时保存 unknown，不能补造进程树已停止或 S1 验证通过。具体 DTO、限制、测试与未验证项见 [S4 报告](./s4-validation-report.md)。

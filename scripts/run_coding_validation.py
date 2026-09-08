@@ -13,6 +13,9 @@ from coding_validation_process import managed_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {
+    "execution": ["tests/unit/test_local_execution_sessions.py"],
+    "streaming": ["tests/unit/test_local_streaming.py", "tests/unit/test_local_models.py"],
+    "execution-duration": ["tests/coding_acceptance/test_s4_duration.py"],
     "repository": [f"tests/unit/test_local_{name}.py" for name in ("file_ranges", "search_pagination", "patchsets")],
     "context": [f"tests/unit/test_local_{name}.py" for name in ("instructions", "context_history", "compaction")],
     "completion": ["tests/unit/test_local_completion.py"],
@@ -57,7 +60,7 @@ def run(suite: str) -> int:
     parent.mkdir(parents=True, exist_ok=True)
     directory = new_directory(parent, suite)
     (directory / "tmp").mkdir()
-    tests = [item for name, items in SUITES.items() if name != "duration" for item in items] if suite == "all" else SUITES[suite]
+    tests = [item for name, items in SUITES.items() if name not in {"duration", "execution-duration"} for item in items] if suite == "all" else SUITES[suite]
     paths = [(ROOT / item).resolve(strict=True) for item in tests]
     if any(not path.is_relative_to(ROOT / "tests") for path in paths):
         raise ValueError("测试文件越界")

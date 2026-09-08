@@ -37,6 +37,7 @@ import { redactCommandArgs, redactSecretText } from "../model/redaction";
 import DiffArtifact from "./DiffArtifact.vue";
 import CommandOutput from "./CommandOutput.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import { executionText } from "../api/executions";
 
 const props = withDefaults(
   defineProps<{
@@ -449,6 +450,10 @@ const resultArtifactEntries = computed(() =>
 <template>
   <div class="run-transcript" data-testid="run-transcript">
     <div ref="scrollEl" class="transcript-scroll" @scroll.passive="onScroll">
+      <section v-if="projection?.modelOutput" class="model-public-output" data-testid="model-public-output">
+        <span>{{ projection.modelOutput.state === 'interrupted' ? '模型输出中断，计量可能不完整' : projection.modelOutput.state === 'streaming' ? '模型正在输出' : '本轮公开输出' }} · 最终结论以任务验收为准</span>
+        <pre style="white-space: pre-wrap; overflow-wrap: anywhere">{{ executionText(projection.modelOutput.text) }}</pre>
+      </section>
       <!-- 未开始任务 -->
       <div v-if="!projection && historyEntries.length === 0" class="transcript-empty" data-testid="transcript-empty">
         <PhLightning :size="26" weight="duotone" />
@@ -553,7 +558,8 @@ const resultArtifactEntries = computed(() =>
             <span class="entry-copy">
               模型第 {{ entry.ordinal }} 轮
               <template v-if="entry.state === 'completed'">
-                · {{ entry.outputTokens.toLocaleString() }} 输出 tokens<template v-if="entry.latencyMs !== null"> · {{ Math.round(entry.latencyMs) }}ms</template>
+                <template v-if="entry.usageComplete === false"> · 用量未知</template>
+                <template v-else> · {{ entry.outputTokens.toLocaleString() }} 输出 tokens</template><template v-if="entry.latencyMs !== null"> · {{ Math.round(entry.latencyMs) }}ms</template>
               </template>
               <template v-else> · 生成中</template>
             </span>

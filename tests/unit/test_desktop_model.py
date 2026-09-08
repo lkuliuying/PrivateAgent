@@ -46,6 +46,34 @@ def app_for(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_stream_proxy_frames_attempt_usage_and_error_redaction(monkeypatch, fail):
+    app, gateway = app_for(monkeypatch)
+    async def complete_stream(request, *, cancellation, on_delta):
+        await on_delta("公开🙂")
+        if fail:
+            raise RuntimeError("fixture-provider-credential-must-not-escape")
+        return ModelResponse(text="公开🙂", provider="test", model="test")
+    gateway.complete_stream = complete_stream
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://server.test", headers={"Authorization": "Bearer test-account"}) as client:
+        assert (await client.get("/desktop/model/capabilities")).json()["stream_protocol"] == "1.0"
+        payload = {"stream_protocol": "1.0", "attempt_id": "fixture-attempt", "request": {"messages": [{"role": "user", "content": "hello"}]}}
+        result = await client.post("/desktop/model/stream", json=payload)
+        assert result.status_code == 200
+        assert result.headers["x-accel-buffering"] == "no"
+        frames = [json.loads(line) for line in result.text.splitlines()]
+        assert [frame["sequence"] for frame in frames] == [1, 2]
+        assert all(frame["attempt_id"] == "fixture-attempt" for frame in frames)
+        assert frames[0]["delta"] == "公开🙂"
+        assert "fixture-provider-credential" not in result.text
+        if fail:
+            assert frames[-1]["type"] == "error" and frames[-1]["usage_complete"] is False
+        else:
+            assert frames[-1]["type"] == "completed" and frames[-1]["response"]["usage"] == {}
+        assert (await client.post("/desktop/model/stream", json={**payload, "stream_protocol": "9.0"})).status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_gateway_requires_account_and_forwards_model_contract(monkeypatch):
     app, gateway = app_for(monkeypatch)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="https://server.test") as client:

@@ -214,19 +214,19 @@ async def test_s1_t10_correction_uses_original_budget_and_can_pass(api):
 async def test_s1_t11_final_transaction_never_publishes_early_success(api, monkeypatch, fail_at):
     app, client, server, root, body = api
     store = app.state.desktop.runtime.store
-    create, append = store.create, store.append_event
+    create, emit = store.create, store.emit
 
     def fail_message(kind, data):
         if kind == "message" and data.get("role") == "assistant":
             raise OSError("fixture message failure")
         return create(kind, data)
 
-    def fail_terminal(run, event):
-        append(run, event)
-        if event["type"] == "run.completed":
+    def fail_terminal(run, event_type, payload, **options):
+        emit(run, event_type, payload, **options)
+        if event_type == "run.completed":
             raise OSError("fixture terminal failure after insert")
 
-    monkeypatch.setattr(store, "create" if fail_at == "message" else "append_event", fail_message if fail_at == "message" else fail_terminal)
+    monkeypatch.setattr(store, "create" if fail_at == "message" else "emit", fail_message if fail_at == "message" else fail_terminal)
     run = await create_run(api, "创建 hello.py", [response(call("write_project_file", {"rel_path": "hello.py", "content": "hello"})), response(text="已创建")])
     assert run["status"] == "failed" and run["goal_outcome"] == "unknown" and run["output"] is None
     assert (root / "hello.py").read_text() == "hello"

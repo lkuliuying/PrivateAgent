@@ -1,4 +1,5 @@
 """服务器模式验证：不提供本机账号，模型推理可选本地，保留账号隔离与共享核心。"""
+import json
 import subprocess
 import sys
 
@@ -93,8 +94,9 @@ async def test_server_account_relogin_keeps_existing_projects_messages_and_runs(
             await cloud.close()
 
 @pytest.mark.parametrize("protocol", ["ollama", "openai"])
+@pytest.mark.parametrize("capacity", [8192, 32000])
 @pytest.mark.asyncio
-async def test_local_models_require_server_identity_and_never_receive_account_token(tmp_path, protocol):
+async def test_local_models_require_server_identity_and_never_receive_account_token(tmp_path, protocol, capacity):
     requests = []
 
     def handle(request):
@@ -105,9 +107,12 @@ async def test_local_models_require_server_identity_and_never_receive_account_to
             assert request.url.path == "/api/chat"
             return httpx.Response(200, json={"model": "fixture", "message": {"role": "assistant", "content": "本地完成"}, "prompt_eval_count": 123, "eval_count": 8, "done": True})
         assert request.url.path == "/v1/chat/completions"
+        if json.loads(request.content).get("stream"):
+            events = [{"model": "fixture", "choices": [{"delta": {"content": "本地完成"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 123, "completion_tokens": 8}}]
+            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content="".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n")
         return httpx.Response(200, json={"model": "fixture", "choices": [{"message": {"content": "本地完成"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 123, "completion_tokens": 8}})
 
-    config = ModelConfig(inference_mode="local", model_protocol=protocol, model_endpoint="http://127.0.0.1:11434" + ("/v1" if protocol == "openai" else ""), model_name="fixture", context_tokens=8192)
+    config = ModelConfig(inference_mode="local", model_protocol=protocol, model_endpoint="http://127.0.0.1:11434" + ("/v1" if protocol == "openai" else ""), model_name="fixture", context_tokens=capacity)
     def account(request):
         assert request.url.path == "/auth/me"
         if request.headers.get("authorization") != "Bearer valid-server-session":
@@ -132,12 +137,17 @@ async def test_local_models_require_server_identity_and_never_receive_account_to
             workspace = (await client.get(f"/projects/{project['id']}/workspaces")).json()[0]
             binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
             session = (await client.post("/sessions", json={**binding, "title": "本机任务"})).json()
-            run = (await client.post("/agent-runs", json={**binding, "session_id": session["id"], "message": "你好", "permission_mode": "readonly"})).json()
+            run = (await client.post("/agent-runs", json={**binding, "session_id": session["id"], "message": "你好", "permission_mode": "readonly", "execution_contract_version": "1.0"})).json()
             final = await until(client, run["id"], TERMINAL)
+            if capacity == 8192:
+                # S3 基线即超出必需输入预算；保留拒绝边界，不把窗口不足变成流式重试。
+                assert final["status"] == "limit_exceeded" and final["error_code"] == "context_limit"
+                assert final["output"] is None and not requests
+                return
             assert final["status"] == "completed", final
             assert final["output"] == "本地完成"
             budget = (await client.get(f"/sessions/{session['id']}/context-budget")).json()
-            assert budget["used_tokens"] == 123 and budget["max_context_tokens"] == 8192
+            assert budget["used_tokens"] == 123 and budget["max_context_tokens"] == capacity
             assert len(requests) == 1
         finally:
             await app.state.desktop.clear()
@@ -153,9 +163,9 @@ async def test_switch_inference_to_local_keeps_account_projects_messages_and_run
 
     def infer(request):
         assert "authorization" not in request.headers
-        return httpx.Response(200, json={"model": "fixture", "message": {"content": "本机续写"}, "prompt_eval_count": 50, "eval_count": 5})
+        return httpx.Response(200, json={"model": "fixture", "message": {"content": "本机续写"}, "prompt_eval_count": 50, "eval_count": 5, "done": True})
 
-    config = ModelConfig( inference_mode="local", model_name="fixture")
+    config = ModelConfig(inference_mode="local", model_name="fixture", context_tokens=32000)
     service = ConnectedLocalModels("https://account.example.test", config, transport=httpx.MockTransport(server.handle), model_transport=httpx.MockTransport(infer))
     second = create_app(data_dir=tmp_path / "data", cloud=service, nonce=NONCE)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=second), base_url="http://127.0.0.1", headers=HEADERS) as current:

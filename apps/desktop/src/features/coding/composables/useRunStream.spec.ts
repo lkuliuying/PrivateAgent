@@ -88,6 +88,23 @@ const INPUT = {
 };
 
 describe("useRunStream", () => {
+  it("实时缺口保留原游标并按分页补齐，不被快照终态截断", async () => {
+    const { deps, streams, runTimers } = makeDeps();
+    const { scope, controller } = scopedSetup(deps);
+    await controller.startRun(INPUT);
+    streams[0].callbacks.onFrame({ sequence: 1, type: "run.started", payload: {} });
+    streams[0].callbacks.onFrame({ sequence: 3, type: "run.completed", payload: { output: "done" } });
+    expect(controller.projection.value?.lastSequence).toBe(1);
+    expect(controller.connectionError.value).toContain("缺口");
+    vi.mocked(deps.fetchSnapshot).mockResolvedValue(snapshot({ last_event_sequence: 3, status: "completed", output: "done" }));
+    vi.mocked(deps.fetchEvents).mockResolvedValueOnce({ items: [{ sequence: 2, type: "model.output.delta", payload: { attempt_id: "a", delta: "公开" } }] })
+      .mockResolvedValueOnce({ items: [{ sequence: 3, type: "run.completed", payload: { output: "done" } }] });
+    runTimers(); await flushPromises();
+    expect(controller.projection.value?.lastSequence).toBe(3);
+    expect(controller.projection.value?.modelOutput?.text).toBe("公开");
+    expect(deps.fetchEvents).toHaveBeenCalledTimes(2);
+    scope.stop();
+  });
   it("startRun：创建→快照→续流，帧按序投影，run.terminal 收敛", async () => {
     const { deps, streams } = makeDeps();
     (deps.fetchSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(

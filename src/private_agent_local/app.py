@@ -25,6 +25,7 @@ from private_agent_core.context import ContextLimits
 from . import files, git_workspace, migration
 from .cloud import Cloud, CloudError
 from .connections import ModelConfig
+from .execution_tools import CancelArgs, StdinArgs
 from .local_models import LocalInference
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import Store, now
@@ -46,6 +47,7 @@ CAPABILITIES = {
     "coding_patchsets_enabled": True, "coding_repository_tools_version": "2",
     "coding_powershell_file_writes_enabled": False,
     "coding_rg_available": shutil.which("rg") is not None,
+    "coding_execution_sessions_enabled": True,
 }
 
 
@@ -109,6 +111,7 @@ class RunInput(Binding):
     reasoning_effort: str | None = Field(default=None, max_length=32)
     client_request_id: str | None = Field(default=None, max_length=100)
     completion_contract_version: Literal["1.0"] | None = None
+    execution_contract_version: Literal["1.0"] | None = None
     completion_requirements: list[Requirement] = Field(default_factory=list, max_length=32)
     context_limits: ContextLimits = Field(default_factory=ContextLimits)
 
@@ -544,11 +547,17 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
 
     @app.post("/sessions/{session_id}/{action}")
     async def session_action(session_id: int, action: Literal["archive", "unarchive", "pin", "unpin"], runtime: Runtime = Depends(local)):
+        if action == "archive":
+            await runtime.execution_sessions.stop_matching(lambda record: record["session_id"] == session_id)
         key = "archived_at" if action in {"archive", "unarchive"} else "pinned_at"
         return runtime.store.update("session", session_id, **{key: now() if action in {"archive", "pin"} else None})
 
     @app.post("/agent-runs", status_code=201)
     async def create_run(data: RunInput, runtime: Runtime = Depends(local)):
+        if data.execution_contract_version == "1.0" and data.permission_mode != "readonly":
+            capabilities = await runtime.execution_sessions.capabilities()
+            if not capabilities["contract"]["execution"]:
+                raise ValueError("执行宿主缺少 S4 持续执行能力，请升级完整客户端；仍可创建只读任务")
         return runtime.create(data.model_dump())
 
     @app.get("/agent-runs/{run_id}")
@@ -577,8 +586,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
                     if event["sequence"] > cursor:
                         yield "data: " + json.dumps(event, ensure_ascii=False) + "\n\n"
                         cursor = event["sequence"]
-                if run["status"] in TERMINAL:
-                    yield "data: " + json.dumps({"sequence": cursor + 1, "type": "run.terminal", "payload": {"status": run["status"]}}) + "\n\n"
+                if run["status"] in TERMINAL and cursor >= run["last_event_sequence"]:
+                    yield "data: " + json.dumps({"sequence": cursor, "type": "run.terminal", "payload": {"status": run["status"]}}) + "\n\n"
                     return
                 yield ": heartbeat\n\n"
                 await asyncio.sleep(0.5)
@@ -588,6 +597,40 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.get("/agent-runs/{run_id}/approvals")
     async def approvals(run_id: str, runtime: Runtime = Depends(local)):
         return [{k: v for k, v in a.items() if k != "preview"} for a in runtime.store.run(run_id)["approvals"]]
+
+    @app.get("/sessions/{session_id}/execution-capabilities")
+    async def execution_capabilities(session_id: int, runtime: Runtime = Depends(local)):
+        runtime.store.get("session", session_id)
+        return await runtime.execution_sessions.capabilities()
+
+    @app.get("/sessions/{session_id}/executions")
+    async def managed_executions(session_id: int, runtime: Runtime = Depends(local)):
+        runtime.store.get("session", session_id)
+        return {"items": runtime.execution_sessions.list(session_id)}
+
+    @app.get("/sessions/{session_id}/executions/{execution_id}")
+    async def read_managed_execution(session_id: int, execution_id: str, cursor: int = Query(default=0, ge=0),
+                                     wait_ms: int = Query(default=0, ge=0, le=30_000), runtime: Runtime = Depends(local)):
+        return await runtime.execution_sessions.read(execution_id, session_id, after=cursor, wait_ms=wait_ms)
+
+    @app.post("/sessions/{session_id}/executions/{execution_id}/cancel")
+    async def cancel_managed_execution(session_id: int, execution_id: str, data: CancelArgs, runtime: Runtime = Depends(local)):
+        if data.execution_id != execution_id:
+            raise ValueError("执行 ID 与请求路径不一致")
+        return await runtime.execution_sessions.cancel(execution_id, session_id)
+
+    @app.post("/sessions/{session_id}/executions/{execution_id}/stdin")
+    async def managed_stdin(session_id: int, execution_id: str, data: StdinArgs, runtime: Runtime = Depends(local)):
+        if data.execution_id != execution_id:
+            raise ValueError("执行 ID 与请求路径不一致")
+        # 此入口仅接受界面明确提交的输入；模型写入走独立工具审批。
+        return await runtime.execution_sessions.write(execution_id, session_id, data.data, data.eof, data.expected_state_version)
+
+    @app.post("/sessions/{session_id}/executions/close")
+    async def close_session_executions(session_id: int, runtime: Runtime = Depends(local)):
+        runtime.store.get("session", session_id)
+        await runtime.execution_sessions.stop_matching(lambda record: record["session_id"] == session_id)
+        return {"items": runtime.execution_sessions.list(session_id)}
 
     def patch_run(runtime, run_id):
         run = runtime.store.run(run_id)

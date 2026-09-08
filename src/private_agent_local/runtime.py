@@ -27,7 +27,7 @@ from private_agent_core.contracts import (
 from private_agent_core.patches import PatchApply, PatchProposal
 from private_agent_core.runtime import AgentRuntime
 
-from . import files, git_workspace, policy, repository
+from . import execution_tools, files, git_workspace, policy, repository
 from .cloud import Cloud, CloudError
 from .completion import (
     LocalCompletionVerifier,
@@ -39,6 +39,7 @@ from .completion import (
 )
 from .context import average_cache_hit_percent, context_budget, matches_profile
 from .core_adapter import LocalRunAdapter
+from .execution_sessions import ExecutionSessions
 from .executor import ExecutionFailure, run_command
 from .instructions import InstructionError, InstructionLoader
 from .patchsets import PatchService
@@ -119,6 +120,7 @@ TOOLS = {
     "write_project_file": (WriteArgs, "Write full UTF-8 content through the patch service. Existing files require a prior read in this run. Parent must exist. require_approval=true requests confirmation even in automatic mode."),
     "run_project_command": (CommandArgs, "Run a registered development command in this project. confirm asks; workspace/full_access can auto-approve unless require_approval=true. No shell chaining, inline eval or external paths."),
 }
+TOOLS.update(execution_tools.TOOLS)
 if os.name == "nt":
     TOOLS["run_powershell_command"] = (
         PowerShellArgs,
@@ -129,7 +131,7 @@ VERSIONED_FILE_TOOLS = FILE_WRITE_TOOLS | {
     "read_patch_preview", "propose_project_patch", "list_project_directory", "read_code_file",
     "search_project_files", "run_powershell_command",
 }
-WRITE_TOOLS = FILE_WRITE_TOOLS | {"run_project_command", "run_powershell_command"}
+WRITE_TOOLS = FILE_WRITE_TOOLS | {"run_project_command", "run_powershell_command", "exec_command", "write_stdin"}
 SYSTEM = (
     "You are a coding assistant running on the user's computer. The cloud only provides inference. "
     "Use the available tools to inspect the selected project; use project-relative paths by default. "
@@ -180,6 +182,7 @@ class Runtime:
         self.contexts: dict = {}
         self.patches = PatchService(store)
         self.repository = self.patches.repository
+        self.execution_sessions = ExecutionSessions(self)
 
     async def activate_project(self, project_id: int | None):
         if project_id is not None:
@@ -187,6 +190,7 @@ class Runtime:
         # 先改变权限上下文，再等待旧命令停止；新工具调用立即失败关闭。
         self.active_project_id = project_id
         self.project_context_set = True
+        await self.execution_sessions.stop_matching(lambda record: record["project_id"] != project_id)
         grants = self.store.db.execute("SELECT id, project_id FROM grants WHERE revoked_at IS NULL").fetchall()
         for grant_id, previous_project in grants:
             if previous_project != project_id:
@@ -218,11 +222,7 @@ class Runtime:
         return budget
 
     def event(self, run: dict, event_type: str, **payload):
-        sequence = len(run["events"]) + 1
-        run["events"].append({"sequence": sequence, "type": event_type, "payload": payload,
-                              "step_id": None, "created_at": now()})
-        run["last_event_sequence"] = sequence
-        self.store.append_event(run, run["events"][-1])
+        return self.store.emit(run, event_type, payload)
 
     def root(self, project_id: int, workspace_id: int) -> Path:
         project = self.store.get("project", project_id)
@@ -279,6 +279,7 @@ class Runtime:
                    completion_policy=completion_policy, denied_operations=[], workspace_version=0, verification_state="pending")
         limits = ContextLimits.model_validate(data.get("context_limits", {}))
         run.update(context_limits=limits.model_dump(), approval_wait_seconds=0)
+        run["execution_contract_version"] = data.get("execution_contract_version")
         run["root_identity"] = files.file_identity(root)
         project = self.store.get("project", data["project_id"])
         self.instructions.load(root, trusted=project.get("trust_instructions") is True)
@@ -305,6 +306,7 @@ class Runtime:
     async def revoke_grant(self, grant_id: str) -> bool:
         revoked = self.store.revoke_grant(grant_id, "user_revoke")
         if revoked:
+            await self.execution_sessions.stop_matching(lambda record: self.store.run_state(record["run_id"]).get("full_access_grant_id") == grant_id)
             for run in self.store.runs(active_only=True):
                 if run.get("full_access_grant_id") == grant_id:
                     await self.cancel(run["id"])
@@ -320,6 +322,8 @@ class Runtime:
             current = self.store.run(run["id"])
             self.finish(current, "failed", "context_preparation_failed", "上下文准备失败，原始记录未被覆盖")
         finally:
+            current = self.store.run_state(run["id"])
+            await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run["id"] and (record["retention"] == "run" or current["status"] != "completed"))
             self.tasks.pop(run["id"], None)
             self.contexts.pop(run["id"], None)
 
@@ -347,6 +351,10 @@ class Runtime:
             messages[0]["content"] += "\n本轮仅提供方案或预览，不允许写入。"
         definitions = []
         for name, (model, description) in TOOLS.items():
+            if run.get("execution_contract_version") != "1.0" and name in execution_tools.TOOLS:
+                continue
+            if run.get("execution_contract_version") == "1.0" and name == "run_project_command":
+                continue
             if run["permission_mode"] == "readonly" and name in WRITE_TOOLS:
                 continue
             schema = tool_schema(model)
@@ -364,6 +372,7 @@ class Runtime:
                 tool_definitions=[ModelToolDefinition.model_validate(item) for item in definitions],
             )
             run["steps"] = [step.model_dump(mode="json") for step in result.steps]
+            await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run["id"] and record["retention"] == "run")
             run["output"] = result.output
             error = adapter.model_error
             status = result.status.value
@@ -386,6 +395,7 @@ class Runtime:
                 self.finish(run, status, error.code if error else adapter.terminal_payload.get("error_code"),
                             str(error) if error else result.error)
         except asyncio.CancelledError:
+            await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run["id"])
             self.finish(run, "cancelled", "cancelled", "任务已取消；已完成的文件修改会保留")
         except Exception:
             # 事务回滚后重新读取，不能把内存中未提交的成功事件或输出再次保存。
@@ -429,10 +439,11 @@ class Runtime:
 
     async def approve(self, run: dict, call: dict, preview: dict) -> bool:
         approval_id = str(uuid.uuid4())
+        command_input = call["name"] in {"run_project_command", "exec_command", "write_stdin"}
         approval = {"id": approval_id, "run_id": run["id"], "step_id": None, "tool_call_id": call["id"],
                     "tool_name": call["name"], "tool_version": "2" if call["name"] in VERSIONED_FILE_TOOLS else "1", "arguments_sha256": files.digest(json.dumps(call["arguments"], sort_keys=True).encode()),
-                    "risk_level": "high" if call["name"] == "run_project_command" else "medium",
-                    "required_capabilities": ["command.execute" if call["name"] == "run_project_command" else "file.write"],
+                    "risk_level": "high" if command_input else "medium",
+                    "required_capabilities": ["command.execute" if command_input else "file.write"],
                     "status": "pending", "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
                     "decision_at": None, "consumed_at": None, "created_at": now(), "preview": preview}
         binding = {"arguments": call["arguments"], "preview": preview,
@@ -480,6 +491,18 @@ class Runtime:
                    operation_id=execution["operation_id"], tool_call_count=run["tool_call_count"])
         error_code, command, invoked = "local_tool_rejected", [], False
         try:
+            if name in execution_tools.TOOLS:
+                output = await execution_tools.execute(self, run, root, call, execution)
+                output["execution_error"] = output.pop("error", None)
+                if name == "exec_command" and output.get("status") in {"starting", "running"}:
+                    execution.update(status="running", output=output)
+                elif "execution_result" not in execution:
+                    execution.update(status="completed", output=output, completed_at=now())
+                failed = execution["status"] == "failed"
+                if failed:
+                    output.update(error=execution.get("error_message") or "命令未成功结束，请检查执行结果", error_code=execution.get("error_code") or "command_failed")
+                self.complete_tool(run, call, execution, failed=failed)
+                return output
             args = TOOLS[name][0].model_validate(call["arguments"])
             patch = self.patches.get(run["id"], args.patch_set_id) if name == "apply_project_patch" else None
             if name in WRITE_TOOLS:
@@ -603,7 +626,7 @@ class Runtime:
                     raise ValueError(output.get("error") or "补丁未全部应用，请检查逐项日志")
             else:
                 grant = self.require_grant(run)
-                timeout = min(120, (datetime.fromisoformat(grant["expires_at"]) - datetime.now(timezone.utc)).total_seconds()) if grant else 120
+                timeout = min(600, (datetime.fromisoformat(grant["expires_at"]) - datetime.now(timezone.utc)).total_seconds()) if grant else 600
                 if context:
                     timeout = min(timeout, context.remaining_seconds())
                 if timeout <= 0:
@@ -688,6 +711,7 @@ class Runtime:
 
     async def cancel(self, run_id: str):
         self.store.run(run_id)
+        await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run_id)
         task = self.tasks.get(run_id)
         if task:
             task.cancel()
@@ -703,6 +727,7 @@ class Runtime:
     async def close(self):
         for run_id in list(self.tasks):
             await self.cancel(run_id)
+        await self.execution_sessions.close()
         self.token = ""
         for (grant_id,) in self.store.db.execute("SELECT id FROM grants WHERE revoked_at IS NULL").fetchall():
             self.store.revoke_grant(grant_id, "app_exit")

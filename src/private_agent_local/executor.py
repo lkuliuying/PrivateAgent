@@ -51,7 +51,7 @@ def verify_host(path: Path) -> str:
     return digest
 
 
-async def run_command(root: Path, args: list[str], *, timeout: float = 120, executable: Path | None = None,
+async def run_command(root: Path, args: list[str], *, timeout: float = 600, executable: Path | None = None,
                       execution_id: str | None = None) -> dict:
     path = executable or host_path()
     host_sha256 = verify_host(path)

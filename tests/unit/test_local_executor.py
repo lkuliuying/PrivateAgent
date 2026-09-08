@@ -47,8 +47,8 @@ def call(name, arguments):
     return {"id": f"call-{name}", "name": name, "arguments": arguments}
 
 
-async def setup(tmp_path):
-    server = Server()
+async def setup(tmp_path, server=None):
+    server = server or Server()
     cloud = Cloud("https://account.example.test", transport=httpx.MockTransport(server.handle))
     app = create_app(data_dir=tmp_path / "data", cloud=cloud, nonce=NONCE)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=HEADERS)

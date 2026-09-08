@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import suppress
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,15 +55,20 @@ class DesktopModelRequest(BaseModel):
     request: ModelRequest
 
 
-async def parse_inference_request(request: Request) -> DesktopModelRequest:
-    """Bound the body before JSON parsing; do not echo model input in errors."""
+class DesktopStreamRequest(DesktopModelRequest):
+    stream_protocol: Literal["1.0"]
+    attempt_id: str = Field(min_length=8, max_length=128)
+
+
+async def parse_inference_request(request: Request, model=DesktopModelRequest) -> DesktopModelRequest:
+    """解析前限制正文大小，错误不回显模型输入。"""
     body = bytearray()
     async for chunk in request.stream():
         if len(body) + len(chunk) > MAX_REQUEST_BYTES:
             raise HTTPException(413, "模型上下文超过 2 MB，请缩小任务范围")
         body.extend(chunk)
     try:
-        value = DesktopModelRequest.model_validate_json(body)
+        value = model.model_validate_json(body)
     except ValidationError:
         raise HTTPException(422, "本机模型请求格式无效") from None
     if len(value.request.messages) > 100 or len(value.request.tools) > 32:
@@ -139,3 +147,72 @@ async def complete_desktop_model(
         with suppress(asyncio.CancelledError):
             await watcher
         _inference_slots.release()
+
+
+@router.get("/model/capabilities")
+async def desktop_model_capabilities(request: Request):
+    current_principal(request)
+    return {"stream_protocol": "1.0", "text_delta": True, "complete_compatible": True}
+
+
+@router.post("/model/stream")
+async def stream_desktop_model(request: Request, db: AsyncSession = Depends(get_session)):
+    current_principal(request)
+    payload = await parse_inference_request(request, DesktopStreamRequest)
+    gateway = await resolve_gateway(db, payload)
+    if not hasattr(gateway, "complete_stream"):
+        raise model_http_error("unsupported_capability")
+
+    async def iterate():
+        queue = asyncio.Queue(maxsize=32)
+        cancellation = CancellationToken()
+        sequence, size = 0, 0
+
+        async def delta(text):
+            for offset in range(0, len(text), 4096):
+                await queue.put({"type": "text.delta", "delta": text[offset:offset + 4096]})
+
+        async def infer():
+            try:
+                async with asyncio.timeout(1):
+                    await _inference_slots.acquire()
+            except TimeoutError:
+                await queue.put({"type": "error", "code": "provider_unavailable", "usage_complete": False})
+                return
+            try:
+                async with asyncio.timeout(180):
+                    result = await gateway.complete_stream(payload.request, cancellation=cancellation, on_delta=delta)
+                response = result.model_dump(mode="json")
+                if not result.usage.input_tokens:
+                    response["usage"] = {}
+                await queue.put({"type": "completed", "response": response})
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                code = error.code if isinstance(error, ModelGatewayError) and error.code in MODEL_ERRORS else "timeout" if isinstance(error, TimeoutError) else "provider_error"
+                await queue.put({"type": "error", "code": code, "usage_complete": False})
+            finally:
+                _inference_slots.release()
+
+        task = asyncio.create_task(infer())
+        try:
+            while True:
+                frame = await queue.get()
+                sequence += 1
+                frame.update(attempt_id=payload.attempt_id, sequence=sequence)
+                line = json.dumps(frame, ensure_ascii=False, separators=(",", ":")) + "\n"
+                size += len(line.encode("utf-8"))
+                if size > 4 * 1024 * 1024:
+                    yield json.dumps({"type": "error", "code": "invalid_response", "usage_complete": False,
+                                      "attempt_id": payload.attempt_id, "sequence": sequence}) + "\n"
+                    return
+                yield line
+                if frame["type"] in {"completed", "error"}:
+                    return
+        finally:
+            cancellation.cancel()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    return StreamingResponse(iterate(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})

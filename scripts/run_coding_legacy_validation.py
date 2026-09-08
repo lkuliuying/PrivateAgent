@@ -12,6 +12,7 @@ from coding_validation_process import managed_process
 from run_coding_validation import ROOT, isolated_environment, new_directory
 
 NODES = {
+    "test_v100_ct6_exec_host_client.py": None,
     "unit/test_desktop_model.py": None,
     "test_model_gateway.py": None,
     "test_agent_runtime.py": None,

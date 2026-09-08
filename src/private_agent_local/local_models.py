@@ -62,7 +62,7 @@ class LocalInference:
         p = self.profile
         return [{"id": "local-model", "provider": p.model_protocol, "model_name": p.model_name,
                  "display_name": p.model_name or "请配置本地模型", "is_default": True, "is_local": True,
-                 "native_tool_calls": True, "supports_streaming": False, "supports_structured_output": True,
+                 "native_tool_calls": True, "supports_streaming": True, "supports_structured_output": True,
                  "supports_vision": False, "context_tokens": p.context_tokens, "reasoning_efforts": [],
                  "usage_reporting": True, "enabled": bool(p.model_name)}]
 
@@ -92,6 +92,12 @@ class LocalInference:
             raise CloudError(502, "无法读取本机模型列表，请检查服务地址、协议及服务状态", code="model_discovery_failed") from None
 
     async def complete(self, profile: str | None, request: dict) -> dict:
+        return await self._complete(profile, request)
+
+    async def complete_stream(self, profile, request, *, on_delta):
+        return await self._complete(profile, request, on_delta=on_delta)
+
+    async def _complete(self, profile, request, *, on_delta=None):
         p = self.profile
         if profile not in {None, "local-model"} or not p.model_name:
             raise CloudError(422, "请先在模型设置中填写本地模型名称", code="model_not_configured")
@@ -104,7 +110,11 @@ class LocalInference:
                                         allow_http=True, allow_private_network=True, client=self.client)
         gateway = ModelGateway(adapter, request_timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1))
         try:
-            result = await gateway.complete(ModelRequest.model_validate(request), cancellation=CancellationToken())
+            parsed = ModelRequest.model_validate(request)
+            if on_delta is None:
+                result = await gateway.complete(parsed, cancellation=CancellationToken())
+            else:
+                result = await gateway.complete_stream(parsed, cancellation=CancellationToken(), on_delta=on_delta)
             response = result.model_dump(mode="json")
             # 旧供应商未返回 usage 时适配器会填零；不能据此伪造已计量的零占用。
             if not result.usage.input_tokens:
@@ -131,6 +141,9 @@ class ConnectedLocalModels(Cloud):
     async def complete(self, token: str, profile: str | None, request: dict) -> dict:
         return await self.models.complete(profile, request)
 
+    async def complete_stream(self, token, profile, request, *, on_delta):
+        return await self.models.complete_stream(profile, request, on_delta=on_delta)
+
     async def close(self):
         try:
             await self.models.close()
@@ -145,7 +158,7 @@ class ConfiguredModels(Cloud):
         super().__init__(origin, transport=transport)
         self.model_transport = model_transport
 
-    async def complete(self, token: str, profile: str | None, request: dict) -> dict:
+    async def _selection(self, token, profile):
         # 供应商读取可能校正默认模型，必须先于读取 Profile，且不得按协议猜测供应商。
         providers = await self.request("GET", "/model-providers", token)
         profiles = await self.profiles(token)
@@ -186,14 +199,26 @@ class ConfiguredModels(Cloud):
                 config = None
         except (ValueError, TypeError):
             raise CloudError(422, "模型配置无效；本机模型仅支持回环地址的 Ollama 或 OpenAI 兼容接口", code="model_invalid_configuration") from None
+        if config is not None and provider.get("api_key_configured"):
+            raise CloudError(422, "本机模型暂不支持需要密钥的接口，请使用无密钥回环服务", code="model_invalid_configuration")
+        return selected, config
+
+    async def complete(self, token, profile, request):
+        return await self._configured_complete(token, profile, request)
+
+    async def complete_stream(self, token, profile, request, *, on_delta):
+        return await self._configured_complete(token, profile, request, on_delta=on_delta)
+
+    async def _configured_complete(self, token, profile, request, *, on_delta=None):
+        selected, config = await self._selection(token, profile)
         if config is None:
-            result = await super().complete(token, selected["id"], request)
+            result = (await super().complete(token, selected["id"], request) if on_delta is None else
+                      await super().complete_stream(token, selected["id"], request, on_delta=on_delta))
         else:
-            if provider.get("api_key_configured"):
-                raise CloudError(422, "本机模型暂不支持需要密钥的接口，请使用无密钥回环服务", code="model_invalid_configuration")
             models = LocalInference(config, transport=self.model_transport)
             try:
-                result = await models.complete(None, request)
+                result = (await models.complete(None, request) if on_delta is None else
+                          await models.complete_stream(None, request, on_delta=on_delta))
             finally:
                 await models.close()
         # 固定本轮实际解析的模型，后续工具轮次与用量统计不随默认模型漂移。

@@ -214,15 +214,16 @@ def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
         env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep)
                                       if part and (not bundle or not part.casefold().startswith(bundle.casefold())))
     env["GIT_TERMINAL_PROMPT"] = "0"
+    env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     executable = shutil.which(args[0], path=env.get("PATH", ""))
     if not executable:
-        raise ValueError("本机尚未安装该命令所需的开发工具")
+        raise ValueError("本机尚未安装该命令所需的开发工具：" + args[0])
     command = [executable, *args[1:]]
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # 批处理只接收已经验证的参数，拒绝 shell 元字符。
-        if any(any(c in arg for c in '&|<>^%!\r\n"') for arg in args[1:]):
+        if any(any(c in arg for c in '&|<>^%!\r\n"') for arg in [executable, *args[1:]]):
             raise ValueError("命令参数包含不支持的 shell 字符")
-        command = [env.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", subprocess.list2cmdline([executable, *args[1:]])]
+        command = [env.get("COMSPEC", "cmd.exe"), "/d", "/s", "/c", " ".join('"' + arg + '"' for arg in [executable, *args[1:]])]
     return command, env
 
 

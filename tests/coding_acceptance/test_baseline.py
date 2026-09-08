@@ -91,7 +91,7 @@ async def test_s0_t04_model_round_limit_and_store_cost(api):
     assert [event["sequence"] for event in persisted["events"]] == list(range(1, len(persisted["events"]) + 1))
 
 
-async def test_s0_t05_desktop_passes_fixed_timeout(api, monkeypatch):
+async def test_s0_t05_desktop_passes_s4_timeout(api, monkeypatch):
     app, client, server, root, body = api
     observed = []
 
@@ -105,7 +105,7 @@ async def test_s0_t05_desktop_passes_fixed_timeout(api, monkeypatch):
     await until(client, run_id, TERMINAL)
     execution = (await client.get(f"/agent-runs/{run_id}/executions")).json()[0]
     record("S0-T05", configured_timeout=observed, execution_status=execution["status"], real_120_second_command=False)
-    assert observed == [120] and execution["status"] == "failed"
+    assert observed == [600] and execution["status"] == "failed"
 
 
 async def test_s0_t06_cancel_approval_then_restart(api, tmp_path):

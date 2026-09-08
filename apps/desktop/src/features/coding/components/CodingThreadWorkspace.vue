@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import PatchReviewPanel from "./PatchReviewPanel.vue";
+import ExecutionPanel from "./ExecutionPanel.vue";
 /**
  * CodingThreadWorkspace · v0.8.0 W3
  *
@@ -486,7 +487,7 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
       message:
         "有效期 4 小时；切换项目、退出应用或手动撤销后立即失效。不获得管理员权限，也不绕过系统权限。",
       impact:
-        "当前系统用户可访问的普通本机文件与已登记的开发命令将免逐次审批。文件工具拒绝凭据和系统目录；项目脚本可读写该用户可访问的文件并联网，请只对可信项目启用。所有操作保留审计。",
+        "项目文件工具可免逐次审批，持续命令仍需单独确认。文件工具拒绝凭据和系统目录；可信项目脚本以当前系统用户运行，可读写该用户可访问的项目外文件并联网。所有操作保留审计。",
       confirmLabel: "启用完全访问",
       danger: true,
     });
@@ -518,6 +519,7 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
   }
   await stream.startRun({
     session_id: currentThread.id,
+    execution_contract_version: props.store.capabilities.value?.coding_execution_sessions_enabled === true ? "1.0" : undefined,
     message: payload.message,
     project_id: projectId,
     workspace_id: workspaceId,
@@ -686,6 +688,7 @@ function navigateToInstruction(instructionId: string): void {
 
           <PatchReviewPanel v-if="projection?.runId && store.capabilities.value?.coding_patchsets_enabled === true"
             :run-id="projection.runId" :revision="projection.status ?? ''" :active="runActive" />
+          <ExecutionPanel v-if="thread && !previewMode && store.capabilities.value?.coding_execution_sessions_enabled === true" :session-id="thread.id" />
 
           <!-- v0.9.0 H1-B（§5.6）：创建失败阻塞卡片（具体阻塞项 + 恢复入口） -->
           <div

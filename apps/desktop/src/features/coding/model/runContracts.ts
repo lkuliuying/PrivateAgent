@@ -175,6 +175,7 @@ export interface RunSnapshot {
 
 /** POST /agent-runs 创建输入（coding 判定：project_id+workspace_id 成对） */
 export interface CodingRunCreateInput {
+  execution_contract_version?: "1.0";
   completion_contract_version?: "1.0";
   completion_requirements?: Requirement[];
   session_id: number;
@@ -274,11 +275,11 @@ export const PERMISSION_MODE_META: Record<string, { label: string; hint: string 
   confirm: { label: "总是询问", hint: "写入或命令前逐次进入审批流" },
   workspace: {
     label: "替我批准",
-    hint: "项目内文件编辑和登记命令默认执行；模型可主动发起审批，越界操作始终拒绝",
+    hint: "项目文件编辑可自动批准；持续命令需单独确认。可信脚本以当前系统用户运行，可访问项目外文件和网络",
   },
   full_access: {
     label: "完全访问",
-    hint: "限时授权内自动执行项目目录中的登记操作；不访问项目外路径，也不获得管理员权限",
+    hint: "限时授权内自动处理项目文件；持续命令仍需确认。脚本可访问当前用户的文件和网络，不获得管理员权限",
   },
 };
 

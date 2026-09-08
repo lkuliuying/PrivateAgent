@@ -57,7 +57,7 @@ class ExecHostClient:
         self._env = env
         self._process: asyncio.subprocess.Process | None = None
         self._next_id = 0
-        self._events: asyncio.Queue[ExecEvent | None] = asyncio.Queue(maxsize=4_096)
+        self._events: asyncio.Queue[ExecEvent | None] = asyncio.Queue(maxsize=128)
         self._reader_task: asyncio.Task[None] | None = None
         self._session_nonce = ""
         # 单一读取泵分发：响应 → pending future；通知 → 事件队列。
@@ -140,7 +140,7 @@ class ExecHostClient:
             await asyncio.gather(self._reader_task, return_exceptions=True)
             self._reader_task = None
         if self._process is not None:
-            await asyncio.gather(self._process.wait(), return_exceptions=True)
+            await asyncio.wait_for(self._process.wait(), timeout=5)
             self._process = None
 
     @property
@@ -191,6 +191,9 @@ class ExecHostClient:
             "execution/cancel",
             ExecCancelParams(execution_id=execution_id).model_dump(),
         )
+
+    async def status(self, execution_id: str) -> dict[str, Any]:
+        return await self._request("execution/status/read", {"execution_id": execution_id})
 
     async def next_event(self, timeout: float = 30.0) -> ExecEvent | None:
         """读取下一个事件；超时返回 None（连接仍存活）。"""
@@ -267,6 +270,7 @@ class ExecHostClient:
         while True:
             raw = await self._process.stdout.readline()
             if not raw:
+                self._failure = ExecutorUnavailable("exec host 已退出", code="executor_disconnected")
                 for future in list(self._pending.values()):
                     if not future.done():
                         future.set_exception(ExecutorUnavailable("exec host 已退出"))
@@ -277,8 +281,8 @@ class ExecHostClient:
                 raise ExecutorUnavailable("exec host 消息超出协议上限")
             try:
                 parsed = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
+            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                raise ExecutorUnavailable("exec host 帧无法解析") from error
             if not isinstance(parsed, dict):
                 continue
             message_id = parsed.get("id")
@@ -316,8 +320,8 @@ class ExecHostClient:
                 event = ExecEvent.model_validate(
                     {**parsed, "notification": notification}
                 )
-            except Exception:  # noqa: BLE001 - 非法事件丢弃，不影响通道
-                continue
+            except Exception as error:
+                raise ExecutorUnavailable("exec host 事件无效") from error
             if self._events.full():
                 raise ExecutorUnavailable("exec host 事件缓冲溢出，不能丢弃执行证据")
             await self._events.put(event)

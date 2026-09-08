@@ -45,10 +45,20 @@ function project(frames: RunStreamFrame[]): ReturnType<typeof createRunProjectio
 }
 
 describe("runProjector", () => {
+  it("公开模型增量不提前生成最终答案，重复帧不重复文本", () => {
+    const value = createRunProjection("streaming");
+    const delta = frame(1, "model.output.delta", { attempt_id: "a", delta: "处理中" });
+    applyRunFrame(value, delta); applyRunFrame(value, delta);
+    expect(value.modelOutput?.text).toBe("处理中");
+    expect(value.output).toBeNull();
+    expect(value.runOutcome.goal_outcome).toBe("unknown");
+    applyRunFrame(value, frame(2, "model.output.interrupted", { attempt_id: "a" }));
+    expect(value.modelOutput?.state).toBe("interrupted");
+  });
   it("七步闭环：条目按事实构建，计划/工具/审批/终态齐全", () => {
     const projection = project(HAPPY);
     expect(projection.status).toBe("completed");
-    expect(projection.lastSequence).toBe(19);
+    expect(projection.lastSequence).toBe(18);
     expect(projection.output).toBe("完成");
     expect(projection.userMessage).toBe("任务请求");
     const kinds = projection.entries.map((entry) => entry.kind);
@@ -136,12 +146,13 @@ describe("runProjector", () => {
     }
   );
 
-  it("合成 run.terminal：仅在未收敛时补状态，不覆盖 durable 输出", () => {
+  it("合成 run.terminal 不推进游标或替代持久化终态", () => {
     const projection = project(HAPPY.slice(0, 17));
     applyRunFrame(projection, frame(18, "run.terminal", { status: "completed" }));
-    expect(projection.status).toBe("completed");
+    expect(projection.status).toBe("running");
+    expect(projection.lastSequence).toBe(17);
     expect(projection.output).toBeNull(); // durable run.completed 未到，不虚构输出
-    applyRunFrame(projection, frame(19, "run.completed", HAPPY[17].payload)); // durable 终态补全文
+    applyRunFrame(projection, frame(18, "run.completed", HAPPY[17].payload)); // 持久化终态仍使用真正的下一个序号。
     expect(projection.output).toBe("完成");
   });
 
@@ -241,7 +252,7 @@ describe("runProjector", () => {
     } as RunSnapshot;
     reconcileRunWithSnapshot(projection, stale);
     expect(projection.status).toBe("completed");
-    expect(projection.lastSequence).toBe(19);
+    expect(projection.lastSequence).toBe(18);
   });
 
   it("patch_set 异常路径：failed/rolled_back/unknown 语义呈现", () => {

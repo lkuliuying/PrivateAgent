@@ -169,16 +169,16 @@ def test_restart_journal_distinguishes_unstarted_before_after_unknown(service, b
 def test_schema4_upgrade_is_backed_up(service):
     svc, run, root = service
     store = svc.store
-    for name in ("patch_journal", "patch_sets", "file_snapshots"):
+    for name in ("execution_chunks", "managed_executions", "patch_journal", "patch_sets", "file_snapshots"):
         store.db.execute(f"DROP TABLE {name}")
     store.db.execute("DELETE FROM schema_migrations WHERE version=?", (SCHEMA_VERSION,))
     store.db.execute("PRAGMA user_version=4")
     store.db.commit()
     reopened = Store(store.path)
     try:
-        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert reopened.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
         assert reopened.run("run")["id"] == "run"
-        backups = list(store.path.parent.glob("*.pre-v5-*.sqlite3"))
+        backups = list(store.path.parent.glob("*.pre-v6-*.sqlite3"))
         assert len(backups) == 1
         with sqlite3.connect(backups[0]) as old:
             assert old.execute("PRAGMA user_version").fetchone()[0] == 4

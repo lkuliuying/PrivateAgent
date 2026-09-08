@@ -57,7 +57,7 @@ def test_v3_context_migration_backup_and_failure_rollback(tmp_path, monkeypatch,
     path = store.path
     store.db.execute("DROP TABLE context_items")
     store.db.execute("DROP TABLE context_checkpoints")
-    for table in ("patch_journal", "patch_sets", "file_snapshots"):
+    for table in ("execution_chunks", "managed_executions", "patch_journal", "patch_sets", "file_snapshots"):
         store.db.execute(f"DROP TABLE {table}")
     store.db.execute("DELETE FROM schema_migrations")
     store.db.execute("PRAGMA user_version=3")

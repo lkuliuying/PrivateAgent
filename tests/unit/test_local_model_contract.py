@@ -14,6 +14,7 @@ from private_agent_core.llm.contracts import ModelGatewayError, RetryPolicy
 from private_agent_core.llm.gateway import ModelGateway
 from private_agent_core.runtime import CancellationToken
 from private_agent_local.cloud import CloudError
+from private_agent_local.execution_tools import TOOLS as EXECUTION_TOOLS
 from private_agent_local.runtime import (
     TOOLS,
     WRITE_TOOLS,
@@ -76,7 +77,7 @@ class GatewayCloud:
         return response.model_dump(mode="json")
 
 
-async def run_local_request(tmp_path, provider: StrictProvider, permission_mode: str) -> dict:
+async def run_local_request(tmp_path, provider: StrictProvider, permission_mode: str, version=None) -> dict:
     root = (tmp_path / "project").resolve()
     root.mkdir()
     (root / "needle.txt").write_text("content does not match the filename query", encoding="utf-8")
@@ -99,6 +100,7 @@ async def run_local_request(tmp_path, provider: StrictProvider, permission_mode:
             run = runtime.create({
                 **binding, "session_id": session["id"], "message": "你好",
                 "permission_mode": permission_mode, "model_profile_id": "fixture-profile",
+                "execution_contract_version": version,
             })
             await asyncio.wait_for(runtime.tasks[run["id"]], timeout=2)
             return store.run(run["id"])
@@ -108,15 +110,17 @@ async def run_local_request(tmp_path, provider: StrictProvider, permission_mode:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("permission_mode", ["confirm", "readonly"])
-async def test_first_local_request_satisfies_strict_provider_schema(tmp_path, permission_mode):
+@pytest.mark.parametrize("version", [None, "1.0"])
+async def test_first_local_request_satisfies_strict_provider_schema(tmp_path, permission_mode, version):
     provider = StrictProvider()
-    run = await run_local_request(tmp_path, provider, permission_mode)
+    run = await run_local_request(tmp_path, provider, permission_mode, version)
 
     assert run["status"] == "completed", (run["error_message"], provider.rejected_tools)
     assert provider.rejected_tools == []
     assert len(provider.payloads) == 1
     tools = provider.payloads[0]["tools"]
     expected = set(TOOLS) - WRITE_TOOLS if permission_mode == "readonly" else set(TOOLS)
+    expected -= {"run_project_command"} if version == "1.0" else set(EXECUTION_TOOLS)
     assert {tool["function"]["name"] for tool in tools} == expected
     for tool in tools:
         schema = tool["function"]["parameters"]

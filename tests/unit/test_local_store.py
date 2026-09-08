@@ -64,7 +64,7 @@ def test_v2_upgrade_backs_up_and_preserves_records(tmp_path):
     original.db.execute("DROP TABLE history_imports")
     original.db.execute("DROP TABLE context_items")
     original.db.execute("DROP TABLE context_checkpoints")
-    for table in ("patch_journal", "patch_sets", "file_snapshots"):
+    for table in ("execution_chunks", "managed_executions", "patch_journal", "patch_sets", "file_snapshots"):
         original.db.execute(f"DROP TABLE {table}")
     original.db.execute("DELETE FROM schema_migrations WHERE version=?", (SCHEMA_VERSION,))
     original.db.execute("PRAGMA user_version=2")

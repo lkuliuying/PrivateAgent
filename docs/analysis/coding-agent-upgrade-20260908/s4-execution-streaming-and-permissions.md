@@ -1,6 +1,6 @@
 # S4：持续终端、流式输出与权限开发计划
 
-> 状态：待实施。依赖：S1–S3 完成；Windows 隔离可行性已在 S0 探测。预计：12–18 人日。
+> 状态：2026-09-08 已完成源码接入和本机隔离测试，详见 [S4 开发与验证报告](./s4-validation-report.md)。原生文件/网络隔离、PTY、安装包进程链、真实 Provider 和 UI p95 仍未通过完整验收，M1 未放行。下文保留原开发计划，具体已实现契约以报告为准。
 > 返回：[总体路线](./README.md)。上一阶段：[S3](./s3-repository-and-patches.md)。下一阶段：[S5](./s5-recovery-steering-and-review.md)。
 
 ## 1. 阶段目标

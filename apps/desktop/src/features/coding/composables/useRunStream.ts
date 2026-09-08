@@ -175,13 +175,20 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
           ? cloneRunProjection(projection.value)
           : createRunProjection(runId);
       publish(reconcileRunWithSnapshot(base, snapshot));
-      const cursor = projection.value?.lastSequence ?? 0;
-      if (snapshot.last_event_sequence > cursor) {
+      let cursor = projection.value?.lastSequence ?? 0;
+      while (snapshot.last_event_sequence > cursor) {
         const page = await source.fetchEvents(runId, cursor);
         if (mine !== generation) return;
+        if (!page.items.length) throw new Error("事件历史存在缺口，请重试读取");
         mutate((target) => {
-          for (const frame of page.items) applyRunFrame(target, frame);
+          for (const frame of page.items) {
+            if (frame.type !== "run.terminal" && frame.sequence > target.lastSequence + 1) throw new Error("事件序号缺失，未跳过历史");
+            applyRunFrame(target, frame);
+          }
         });
+        const next = projection.value?.lastSequence ?? cursor;
+        if (next <= cursor) throw new Error("事件历史没有推进，停止重复读取");
+        cursor = next;
       }
       const status = projection.value?.status;
       if (status && isTerminalRunStatus(status)) {
@@ -229,6 +236,11 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     controller = source.openStream(runId, projection.value?.lastSequence ?? 0, {
       onFrame: (frame) => {
         if (mine !== generation) return;
+        if (frame.type !== "run.terminal" && frame.sequence > (projection.value?.lastSequence ?? 0) + 1) {
+          abortStream();
+          scheduleReconnect(runId, mine, "检测到事件缺口，正在续读缺失记录");
+          return;
+        }
         reconnectAttempts = 0;
         mutate((target) => {
           applyRunFrame(target, frame);
