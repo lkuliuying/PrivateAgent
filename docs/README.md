@@ -9,6 +9,7 @@
 ## 快速入口
 
 - 会话接手：[共享项目状态记忆](./project-state.md)、[仓库会话约定](../AGENTS.md)
+- Coding 改造专项：[2026-09-08 总体路线与 S0–S6 详细开发计划](./analysis/coding-agent-upgrade-20260908/README.md)（基于当前统一桌面主链；开发提案，尚未实施）
 - 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
 - 本次故障修复：[1.0.3 模型与管理员日志修复总结](./solutions/2026-08-31-privateagent-1-0-3.md)、[服务器修复操作说明](./connected-runtime-1.0.3-repair.md)
 - 后续代码修复：[指令 HTTP 502 与管理员上海时间](./solutions/2026-08-31-model-502-admin-timezone.md)

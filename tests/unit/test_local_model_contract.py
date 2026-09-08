@@ -8,14 +8,11 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from personal_assistant.agents.contracts import ModelRequest
-from personal_assistant.agents.runtime import CancellationToken
-from personal_assistant.llm import (
-    ModelGateway,
-    ModelGatewayError,
-    OpenAIChatAdapter,
-    RetryPolicy,
-)
+from private_agent_core.contracts import ModelRequest
+from private_agent_core.llm.adapters import OpenAIChatAdapter
+from private_agent_core.llm.contracts import ModelGatewayError, RetryPolicy
+from private_agent_core.llm.gateway import ModelGateway
+from private_agent_core.runtime import CancellationToken
 from private_agent_local.cloud import CloudError
 from private_agent_local.runtime import (
     TOOLS,

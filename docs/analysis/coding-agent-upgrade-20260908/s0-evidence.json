@@ -1,0 +1,223 @@
+{
+  "date": "2026-09-08",
+  "head": "8dcfa7f7dcb787a6216551396c9b9bc577e2ed61",
+  "working_tree": "S0 开工已有文档改动，最终为未提交工作区；未进行发布",
+  "python": "3.12.13",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "node": "v24.14.0",
+  "rust": "cargo 1.96.1 (356927216 2026-06-26)",
+  "independent_runs": [
+    {
+      "directory": "all-0fd9f3c5efb847f88eb0347142863dd0",
+      "result": {
+        "python": "3.12.13",
+        "platform": "Windows-11-10.0.26200-SP0",
+        "exit_code": 0,
+        "counts": {
+          "passed": 118,
+          "xfailed": 4,
+          "skipped": 1
+        },
+        "business_modules_loaded": [],
+        "tests": {
+          "xfailed": [
+            "tests/coding_acceptance/test_baseline.py::test_s0_t01_false_completion",
+            "tests/coding_acceptance/test_baseline.py::test_s0_t02_failed_test",
+            "tests/coding_acceptance/test_host_probes.py::test_host_file_scope_with_allowed_control",
+            "tests/coding_acceptance/test_host_probes.py::test_host_network_none_with_allowed_control"
+          ],
+          "skipped": [
+            "tests/coding_acceptance/test_host_probes.py::test_host_pty_requires_successful_argv_control"
+          ]
+        }
+      }
+    },
+    {
+      "directory": "all-1f69bad2f8504cc188b88f1429a12df9",
+      "result": {
+        "python": "3.12.13",
+        "platform": "Windows-11-10.0.26200-SP0",
+        "exit_code": 0,
+        "counts": {
+          "passed": 118,
+          "xfailed": 4,
+          "skipped": 1
+        },
+        "business_modules_loaded": [],
+        "tests": {
+          "xfailed": [
+            "tests/coding_acceptance/test_baseline.py::test_s0_t01_false_completion",
+            "tests/coding_acceptance/test_baseline.py::test_s0_t02_failed_test",
+            "tests/coding_acceptance/test_host_probes.py::test_host_file_scope_with_allowed_control",
+            "tests/coding_acceptance/test_host_probes.py::test_host_network_none_with_allowed_control"
+          ],
+          "skipped": [
+            "tests/coding_acceptance/test_host_probes.py::test_host_pty_requires_successful_argv_control"
+          ]
+        }
+      }
+    }
+  ],
+  "observations": {
+    "HOST-FILE": {
+      "inside_allowed": true,
+      "outside_written": true,
+      "sandbox_available": false
+    },
+    "HOST-LOW": {
+      "allowed": {
+        "exit_code": 0,
+        "output": "STARTED\r\n",
+        "sandbox_available": false,
+        "modes": [
+          "argv",
+          "pty"
+        ]
+      },
+      "restricted": {
+        "exit_code": 0,
+        "output": "STARTED\r\n",
+        "sandbox_available": false,
+        "modes": [
+          "argv",
+          "pty"
+        ]
+      },
+      "scope": "startup-only"
+    },
+    "HOST-NETWORK": {
+      "allowed": {
+        "exit_code": 0,
+        "output": "CONNECTED\r\n",
+        "sandbox_available": false,
+        "modes": [
+          "argv",
+          "pty"
+        ]
+      },
+      "requested_none": {
+        "exit_code": 0,
+        "output": "CONNECTED\r\n",
+        "sandbox_available": false,
+        "modes": [
+          "argv",
+          "pty"
+        ]
+      },
+      "accepted_connections": 2,
+      "scope": "loopback-only"
+    },
+    "HOST-PTY": {
+      "argv_control": {
+        "exit_code": 0,
+        "output": "PTY-CONTROL\r\n",
+        "sandbox_available": false,
+        "modes": [
+          "argv",
+          "pty"
+        ]
+      },
+      "pty_status": "unavailable",
+      "code": "pty_environment_unavailable"
+    },
+    "HOST-STDIN": {
+      "exit_code": 0,
+      "output": "ECHO:中文输入\r\n\r\n",
+      "sandbox_available": false,
+      "modes": [
+        "argv",
+        "pty"
+      ]
+    },
+    "S0-T01": {
+      "status": "completed",
+      "goal_outcome": null,
+      "tool_call_count": 0,
+      "disk_changed": false
+    },
+    "S0-T02": {
+      "status": "completed",
+      "execution_status": "completed",
+      "returncode": 1
+    },
+    "S0-T03": {
+      "truncated": true,
+      "visible_characters": 32000,
+      "tail_visible": false
+    },
+    "S0-T04": {
+      "model_requests": 24,
+      "status": "limit_exceeded",
+      "error_code": "context_limit",
+      "event_count": 147,
+      "run_row_writes": 148,
+      "execution_row_reads": 1752,
+      "blob_count": 0
+    },
+    "S0-T05": {
+      "configured_timeout": [
+        120
+      ],
+      "execution_status": "failed",
+      "real_120_second_command": false
+    },
+    "S0-T06": {
+      "cancelled_status": "cancelled",
+      "late_approval_status": 422,
+      "recovered_status": "failed",
+      "operation_status": "unknown",
+      "disk_changed": false
+    },
+    "S0-T07": {
+      "preserved": true,
+      "protection_window": "preview-to-write"
+    },
+    "S0-T08": {
+      "health": {
+        "status": "ok",
+        "mode": "desktop-local",
+        "protocol": 1
+      },
+      "capabilities": {
+        "chat_execution_mode": "agent_runtime",
+        "legacy_tool_planner_enabled": false,
+        "agent_read_only_tools_enabled": true,
+        "rag_chat_runtime_enabled": false,
+        "patch_workflow_enabled": true,
+        "command_workflow_enabled": true,
+        "http_workflow_enabled": false,
+        "sql_readonly_workflow_enabled": false,
+        "agent_runs_api_enabled": true,
+        "coding_agent_ui_enabled": true,
+        "project_bound_runs_enabled": true,
+        "coding_workspace_auto_approve": true,
+        "coding_full_access_supported": true,
+        "coding_full_access_audit": true,
+        "coding_full_access_revoke": true,
+        "coding_context_budget_enabled": true,
+        "coding_execution_detail_enabled": true,
+        "coding_worktree_enabled": false,
+        "coding_diagnostic_commands_enabled": true,
+        "coding_local_branches_enabled": true,
+        "coding_powershell_commands_enabled": true,
+        "product_timezone": "Asia/Shanghai"
+      },
+      "note": "旧客户端失败关闭由 localExecutor.spec.ts 验证；当前没有新的必需能力协商"
+    },
+    "S0-T05-REAL": {
+      "elapsed_seconds": 120.203,
+      "early_output_visible": false,
+      "status": "completed",
+      "execution_status": "failed",
+      "child_alive": false,
+      "execution_output": null
+    }
+  },
+  "sha256": {
+    "apps/exec-host/target/release/exec-host.exe": "8c196f1c4c5b9a7489890673f43509148dae185d9f0aac9f94545720cfadf223",
+    "tests/coding_acceptance/tasks.json": "4deaf67da78122e06461ca272c032e07b7adfd27a6a54e3af5ec50b56e717004",
+    "src/private_agent_core/coding_contracts.schema.json": "837f484bcfab818b33fb43e9d119bd88752de97474bbc0b1c760d41af690b56b"
+  },
+  "real_models": "not_run",
+  "installation": "not_run"
+}

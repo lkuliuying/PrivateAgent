@@ -1,5 +1,7 @@
 # 统一客户端实现与验收说明
 
+> **2026-09-08 源码基线**：当前工作区 `F:\Program\Agent`、HEAD `8dcfa7f` 的调用链、能力状态及隔离测试见 [S0 执行基线](analysis/coding-agent-upgrade-20260908/s0-execution-baseline.md)和 [S0 验证报告](analysis/coding-agent-upgrade-20260908/s0-validation-report.md)。下文安装与发布记录保留其原有时间和环境，不代替本轮验收。
+
 本说明记录 `E:\Program\Agent` 统一客户端的实现与本机隔离验证。在该实现验收阶段没有发布、覆盖现有安装、迁移真实账号记录或修改服务器。后续按用户要求提交、推送与预览包发行的范围及服务器操作步骤，见[统一客户端预览版与服务器更新](./unified-preview-server-update.md)。`docs/project-state.md` 保留原有历史快照，本说明不将历史部署状态改写为上线成功。
 
 当前账号与模型边界已按登录故障修复收敛，见[固定账号入口与本机模型修复](./solutions/2026-08-31-server-account-login.md)。下文第 7 节及后续验收记录属于初版 1.0.0，不代表修复版本已发布或真实账号已验收。

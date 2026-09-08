@@ -2,6 +2,8 @@
 
 > 原则：测试必须能证明行为、回滚和安全边界；使用专用测试库，绝不清理或迁移应用主库。
 
+> **本机 Coding（2026-09-08）**：使用 `.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite all`，每次自动新建隔离目录，禁止加载业务 conftest/配置。真实 120 秒探针单独使用 `--suite duration`。详见 [复跑说明](../tests/coding_acceptance/README.md)及 [S0 实际成绩](analysis/coding-agent-upgrade-20260908/s0-validation-report.md)；下文历史业务数据库套件不作为本机 Coding 的默认入口。
+
 > **当前状态（2026-08-06）**：应用主库为 Alembic `0021 (head)`（2026-08-06 新增
 > `compatibility_telemetry` 表）；versioned RAG indexing/retrieval 已生产启用；RAG 证据充分性
 > 策略（`rag-evidence-v1`）已生产开启；Agent Runtime **批 A**（Agent API、只读工具、

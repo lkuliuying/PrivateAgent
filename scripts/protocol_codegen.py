@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -328,12 +329,22 @@ def render_bundle(schema: dict) -> str:
 
 
 def generate() -> dict[str, str]:
+    # 既有测试按文件路径加载本脚本，不能依赖 scripts 恰好位于 sys.path。
+    spec = importlib.util.spec_from_file_location(
+        "coding_contract_codegen", PROJECT_ROOT / "scripts" / "coding_contract_codegen.py"
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("无法加载 Coding 契约生成器")
+    coding_generator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(coding_generator)
+
     schema = load_schema()
     return {
         str(PY_INIT_OUT): DO_NOT_EDIT_PY + "\n",
         str(PY_OUT): render_python(schema),
         str(TS_OUT): render_typescript(schema),
         str(BUNDLE_OUT): render_bundle(schema),
+        **coding_generator.generate(),
     }
 
 
