@@ -69,6 +69,9 @@ const emit = defineEmits<{
 
 const STATUS_ICONS: Record<AgentRunStatus, Component> = {
   created: PhClockClockwise,
+  queued: PhClockClockwise,
+  paused: PhProhibit,
+  interrupted: PhWarning,
   running: PhCircleNotch,
   waiting_approval: PhWarning,
   completed: PhCheckCircle,

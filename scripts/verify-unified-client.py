@@ -28,8 +28,11 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         shutil.copyfile(bundle / name, staged / name)
     host_digest = hashlib.sha256((staged / "exec-host.exe").read_bytes()).hexdigest()
     assert (staged / "exec-host.sha256").read_text().strip() == host_digest
-    (project / "test_fixture.py").write_text('from pathlib import Path\ndef test_file():\n    assert Path("result.txt").read_text(encoding="utf-8") == "本机验证"\n', encoding="utf-8")
+    (project / "tests").mkdir()
+    (project / "tests" / "test_fixture.py").write_text('from pathlib import Path\ndef test_file():\n    assert Path("result.txt").read_text(encoding="utf-8") == "本机验证"\n', encoding="utf-8")
     (project / "fixture.py").write_text('print("full-access-script-ok")\n', encoding="utf-8")
+    # 测试配置随独立项目提供，pytest 不应向沙箱外搜索仓库配置和 conftest。
+    (project / "pytest.ini").write_text("[pytest]\ntestpaths = tests\naddopts = --noconftest --confcutdir=tests --import-mode=importlib -p no:cacheprovider\n", encoding="utf-8")
     replies: list[dict] = []
 
     fixture_token = secrets.token_urlsafe(48)
@@ -61,7 +64,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
             elif self.path == "/auth/me":
                 self.reply({"id": 7, "username": "fixture"})
             elif self.path == "/agent-model-profiles?enabled_only=true":
-                self.reply([{"id": profile_id, "model_name": "fixture-model", "context_tokens": 4096,
+                self.reply([{"id": profile_id, "model_name": "fixture-model", "context_tokens": 65536,
                              "provider": protocol, "provider_id": "fixture-provider", "is_local": model_mode != "service",
                              "enabled": True, "is_default": True}])
             elif self.path == "/model-providers":
@@ -218,7 +221,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         approvals = await request(f"/agent-runs/{confirm_run['id']}/approvals")
         assert len(approvals) == 1 and approvals[0]["status"] == "consumed"
         budget = await request(f"/sessions/{session['id']}/context-budget?model_profile_id={profile_id}")
-        assert budget["source"] == "provider_usage" and budget["used_tokens"] == 1000 and budget["max_context_tokens"] == 4096
+        assert budget["source"] == "provider_usage" and budget["used_tokens"] == 1000 and budget["max_context_tokens"] == 65536
         assert budget["cache_hit_scope"] == "session"
         if model_mode != "ollama":
             assert budget["cache_hit_percent"] == 20.0
@@ -235,7 +238,10 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         run = await request("/agent-runs", "POST", {**binding, "permission_mode": "full_access"})
         await terminal(run["id"])
         execution = (await request(f"/agent-runs/{run['id']}/executions"))[0]
-        assert execution["status"] == "failed" and "SHA-256" in execution["error_message"] and execution["output"] is None
+        assert execution["status"] == "failed" and "SHA-256" in execution["error_message"]
+        assert execution["error_code"] == "environment_unavailable"
+        assert execution["execution_result"]["outcome"] == "failed" and execution["execution_result"]["exit_code"] is None
+        assert not execution["output"].get("stdout") and execution["output"].get("returncode") is None
         assert (await request(f"/full-access-grants/{grant['grant_id']}", "DELETE"))["revoked"]
         exported = await request("/local-history/export")
         assert len(exported["records"]["runs"]) == 4 and exported["records"]["run_steps"]

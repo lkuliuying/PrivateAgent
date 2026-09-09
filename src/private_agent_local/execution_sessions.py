@@ -39,13 +39,15 @@ class ExecutionSessions:
             raise ValueError("工作区位置已变化")
         if files.file_identity(root) != run.get("root_identity", files.file_identity(root)):
             raise ValueError("工作区身份已变化")
-        if self.owner.project_context_set and self.owner.active_project_id != run["project_id"]:
+        if self.owner.project_context_set and self.owner.active_project_id != run["project_id"] and run.get("recovery_contract_version") != "1.0":
             raise ValueError("当前项目已切换")
         self.owner.require_grant(run)
         if self.owner.store.get("session", run["session_id"]).get("archived_at"):
             raise ValueError("会话已关闭，不能继续执行")
 
     async def start(self, run, execution, root, cwd, argv, args, *, prepared=None):
+        generation = run.get("generation", 0)
+        self.owner.controls.guard(run, generation)
         self._check(run, root)
         async with self.lock:
             if len(self.slots) >= 4 or sum(s["record"]["workspace_id"] == run["workspace_id"] for s in self.slots.values()) >= 2:
@@ -68,7 +70,8 @@ class ExecutionSessions:
                       "error": None, "authorization_sha256": execution.get("authorization_sha256", execution["arguments_sha256"]),
                       "expires_at": (datetime.now(timezone.utc) + timedelta(milliseconds=args.timeout_ms)).isoformat()}
             slot = {"record": record, "client": client, "nonce": secrets.token_urlsafe(32), "changed": asyncio.Event(),
-                    "task": None, "lock": asyncio.Lock(), "run": run, "root": root, "execution": execution, "cancel_requested": False}
+                    "task": None, "starting_task": asyncio.current_task(), "lock": asyncio.Lock(), "run": run,
+                    "root": root, "execution": execution, "cancel_requested": False, "sandbox": None}
             self.slots[record["execution_id"]] = slot
             try:
                 self.store.save(record)
@@ -80,22 +83,33 @@ class ExecutionSessions:
                     health = await client.start()
                 if health.session_protocol != 1 or not health.process_tree_termination:
                     raise ValueError("执行宿主缺少持续会话或进程树回收能力，请升级完整客户端")
-                # 当前原生隔离探测尚未闭环，不能把可信执行伪装成受限执行。
-                if args.execution_mode != "trusted_project" or args.network_policy != "approved":
-                    raise ValueError("当前宿主未验证文件或网络隔离；受限执行不可用，需明确批准可信项目执行及网络范围")
+                restricted = args.execution_mode == "restricted"
+                if restricted:
+                    if args.network_policy != "none" or args.tty or health.sandbox_profile_protocol != 1 or not health.sandbox_available:
+                        raise ValueError("受限执行需要独立沙箱协议、禁网及 argv 模式，请核对参数或升级客户端")
+                    from .windows_sandbox import SandboxLease
+                    sandbox = await SandboxLease.prepare(root, argv, env, directory=self.owner.store.path.parent / "sandbox-leases")
+                    slot["sandbox"] = sandbox
+                    sandbox.bind(client.pid)
+                    env = sandbox.environment
+                elif args.network_policy != "approved":
+                    raise ValueError("可信项目执行必须明确批准网络范围；禁网请使用受限模式")
                 if args.tty and "pty" not in health.modes:
                     raise ValueError("当前宿主不支持 PTY")
                 self._check(run, root)
+                self.owner.controls.guard(run, generation)
                 await client.start_execution(ExecStartParams(execution_id=record["execution_id"], argv=command, cwd=str(cwd), env_diff=env,
                     timeout_ms=args.timeout_ms, output_limit_bytes=1024 * 1024, sandbox_policy_hash=record["authorization_sha256"],
-                    network_policy="approved", stdin_mode="pipe" if args.stdin else "closed", session_nonce=slot["nonce"],
+                    network_policy=args.network_policy, appcontainer=restricted,
+                    appcontainer_profile=slot["sandbox"].name if slot["sandbox"] else None,
+                    stdin_mode="pipe" if args.stdin else "closed", session_nonce=slot["nonce"],
                     mode="pty" if args.tty else "argv"))
                 record.update(status="running", state_version=2)
                 self.store.save(record)
                 slot["task"] = asyncio.create_task(self._monitor(slot))
             except BaseException:
                 try:
-                    await client.close()
+                    await self._close_slot(slot)
                     record.update(status="failed", error="执行启动失败，未降级执行", completed_at=now(), stopped=True, state_version=2)
                     self.store.save(record)
                 finally:
@@ -103,22 +117,34 @@ class ExecutionSessions:
                 raise
         return await self.read(record["execution_id"], run["session_id"], wait_ms=args.yield_time_ms, limit=args.output_budget)
 
+    async def _close_slot(self, slot):
+        try:
+            await slot["client"].close()
+        finally:
+            if slot.get("sandbox"):
+                await asyncio.to_thread(slot["sandbox"].close)
+
     async def _monitor(self, slot):
         record, client, run = slot["record"], slot["client"], slot["run"]
         chunks, expected, cancelled, last_flush, last_auth = [], 0, False, time.monotonic(), time.monotonic()
+        first_received_at = None
 
         def flush():
-            nonlocal chunks, last_flush
+            nonlocal chunks, last_flush, first_received_at
             if chunks:
                 self.store.append(record, chunks)
                 self.owner.store.emit(run, "execution.output", {"execution_id": record["execution_id"],
-                    "last_output_sequence": record["last_output_sequence"], "dropped_bytes": record["dropped_bytes"]}, lightweight=True)
+                    "last_output_sequence": record["last_output_sequence"], "dropped_bytes": record["dropped_bytes"],
+                    "first_host_sequence": chunks[0][2], "received_at_unix_ms": first_received_at}, lightweight=True)
                 chunks = []
+                first_received_at = None
                 slot["changed"].set()
             last_flush = time.monotonic()
 
         try:
             while True:
+                if slot["cancel_requested"]:
+                    raise asyncio.CancelledError
                 self._check(run, slot["root"])
                 if time.monotonic() - last_auth >= 15:
                     async with asyncio.timeout(5):
@@ -132,6 +158,8 @@ class ExecutionSessions:
                         raise ExecutorUnavailable("宿主输出序号缺失或执行归属不匹配")
                     expected += 1
                     if event.stream and event.data:
+                        if not chunks:
+                            first_received_at = event._received_at_unix_ms
                         chunks.append((event.stream, event.data, event.sequence))
                     if event.notification.value == "execution/cancelled":
                         cancelled = True
@@ -152,7 +180,7 @@ class ExecutionSessions:
             record.update(status="unknown", error="执行通信、授权或持久化失败；未重放操作")
         finally:
             try:
-                await client.close()
+                await self._close_slot(slot)
                 record["stopped"] = True
             except Exception:
                 record.update(status="unknown", stopped=False, error="无法确认进程树已停止")
@@ -163,6 +191,9 @@ class ExecutionSessions:
                 flush()
                 self.store.save(record)
                 execution = slot["execution"]
+                if run.get("recovery_contract_version"):
+                    from .run_review import changes
+                    execution["candidate_changes"] = changes(execution.pop("before_manifest", {}), after)
                 page = self.store.read(record)
                 output = {"execution_id": record["execution_id"], "args": record["argv"],
                           "stdout": "".join(chunk["data"] for chunk in page["chunks"] if chunk["stream"] == "stdout"),
@@ -204,6 +235,8 @@ class ExecutionSessions:
             finally:
                 slot["changed"].set()
                 self.slots.pop(record["execution_id"], None)
+                if run["id"] not in self.owner.tasks:
+                    self.owner.workspaces.release(run)
 
     async def read(self, execution_id, session_id, *, after=0, wait_ms=0, limit=32_000):
         record = self.store.get(execution_id, session_id)
@@ -245,14 +278,21 @@ class ExecutionSessions:
     async def cancel(self, execution_id, session_id):
         record = self.store.get(execution_id, session_id)
         slot = self.slots.get(execution_id)
+        if slot and not slot["task"]:
+            slot["cancel_requested"] = True
+            starting = slot.get("starting_task")
+            if starting and starting is not asyncio.current_task():
+                starting.cancel()
+                await asyncio.shield(asyncio.gather(starting, return_exceptions=True))
+            return self.store.get(execution_id, session_id)
         if slot and slot["task"]:
             slot["cancel_requested"] = True
-            if not slot["task"].cancelling():
+            if not slot["task"].cancelling() and slot["record"]["status"] in ACTIVE:
                 slot["task"].cancel()
             await asyncio.shield(asyncio.gather(slot["task"], return_exceptions=True))
             if execution_id in self.slots:
                 # 任务在第一次调度前被取消时，其 finally 尚未建立。
-                await slot["client"].close()
+                await self._close_slot(slot)
                 slot["record"].update(status="cancelled", stopped=True, stdin_open=False, completed_at=now(),
                                       state_version=slot["record"]["state_version"] + 1)
                 self.store.save(slot["record"])
@@ -261,9 +301,15 @@ class ExecutionSessions:
         return record
 
     async def stop_matching(self, predicate):
-        for slot in list(self.slots.values()):
-            if predicate(slot["record"]):
-                await self.cancel(slot["record"]["execution_id"], slot["record"]["session_id"])
+        selected = [slot for slot in self.slots.values() if predicate(slot["record"])]
+        # 先同时发布停止意图，再等待清理，避免后面的命令在等待期间误记授权失联。
+        for slot in selected:
+            slot["cancel_requested"] = True
+            task = slot["task"] or slot.get("starting_task")
+            if task and task is not asyncio.current_task() and not task.cancelling() and slot["record"]["status"] in ACTIVE:
+                task.cancel()
+        for slot in selected:
+            await self.cancel(slot["record"]["execution_id"], slot["record"]["session_id"])
 
     async def close(self):
         self.closed = True
@@ -291,6 +337,8 @@ class ExecutionSessions:
             if client:
                 await client.close()
         return {"contract": snapshot.model_dump(mode="json"), "session_protocol": "1.0" if snapshot.execution else None,
-                "file_read_isolation": False, "file_write_isolation": False, "network_isolation": False,
+                "file_read_isolation": bool(health and health.file_read_isolation and health.sandbox_profile_protocol == 1),
+                "file_write_isolation": bool(health and health.file_write_isolation and health.sandbox_profile_protocol == 1),
+                "network_isolation": bool(health and health.network_isolation and health.sandbox_profile_protocol == 1),
                 "pty": "probe_on_request" if health and "pty" in health.modes else "unavailable",
                 "trusted_project_requires_approval": True, "workspace_limit": 2, "account_limit": 4}

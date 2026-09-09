@@ -329,7 +329,7 @@ fn config_dir() -> PathBuf {
         #[cfg(windows)]
         {
             let base = std::env::var("APPDATA").unwrap_or_default();
-            PathBuf::from(base).join("personal-assistant")
+            PathBuf::from(base).join(if cfg!(feature = "qa") { "personal-assistant-candidate" } else { "personal-assistant" })
         }
         // macOS：~/Library/Application Support/personal-assistant（第八阶段 M5 修正，
         // 原先误用 XDG ~/.local/share，不符合 macOS 惯例且跨应用备份会遗漏）。

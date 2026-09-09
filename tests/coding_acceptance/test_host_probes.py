@@ -17,23 +17,31 @@ from private_agent_local import files
 from private_agent_local.executor import host_path, run_command
 
 
-async def raw_execution(root, code, *, network="approved", mode="argv", stdin=None, integrity="inherit"):
-    command, environment = files.prepare_process([sys.executable, "-c", code])
+async def raw_execution(root, code, *, network="approved", mode="argv", stdin=None, integrity="inherit", argv=None,
+                        close_stdin=True, cancel_on=None):
+    command, environment = files.prepare_process(argv or [sys.executable, "-c", code])
     client = ExecHostClient([str(host_path())], cwd=str(root), env=environment)
     execution_id = str(uuid.uuid4())
     output = ""
+    sandbox = None
     try:
         health = await client.start()
+        if network == "none":
+            from private_agent_local.windows_sandbox import SandboxLease
+            sandbox = await SandboxLease.prepare(root, command, environment)
+            sandbox.bind(client.pid)
+            environment = sandbox.environment
         await client.start_execution(ExecStartParams(
             execution_id=execution_id, argv=command, cwd=str(root), env_diff=environment,
             network_policy=network, integrity_level=integrity, mode=mode,
+            appcontainer=network == "none", appcontainer_profile=sandbox.name if sandbox else None,
             stdin_mode="pipe" if stdin is not None else "closed", timeout_ms=5000,
             sandbox_policy_hash=hashlib.sha256(b"s0-isolated-probe").hexdigest(),
         ))
         if stdin is not None:
             with pytest.raises(ExecutorUnavailable):
                 await client.write_stdin(ExecStdinParams(execution_id=execution_id, session_nonce="incorrect-nonce", data="bad"))
-            await client.write_stdin(ExecStdinParams(execution_id=execution_id, session_nonce=client.session_nonce, data=stdin, close=True))
+            await client.write_stdin(ExecStdinParams(execution_id=execution_id, session_nonce=client.session_nonce, data=stdin, close=close_stdin))
         async with asyncio.timeout(10):
             while True:
                 event = await client.next_event(timeout=1)
@@ -42,13 +50,20 @@ async def raw_execution(root, code, *, network="approved", mode="argv", stdin=No
                     continue
                 if event.data:
                     output += event.data
+                    if cancel_on and cancel_on in output:
+                        await client.cancel(execution_id)
+                        cancel_on = None
                 if event.notification.value == "execution/failed":
                     raise ExecutorUnavailable("宿主执行失败", code=event.error.code if event.error else None)
                 if event.notification.value == "execution/exited":
                     return {"exit_code": event.exit_code, "output": output,
                             "sandbox_available": health.sandbox_available, "modes": list(health.modes)}
     finally:
-        await client.close()
+        try:
+            await client.close()
+        finally:
+            if sandbox:
+                await asyncio.to_thread(sandbox.close)
 
 
 async def test_host_stdin_nonce_and_unicode(tmp_path):
@@ -57,11 +72,10 @@ async def test_host_stdin_nonce_and_unicode(tmp_path):
     assert result["exit_code"] == 0 and "ECHO:中文输入" in result["output"]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="G10：当前可信项目命令可以间接写入项目外文件")
 async def test_host_file_scope_with_allowed_control(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
-    code = "from pathlib import Path; Path('inside.txt').write_text('inside'); Path('../outside.txt').write_text('outside'); print('READY')"
+    code = "from pathlib import Path; Path('inside.txt').write_text('inside'); print('READY');\ntry: Path('../outside.txt').write_text('outside')\nexcept PermissionError: print('FILE_DENIED')"
     result = await run_command(root, [sys.executable, "-c", code])
     # 正对照不成立时直接报环境错误，不能将未启动视为隔离通过。
     if result["returncode"] != 0 or not (root / "inside.txt").exists():
@@ -69,9 +83,10 @@ async def test_host_file_scope_with_allowed_control(tmp_path):
     outside = (tmp_path / "outside.txt").exists()
     record("HOST-FILE", inside_allowed=True, outside_written=outside, sandbox_available=result["sandbox_available"])
     assert outside is False
+    assert "FILE_DENIED" in result["stdout"]
+    assert result["sandbox_available"] is True
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="G10：非 AppContainer 执行时 network_policy=none 不强制阻断网络")
 async def test_host_network_none_with_allowed_control(tmp_path):
     accepted = []
 
@@ -83,13 +98,19 @@ async def test_host_network_none_with_allowed_control(tmp_path):
     server = await asyncio.start_server(handle, "127.0.0.1", 0)
     try:
         port = server.sockets[0].getsockname()[1]
-        code = f"import socket; s=socket.create_connection(('127.0.0.1',{port}),timeout=2); s.sendall(b'x'); s.close(); print('CONNECTED')"
+        code = f"import socket; print('PROBE_STARTED');\ntry:\n s=socket.create_connection(('127.0.0.1',{port}),timeout=2); s.sendall(b'x'); s.close(); print('CONNECTED')\nexcept (PermissionError, TimeoutError) as error: print('NETWORK_BLOCKED', type(error).__name__)"
         allowed = await raw_execution(tmp_path, code)
         if allowed["exit_code"] != 0 or "CONNECTED" not in allowed["output"]:
             raise RuntimeError("网络允许对照失败，不能据此宣称网络隔离")
         denied = await raw_execution(tmp_path, code, network="none")
-        record("HOST-NETWORK", allowed=allowed, requested_none=denied, accepted_connections=len(accepted), scope="loopback-only")
+        # 本机 WFP 对 AC 回环请求表现为丢弃超时；再次获准对照证明监听器未失效。
+        allowed_after = await raw_execution(tmp_path, code)
+        record("HOST-NETWORK", allowed=allowed, requested_none=denied, allowed_after=allowed_after,
+               accepted_connections=len(accepted), scope="loopback-only")
         assert "CONNECTED" not in denied["output"]
+        assert denied["exit_code"] == 0 and "PROBE_STARTED" in denied["output"] and "NETWORK_BLOCKED" in denied["output"]
+        assert allowed_after["exit_code"] == 0 and "CONNECTED" in allowed_after["output"]
+        assert len(accepted) == 2
     finally:
         server.close()
         await server.wait_closed()
@@ -110,12 +131,37 @@ async def test_host_pty_requires_successful_argv_control(tmp_path):
     assert result["exit_code"] == 0 and "PTY-CONTROL" in result["output"]
 
 
+async def test_host_pty_console_input_unicode_and_final_output(tmp_path):
+    code = "import os; print('TTY='+str(os.isatty(0) and os.isatty(1)),flush=True); text=input(); print('ECHO:'+text); print('PTY-FINAL')"
+    result = await raw_execution(tmp_path, code, mode="pty", stdin="中文输入\r", close_stdin=False)
+    record("HOST-PTY-INPUT", **result)
+    assert result["exit_code"] == 0
+    assert "TTY=True" in result["output"] and "ECHO:中文输入" in result["output"]
+    assert "PTY-FINAL" in result["output"]
+
+
+async def test_host_pty_cancel_stops_child_and_rejects_restricted_mode(tmp_path):
+    from private_agent_local.entry import parent_alive
+
+    code = "import os,time; from pathlib import Path; Path('pty.pid').write_text(str(os.getpid())); print('PTY-STARTED',flush=True); time.sleep(60)"
+    result = await raw_execution(tmp_path, code, mode="pty", cancel_on="PTY-STARTED")
+    assert result["exit_code"] != 0 and "PTY-STARTED" in result["output"]
+    assert not parent_alive(int((tmp_path / "pty.pid").read_text()))
+    with pytest.raises(ExecutorUnavailable) as rejected:
+        await raw_execution(tmp_path, "open('unexpected','w').write('bad')", mode="pty", network="none")
+    assert rejected.value.code == "unsupported_mode"
+    assert not (tmp_path / "unexpected").exists()
+    record("HOST-PTY-CANCEL", stopped=True, restricted_rejected=True)
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Low MIC 仅适用于 Windows")
 async def test_host_low_integrity_has_a_startup_control(tmp_path):
-    allowed = await raw_execution(tmp_path, "print('STARTED')")
+    # 启动门禁使用系统自带程序，避免把第三方 Python 安装目录的 MIC 限制混入宿主验证。
+    argv = [os.environ["COMSPEC"], "/d", "/s", "/c", "echo STARTED"]
+    allowed = await raw_execution(tmp_path, "", argv=argv)
     assert allowed["exit_code"] == 0 and "STARTED" in allowed["output"]
     try:
-        restricted = await raw_execution(tmp_path, "print('STARTED')", integrity="low")
+        restricted = await raw_execution(tmp_path, "", integrity="low", argv=argv)
     except ExecutorUnavailable as error:
         record("HOST-LOW", allowed=allowed, status="startup_blocked", code=error.code)
         if error.code != "sandbox_policy_unavailable":

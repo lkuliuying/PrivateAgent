@@ -159,4 +159,5 @@ async def test_s0_t08_current_capability_surface(api):
     record("S0-T08", health=health, capabilities=caps,
            note="旧客户端失败关闭由 localExecutor.spec.ts 验证；当前没有新的必需能力协商")
     assert health["protocol"] == 1 and health["mode"] == "desktop-local"
-    assert caps["coding_worktree_enabled"] is False
+    assert caps["coding_worktree_enabled"] is True
+    assert caps["coding_recovery_contract_version"] == "1.0"

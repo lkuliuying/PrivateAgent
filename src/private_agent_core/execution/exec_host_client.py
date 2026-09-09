@@ -17,6 +17,7 @@ import contextlib
 import json
 import os
 import secrets
+import time
 from typing import Any
 
 from .contracts import (
@@ -66,6 +67,10 @@ class ExecHostClient:
         self._failure: ExecutorUnavailable | None = None
 
     # ---- 生命周期 -------------------------------------------------------
+
+    @property
+    def pid(self) -> int | None:
+        return self._process.pid if self._process and self._process.returncode is None else None
 
     async def start(self) -> ExecHealth:
         """拉起 Exec Host 并完成 initialize 握手（版本不符即失败关闭）。"""
@@ -269,6 +274,7 @@ class ExecHostClient:
         self._pump_ready.set()
         while True:
             raw = await self._process.stdout.readline()
+            received_at_unix_ms = time.time_ns() / 1_000_000
             if not raw:
                 self._failure = ExecutorUnavailable("exec host 已退出", code="executor_disconnected")
                 for future in list(self._pending.values()):
@@ -322,6 +328,7 @@ class ExecHostClient:
                 )
             except Exception as error:
                 raise ExecutorUnavailable("exec host 事件无效") from error
+            event._received_at_unix_ms = received_at_unix_ms
             if self._events.full():
                 raise ExecutorUnavailable("exec host 事件缓冲溢出，不能丢弃执行证据")
             await self._events.put(event)

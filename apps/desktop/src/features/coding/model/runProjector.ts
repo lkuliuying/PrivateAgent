@@ -270,6 +270,7 @@ function normalizePlanItems(raw: unknown): RunPlanItemRecord[] {
 
 /** 终态 durable 事件的 payload（runtime _terminal_payload） */
 const TERMINAL_EVENT_STATUS: Record<string, AgentRunStatus> = {
+  "run.interrupted": "interrupted",
   "run.completed": "completed",
   "run.failed": "failed",
   "run.cancelled": "cancelled",
@@ -286,6 +287,15 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
   const payload = frame.payload ?? {};
 
   switch (frame.type) {
+    case "run.paused":
+      projection.status = "paused";
+      break;
+    case "run.queued":
+      projection.status = "queued";
+      break;
+    case "run.resumed":
+      projection.status = "running";
+      break;
     case "model.output.delta": {
       const attemptId = str(payload, "attempt_id");
       if (!attemptId) break;
@@ -584,6 +594,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       break;
     }
     case "run.completed":
+    case "run.interrupted":
     case "run.failed":
     case "run.cancelled":
     case "run.timed_out":

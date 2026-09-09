@@ -11,7 +11,7 @@ from private_agent_local.migration import (
     preview_history,
     rollback_history,
 )
-from private_agent_local.store import Store
+from private_agent_local.store import SCHEMA_VERSION, Store
 
 AUTHORITY = "https://account.example.test"
 
@@ -99,18 +99,21 @@ def test_mid_import_failure_rolls_back_every_normalized_record(tmp_path, monkeyp
             apply_history(store, str(source), preview["sha256"], {"1": str(root)}, **args)
         assert not store.list("project") and not store.list("message")
         assert store.db.execute("SELECT count(*) FROM history_imports").fetchone()[0] == 0
-        assert list((tmp_path / "current").glob("*.pre-v2-*.sqlite3"))
+        assert list((tmp_path / "current").glob(f"*.pre-v{SCHEMA_VERSION}-*.sqlite3"))
     finally:
         store.db.close()
 
 
-def test_readonly_sqlite_export_checks_account_and_leaves_source_unchanged(tmp_path):
+@pytest.mark.parametrize("version", [4, 5, 6, 7])
+def test_readonly_sqlite_export_checks_account_and_leaves_source_unchanged(tmp_path, version):
     account = hashlib.sha256(f"{AUTHORITY}\0{7}".encode()).hexdigest()
     path = tmp_path / account / "projects.sqlite3"
     store = Store(path)
     store.create("project", {"name": "联网旧记录", "root_path": "C:/project"})
     store.save_run({"id": "fixture-run", "status": "completed", "steps": [
         {"id": "fixture-step", "ordinal": 1, "kind": "tool", "status": "failed", "error": "保留原错误"}]})
+    # 这些版本共享基础记录表；附加表不进入历史交换包。
+    store.db.execute(f"PRAGMA user_version={version}")
     store.db.close()
     before = path.read_bytes()
     archive = archive_sqlite(path, authority=AUTHORITY, owner_id=7)
@@ -119,6 +122,18 @@ def test_readonly_sqlite_export_checks_account_and_leaves_source_unchanged(tmp_p
     assert path.read_bytes() == before
     with pytest.raises(ValueError, match="账号目录"):
         archive_sqlite(path, authority=AUTHORITY, owner_id=8)
+
+
+def test_export_rejects_future_schema_without_modifying_it(tmp_path):
+    account = hashlib.sha256(f"{AUTHORITY}\0{7}".encode()).hexdigest()
+    path = tmp_path / account / "projects.sqlite3"
+    store = Store(path)
+    store.db.execute(f"PRAGMA user_version={SCHEMA_VERSION + 1}")
+    store.db.close()
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="不支持的版本"):
+        archive_sqlite(path, authority=AUTHORITY, owner_id=7)
+    assert path.read_bytes() == before
 
 
 def test_unknown_authorization_fields_and_broken_relations_are_rejected(tmp_path):

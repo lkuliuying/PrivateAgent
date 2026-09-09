@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 import time
 import uuid
@@ -15,6 +16,7 @@ from private_agent_core.contracts import ModelMessage, ModelRequest
 
 from .cloud import CloudError
 from .instructions import InstructionError, instruction_message, public_sources
+from .recovery import model_capability_version
 
 
 class LocalContext:
@@ -23,6 +25,10 @@ class LocalContext:
         self.history = owner.store.context
         self.limits = ContextLimits.model_validate(run.get("context_limits", {}))
         self.started = time.monotonic()
+        prior = run.get("loop_budget", {}) if run.get("resumed_from_run_id") else {}
+        self.prior_active_seconds = prior.get("active_seconds", 0)
+        self.paused_seconds = 0.0
+        self.paused_at = None
         self.message_count = 0
         self.calibration = 1.0
         self.version: str | None = None
@@ -30,15 +36,16 @@ class LocalContext:
         self.sources: dict[str, list[dict]] = {}
         self.pending_scopes: list[str] = []
         self.delivered_rules: set[tuple[str, str]] = set()
-        self.rounds = 0
-        self.cost = 0.0
-        self.cost_known = True
-        self.failure_key = None
-        self.failure_count = 0
+        self.rounds = prior.get("model_requests", 0)
+        self.cost = prior.get("known_cost_usd", prior.get("cost_usd")) or 0.0
+        self.cost_known = prior.get("cost_usd", 0) is not None
+        self.failure_key = prior.get("failure_key")
+        self.failure_count = prior.get("failure_count", 0)
         self.auto_compaction_failed = False
 
     def remaining_seconds(self) -> float:
-        return self.limits.max_active_seconds - (time.monotonic() - self.started - self.run.get("approval_wait_seconds", 0))
+        elapsed = (self.paused_at or time.monotonic()) - self.started - self.run.get("approval_wait_seconds", 0) - self.paused_seconds
+        return self.limits.max_active_seconds - self.prior_active_seconds - max(0, elapsed)
 
     def budget_snapshot(self) -> dict:
         return {"model_requests": self.rounds, "max_model_requests": self.limits.max_model_requests,
@@ -46,7 +53,9 @@ class LocalContext:
                 "active_seconds": round(self.limits.max_active_seconds - self.remaining_seconds(), 3),
                 "approval_wait_seconds": self.run.get("approval_wait_seconds", 0),
                 "max_active_seconds": self.limits.max_active_seconds, "cost_usd": self.cost if self.cost_known else None,
-                "max_cost_usd": self.limits.max_cost_usd}
+                "max_cost_usd": self.limits.max_cost_usd, "known_cost_usd": self.cost,
+                "verification_retries": self.run.get("verification_retries", 0),
+                "failure_count": self.failure_count, "failure_key": self.failure_key}
 
     def check_limits(self):
         reason = None
@@ -105,6 +114,14 @@ class LocalContext:
             raise CloudError(422, "当前模型不可用，请刷新模型配置", code="model_not_configured")
         self.run["model_profile_id"] = profile["id"]
         version = configuration_version(profile)
+        if self.run.get("recovery_contract_version"):
+            capability_version = model_capability_version(profile)
+            if self.run.get("model_capability_version") not in {None, capability_version}:
+                raise CloudError(422, "运行期间模型能力已变化，请核对配置", code="model_not_configured")
+            self.run["model_capability_version"] = capability_version
+        if self.run.get("resumed_from_run_id") and self.run.get("model_config_version") not in {None, version}:
+            raise CloudError(422, "恢复期间模型配置已变化", code="model_not_configured")
+        self.run["model_config_version"] = version
         if version != self.version:
             self.calibration = 1.0
             self.run.pop("context_usage", None)
@@ -112,6 +129,10 @@ class LocalContext:
         target = self.scope
         self.instructions(".")
         system = [message for message in request.messages if message.role == "system"]
+        if self.run.get("recovery_contract_version"):
+            system.append(ModelMessage(role="system", content="当前目标版本与执行限制（后续约束已生效；旧失败事实保留）：" + json.dumps({
+                "goal_version": self.run.get("goal_version", 1), "requirements": self.run["completion_requirements"],
+                "restrictions": self.run["completion_policy"]}, ensure_ascii=False)))
         delivered = []
         for scope in self.pending_scopes or [target]:
             rules, _ = self.instructions(scope)

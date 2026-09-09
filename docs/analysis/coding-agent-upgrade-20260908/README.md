@@ -1,10 +1,10 @@
 # PrivateAgent Coding Agent 改造计划书：总体路线
 
 > 编制日期：2026-09-08（Asia/Shanghai）。
-> 状态：S0–S4 已接入本机主链；S4 原生隔离、真实安装链和 UI 延迟指标尚未通过完整验收，M1 未放行；S5–S6 待实施。见 [S0 验证报告](./s0-validation-report.md)、[S1 验收报告](./s1-validation-report.md)、[S2 验收报告](./s2-validation-report.md)、[S3 验收报告](./s3-validation-report.md)和 [S4 开发与验证报告](./s4-validation-report.md)。本文件不构成发布、生产操作或付费模型调用授权。
+> 状态（2026-09-09 收尾）：S0–S5 全部适用阻断门禁已通过，当前 Windows QA 范围满足 M1/M2，可进入 S6。真实安装已完成追加约束、暂停/继续、强退重启、关联恢复和变更审查；普通 ConPTY、真实符号链接拒绝、600 秒持续命令及最终前台 120 样本 p95 386.70 ms 均有通过证据。最新 636 文件源码、构建产物与安装副本一致；临时模型及所属服务已清理，原测试文件保留。详见 [S5 剩余门禁验收记录](./s5-remaining-gates-validation-report.md)，历史见 [阻断补充验收](./s5-blockers-validation-report.md)及 [S0](./s0-validation-report.md)、[S1](./s1-validation-report.md)、[S2](./s2-validation-report.md)、[S3](./s3-validation-report.md)、[S4](./s4-validation-report.md)、[S5](./s5-validation-report.md)。本轮仅本地提交 S5 后停止，S6 未开发，M3 未验收；本文件不构成发布、生产操作或付费模型调用授权。
 > 原编制源码基线：`F:\Program\Agent`，`dev/1.0.0`，HEAD `8dcfa7f`；编制前工作区干净。S2 开工时已核对到 `ef54b9c`（S1），工作区干净；各阶段报告分别记录实际证据。
 > 适用产品：当前统一桌面客户端及其本机 Coding 执行链。历史普通版和 Remote 安装包单独核对。
-> S0 类型和生成校验见 [契约决议](./s0-contract-decisions.md)；S1 接入 RunOutcome、ExecutionResult，S2 接入 ContextItem 与派生压缩检查点，S3 接入 WorkspaceIdentity、读取快照与补丁日志，S4 接入持续执行、分块输出、模型增量与显式可信项目审批。S5–S6 能力仍为拟议设计。
+> S0 类型和生成校验见 [契约决议](./s0-contract-decisions.md)；S1 接入 RunOutcome、ExecutionResult，S2 接入 ContextItem 与派生压缩检查点，S3 接入 WorkspaceIdentity、读取快照与补丁日志，S4 接入持续执行、分块输出、模型增量与显式可信项目审批，S5 接入检查点、运行控制、关联恢复、工作区协调和显式 worktree。S6 尚未实施。
 
 ## 1. 阅读顺序与文件组成
 
@@ -50,7 +50,7 @@
 | 能力 | 当前证据 | 使用边界 |
 | --- | --- | --- |
 | 共享 Agent 循环与模型契约 | [共享运行时](../../../src/private_agent_core/runtime.py)、[契约](../../../src/private_agent_core/contracts.py) | 支持工具循环和可选验证器，不代表桌面已连接全部能力 |
-| 本机项目、会话、运行与记录 | [本机 API](../../../src/private_agent_local/app.py)、[Store](../../../src/private_agent_local/store.py) | SQLite schema 为 3，源码事实，不是生产数据库检查 |
+| 本机项目、会话、运行与记录 | [本机 API](../../../src/private_agent_local/app.py)、[Store](../../../src/private_agent_local/store.py) | SQLite schema 为 7，源码与隔离迁移测试事实，不是生产数据库检查 |
 | 四种权限、审批、撤权 | [策略](../../../src/private_agent_local/policy.py)、[本机运行时](../../../src/private_agent_local/runtime.py) | 工具策略不等于 OS 沙箱 |
 | 文件预览与写后校验 | [文件工具](../../../src/private_agent_local/files.py) | 专用写入是整文件替换，保护主要覆盖预览至落盘期间 |
 | 私有管道与进程管理 | [IPC](../../../src/private_agent_local/ipc.py)、[Tauri 宿主](../../../apps/desktop/src-tauri/src/local_executor.rs) | 当前默认不是开放本机 TCP API |
@@ -69,11 +69,11 @@
 | G05 | S2 已接入项目规则发现、目录作用域和显式信任 | 规则不增加授权，复杂自然语言服从仍需模型验收 | S2 隔离验证 |
 | G06 | S3 已接入范围读取、读取版本绑定、多文件补丁及保护回滚 | 跨文件无事务保证，未知日志不重放，链接/二进制拒绝 | S3 隔离验证 |
 | G07 | S3 已接入有界搜索游标、rg 与字面降级，登记命令限制仍在 | 大仓库须缩小范围，持续终端和脚本隔离仍属 S4 | S3、S4 |
-| G08 | S4 接入有界执行会话、stdin 和滚动输出，默认总期限 10 分钟 | 真实十分钟命令、持续服务及回收已验证；PTY 不可用 | S4 隔离测试验证 |
-| G09 | S4 接通本机 Provider 与服务器代理公开文本流，终态仍由 S1 验证 | 真实供应商、安装链及 UI p95 尚未验收 | S4 隔离测试验证 |
-| G10 | 新执行链逐次批准可信项目和网络范围，受限请求失败关闭；原生文件/网络隔离仍未闭环 | 当前用户执行可能访问项目外文件和网络，不能称为沙箱通过 | S4 保留限制 |
-| G11 | 重启将活动任务标失败，未接入安全续跑 | 无法利用已完成工作接续 | S5 |
-| G12 | 账号运行时全局单任务，缺少运行中追加指令与任务级隔离 | 多项目使用和过程纠正受限 | S5 |
+| G08 | 有界执行会话、stdin、滚动输出及普通 ConPTY 已验证，默认总期限 10 分钟 | 真实 600 秒命令、持续服务、Unicode、末尾排空及回收通过；受限 PTY 明确拒绝 | S4 与 S5 剩余门禁验证 |
+| G09 | 本机 Provider 与服务器代理公开文本流已接通，终态仍由 S1 验证 | 实际安装回环流程及输出 p95 386.70 ms 通过；真实供应商质量、完整升级链留待 S6 | S4 与 S5 剩余门禁验证 |
+| G10 | 独立 AppContainer 身份、工作区修改/工具只读权限及禁网已接入，原生正反门禁通过 | 受限模式仅 argv；可信项目仍逐次批准当前用户文件/网络范围；网络实测范围为回环 TCP | S5 阻断补充验收 |
+| G11 | 新协议中断记录可核对后关联继续，旧记录保持保守收束 | 未知副作用阻止继续；不支持凭 PID 附着，不自动重放旧工具 | 当前安装候选已验证关联恢复；完整升级链待验收 |
+| G12 | 新协议同真实工作区串行、最多 2 个工作区并发，支持追加约束/暂停及显式 worktree | 第一版只收紧约束；租约不按超时解除；内部锁不能阻止外部编辑 | S5 已接入 |
 | G13 | 服务端既有门禁未完整覆盖当前桌面入口 | 模块测试通过仍可能交付断链 | S0、S6 |
 
 G01/G02 的隔离探针使用内存假模型与假命令，证明状态路径，不证明真实模型必然做出虚假声明。非零退出码也不总是错误，例如搜索的“未匹配”需要按工具语义解释。
@@ -254,4 +254,4 @@ flowchart LR
 6. 提交、推送、部署、生产迁移和真实付费验收按会话授权单独判断，不由里程碑自动触发。
 7. 开始下一阶段前填写前置验收结论；已失败或未执行的测试不得由历史成绩替代。
 
-S0–S4 的范围和复跑入口见各阶段报告。当前本机存储为 schema 6；2026-09-08 提交前复核确认已具备 S5 源码开发所需的上下文、操作日志、执行会话与有序事件基础，详见 [S4 报告的前置复核](./s4-validation-report.md#s5-开发前置复核2026-09-08)。S5 尚未开工，须等待用户新的开发指令。原生隔离、PTY、真实安装链、Provider 和 UI 延迟的剩余验收项继续保留，M1 未放行，不能由开发就绪推导为可发布。
+S0–S5 的范围和复跑入口见各阶段报告。当前本机存储为 schema 7；2026-09-08 的 [S4 前置复核](./s4-validation-report.md#s5-开发前置复核2026-09-08)是当时源码开发条件的记录。真实 SQLite、临时 Git 仓库、exec-host 故障注入与浏览器控制流程见 [S5 报告](./s5-validation-report.md)，原生隔离、候选安装及真实强退/恢复/审查见 [阻断补充验收](./s5-blockers-validation-report.md)。后续 ConPTY 修复、完整桌面协作组合、真实符号链接及前台延迟通过证据见 [剩余门禁验收](./s5-remaining-gates-validation-report.md)。当前已满足 M1/M2 与 S6 开工条件；真实 Provider 质量、干净安装/升级/回退和 M3 仍待 S6，不以回环模型或本轮具体流程推导为可发布。

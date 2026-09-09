@@ -45,6 +45,19 @@ function project(frames: RunStreamFrame[]): ReturnType<typeof createRunProjectio
 }
 
 describe("runProjector", () => {
+  it("暂停、排队、继续和中断从有序事件收敛，旧帧不覆盖终态", () => {
+    const value = createRunProjection("recovery");
+    applyRunFrame(value, frame(1, "run.queued"));
+    expect(value.status).toBe("queued");
+    applyRunFrame(value, frame(2, "run.paused"));
+    expect(value.status).toBe("paused");
+    applyRunFrame(value, frame(3, "run.resumed"));
+    expect(value.status).toBe("running");
+    applyRunFrame(value, frame(4, "run.interrupted", { error_code: "desktop_restarted", error: "需核对现场" }));
+    applyRunFrame(value, frame(2, "run.paused"));
+    expect(value.status).toBe("interrupted");
+    expect(value.entries.filter(item => item.kind === "terminal")).toHaveLength(1);
+  });
   it("公开模型增量不提前生成最终答案，重复帧不重复文本", () => {
     const value = createRunProjection("streaming");
     const delta = frame(1, "model.output.delta", { attempt_id: "a", delta: "处理中" });

@@ -31,11 +31,39 @@ class LocalRunAdapter:
         self.last_usage_complete = False
         self.context = LocalContext(owner, run, root)
         owner.contexts[run["id"]] = self.context
+        self.response_generation = run.get("generation", 0)
 
     async def complete(self, request: ModelRequest, *, cancellation: CancellationToken) -> ModelResponse:
         return await self.complete_stream(request, cancellation=cancellation)
 
     async def complete_stream(self, request: ModelRequest, *, cancellation: CancellationToken, on_delta=None) -> ModelResponse:
+        while True:
+            await self.owner.controls.boundary(self.run, model=True)
+            generation = self.run.get("generation", 0)
+            task = asyncio.create_task(self._complete_attempt(request, cancellation=cancellation, on_delta=on_delta, generation=generation))
+            self.owner.controls.model_tasks[self.run["id"]] = task
+            try:
+                result = await task
+            except asyncio.CancelledError:
+                if asyncio.current_task().cancelling() or self.run.get("cancel_requested_at"):
+                    raise
+                if generation == self.run.get("generation", 0):
+                    raise
+                continue
+            finally:
+                self.owner.controls.model_tasks.pop(self.run["id"], None)
+            if generation != self.run.get("generation", 0):
+                for key in ("input_tokens", "output_tokens", "cached_tokens"):
+                    self.run[key] += getattr(result.usage, key) or 0
+                self.owner.event(self.run, "model.response_discarded", generation=generation)
+                continue
+            self.response_generation = generation
+            self.run["response_generation"] = generation
+            self.run["pending_response"] = result.model_dump(mode="json")
+            self.owner.event(self.run, "model.response_confirmed", generation=generation)
+            return result
+
+    async def _complete_attempt(self, request: ModelRequest, *, cancellation: CancellationToken, on_delta=None, generation=0) -> ModelResponse:
         cancellation.raise_if_cancelled()
         try:
             request = await self.context.prepare(request)
@@ -51,6 +79,7 @@ class LocalRunAdapter:
             raise self.model_error from None
         try:
             self.context.rounds += 1
+            self.owner.event(self.run, "model.requested", generation=generation)
             attempt_id = str(uuid.uuid4())
             partial = []
             pending = []
@@ -77,6 +106,8 @@ class LocalRunAdapter:
             async def receive(delta):
                 nonlocal size
                 cancellation.raise_if_cancelled()
+                if generation != self.run.get("generation", 0):
+                    return
                 size += len(delta.encode("utf-8"))
                 if size > 1024 * 1024:
                     raise ValueError("模型公开输出超出上限")
@@ -148,9 +179,24 @@ class LocalRunAdapter:
 
     async def execute(self, call: ToolCall, *, cancellation: CancellationToken) -> ToolResult:
         cancellation.raise_if_cancelled()
-        output = await self.owner.tool(self.run, self.root, call.model_dump(mode="json"))
+        await self.owner.controls.boundary(self.run)
+        if self.response_generation != self.run.get("generation", 0):
+            self.owner.event(self.run, "tool.superseded", tool_call_id=call.id, name=call.name)
+            return ToolResult(tool_call_id=call.id, name=call.name, success=False, error="用户约束已更新，旧工具未执行，请重新规划", error_code="steering_superseded")
+        task = asyncio.create_task(self.owner.tool(self.run, self.root, call.model_dump(mode="json")))
+        self.owner.controls.tool_tasks[self.run["id"]] = {"task": task, "name": call.name}
+        try:
+            output = await task
+        except asyncio.CancelledError:
+            if asyncio.current_task().cancelling() or self.run.get("cancel_requested_at"):
+                raise
+            if not self.run.get("pause_requested"):
+                raise
+            output = {"error": "暂停已停止当前命令，已发生的副作用保留", "error_code": "command_cancelled"}
+        finally:
+            self.owner.controls.tool_tasks.pop(self.run["id"], None)
         # 只有相同参数、相同失败和相同结果反复出现才累计；成功读取不视为停滞。
-        if "error" in output:
+        if output.get("error") is not None:
             fingerprint = hashlib.sha256(json.dumps([call.name, call.arguments, output, self.run.get("workspace_version", 0)], sort_keys=True).encode()).hexdigest()
             self.context.failure_count = self.context.failure_count + 1 if fingerprint == self.context.failure_key else 1
             self.context.failure_key = fingerprint
@@ -158,7 +204,10 @@ class LocalRunAdapter:
                 output = {**output, "loop_warning": "相同失败已出现三次，请改变方案；再次无进展将停止"}
         else:
             self.context.failure_key, self.context.failure_count = None, 0
-        if "error" in output:
+        self.run["pending_response"] = None
+        self.owner.event(self.run, "tool.result_recorded", tool_call_id=call.id, name=call.name)
+        await self.owner.controls.boundary(self.run)
+        if output.get("error") is not None:
             return ToolResult(tool_call_id=call.id, name=call.name, success=False, error=output["error"],
                               error_code=output.get("error_code", "local_tool_rejected"),
                               output={key: value for key, value in output.items() if key not in {"error", "error_code"}})
@@ -174,6 +223,8 @@ class LocalRunAdapter:
             self.run["status"] = "running"
         if kind == "output.validation_started":
             self.run["verification_state"] = "started"
+        if kind == "output.validation_failed" and event.payload.get("will_retry"):
+            self.run["verification_retries"] = self.run.get("verification_retries", 0) + 1
         if kind == "run.started":
             self.owner.event(self.run, kind, **event.payload, completion_contract_version="1.0",
                              completion_requirements=self.run.get("completion_requirements", []))

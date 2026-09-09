@@ -52,7 +52,7 @@ def verify_host(path: Path) -> str:
 
 
 async def run_command(root: Path, args: list[str], *, timeout: float = 600, executable: Path | None = None,
-                      execution_id: str | None = None) -> dict:
+                      execution_id: str | None = None, trusted: bool = False, sandbox_directory: Path | None = None) -> dict:
     path = executable or host_path()
     host_sha256 = verify_host(path)
     command, env = files.prepare_process(args)
@@ -63,6 +63,7 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 600, exec
     truncated = False
     submitted = False
     cancelled = False
+    sandbox = None
 
     def collected():
         return {**{key: value.decode("utf-8", errors="replace") for key, value in buffers.items()},
@@ -77,11 +78,20 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 600, exec
             health = await client.start()
         if "argv" not in health.modes:
             raise ExecutorUnavailable("执行宿主未提供 argv 能力")
-        binding = json.dumps({"cwd": str(root), "argv": command, "network_policy": "approved"}, sort_keys=True).encode()
+        if not trusted:
+            if health.sandbox_profile_protocol != 1 or not health.sandbox_available:
+                raise ExecutorUnavailable("宿主没有独立沙箱协议，请升级完整客户端", code="sandbox_policy_unavailable")
+            from .windows_sandbox import SandboxLease
+            sandbox = await SandboxLease.prepare(root, args, env, directory=sandbox_directory)
+            sandbox.bind(client.pid)
+            env = sandbox.environment
+        network = "approved" if trusted else "none"
+        binding = json.dumps({"cwd": str(root), "argv": command, "network_policy": network}, sort_keys=True).encode()
         submitted = True
         await client.start_execution(ExecStartParams(execution_id=execution_id, argv=command, cwd=str(root), env_diff=env,
             timeout_ms=max(1, min(600000, int(timeout * 1000))), output_limit_bytes=files.MAX_OUTPUT,
-            sandbox_policy_hash=hashlib.sha256(binding).hexdigest(), network_policy="approved"))
+            sandbox_policy_hash=hashlib.sha256(binding).hexdigest(), network_policy=network,
+            appcontainer=not trusted, appcontainer_profile=sandbox.name if sandbox else None))
         async with asyncio.timeout(timeout + 5):
             while True:
                 event = await client.next_event(timeout=1)
@@ -119,4 +129,8 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 600, exec
         raise
     finally:
         # 每次命令独立宿主；关闭宿主会回收其 Job 内残留后代，不留下后台脚本。
-        await client.close()
+        try:
+            await client.close()
+        finally:
+            if sandbox:
+                await asyncio.to_thread(sandbox.close)

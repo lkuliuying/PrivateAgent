@@ -209,6 +209,11 @@ def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
     environment_names = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "HOME",
                          "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "NUMBER_OF_PROCESSORS"}
     env = {key: value for key, value in os.environ.items() if key.upper() in environment_names}
+    if os.name == "nt":
+        from .windows_process import profile_environment
+        for key, value in profile_environment().items():
+            if not any(existing.upper() == key for existing in env):
+                env[key] = value
     if getattr(sys, "frozen", False):
         bundle = str(getattr(sys, "_MEIPASS", ""))
         env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep)

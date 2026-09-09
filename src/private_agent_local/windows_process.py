@@ -6,6 +6,36 @@ from contextlib import contextmanager
 from ctypes import wintypes
 
 
+def profile_environment() -> dict[str, str]:
+    """通过系统 API 获取启动 AppContainer 必需的目录，不读取用户配置或凭据。"""
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    shell = ctypes.WinDLL("shell32", use_last_error=True)
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    security.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    userenv.GetUserProfileDirectoryW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+    shell.SHGetFolderPathW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR]
+    token = wintypes.HANDLE()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 8, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    result = {}
+    try:
+        size = wintypes.DWORD(32768)
+        buffer = ctypes.create_unicode_buffer(size.value)
+        if not userenv.GetUserProfileDirectoryW(token, buffer, ctypes.byref(size)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        result["USERPROFILE"] = buffer.value
+        for key, folder in (("APPDATA", 26), ("LOCALAPPDATA", 28)):
+            if shell.SHGetFolderPathW(None, folder, None, 0, buffer) != 0:
+                raise ValueError("无法定位系统应用数据目录，不能启动受限进程")
+            result[key] = buffer.value
+    finally:
+        kernel.CloseHandle(token)
+    return result
+
+
 class BasicLimits(ctypes.Structure):
     _fields_ = [("process_time", ctypes.c_longlong), ("job_time", ctypes.c_longlong),
                 ("flags", wintypes.DWORD), ("min_working_set", ctypes.c_size_t),

@@ -56,3 +56,30 @@ it("游标缺口与磁盘丢弃明确展示", async () => {
   expect(wrapper.text()).toContain("不代表完整日志");
   wrapper.unmount();
 });
+
+it("持续输出跟随尾部，但保留用户向上翻阅的位置", async () => {
+  const wrapper = mount(ExecutionPanel, { props: { sessionId: 1 } });
+  await flushPromises();
+  const element = wrapper.find("pre").element;
+  const panel = wrapper.element;
+  // 无布局环境中以已提交的 DOM 文本模拟新增一行后的高度。
+  Object.defineProperties(element, { scrollHeight: { get: () => element.textContent?.includes("下一行") ? 700 : 600 }, clientHeight: { value: 180 } });
+  Object.defineProperties(panel, { scrollHeight: { get: () => element.textContent?.includes("下一行") ? 400 : 350 }, clientHeight: { value: 240 } });
+  element.scrollTop = 420;
+  panel.scrollTop = 110;
+  vi.mocked(readExecution).mockImplementation(async () => {
+    return { ...item, chunks: [{ sequence: 2, stream: "stdout", data: "下一行" }], next_cursor: 2, gap: false, has_more: false };
+  });
+  await vi.advanceTimersByTimeAsync(300); await flushPromises();
+  expect(element.scrollTop).toBe(700);
+  expect(panel.scrollTop).toBe(400);
+  element.scrollTop = 40;
+  panel.scrollTop = 20;
+  await vi.advanceTimersByTimeAsync(300); await flushPromises();
+  expect(element.scrollTop).toBe(40);
+  expect(panel.scrollTop).toBe(20);
+  element.scrollTop = 520;
+  await vi.advanceTimersByTimeAsync(300); await flushPromises();
+  expect(panel.scrollTop).toBe(20);
+  wrapper.unmount();
+});

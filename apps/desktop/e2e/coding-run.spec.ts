@@ -332,6 +332,93 @@ async function sendMessage(page: Page, text: string) {
   await page.getByTestId("coding-composer-send").click();
 }
 
+test("S5：追加约束回执、暂停继续和关联恢复在工作台收敛", async ({ page }) => {
+  await page.addInitScript(() => window.sessionStorage.setItem("pa_access_token", "s5-browser-fixture"));
+  const mock = mockRunApi(page);
+  await mock.route;
+  const nextId = "run-e2e-resumed";
+  let currentId = RUN_ID;
+  let status = "running";
+  let version = 1;
+  const controls: Record<string, unknown>[] = [];
+  const frames: Frame[] = [runStarted()];
+  await page.route("**://127.0.0.1:8000/**", async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === "/auth/me") {
+      await route.fulfill({ json: { id: 2, email: "user@example.test", username: "fixture", display_name: "fixture", role: "user", status: "active" } });
+    } else if (path === "/capabilities") {
+      await route.fulfill({ json: { coding_agent_ui_enabled: true, agent_runs_api_enabled: true, project_bound_runs_enabled: true,
+        chat_execution_mode: "legacy", coding_recovery_contract_version: "1.0" } });
+    } else if (path.endsWith("/recovery")) {
+      await route.fulfill({ json: { run_id: currentId, supported: true, status, state_version: version, checkpoint_id: `cp-${version}`,
+        logical_task_id: RUN_ID, resumed_from_run_id: currentId === nextId ? RUN_ID : null,
+        can_resume: ["paused", "cancelled"].includes(status), blockers: [], controls, executions: [], budget: { model_requests: 3 }, expired_approvals: [], limitations: [] } });
+    } else if (path.endsWith("/review")) {
+      await route.fulfill({ json: { task_changes: [], preexisting_changes: [{ rel_path: "user.txt", status: "M" },
+        ...Array.from({ length: 30 }, (_, index) => ({ rel_path: `history-${index}.txt`, status: "M" }))],
+        external_or_unattributed: [], command_candidates: [], snapshot_complete: true, limitations: [] } });
+    } else if (/\/agent-runs\/[^/]+\/(pause|resume|cancel|steer)$/.test(path)) {
+      const kind = path.split("/").pop()!;
+      const data = request.postDataJSON();
+      expect(data.expected_state_version).toBe(version);
+      version++;
+      if (kind === "pause") status = "paused";
+      if (kind === "cancel") status = "cancelled";
+      if (kind === "resume") {
+        if (status === "cancelled") currentId = nextId;
+        status = "running";
+      }
+      const record = { request_id: data.request_id, kind, status: kind === "steer" ? "received" : "applied", result_run_id: currentId, message: data.message };
+      controls.push(record);
+      if (kind !== "steer") frames.push({ sequence: frames.length + 1, type: `run.${kind === "resume" ? "resumed" : status}`, payload: {} });
+      await route.fulfill({ status: 202, json: record });
+    } else if (path.endsWith("/events/stream")) {
+      await route.fulfill(sse(frames.filter(frame => frame.sequence > Number(url.searchParams.get("after_sequence") ?? 0))));
+    } else if (path === `/agent-runs/${RUN_ID}` || path === `/agent-runs/${nextId}`) {
+      await route.fulfill({ json: { ...snapshot({ status, last_event_sequence: frames.length }), id: currentId } });
+    } else {
+      await route.fallback();
+    }
+  });
+  await openThread(page);
+  await sendMessage(page, "修改后保留现场");
+  const panel = page.getByRole("region", { name: "任务恢复与协作" });
+  await expect(panel).toBeVisible();
+  expect(mock.createdRequests[0].recovery_contract_version).toBe("1.0");
+  await panel.getByLabel("补充本任务约束").fill("停止写入，先解释结果");
+  await panel.getByRole("button", { name: "追加约束", exact: true }).click();
+  await expect(panel.getByLabel("控制进度")).toContainText("等待应用");
+  await panel.getByRole("button", { name: "暂停", exact: true }).click();
+  await expect(panel.getByRole("button", { name: "核对并继续" })).toBeEnabled();
+  await panel.getByRole("button", { name: "核对并继续" }).click();
+  await expect(panel.getByRole("button", { name: "暂停", exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "取消任务" }).click();
+  await expect(panel.getByRole("button", { name: "核对并继续" })).toBeEnabled();
+  await panel.getByRole("button", { name: "核对并继续" }).click();
+  await expect(panel).toContainText("已从中断记录继续");
+  await expect(panel).toContainText("累计模型请求 3 次");
+  await panel.getByText("核对变更归属", { exact: true }).click();
+  await expect(panel).toContainText("已有改动 · user.txt");
+  // 长审查列表在窄窗口中也不能溢出面板，遮挡恢复按钮或输入区域。
+  for (const viewport of [{ width: 1365, height: 900 }, { width: 760, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    const pause = panel.getByRole("button", { name: "暂停", exact: true });
+    await pause.scrollIntoViewIfNeeded();
+    await expect.poll(() => pause.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
+    })).toBe(true);
+    const bounds = await panel.evaluate(element => {
+      const box = element.getBoundingClientRect();
+      const composer = document.querySelector(".thread-composer")!.getBoundingClientRect();
+      return { bottom: box.bottom, composerTop: composer.top };
+    });
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.composerTop);
+  }
+});
+
 test.describe("v0.8.0 W2 任务页与真实计划", () => {
   test("闭环：发送→计划→工具→校验→完成（矩阵 7/8/9/14）", async ({ page }) => {
     const mock = mockRunApi(page);

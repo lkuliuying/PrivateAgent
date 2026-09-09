@@ -1,7 +1,8 @@
 use keyring::{Entry, Error as KeyringError};
 use zeroize::Zeroize;
 
-const SERVICE: &str = "com.personal-assistant.desktop";
+// 候选包使用独立凭据命名空间，不能读取或覆盖正式客户端保存的秘密。
+const SERVICE: &str = if cfg!(feature = "qa") { "com.personal-assistant.desktop.candidate" } else { "com.personal-assistant.desktop" };
 pub const DATABASE_PASSWORD_ACCOUNT: &str = "database.password";
 pub const OPENAI_API_KEY_ACCOUNT: &str = "provider.openai.api-key";
 pub const CLAUDE_API_KEY_ACCOUNT: &str = "provider.claude.api-key";

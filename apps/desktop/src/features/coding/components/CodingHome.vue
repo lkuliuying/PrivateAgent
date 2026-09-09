@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import WorktreePanel from "./WorktreePanel.vue";
 /**
  * CodingHome · v0.8.0 W1
  *
@@ -355,6 +356,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
       </template>
 
       <template v-else>
+        <WorktreePanel v-if="store.selectedProjectId.value && store.capabilities.value?.coding_worktree_enabled === true" :store="store" />
         <div class="draft-stage">
           <div class="draft-empty" data-testid="coding-home-empty-chat">
             <PhChatsCircle :size="48" weight="thin" aria-hidden="true" />

@@ -37,7 +37,7 @@ async def test_real_host_returns_complete_output_and_kills_background_descendant
     assert result["returncode"] == 0
     assert result["stdout"].strip() == "done"
     assert len(result["execution_host_sha256"]) == 64
-    assert result["sandbox_available"] is False
+    assert result["sandbox_available"] is True
     child = int((tmp_path / "child.pid").read_text())
     for _ in range(100):
         if not parent_alive(child):
@@ -56,7 +56,11 @@ async def test_real_host_timeout_and_cancel_stop_process(tmp_path):
     assert not parent_alive(int((tmp_path / "parent.pid").read_text()))
     (tmp_path / "parent.pid").unlink()
     task = asyncio.create_task(run_command(tmp_path, [sys.executable, "-c", code]))
-    await asyncio.sleep(0.5)
+    for _ in range(1000):
+        if (tmp_path / "parent.pid").exists():
+            break
+        await asyncio.sleep(0.02)
+    assert (tmp_path / "parent.pid").exists(), "先确认沙箱内进程启动，再验证取消能回收它"
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -94,7 +98,7 @@ async def test_protocol_failure_classification_and_close(tmp_path, monkeypatch, 
     monkeypatch.setattr("private_agent_local.executor.verify_host", lambda path: "a" * 64)
     monkeypatch.setattr("private_agent_local.files.prepare_process", lambda args: (args, {}))
     with pytest.raises(ExecutionFailure) as failure:
-        await run_command(tmp_path, ["pytest"], execution_id="execution-123")
+        await run_command(tmp_path, ["pytest"], execution_id="execution-123", trusted=True)
     assert failure.value.outcome == expected and client.closed
     assert "private-protocol-error" not in str(failure.value)
     assert "returncode" not in failure.value.output
@@ -121,7 +125,7 @@ async def test_real_host_runs_registered_powershell_inside_project(tmp_path):
         "full_access",
     )
 
-    result = await run_command(tmp_path, list(plan.argv))
+    result = await run_command(tmp_path, list(plan.argv), trusted=True)
 
     assert result["returncode"] == 0
     assert "visible.txt" in result["stdout"]

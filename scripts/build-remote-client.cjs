@@ -35,6 +35,8 @@ function parseOptions(args) {
       options.mode = arg === "--release" ? "release" : "preview";
     } else if (arg === "--unified") {
       options.unified = true;
+    } else if (arg === "--qa") {
+      options.qa = true;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
     } else if (values.has(arg)) {
@@ -51,6 +53,9 @@ function parseOptions(args) {
   }
   options.apiBaseUrl = httpsUrl(api || FIXED_API_ORIGIN, "API origin", true).origin;
   if (options.apiBaseUrl !== FIXED_API_ORIGIN) throw new Error("Account server is fixed in the desktop backend; API overrides are not supported.");
+  if (options.qa && (!options.unified || options.mode !== "preview" || options.updateUrl || options.downloadBaseUrl)) {
+    throw new Error("QA requires --unified --preview-installer and cannot configure update channels.");
+  }
   if (options.mode === "portable") {
     if (options.version || options.updateUrl || options.downloadBaseUrl) {
       throw new Error("Version and update URLs require --release or --preview-installer.");
@@ -105,6 +110,11 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
     config.bundle.windows = { nsis: { installerHooks: null } };
     config.plugins = { updater: { endpoints: options.mode === "release" ? [options.updateUrl] : [] } };
   }
+  if (options.qa) {
+    // 独立安装名称、标识和数据目录，候选包不会覆盖用户的正式客户端。
+    Object.assign(config, { productName: "PrivateAgentCandidate", identifier: "com.personal-assistant.desktop.candidate", mainBinaryName: "privateagent-candidate" });
+    config.app = { windows: [{ title: "PrivateAgent S5 验收候选版", width: 1200, height: 800, minWidth: 900, minHeight: 600 }] };
+  }
   return config;
 }
 
@@ -132,6 +142,7 @@ function main(args = process.argv.slice(2)) {
     console.log('Usage: scripts\\build-remote-client.cmd "[fixed backend server]"');
     console.log("  --release --version 1.0.1       signed remote NSIS installer + publish/latest.json");
     console.log("  --preview-installer --version 1.0.1  unsigned installer for local QA; no update manifest");
+    console.log("  --unified --qa                independently identified local acceptance installer");
     console.log("  --update-url HTTPS_URL         default: API_ORIGIN/updates/remote/latest.json");
     console.log("  --download-base-url HTTPS_URL  default: update manifest directory; assets live under VERSION/");
     console.log("  --dry-run                      validate options and print non-secret build configuration only");
@@ -167,6 +178,13 @@ function main(args = process.argv.slice(2)) {
   const commit = run("git", ["rev-parse", "HEAD"], true);
   const dirty = run("git", ["status", "--porcelain"], true).length > 0;
   assertReleaseReady(options, dirty, Boolean(env.TAURI_SIGNING_PRIVATE_KEY));
+  const sourcePaths = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
+    "../../src", "src", "src-tauri", "../../apps/exec-host", "../../pyproject.toml", "package.json", "package-lock.json", "../../scripts/build-remote-client.cjs"], true)
+    .split("\0").filter(Boolean).sort();
+  const sourceManifest = () => sourcePaths.map((file) => ({ path: path.relative(root, path.resolve(desktop, file)).replaceAll("\\", "/"),
+    sha256: crypto.createHash("sha256").update(fs.readFileSync(path.resolve(desktop, file))).digest("hex") }));
+  const sources = sourceManifest();
+  const sourceSha256 = crypto.createHash("sha256").update(JSON.stringify(sources)).digest("hex");
   const runDir = path.join(root, ".run");
   fs.mkdirSync(runDir, { recursive: true });
   const output = fs.mkdtempSync(path.join(runDir, options.unified ? "unified-client-" : "remote-client-"));
@@ -208,9 +226,9 @@ function main(args = process.argv.slice(2)) {
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { flag: "wx" });
   const buildFlags = options.mode === "portable" ? ["--no-bundle", "--no-sign"] : options.mode === "preview" ? ["--no-sign"] : [];
   const buildStarted = Date.now();
-  run(process.execPath, [cli, "build", ...buildFlags, "--ci",
+  run(process.execPath, [cli, "build", ...buildFlags, ...(options.qa ? ["--features", "qa"] : []), "--ci",
     "--target", triple, "--config", JSON.stringify(config), "--", "--locked"]);
-  const builtExe = path.join(env.CARGO_TARGET_DIR, triple, "release", options.unified ? "privateagent.exe" : options.mode === "portable" ? "appsdesktop.exe" : `${REMOTE_BINARY}.exe`);
+  const builtExe = path.join(env.CARGO_TARGET_DIR, triple, "release", options.qa ? "privateagent-candidate.exe" : options.unified ? "privateagent.exe" : options.mode === "portable" ? "appsdesktop.exe" : `${REMOTE_BINARY}.exe`);
   const exeBytes = fs.readFileSync(builtExe);
   if (exeBytes.subarray(0, 2).toString() !== "MZ" || !exeBytes.includes(Buffer.from(entry[1].split("/").pop())) || !exeBytes.includes(Buffer.from(apiBaseUrl))) {
     throw new Error("Executable validation failed: missing PE header, current frontend entry or fixed backend account origin.");
@@ -224,7 +242,7 @@ function main(args = process.argv.slice(2)) {
   const sha256 = crypto.createHash("sha256").update(exeBytes).digest("hex");
   let sums = `${sha256}  ${exeName}\n${crypto.createHash("sha256").update(localBytes).digest("hex")}  private-agent-local.exe\n${hostSha}  exec-host.exe\n`;
   if (options.mode !== "portable") {
-    const installerName = `${options.unified ? "PrivateAgent" : "PrivateAgentRemote"}_${options.version}_x64-setup.exe`;
+    const installerName = `${options.qa ? "PrivateAgentCandidate" : options.unified ? "PrivateAgent" : "PrivateAgentRemote"}_${options.version}_x64-setup.exe`;
     const installer = path.join(env.CARGO_TARGET_DIR, triple, "release", "bundle", "nsis", installerName);
     if (!fs.existsSync(installer) || fs.statSync(installer).mtimeMs < buildStarted - 2000) throw new Error("Current remote installer was not generated; refusing stale artifacts.");
     if (options.mode === "release") {
@@ -250,8 +268,11 @@ function main(args = process.argv.slice(2)) {
     }
   }
   fs.writeFileSync(path.join(output, "SHA256SUMS.txt"), sums, { flag: "wx" });
+  if (JSON.stringify(sourceManifest()) !== JSON.stringify(sources)) throw new Error("Source changed during build; this candidate is not verified.");
+  fs.writeFileSync(path.join(output, "source-manifest.json"), JSON.stringify({ sourceSha256, sources }, null, 2) + "\n", { flag: "wx" });
   fs.writeFileSync(path.join(output, "build-info.json"), JSON.stringify({
-    commit, dirty, apiBaseUrl, unified: Boolean(options.unified), transport: "stdio-v2", executionHostSha256: hostSha,
+    commit, dirty, apiBaseUrl, unified: Boolean(options.unified), qa: Boolean(options.qa), applicationIdentifier: config.identifier,
+    transport: "stdio-v2", executionHostSha256: hostSha, sourceSha256,
     target: triple, signing: options.mode === "release" ? "updater-verified" : "unsigned", sidecar: "desktop-local",
     mode: options.mode, updateTarget: options.mode === "portable" ? null : options.unified ? UNIFIED_TARGET : REMOTE_TARGET,
     updateUrl: options.updateUrl || null, downloadBaseUrl: options.downloadBaseUrl || null,

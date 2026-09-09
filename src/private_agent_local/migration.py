@@ -58,7 +58,8 @@ def archive_sqlite(path: Path, *, authority: str, owner_id: int) -> dict:
     try:
         db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
-        if db.execute("PRAGMA user_version").fetchone()[0] not in {0, 2, 3}:
+        # 4–7 保留相同的基础记录表；交换格式仍只导出白名单字段，不导出恢复授权。
+        if db.execute("PRAGMA user_version").fetchone()[0] not in {0, 2, 3, 4, 5, 6, 7}:
             raise ValueError("SQLite 来自不支持的版本，请使用该版本的导出功能")
         names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):

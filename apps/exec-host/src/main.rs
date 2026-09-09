@@ -135,10 +135,8 @@ struct ExecutionState {
     stdin: Arc<Mutex<Option<StdinSink>>>,
     session_nonce: Option<String>,
     output_tail: Arc<Mutex<OutputTail>>,
-    /// PTY 模式：持有伪控制台句柄直至执行移除（drop 即释放）。
-    /// 仅作生命周期守卫，不被读取。
+    /// PTY 模式：进程退出后先关闭控制台，再排空其最后一帧。
     #[cfg(windows)]
-    #[allow(dead_code)]
     pty: Arc<Mutex<Option<sandbox::PseudoConsole>>>,
 }
 
@@ -194,16 +192,19 @@ impl Host {
 
     fn health(&self) -> Value {
         let active = self.executions.lock().unwrap().len() as u64;
+        let mut modes = vec!["argv"];
+        #[cfg(windows)]
+        if sandbox::pty_environment_ready() { modes.push("pty"); }
         json!({
             "protocol_version": PROTOCOL_VERSION,
-            // Job Object 级联终止 + Low MIC 写拦截已落地；
-            // 网络强制边界（ADR-004 S4）未闭环前仍如实上报 false。
-            "sandbox_available": false,
-            "modes": if cfg!(windows) { vec!["argv", "pty"] } else { vec!["argv"] },
+            // 每次受限执行仍须准备独立 SID、目录授权并成功启动，不能静默降级。
+            "sandbox_available": cfg!(windows),
+            "sandbox_profile_protocol": if cfg!(windows) { 1 } else { 0 },
+            "modes": modes,
             "session_protocol": 1,
-            "file_read_isolation": false,
-            "file_write_isolation": false,
-            "network_isolation": false,
+            "file_read_isolation": cfg!(windows),
+            "file_write_isolation": cfg!(windows),
+            "network_isolation": cfg!(windows),
             "process_tree_termination": cfg!(windows),
             "active_sessions": active
         })
@@ -343,71 +344,25 @@ fn handle_start(request_id: u64, message: &Value) {
         }
         env_pairs.sort();
 
-        let appcontainer =
-            params.get("appcontainer").and_then(Value::as_bool).unwrap_or(false);
-        let network_policy = params
-            .get("network_policy")
-            .and_then(Value::as_str)
-            .unwrap_or("none");
+        let network_policy = params.get("network_policy").and_then(Value::as_str).unwrap_or("none");
+        if !matches!(network_policy, "none" | "approved") {
+            return fail("unsupported_network_policy", "当前只支持 none 或明确批准的 approved 网络策略");
+        }
+        let appcontainer = params.get("appcontainer").and_then(Value::as_bool).unwrap_or(false) || network_policy == "none";
         if appcontainer && network_policy != "none" {
-            // N3 失败关闭：capability 授予未实现，非 none 一律拒绝。
-            return fail(
-                "unsupported_network_policy",
-                "AppContainer 仅支持 network_policy=none（能力授予尚未开放）",
-            );
+            return fail("unsupported_network_policy", "AppContainer 仅支持 network_policy=none");
         }
         if mode == "pty" && appcontainer {
-            // 失败关闭：AC + ConPTY 组合未经验证，不降级不猜测（§11.5）。
-            return fail(
-                "unsupported_mode",
-                "appcontainer 不支持 pty 模式",
-            );
+            return fail("unsupported_mode", "受限执行只支持 argv 模式");
         }
-
-        #[cfg(windows)]
-        sandbox::ac_trace_public(&format!(
-            "handle_start appcontainer={appcontainer} integrity={:?}",
-            params.get("integrity_level").and_then(Value::as_str),
-        ));
-        // 运行时根：调用方声明（解释器/依赖目录）+ exe 目录自动推导。
-        let mut roots: Vec<String> = Vec::new();
-        if let Some(paths) = params.get("ac_grant_paths").and_then(Value::as_array) {
-            for path in paths.iter().take(16) {
-                if let Some(path) = path.as_str() {
-                    if !path.is_empty() && path.len() <= 2048 {
-                        roots.push(path.to_string());
-                    }
-                }
-            }
+        let profile = params.get("appcontainer_profile").and_then(Value::as_str).unwrap_or("");
+        if appcontainer && !(profile.starts_with("pa.execution.") && profile.len() == 45
+            && profile[13..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) {
+            return fail("sandbox_policy_unavailable", "受限执行缺少独立沙箱授权身份，命令未执行");
         }
-        let exe_dir = std::path::Path::new(&program[0])
-            .parent()
-            .map(|p| p.to_string_lossy().to_string());
-        if let Some(dir) = exe_dir {
-            roots.push(dir);
+        if params.get("ac_grant_paths").and_then(Value::as_array).is_some_and(|paths| !paths.is_empty()) {
+            return fail("sandbox_policy_unavailable", "宿主不再接受直接修改目录 ACL 的旧接口，请升级本机运行时");
         }
-        roots.sort();
-        roots.dedup();
-
-        #[cfg(windows)]
-        sandbox::ac_trace_public(&format!("ac roots={roots:?}"));
-        if appcontainer {
-            // host 级稳定 profile + 常驻 RX 基线；失败 → 失败关闭。
-            if let Err(err) = sandbox::ensure_ac_runtime("pa.exec.host.default", &roots)
-            {
-                return fail(
-                    "sandbox_policy_unavailable",
-                    &format!("appcontainer 准备失败：{err}"),
-                );
-            }
-        }
-        #[cfg(windows)]
-        sandbox::ac_trace_public("spawn begin");
-        // 顺序修正（N1b 实证）：本机内核/EDR 对"进程持有 KILL_ON_JOB_CLOSE
-        // Job 句柄期间调用 CreateProcess"返回 ACCESS_DENIED——Job 改为
-        // 进程创建成功后立即创建并分配。std 路径存在微秒级窗口（子进程尚未
-        // 入 Job 即可能派生孙进程）；受限/AC 路径以挂起态创建后分配再恢复，
-        // 零窗口。任一沙箱原语失败 → 失败关闭，绝不降级（§11.5）。
         let spawn_result = if mode == "pty" {
             // 失败关闭：ConPTY 附着环境不可用（实证探针）→ 结构化拒绝，
             // 绝不交付无法回显的伪会话（与 §11.5 沙箱失败关闭同语义）。
@@ -421,7 +376,7 @@ fn handle_start(request_id: u64, message: &Value) {
             let pty_env_block = sandbox::build_environment_block(&env_pairs);
             sandbox::spawn_pty(&program, cwd, &pty_env_block,
                 integrity == sandbox::IntegrityLevel::Low, want_stdin)
-                .map(|pty_spawned| {
+                .map(|mut pty_spawned| {
                     let slot = ChildSlot::Restricted(sandbox::RestrictedChild::from_parts(
                         pty_spawned.process_handle,
                         pty_spawned.main_thread_handle,
@@ -433,28 +388,15 @@ fn handle_start(request_id: u64, message: &Value) {
                         stdin: if want_stdin {
                             Some(StdinSink::Raw(pty_spawned.input_write))
                         } else {
+                            pty_spawned.console.keep_input(pty_spawned.input_write);
                             None
                         },
                         pty_console: Some(pty_spawned.console),
                     }
                 })
         } else if appcontainer {
-            match sandbox::ensure_ac_runtime("pa.exec.host.default", &roots) {
-                Ok(runtime) => {
-                    // AC 语义下忽略请求 cwd（不授权工作区），使用 profile AC 目录。
-                    let ac_cwd = runtime.working_dir().to_string_lossy().to_string();
-                    spawn_appcontainer(
-                        &program,
-                        &ac_cwd,
-                        &env_pairs,
-                        &runtime.guard,
-                        want_stdin,
-                    )
-                }
-                Err(err) => Err(std::io::Error::other(format!(
-                    "sandbox_policy_unavailable: {err}"
-                ))),
-            }
+            sandbox::AppContainerGuard::existing(profile)
+                .and_then(|guard| spawn_appcontainer(&program, cwd, &env_pairs, &guard, want_stdin))
         } else if integrity == sandbox::IntegrityLevel::Low {
             spawn_restricted(&program, cwd, &env_pairs, want_stdin)
         } else {
@@ -496,6 +438,7 @@ fn handle_start(request_id: u64, message: &Value) {
         let cancel_requested = Arc::clone(&state.cancel_requested);
         let child_slot = Arc::clone(&state.child);
         let output_tail = Arc::clone(&state.output_tail);
+        let pty = Arc::clone(&state.pty);
         host.executions
             .lock()
             .unwrap()
@@ -525,6 +468,7 @@ fn handle_start(request_id: u64, message: &Value) {
             sequence,
             Instant::now() + Duration::from_millis(timeout_ms),
             readers,
+            pty,
         );
     }
 }
@@ -612,7 +556,6 @@ fn spawn_appcontainer(
     let env_block = sandbox::build_environment_block(env_pairs);
     // 挂起态创建：调用方建 Job 分配后再 resume（零窗口受控）。
     let spawned = sandbox::spawn_appcontainer(program, cwd, &env_block, ac, want_stdin)?;
-    spawned.resume();
     let slot = ChildSlot::Restricted(sandbox::RestrictedChild::from_parts(
         spawned.process_handle,
         spawned.main_thread_handle,
@@ -707,6 +650,7 @@ fn spawn_waiter(
     sequence: Arc<AtomicU64>,
     deadline: Instant,
     readers: Vec<std::thread::JoinHandle<()>>,
+    #[cfg(windows)] pty: Arc<Mutex<Option<sandbox::PseudoConsole>>>,
 ) {
     std::thread::spawn(move || {
         let mut timed_out = false;
@@ -730,6 +674,12 @@ fn spawn_waiter(
             };
             match outcome {
                 Some(Ok(exit_code)) => {
+                    #[cfg(windows)]
+                    {
+                        // 不持有宿主执行表锁关闭控制台，输出线程仍可发送最后一帧。
+                        let console = pty.lock().unwrap().take();
+                        drop(console);
+                    }
                     // 先排空输出再公布退出；后代持续持有管道时失败关闭，避免丢失末尾结果。
                     let drain_deadline = Instant::now() + Duration::from_secs(1);
                     while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < drain_deadline {

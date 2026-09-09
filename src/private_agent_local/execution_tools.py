@@ -57,7 +57,7 @@ class CancelArgs(Input):
 
 
 TOOLS = {
-    "exec_command": (ExecArgs, "Start a registered argv development command with project-relative cwd. yield_time_ms never kills it; continue with execution_id. Restricted execution currently unavailable. trusted_project + approved network ALWAYS requires explicit user approval of current-user file/network access. Default lifetime is run; session retention is visible and separately approved. No shell/eval."),
+    "exec_command": (ExecArgs, "Start a registered argv development command with project-relative cwd. yield_time_ms never kills it; continue with execution_id. Restricted argv execution uses a workspace AppContainer with network none; unsupported tool paths fail closed. trusted_project + approved network ALWAYS requires explicit user approval of current-user file/network access. Default lifetime is run; session retention is visible and separately approved. No shell/eval."),
     "read_execution": (ReadArgs, "Read an execution owned by this session using next_cursor. Observe status, gaps and dropped_bytes; running is not success. Wait <=30s, no side effects."),
     "write_stdin": (StdinArgs, "Write bounded input or EOF to an approved execution with its current state version; user approval required for each input. Never supply credentials."),
     "cancel_execution": (CancelArgs, "Idempotently stop this session's execution tree. Only stopped=true confirms cleanup; request acceptance is not proof."),
@@ -76,6 +76,7 @@ def program_versions(command):
 
 
 async def execute(owner, run, root, call, execution):
+    generation = run.get("generation", 0)
     name, arguments = call["name"], call["arguments"]
     args = TOOLS[name][0].model_validate(arguments)
     owner.execution_sessions._check(run, root)
@@ -102,9 +103,11 @@ async def execute(owner, run, root, call, execution):
         if not await owner.approve(run, call, preview):
             raise ValueError("stdin 输入已拒绝或审批过期")
         await owner.cloud.identity(owner.token)
+        owner.controls.guard(run, generation)
         return await manager.write(args.execution_id, run["session_id"], args.data, args.eof, args.expected_state_version)
-    if args.execution_mode != "trusted_project" or args.network_policy != "approved":
-        raise ValueError("当前未验证文件/网络隔离；受限请求未执行。可请求用户明确批准可信项目及当前用户网络范围")
+    restricted = args.execution_mode == "restricted"
+    if (restricted and (args.network_policy != "none" or args.tty)) or (not restricted and args.network_policy != "approved"):
+        raise ValueError("受限模式只支持禁网 argv；可信项目执行须明确批准网络范围")
     if args.retention == "run" and args.timeout_ms > 3_600_000:
         raise ValueError("普通命令硬上限为 1 小时；持续服务必须声明 session 生命周期")
     plan = policy.command_plan(shlex.join(args.argv), run["permission_mode"], require_approval=True)
@@ -123,12 +126,13 @@ async def execute(owner, run, root, call, execution):
         raise ValueError("无法生成有界项目版本，命令授权不能绑定当前脚本；请缩小项目范围")
     versions = await asyncio.to_thread(program_versions, prepared[0])
     binding = {"argv": prepared[0], "cwd": str(cwd), "environment": prepared[1], "program_versions": versions, "workspace": baseline["digest"],
-               "retention": args.retention, "timeout_ms": args.timeout_ms, "network": args.network_policy}
+               "retention": args.retention, "timeout_ms": args.timeout_ms, "network": args.network_policy, "execution_mode": args.execution_mode}
     binding_sha = content_ref(binding).sha256
     preview = {"tool_name": name, "previewable": False, "argv": list(plan.display_argv), "cwd": relative,
                "authorization_sha256": binding_sha, "execution_mode": args.execution_mode, "network_policy": args.network_policy,
                "retention": args.retention, "timeout_ms": args.timeout_ms,
-               "reason": "可信项目执行：以当前系统用户运行，可访问该用户可读写的项目外文件并联网，没有文件或网络沙箱。"
+               "reason": ("受限项目执行：项目可读写，工具目录只读，网络被系统阻断；独立临时目录随执行回收。" if restricted else
+                          "可信项目执行：以当前系统用户运行，可访问该用户可读写的项目外文件并联网，没有文件或网络沙箱。")
                          + ("此进程保留到会话关闭或授权到期，可在执行面板停止。" if args.retention == "session" else "任务结束时回收进程。")
                          + " 命令：" + shlex.join(args.argv) + "；cwd：" + relative}
     if not await owner.approve(run, call, preview):
@@ -150,6 +154,9 @@ async def execute(owner, run, root, call, execution):
         raise ValueError("执行预算或授权已经到期")
     execution.update(command=canonical_command(shlex.join(args.argv)), workspace_version=run.get("workspace_version", 0), workspace_digest=baseline["digest"],
                      authorization_sha256=binding_sha)
+    if run.get("recovery_contract_version"):
+        execution["before_manifest"] = baseline
     owner.event(run, "tool.started", name=name, tool_call_id=call["id"], execution_id=execution["id"])
+    owner.controls.guard(run, generation)
     result = await manager.start(run, execution, root, cwd, list(plan.argv), args.model_copy(update={"timeout_ms": remaining}), prepared=prepared)
-    return {**result, "args": args.argv, "profile": "trusted-project", "truncated": result["dropped_bytes"] > 0}
+    return {**result, "args": args.argv, "profile": "appcontainer" if restricted else "trusted-project", "truncated": result["dropped_bytes"] > 0}

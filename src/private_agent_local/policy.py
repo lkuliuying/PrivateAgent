@@ -226,6 +226,11 @@ def powershell_plan(
     canonical = next(name for name in POWERSHELL_RULES if name == normalized)
     display = ("powershell", command, *arguments)
     script = "& " + " ".join((_powershell_quote(canonical), *script_arguments))
+    if mode != "full_access":
+        # AC 不授予磁盘根目录读取；专用 PSDrive 让文件系统 Provider 从已授权工作区开始。
+        script = ("New-PSDrive -Name PrivateAgentWorkspace -PSProvider FileSystem -Root "
+                  + _powershell_quote(str(root)) + " -ErrorAction Stop | Out-Null; "
+                  "Set-Location -LiteralPath 'PrivateAgentWorkspace:' -ErrorAction Stop; " + script)
     argv = ("powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
     profile = "full-access-powershell" if mode == "full_access" else "workspace-powershell" if mode == "workspace" else "confirmed-powershell"
     return CommandPlan(argv, display, _automatic(mode, require_approval), profile)

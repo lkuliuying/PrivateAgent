@@ -43,9 +43,12 @@ from .execution_sessions import ExecutionSessions
 from .executor import ExecutionFailure, run_command
 from .instructions import InstructionError, InstructionLoader
 from .patchsets import PatchService
+from .recovery import Recovery
+from .run_controls import RunControls
 from .store import Store, now
+from .workspaces import Workspaces, workspace_key
 
-TERMINAL = {"completed", "failed", "cancelled", "timed_out", "limit_exceeded"}
+TERMINAL = {"completed", "failed", "cancelled", "timed_out", "limit_exceeded", "interrupted"}
 
 
 class Arguments(BaseModel):
@@ -144,7 +147,7 @@ SYSTEM = (
 
 def snapshot(run: dict) -> dict:
     value = {key: value for key, value in run.items()
-             if key not in {"events", "approvals", "executions", "client_request_id", "denied_operations", "uncertain_operations", "completion_policy", "workspace_identity"}}
+             if key not in {"events", "approvals", "executions", "client_request_id", "denied_operations", "uncertain_operations", "completion_policy", "workspace_identity", "pending_response", "review_baseline"}}
     outcome = run.get("run_outcome") or unknown_outcome(run["id"])
     return {**value, "run_outcome": outcome, "goal_outcome": outcome["goal_outcome"]}
 
@@ -183,6 +186,10 @@ class Runtime:
         self.patches = PatchService(store)
         self.repository = self.patches.repository
         self.execution_sessions = ExecutionSessions(self)
+        self.live: dict[str, dict] = {}
+        self.recovery = Recovery(self)
+        self.controls = RunControls(self)
+        self.workspaces = Workspaces(self)
 
     async def activate_project(self, project_id: int | None):
         if project_id is not None:
@@ -190,7 +197,8 @@ class Runtime:
         # 先改变权限上下文，再等待旧命令停止；新工具调用立即失败关闭。
         self.active_project_id = project_id
         self.project_context_set = True
-        await self.execution_sessions.stop_matching(lambda record: record["project_id"] != project_id)
+        await self.execution_sessions.stop_matching(lambda record: record["project_id"] != project_id
+            and self.store.run_state(record["run_id"]).get("recovery_contract_version") != "1.0")
         grants = self.store.db.execute("SELECT id, project_id FROM grants WHERE revoked_at IS NULL").fetchall()
         for grant_id, previous_project in grants:
             if previous_project != project_id:
@@ -222,6 +230,9 @@ class Runtime:
         return budget
 
     def event(self, run: dict, event_type: str, **payload):
+        context = self.contexts.get(run["id"])
+        if context:
+            run["loop_budget"] = context.budget_snapshot()
         return self.store.emit(run, event_type, payload)
 
     def root(self, project_id: int, workspace_id: int) -> Path:
@@ -236,7 +247,7 @@ class Runtime:
             raise ValueError("工作区实际位置已变化，请重新选择项目")
         return root
 
-    def create(self, data: dict) -> dict:
+    def create(self, data: dict, *, parent: dict | None = None, launch: bool = True) -> dict:
         session = self.store.get("session", data["session_id"])
         if any(session.get(key) != data[key] for key in ("project_id", "workspace_id")):
             raise ValueError("任务与当前项目、工作区不匹配")
@@ -246,8 +257,17 @@ class Runtime:
             if prior["session_id"] != data["session_id"]:
                 raise ValueError("重复请求标识与任务不匹配")
             return snapshot(prior)
-        if self.store.has_active_run():
+        if self.store.has_active_run() and data.get("recovery_contract_version") != "1.0":
             raise ValueError("本机已有任务执行中，请完成或取消后再开始")
+        active = self.store.runs(active_only=True)
+        if any(r["session_id"] == session["id"] for r in active):
+            raise ValueError("当前会话已有运行，请使用追加约束或先结束运行")
+        if len(active) >= 16:
+            raise ValueError("账号活动与排队任务已达 16 个上限")
+        if data.get("recovery_contract_version") == "1.0" and any(r.get("recovery_contract_version") != "1.0" for r in active):
+            raise ValueError("请先结束旧协议运行，再启动支持并发的新任务")
+        if data.get("recovery_contract_version") != "1.0":
+            self.workspaces.assert_idle(root)
         mode = data.get("permission_mode", "confirm")
         if mode not in policy.MODES:
             raise ValueError("不支持的权限模式")
@@ -280,18 +300,42 @@ class Runtime:
         limits = ContextLimits.model_validate(data.get("context_limits", {}))
         run.update(context_limits=limits.model_dump(), approval_wait_seconds=0)
         run["execution_contract_version"] = data.get("execution_contract_version")
+        if data.get("recovery_contract_version") == "1.0":
+            run.update(recovery_contract_version="1.0", logical_task_id=run["id"], resumed_from_run_id=None,
+                       state_version=0, generation=0, goal_version=1, goal=data["message"],
+                       workspace_key=workspace_key(root), ancestor_run_ids=[])
+        if parent:
+            for key in ("logical_task_id", "goal", "goal_version", "generation", "completion_requirements", "completion_policy",
+                        "workspace_version", "loop_budget", "denied_operations", "uncertain_operations", "model_config_version",
+                        "model_capability_version", "verification_retries",
+                        "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "tool_call_count", "usage_complete"):
+                if key in parent:
+                    run[key] = json.loads(json.dumps(parent[key]))
+            run.update(resumed_from_run_id=parent["id"], ancestor_run_ids=[*parent.get("ancestor_run_ids", []), parent["id"]])
         run["root_identity"] = files.file_identity(root)
+        run["workspace_key"] = workspace_key(root)
         project = self.store.get("project", data["project_id"])
         self.instructions.load(root, trusted=project.get("trust_instructions") is True)
         with self.store.transaction():
             self.store.context.import_legacy(session["id"])
-            user_message = self.store.create("message", {"session_id": session["id"], "role": "user", "content": data["message"]})
-            self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content=data["message"]),
-                                      key=f"message:{user_message['id']}", source="user")
+            if not parent:
+                user_message = self.store.create("message", {"session_id": session["id"], "role": "user", "content": data["message"]})
+                self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content=data["message"]),
+                                          key=f"message:{user_message['id']}", source="user")
+            else:
+                self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content="用户确认继续原逻辑任务。已核对历史操作；保留原目标、约束、失败尝试和预算。旧工具序列及审批不重放，必要时重新读取。"),
+                                          key=f"{run['id']}:recovery", source="user")
             self.store.update("session", session["id"], last_run_id=run["id"])
             self.store.save_run(run)
-        self.tasks[run["id"]] = asyncio.create_task(self.execute(run, root))
+            if run.get("recovery_contract_version"):
+                self.event(run, "run.created", resumed_from_run_id=run.get("resumed_from_run_id"))
+        if launch:
+            self.launch(run)
         return snapshot(run)
+
+    def launch(self, run):
+        self.live[run["id"]] = run
+        self.tasks[run["id"]] = asyncio.create_task(self.execute(run, self.root(run["project_id"], run["workspace_id"])))
 
     def require_grant(self, run: dict) -> dict | None:
         if run["permission_mode"] != "full_access":
@@ -314,6 +358,8 @@ class Runtime:
 
     async def execute(self, run: dict, root: Path):
         try:
+            await self.workspaces.acquire(run, root)
+            await self.controls.boundary(run)
             await self._execute(run, root)
         except asyncio.CancelledError:
             self.finish(run, "cancelled", "cancelled", "任务已取消")
@@ -326,6 +372,9 @@ class Runtime:
             await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run["id"] and (record["retention"] == "run" or current["status"] != "completed"))
             self.tasks.pop(run["id"], None)
             self.contexts.pop(run["id"], None)
+            self.live.pop(run["id"], None)
+            self.controls.changed.pop(run["id"], None)
+            self.workspaces.release(run)
 
     async def _execute(self, run: dict, root: Path):
         baseline = await asyncio.to_thread(git_workspace.inspect, root)
@@ -334,6 +383,8 @@ class Runtime:
         run["workspace_identity"] = WorkspaceIdentity(project_id=run["project_id"], workspace_id=run["workspace_id"],
             root_path=str(root), canonical_path=str(root), git_available=baseline["is_git"],
             initial_head=run["base_head_sha"], initial_dirty=run["base_git_dirty"]).model_dump(mode="json")
+        if run.get("recovery_contract_version"):
+            run["review_baseline"] = await asyncio.to_thread(workspace_state, root)
         self.store.save_run(run)
         messages = [{"role": "system", "content": SYSTEM}]
         if run["permission_mode"] in {"workspace", "full_access"}:
@@ -362,7 +413,8 @@ class Runtime:
         adapter = LocalRunAdapter(self, run, root)
         verifier = LocalCompletionVerifier(self, run, root)
         core = AgentRuntime(adapter, adapter, event_sink=adapter, reasoning_effort=run["reasoning_effort"],
-                            output_verifier=verifier, max_verification_retries=2, context_sink=adapter.context.record)
+                            output_verifier=verifier, max_verification_retries=2,
+                            context_sink=adapter.context.record)
         try:
             result = await core.run(
                 [ModelMessage.model_validate(item) for item in messages],
@@ -407,6 +459,8 @@ class Runtime:
     def finish(self, run: dict, status: str, code=None, message=None):
         try:
             self.store.context.close_pending(run["session_id"], run["id"])
+            self.controls.commit_messages(run)
+            self.controls.settle(run)
         except (ValueError, OSError):
             status, code, message = "failed", "context_history_invalid", "上下文内容无法校验，执行已停止；请保留原始记录用于检查"
         pending = self.store.context.pending(run["session_id"])
@@ -417,7 +471,7 @@ class Runtime:
                 pending.update(state="failed", error="任务已停止，未提交排队压缩；原历史保留")
                 self.store.context.save_checkpoint(run["session_id"], pending)
         run.update(status=status, error_code=code, error_message=message, completed_at=now(), active_in_process=False)
-        if not run.get("run_outcome") or status in {"cancelled", "timed_out", "limit_exceeded"}:
+        if not run.get("run_outcome") or status in {"cancelled", "timed_out", "limit_exceeded", "interrupted"}:
             run["run_outcome"] = unknown_outcome(run["id"], message or "任务未完成验证")
         for approval in run["approvals"]:
             if approval["status"] == "pending":
@@ -439,6 +493,8 @@ class Runtime:
 
     async def approve(self, run: dict, call: dict, preview: dict) -> bool:
         approval_id = str(uuid.uuid4())
+        generation = run.get("generation", 0)
+        self.controls.guard(run, generation)
         command_input = call["name"] in {"run_project_command", "exec_command", "write_stdin"}
         approval = {"id": approval_id, "run_id": run["id"], "step_id": None, "tool_call_id": call["id"],
                     "tool_name": call["name"], "tool_version": "2" if call["name"] in VERSIONED_FILE_TOOLS else "1", "arguments_sha256": files.digest(json.dumps(call["arguments"], sort_keys=True).encode()),
@@ -468,11 +524,16 @@ class Runtime:
             run["approval_wait_seconds"] = run.get("approval_wait_seconds", 0) + time.monotonic() - waiting_started
             self.decisions.pop(approval_id, None)
         run["status"] = "running"
+        if approval.get("invalidated_by_control"):
+            approval["status"] = "cancelled"
+            self.event(run, "tool.approval_resolved", tool_call_id=call["id"], name=call["name"], approval_id=approval_id)
+            raise ValueError("审批因运行控制变化失效，操作未执行")
         if not accepted:
             run.setdefault("denied_operations", []).append({"operation_id": execution["operation_id"],
                 "arguments_sha256": execution["arguments_sha256"], "scope": execution["scope"], "approval_id": approval_id})
         self.event(run, "tool.approval_resolved", tool_call_id=call["id"], name=call["name"], approval_id=approval_id)
         if accepted:
+            self.controls.guard(run, generation)
             current_binding = {"arguments": call["arguments"], "preview": preview,
                                "root": str(self.root(run["project_id"], run["workspace_id"])), "tool": call["name"]}
             if files.digest(json.dumps(current_binding, sort_keys=True).encode()) != approval["operation_sha256"]:
@@ -481,6 +542,8 @@ class Runtime:
 
     async def tool(self, run: dict, root: Path, call: dict) -> dict:
         name = call["name"]
+        generation = run.get("generation", 0)
+        self.controls.guard(run, generation)
         run["tool_call_count"] += 1
         execution = {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "tool_call_id": call["id"],
                      "arguments_sha256": content_ref(call["arguments"]).sha256,
@@ -491,6 +554,8 @@ class Runtime:
                    operation_id=execution["operation_id"], tool_call_count=run["tool_call_count"])
         error_code, command, invoked = "local_tool_rejected", [], False
         try:
+            if run["tool_call_count"] > run.get("context_limits", {}).get("max_tool_calls", 128):
+                raise ValueError("逻辑任务工具预算已耗尽")
             if name in execution_tools.TOOLS:
                 output = await execution_tools.execute(self, run, root, call, execution)
                 output["execution_error"] = output.pop("error", None)
@@ -589,6 +654,7 @@ class Runtime:
                                grant_id=run.get("full_access_grant_id"), arguments_sha256=execution["arguments_sha256"],
                                preview=approval_preview)
             self.event(run, "tool.started", name=name, tool_call_id=call["id"], execution_id=execution["id"])
+            self.controls.guard(run, generation)
             if name == "read_context_content":
                 output = self.store.context.read(run["session_id"], args.item_id, args.offset, args.limit)
             elif name == "read_patch_preview":
@@ -606,6 +672,7 @@ class Runtime:
             elif name in FILE_WRITE_TOOLS:
                 async def guard():
                     await self.cloud.identity(self.token)
+                    self.controls.guard(run, generation)
                     self.root(run["project_id"], run["workspace_id"])
                     self.require_grant(run)
                     if context:
@@ -633,15 +700,20 @@ class Runtime:
                     error_code = "max_active_seconds" if context and context.remaining_seconds() <= 0 else "permission_blocked"
                     raise ValueError("有效执行时长预算或当前授权已到期，命令未执行")
                 before = await asyncio.to_thread(workspace_state, root)
+                self.controls.guard(run, generation)
                 execution["workspace_version"] = run.get("workspace_version", 0)
                 execution["workspace_digest"] = before["digest"]
                 invoked = True
-                output = await run_command(root, command, timeout=timeout, execution_id=execution["id"])
+                output = await run_command(root, command, timeout=timeout, execution_id=execution["id"], trusted=run["permission_mode"] == "full_access",
+                                           sandbox_directory=self.store.path.parent / "sandbox-leases")
                 output.update(args=list(plan.display_argv), profile=profile)
                 after = await asyncio.to_thread(workspace_state, root)
                 execution["workspace_changed"] = before["digest"] != after["digest"] or before["digest"] is None
                 if execution["workspace_changed"]:
                     run["workspace_version"] = run.get("workspace_version", 0) + 1
+                if run.get("recovery_contract_version"):
+                    from .run_review import changes
+                    execution["candidate_changes"] = changes(before, after)
                 raw_exit = output.get("returncode")
                 result = interpret_execution(execution_id=execution["id"], operation_id=execution["operation_id"], argv=command,
                                              outcome="exited" if type(raw_exit) is int else "unknown",
@@ -701,7 +773,10 @@ class Runtime:
                    error=execution.get("error_message"), error_type=execution.get("error_code"))
 
     def decide(self, run_id: str, approval_id: str, accepted: bool):
-        run = self.store.run(run_id)
+        run = self.live.get(run_id) or self.store.run(run_id)
+        if run["status"] != "waiting_approval":
+            raise ValueError("当前运行不再等待审批")
+        self.controls.guard(run)
         if not any(a["id"] == approval_id and a["status"] == "pending" for a in run["approvals"]):
             raise ValueError("审批已结束或不属于当前任务")
         future = self.decisions.get(approval_id)
@@ -710,6 +785,13 @@ class Runtime:
         future.set_result(accepted)
 
     async def cancel(self, run_id: str):
+        run = self.live.get(run_id) or self.store.run(run_id)
+        if run.get("recovery_contract_version") and run["status"] not in TERMINAL:
+            await self.controls.request(run_id, "cancel", {"request_id": "legacy-cancel", "expected_state_version": run["state_version"]})
+            return {"run_id": run_id, "accepted": True, "active_in_process": False}
+        return await self._cancel(run_id)
+
+    async def _cancel(self, run_id: str):
         self.store.run(run_id)
         await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run_id)
         task = self.tasks.get(run_id)
@@ -721,6 +803,9 @@ class Runtime:
                 # Cancellation can occur before the coroutine's first instruction.
                 self.finish(current, "cancelled", "cancelled", "任务已取消")
                 self.tasks.pop(run_id, None)
+                self.live.pop(run_id, None)
+                self.controls.changed.pop(run_id, None)
+                self.workspaces.release(current)
             self.store.save_run({**self.store.run(run_id), "cancel_requested_at": now()})
         return {"run_id": run_id, "accepted": task is not None, "active_in_process": False}
 

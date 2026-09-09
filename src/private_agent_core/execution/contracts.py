@@ -13,7 +13,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 # 协议版本（破坏性变更必须递增并在握手时失败关闭）。
 PROTOCOL_VERSION = "1.0"
@@ -93,8 +93,9 @@ class ExecStartParams(BaseModel):
     # CT6-N3：AppContainer 零能力启动——network_policy=none 时内核级默认
     # 拒绝全部 outbound（含 loopback）。非 none 一律失败关闭（能力授予未开放）。
     appcontainer: bool = False
-    # N1b：AC 运行时根（解释器/依赖目录），host 为 AC SID 追加 RX(继承) ACE，
-    # 执行结束撤销。仅受信调用方可用；上限 16 条。
+    # 身份由本机授权协调器独立创建；宿主只派生 SID，不创建共享身份或改目录 ACL。
+    appcontainer_profile: str | None = Field(default=None, pattern=r"^pa\.execution\.[a-f0-9]{32}$")
+    # 仅保留旧请求的解析兼容性；宿主拒绝非空列表，授权由独立租约协调器负责。
     ac_grant_paths: list[str] = Field(default_factory=list, max_length=16)
 
     @field_validator("argv")
@@ -127,6 +128,9 @@ class ExecEvent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # 本机接收泵的测量事实，不接受宿主提供，也不改变线上的协议字段。
+    _received_at_unix_ms: float | None = PrivateAttr(default=None)
+
     notification: ExecNotification
     execution_id: str = Field(min_length=8, max_length=64)
     sequence: int = Field(ge=0)
@@ -150,6 +154,7 @@ class ExecHealth(BaseModel):
     modes: tuple[Literal["argv", "pty"], ...] = ("argv",)
     active_sessions: int = Field(default=0, ge=0)
     session_protocol: int = 0
+    sandbox_profile_protocol: int = 0
     file_read_isolation: bool = False
     file_write_isolation: bool = False
     network_isolation: bool = False

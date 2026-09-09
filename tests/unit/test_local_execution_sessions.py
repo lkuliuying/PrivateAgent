@@ -1,6 +1,7 @@
 """S4 持续执行：真实宿主、临时 SQLite、输入竞态与进程树回收。"""
 import asyncio
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -46,7 +47,7 @@ async def start(session, code, **options):
                  "arguments_sha256": "a" * 64, "status": "running", "tool_name": "exec_command"}
     run["executions"].append(execution)
     owner.store.save_run(run)
-    args = ExecArgs(argv=[sys.executable, "-c", code], execution_mode="trusted_project", network_policy="approved", **options)
+    args = ExecArgs(argv=[sys.executable, "-c", code], **{"execution_mode": "trusted_project", "network_policy": "approved", **options})
     return await owner.execution_sessions.start(run, execution, root, root, args.argv, args)
 
 
@@ -68,6 +69,16 @@ async def test_yield_is_not_timeout_and_small_unicode_output_arrives(session):
     assert final["exit_code"] == 0 and final["stopped"]
     assert "尾部" in "".join(chunk["data"] for chunk in final["chunks"])
     assert not session[0].execution_sessions.slots
+
+
+async def test_restricted_session_enforces_workspace_and_releases_lease(session):
+    result = await start(session, "from pathlib import Path; Path('inside.txt').write_text('ok');\ntry: Path('../outside.txt').write_text('bad')\nexcept PermissionError: print('DENIED')",
+                         execution_mode="restricted", network_policy="none", yield_time_ms=1000)
+    final = await finished(session, result["execution_id"])
+    assert final["status"] == "exited" and final["exit_code"] == 0 and final["stopped"]
+    assert "DENIED" in "".join(chunk["data"] for chunk in final["chunks"])
+    assert (session[2] / "inside.txt").read_text() == "ok" and not (session[2].parent / "outside.txt").exists()
+    assert not list((session[0].store.path.parent / "sandbox-leases").glob("*.json"))
 
 
 async def test_delayed_failure_updates_original_tool_and_s1_evidence(session):
@@ -143,7 +154,7 @@ async def test_restricted_request_and_old_host_fail_closed(session, monkeypatch)
     capabilities = await session[0].execution_sessions.capabilities()
     assert capabilities["contract"]["execution"] is True
     assert capabilities["contract"]["pty"] is False
-    assert capabilities["network_isolation"] is False
+    assert capabilities["network_isolation"] is True
     from private_agent_core.execution.contracts import ExecHealth
     from private_agent_core.execution.exec_host_client import ExecHostClient
     original = ExecHostClient.start
@@ -159,12 +170,17 @@ async def test_restricted_request_and_old_host_fail_closed(session, monkeypatch)
 
 
 async def test_run_events_have_one_durable_sequence_and_output_is_not_rewritten(session):
+    started_at = time.time_ns() / 1_000_000
     result = await start(session, "import time; [(print(i,flush=True),time.sleep(.02)) for i in range(15)]", yield_time_ms=0)
     final = await finished(session, result["execution_id"])
     events = session[0].store.events(session[1]["id"])
     assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
     assert any(event["type"] == "execution.output" for event in events)
     assert all("data" not in event["payload"] for event in events if event["type"] == "execution.output")
+    timings = [event["payload"] for event in events if event["type"] == "execution.output"]
+    assert all(started_at <= item["received_at_unix_ms"] <= time.time_ns() / 1_000_000 for item in timings)
+    sequences = {chunk["host_sequence"] for chunk in final["chunks"]}
+    assert all(item["first_host_sequence"] in sequences for item in timings)
     assert final["status"] == "exited"
 
 
@@ -288,6 +304,39 @@ async def test_output_quota_and_restart_never_replay(session, monkeypatch):
     store.recover()
     assert store.get(record["execution_id"], record["session_id"])["status"] == "unknown"
     assert not session[0].execution_sessions.slots
+
+
+@pytest.mark.parametrize("fault", ["previous_execution", "duplicate_sequence", "missing_sequence"])
+async def test_stale_host_output_cannot_cross_execution_identity(session, monkeypatch, fault):
+    from private_agent_local.execution_sessions import ExecHostClient
+
+    previous = await start(session, "print('OLD-OUTPUT',flush=True)", yield_time_ms=0)
+    previous = await finished(session, previous["execution_id"])
+    manager, run, root = session[0].execution_sessions, session[1], session[2]
+    saved = manager.store.get(previous["execution_id"], run["session_id"])
+    next_event = ExecHostClient.next_event
+    injected = False
+
+    async def corrupt_output(client, **options):
+        nonlocal injected
+        event = await next_event(client, **options)
+        if event and event.data and "CURRENT-MARKER" in event.data:
+            injected = True
+            if fault == "previous_execution":
+                return event.model_copy(update={"execution_id": previous["execution_id"], "data": "OLD-LATE-OUTPUT"})
+            return event.model_copy(update={"sequence": event.sequence + (1 if fault == "missing_sequence" else -1)})
+        return event
+
+    monkeypatch.setattr(ExecHostClient, "next_event", corrupt_output)
+    code = "import os,time; from pathlib import Path; Path('pid').write_text(str(os.getpid())); print('CURRENT-MARKER',flush=True); time.sleep(60)"
+    current = await start(session, code, yield_time_ms=0)
+    final = await finished(session, current["execution_id"])
+    assert injected and final["host_instance_id"] != previous["host_instance_id"]
+    assert final["status"] == "unknown" and final["stopped"]
+    assert not final["chunks"]
+    assert not parent_alive(int((root / "pid").read_text()))
+    assert manager.store.get(previous["execution_id"], run["session_id"]) == saved
+    assert not manager.slots
 
 
 async def test_old_host_rejected_before_run_creation_but_readonly_remains(tmp_path, monkeypatch):

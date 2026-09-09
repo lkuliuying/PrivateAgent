@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import PatchReviewPanel from "./PatchReviewPanel.vue";
 import ExecutionPanel from "./ExecutionPanel.vue";
+import RecoveryPanel from "./RecoveryPanel.vue";
+import WorktreePanel from "./WorktreePanel.vue";
 /**
  * CodingThreadWorkspace · v0.8.0 W3
  *
@@ -122,6 +124,12 @@ async function requestWorkspacePath(): Promise<void> {
 
 // ============ run 流（真实计划/工具/审批/终态均来自 durable 事件） ============
 const stream = useRunStream();
+async function resumeRun(runId: string) {
+  const current = thread.value;
+  if (!current) return;
+  props.store.recordThreadRun(current.id, runId);
+  await stream.attachRun(runId);
+}
 const durableHistory = shallowRef<Message[]>([]);
 let hydrationSeq = 0;
 const planOpen = ref(false);
@@ -520,6 +528,7 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
   await stream.startRun({
     session_id: currentThread.id,
     execution_contract_version: props.store.capabilities.value?.coding_execution_sessions_enabled === true ? "1.0" : undefined,
+    recovery_contract_version: props.store.capabilities.value?.coding_recovery_contract_version === "1.0" ? "1.0" : undefined,
     message: payload.message,
     project_id: projectId,
     workspace_id: workspaceId,
@@ -639,6 +648,7 @@ function navigateToInstruction(instructionId: string): void {
         @request-workspace-path="void requestWorkspacePath()"
       />
 
+      <WorktreePanel v-if="store.capabilities.value?.coding_worktree_enabled === true && !previewMode" :store="store" />
       <div class="thread-body">
         <aside
           v-if="instructionMarkers.length > 0"
@@ -686,6 +696,7 @@ function navigateToInstruction(instructionId: string): void {
             @instruction-markers-change="onInstructionMarkersChange"
           />
 
+          <RecoveryPanel v-if="projection?.runId && store.capabilities.value?.coding_recovery_contract_version === '1.0' && !previewMode" :run-id="projection.runId" @resumed="resumeRun" />
           <PatchReviewPanel v-if="projection?.runId && store.capabilities.value?.coding_patchsets_enabled === true"
             :run-id="projection.runId" :revision="projection.status ?? ''" :active="runActive" />
           <ExecutionPanel v-if="thread && !previewMode && store.capabilities.value?.coding_execution_sessions_enabled === true" :session-id="thread.id" />

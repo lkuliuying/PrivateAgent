@@ -126,6 +126,8 @@ class LocalCompletionVerifier:
         self.last_candidate_nonempty = False
 
     async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        if getattr(self.owner, "controls", None):
+            await self.owner.controls.boundary(self.run)
         self.last_candidate_nonempty = bool(output.strip())
         if not self.last_candidate_nonempty:
             self.last_outcome = RunOutcome(run_id=self.run["id"], goal_outcome="unknown", unverified_items=["模型未提供任务结果说明"])
@@ -145,6 +147,8 @@ class LocalCompletionVerifier:
             self.run["verification_state"] = "failed"
             self.owner.store.save_run(self.run)
             return OutputVerification(passed=False, code="verification_error", message=outcome.unverified_items[0], retryable=False)
+        if self.run.get("response_generation", 0) != self.run.get("generation", 0):
+            return OutputVerification(passed=False, code="steering_superseded", message="用户约束已变化，请重新生成结果", retryable=True)
         self.last_outcome = outcome
         self.run["verification_state"] = "passed" if outcome.goal_outcome in {"answered", "verified"} else "failed"
         self.owner.store.save_run(self.run)
@@ -156,13 +160,17 @@ class LocalCompletionVerifier:
         message = "；".join(outcome.unverified_items)[:2000] or "任务要求尚未满足"
         return OutputVerification(passed=False, code="completion_" + outcome.goal_outcome, message=message,
                                   correction=("基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：" + message)[:4000],
-                                  retryable=outcome.goal_outcome == "unmet")
+                                  retryable=outcome.goal_outcome == "unmet" and self.run.get("verification_retries", 0) < 2)
 
     async def load_outcome(self, output: str) -> RunOutcome:
         persisted = self.owner.store.run(self.run["id"])
         requirements = [Requirement.model_validate(item) for item in persisted["completion_requirements"]]
-        executions = persisted["executions"]
-        started_ids = {event["payload"].get("execution_id") for event in persisted["events"] if event["type"] == "tool.started"}
+        history = [self.owner.store.run(identifier) for identifier in persisted.get("ancestor_run_ids", [])]
+        if any(item.get("logical_task_id") != persisted.get("logical_task_id") or item["session_id"] != persisted["session_id"] for item in history):
+            raise ValueError("恢复证据归属不一致")
+        history.append(persisted)
+        executions = [{**execution, "source_run_id": item["id"]} for item in history for execution in item["executions"]]
+        started_ids = {event["payload"].get("execution_id") for item in history for event in item["events"] if event["type"] == "tool.started"}
         preview_only = persisted.get("completion_policy", {}).get("preview_only", False)
         refs: dict[str, EvidenceRef] = {}
         results = []
@@ -190,14 +198,19 @@ class LocalCompletionVerifier:
         if len(requirements) > 128:
             raise ValueError("完成要求数量越界")
         current = await asyncio.to_thread(workspace_state, self.root) if any(item.kind in {"test", "command"} for item in requirements) else None
-        terminal_sequences = {event["sequence"]: event for event in persisted["events"] if event["type"] in {"tool.completed", "tool.failed"}}
+        terminal_sequences = {(item["id"], event["sequence"]): event for item in history for event in item["events"] if event["type"] in {"tool.completed", "tool.failed"}}
 
         def evidence(execution, facts) -> list[str]:
             sequence = execution.get("source_sequence")
-            event = terminal_sequences.get(sequence)
+            event = terminal_sequences.get((execution["source_run_id"], sequence))
             if not event or event["payload"].get("execution_id") != execution["id"]:
                 return []
             key = "evidence-" + execution["id"]
+            if execution["source_run_id"] != persisted["id"]:
+                # 新运行重新核对磁盘或代码版本后登记新证据，保留原操作与事件的来源。
+                revalidated = self.owner.event(self.run, "evidence.revalidated", source_run_id=execution["source_run_id"],
+                    source_sequence=sequence, operation_id=execution["operation_id"], execution_id=execution["id"], content_ref=content_ref(facts).model_dump(mode="json"))
+                sequence = revalidated["sequence"]
             refs[key] = EvidenceRef(evidence_id=key, run_id=persisted["id"], operation_id=execution["operation_id"],
                                     execution_id=execution["id"], tool_call_id=execution["tool_call_id"],
                                     source_sequence=sequence, content_ref=content_ref(facts), verified_at=datetime.now(timezone.utc),
@@ -238,7 +251,7 @@ class LocalCompletionVerifier:
                 status, message = "failed", f"缺少实际文件变化证据：{requirement.scope or '所选项目'}"
                 for item in candidates:
                     if item.get("patch_set_id"):
-                        patch_facts = self.owner.patches.facts(persisted["id"], item["patch_set_id"], self.root)
+                        patch_facts = self.owner.patches.facts(item["source_run_id"], item["patch_set_id"], self.root)
                         selected = [fact for fact in patch_facts if not requirement.scope or fact["rel_path"] == requirement.scope]
                         if selected and all(fact["verified"] and fact["changed"] for fact in selected):
                             ids = evidence(item, {"patch_set_id": item["patch_set_id"], "files": patch_facts})

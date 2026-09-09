@@ -14,6 +14,9 @@ import type { ExecutionResult, Requirement, RunOutcome } from "./generated/codin
 
 export type AgentRunStatus =
   | "created"
+  | "queued"
+  | "paused"
+  | "interrupted"
   | "running"
   | "waiting_approval"
   | "completed"
@@ -23,6 +26,7 @@ export type AgentRunStatus =
   | "limit_exceeded";
 
 export const TERMINAL_RUN_STATUSES: readonly AgentRunStatus[] = [
+  "interrupted",
   "completed",
   "failed",
   "cancelled",
@@ -175,6 +179,7 @@ export interface RunSnapshot {
 
 /** POST /agent-runs 创建输入（coding 判定：project_id+workspace_id 成对） */
 export interface CodingRunCreateInput {
+  recovery_contract_version?: "1.0";
   execution_contract_version?: "1.0";
   completion_contract_version?: "1.0";
   completion_requirements?: Requirement[];
@@ -289,6 +294,9 @@ export const RUN_STATUS_META: Record<
   { label: string; tone: "neutral" | "info" | "success" | "warning" | "danger" }
 > = {
   created: { label: "已创建", tone: "neutral" },
+  queued: { label: "排队中", tone: "neutral" },
+  paused: { label: "已暂停", tone: "warning" },
+  interrupted: { label: "已中断，待核对", tone: "warning" },
   running: { label: "执行中", tone: "info" },
   waiting_approval: { label: "等待审批", tone: "warning" },
   completed: { label: "已结束", tone: "neutral" },

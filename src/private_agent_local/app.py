@@ -27,6 +27,8 @@ from .cloud import Cloud, CloudError
 from .connections import ModelConfig
 from .execution_tools import CancelArgs, StdinArgs
 from .local_models import LocalInference
+from .recovery import ControlConflict, ControlInput, SteerInput
+from .run_review import review
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import Store, now
 
@@ -40,7 +42,7 @@ CAPABILITIES = {
     "project_bound_runs_enabled": True, "coding_workspace_auto_approve": True,
     "coding_full_access_supported": True, "coding_full_access_audit": True,
     "coding_full_access_revoke": True, "coding_context_budget_enabled": True,
-    "coding_execution_detail_enabled": True, "coding_worktree_enabled": False,
+    "coding_execution_detail_enabled": True, "coding_worktree_enabled": True,
     "coding_diagnostic_commands_enabled": True, "coding_local_branches_enabled": True,
     "coding_powershell_commands_enabled": os.name == "nt", "product_timezone": "Asia/Shanghai",
     "coding_context_compaction_enabled": True, "coding_project_instructions_enabled": True,
@@ -48,6 +50,7 @@ CAPABILITIES = {
     "coding_powershell_file_writes_enabled": False,
     "coding_rg_available": shutil.which("rg") is not None,
     "coding_execution_sessions_enabled": True,
+    "coding_recovery_contract_version": "1.0",
 }
 
 
@@ -90,6 +93,11 @@ class BranchInput(Input):
     branch_name: str = Field(min_length=1, max_length=255)
 
 
+class WorktreeInput(Input):
+    ref: str = Field(min_length=1, max_length=255)
+    request_id: str = Field(min_length=1, max_length=100)
+
+
 class SessionInput(Binding):
     title: str = Field(default="新任务", min_length=1, max_length=255)
     kind: Literal["coding"] = "coding"
@@ -112,6 +120,7 @@ class RunInput(Binding):
     client_request_id: str | None = Field(default=None, max_length=100)
     completion_contract_version: Literal["1.0"] | None = None
     execution_contract_version: Literal["1.0"] | None = None
+    recovery_contract_version: Literal["1.0"] | None = None
     completion_requirements: list[Requirement] = Field(default_factory=list, max_length=32)
     context_limits: ContextLimits = Field(default_factory=ContextLimits)
 
@@ -405,7 +414,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         root = runtime.root(project_id, item["id"])
         before = await asyncio.to_thread(git_workspace.inspect, root)
         sync_workspace_git(runtime, item, before)
-        state = await asyncio.to_thread(git_workspace.switch, root, data.branch_name, before)
+        with runtime.workspaces.exclusive(root):
+            state = await asyncio.to_thread(git_workspace.switch, root, data.branch_name, before)
         sync_workspace_git(runtime, item, state)
         runtime.store.audit("git.branch_switched", project_id=project_id, branch_name=data.branch_name)
         return state
@@ -413,6 +423,14 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
     @app.post("/projects/{project_id}/workspaces/root/ensure", status_code=201)
     async def ensure_workspace(project_id: int, runtime: Runtime = Depends(local)):
         return workspace(runtime, runtime.store.get("project", project_id))
+
+    @app.post("/projects/{project_id}/workspaces/worktree", status_code=201)
+    async def create_worktree(project_id: int, data: WorktreeInput, runtime: Runtime = Depends(local)):
+        return runtime.workspaces.create_worktree(project_id, data.ref, data.request_id)
+
+    @app.post("/projects/{project_id}/workspaces/{workspace_id}/cleanup")
+    async def cleanup_worktree(project_id: int, workspace_id: int, runtime: Runtime = Depends(local)):
+        return runtime.workspaces.remove_worktree(project_id, workspace_id)
 
     @app.get("/projects/{project_id}/workspaces/{workspace_id}")
     async def get_workspace(project_id: int, workspace_id: int, runtime: Runtime = Depends(local)):
@@ -436,7 +454,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         # The explicit file picker action authorizes copying this one file, never replacing existing files.
         relative = f"attachment-{uuid.uuid4().hex[:12]}-{source.name}"
         preview = files.patch_preview(root, relative, text)
-        files.apply_patch(root, preview, text)
+        with runtime.workspaces.exclusive(root):
+            files.apply_patch(root, preview, text)
         return {"rel_path": relative, "name": source.name, "language": source.suffix.lstrip(".") or None}
 
     @app.post("/projects/context")
@@ -565,8 +584,36 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
         return snapshot(runtime.store.run_state(run_id))
 
     @app.post("/agent-runs/{run_id}/cancel")
-    async def cancel(run_id: str, runtime: Runtime = Depends(local)):
+    async def cancel(run_id: str, data: ControlInput | None = None, runtime: Runtime = Depends(local)):
+        if data:
+            return await control_request(runtime, run_id, "cancel", data)
         return await runtime.cancel(run_id)
+
+    async def control_request(runtime, run_id, kind, data):
+        try:
+            return await runtime.controls.request(run_id, kind, data.model_dump())
+        except ControlConflict as error:
+            return JSONResponse(status_code=409, content={"error_code": "run_state_conflict", "detail": str(error), "state_version": error.version})
+
+    @app.post("/agent-runs/{run_id}/steer", status_code=202)
+    async def steer(run_id: str, data: SteerInput, runtime: Runtime = Depends(local)):
+        return await control_request(runtime, run_id, "steer", data)
+
+    @app.post("/agent-runs/{run_id}/pause", status_code=202)
+    async def pause(run_id: str, data: ControlInput, runtime: Runtime = Depends(local)):
+        return await control_request(runtime, run_id, "pause", data)
+
+    @app.post("/agent-runs/{run_id}/resume", status_code=202)
+    async def resume(run_id: str, data: ControlInput, runtime: Runtime = Depends(local)):
+        return await control_request(runtime, run_id, "resume", data)
+
+    @app.get("/agent-runs/{run_id}/recovery")
+    async def recovery(run_id: str, runtime: Runtime = Depends(local)):
+        return runtime.recovery.inspect(runtime.store.run(run_id))
+
+    @app.get("/agent-runs/{run_id}/review")
+    async def run_review(run_id: str, runtime: Runtime = Depends(local)):
+        return review(runtime, runtime.store.run(run_id))
 
     @app.get("/agent-runs/{run_id}/events")
     async def events(run_id: str, after_sequence: int = Query(default=0, ge=0),
@@ -675,7 +722,8 @@ def create_app(*, data_dir: Path, cloud: Cloud, nonce: str, port: int = 0, shutd
             runtime.require_grant(run)
             if runtime.store.has_active_run():
                 raise ValueError("已有新任务运行，回滚已停止")
-        result = await runtime.patches.apply(run, root, patch_id, data.preview_sha256, guard)
+        with runtime.workspaces.exclusive(root):
+            result = await runtime.patches.apply(run, root, patch_id, data.preview_sha256, guard)
         with runtime.store.transaction():
             run = runtime.store.run(run_id)
             recorded = run.setdefault("recorded_rollbacks", [])

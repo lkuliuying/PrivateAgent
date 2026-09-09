@@ -74,6 +74,7 @@ export function parseExecutionResult(value: unknown, executionId: string): Execu
 }
 
 export function runResultMeta(status: AgentRunStatus, outcome?: RunOutcome | null, verifying = false): { label: string; tone: string } {
+  if (["queued", "paused", "interrupted"].includes(status)) return RUN_STATUS_META[status];
   if (["created", "running", "waiting_approval"].includes(status)) {
     return verifying ? { label: "验证中", tone: "info" } : RUN_STATUS_META[status];
   }

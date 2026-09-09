@@ -482,7 +482,6 @@ impl RestrictedChild {
                 return Ok(None);
             }
             self.exited = true;
-            CloseHandle(self.main_thread_handle);
             Ok(Some(code as i32))
         }
     }
@@ -510,6 +509,7 @@ impl Drop for RestrictedChild {
                     terminate(self.process_handle, 1);
                 }
             }
+            CloseHandle(self.main_thread_handle);
             CloseHandle(self.process_handle);
         }
     }
@@ -524,15 +524,6 @@ pub struct RestrictedSpawn {
     pub stdin_write: Option<PipeWriter>,
 }
 
-impl RestrictedSpawn {
-    pub fn resume(&self) {
-        unsafe {
-            resume_thread(self.main_thread_handle);
-        }
-    }
-
-}
-
 // ---------------------------------------------------------------------------
 // 环境/命令行构造
 // ---------------------------------------------------------------------------
@@ -543,15 +534,41 @@ pub fn build_environment_block(env_diff: &[(String, String)]) -> Vec<u16> {
         block.extend(format!("{key}={value}").encode_utf16());
         block.push(0);
     }
+    // 空环境同样要求双零结束，否则 CreateProcessW 返回 ERROR_INVALID_PARAMETER。
+    if block.is_empty() { block.push(0); }
     block.push(0);
     block
 }
 
 pub fn build_command_line(argv: &[String]) -> String {
+    let is_cmd = argv.first().and_then(|arg| std::path::Path::new(arg).file_name())
+        .is_some_and(|name| name.to_string_lossy().eq_ignore_ascii_case("cmd.exe"));
+    if is_cmd && argv.len() == 5 && argv[1..4] == ["/d", "/s", "/c"] {
+        // 批处理尾串已在策略层校验，保留 cmd 的独立转义约定。
+        return format!("{} /d /s /c \"{}\"", quote_argument(&argv[0]), argv[4]);
+    }
     argv.iter()
-        .map(|arg| format!("\"{}\"", arg.replace('"', "\"\"")))
+        .map(|arg| quote_argument(arg))
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn quote_argument(arg: &str) -> String {
+    // 遵循 Windows CRT 规则：引号前的反斜杠与末尾反斜杠必须翻倍。
+    let mut output = String::from("\"");
+    let mut slashes = 0;
+    for ch in arg.chars() {
+        if ch == '\\' {
+            slashes += 1;
+            continue;
+        }
+        output.push_str(&"\\".repeat(if ch == '"' { slashes * 2 + 1 } else { slashes }));
+        output.push(ch);
+        slashes = 0;
+    }
+    output.push_str(&"\\".repeat(slashes * 2));
+    output.push('"');
+    output
 }
 
 // ---------------------------------------------------------------------------
@@ -665,78 +682,19 @@ fn ac_trace(msg: &str) {
 
 pub struct AppContainerGuard {
     pub sid: PSID,
-    profile_name: Vec<u16>,
 }
 
-unsafe impl Send for AppContainerGuard {}
-
 impl AppContainerGuard {
-    pub fn profile_name_utf8_lossy(&self) -> String {
-        let bytes: Vec<u8> = self
-            .profile_name
-            .iter()
-            .filter(|&&c| c != 0)
-            .map(|&c| c as u8)
-            .collect();
-        String::from_utf8_lossy(&bytes).into_owned()
-    }
-
-    /// 创建零能力 AppContainer；已存在则删除重建（本机 userenv 缺少
-    /// DeriveAppContainerSidFromAppName 导出，实测无法派生既有 SID）。
-    pub fn create_zero_capability(profile_name: &str) -> io::Result<Self> {
+    /// 授权协调器管理身份和 ACL；宿主只派生 SID，不复用或删除其他运行的身份。
+    pub fn existing(profile_name: &str) -> io::Result<Self> {
         unsafe {
-            ac_trace("create_profile begin");
-            let mut name16 = wide0(profile_name);
-            let create_profile: unsafe extern "system" fn(
-                *const u16,
-                *mut u16,
-                *mut u16,
-                *const core::ffi::c_void,
-                u32,
-                *mut PSID,
-            ) -> i32 = std::mem::transmute(get_proc(
-                load_module("userenv.dll"),
-                "CreateAppContainerProfile",
-            )?);
-            let delete_profile: unsafe extern "system" fn(*const u16) -> i32 =
-                std::mem::transmute(get_proc(
-                    load_module("userenv.dll"),
-                    "DeleteAppContainerProfile",
-                )?);
-            let mut sid: PSID = std::ptr::null_mut();
-            let hr = create_profile(
-                name16.as_mut_ptr(),
-                name16.as_mut_ptr(),
-                name16.as_mut_ptr(),
-                std::ptr::null(), // 零 capability
-                0,
-                &mut sid,
-            );
-            if hr == -2147024713 {
-                // ERROR_ALREADY_EXISTS：删除陈旧 profile 后重建（启动期无
-                // 附着进程）。SID 随新 profile 变化，授权在之后统一执行。
-                ac_trace("create_profile exists → delete & recreate");
-                if delete_profile(name16.as_mut_ptr()) == 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                let hr_retry = create_profile(
-                    name16.as_mut_ptr(),
-                    name16.as_mut_ptr(),
-                    name16.as_mut_ptr(),
-                    std::ptr::null(),
-                    0,
-                    &mut sid,
-                );
-                if hr_retry < 0 {
-                    ac_trace(&format!("recreate hr={hr_retry:#x}"));
-                    return Err(io::Error::from_raw_os_error(hr_retry));
-                }
-            } else if hr < 0 {
-                ac_trace(&format!("create_profile hr={hr:#x}"));
-                return Err(io::Error::from_raw_os_error(hr));
-            }
-            ac_trace("create_profile ok");
-            Ok(Self { sid, profile_name: name16 })
+            let derive: unsafe extern "system" fn(*const u16, *mut PSID) -> i32 =
+                std::mem::transmute(get_proc(load_module("userenv.dll"), "DeriveAppContainerSidFromAppContainerName")?);
+            let name = wide0(profile_name);
+            let mut sid = std::ptr::null_mut();
+            let result = derive(name.as_ptr(), &mut sid);
+            if result < 0 { return Err(io::Error::from_raw_os_error(result)); }
+            Ok(Self { sid })
         }
     }
 }
@@ -744,201 +702,10 @@ impl AppContainerGuard {
 impl Drop for AppContainerGuard {
     fn drop(&mut self) {
         unsafe {
-            if let Ok(delete_profile) = (|| -> io::Result<
-                unsafe extern "system" fn(*const u16) -> i32,
-            > {
-                Ok(std::mem::transmute(get_proc(
-                    load_module("userenv.dll"),
-                    "DeleteAppContainerProfile",
-                )?))
-            })() {
-                delete_profile(self.profile_name.as_ptr());
+            if let Ok(free) = get_proc(load_module("advapi32.dll"), "FreeSid") {
+                let free: unsafe extern "system" fn(PSID) -> PSID = std::mem::transmute(free);
+                free(self.sid);
             }
-            free_local(self.sid);
-        }
-    }
-}
-
-/// AC 运行时：profile + 解释器根常驻 RX 基线（host 级一次性复用；
-/// 不随 execution 撤销——DACL 重写触发整树继承重算，巨目录卡死）。
-pub struct AcRuntime {
-    pub guard: AppContainerGuard,
-    #[allow(dead_code)]
-    granted_roots: Vec<String>,
-}
-
-unsafe impl Send for AcRuntime {}
-unsafe impl Sync for AcRuntime {}
-
-static AC_RUNTIME: std::sync::OnceLock<Result<AcRuntime, String>> =
-    std::sync::OnceLock::new();
-
-/// 获取（或首次创建）host 级 AC 运行时；失败被缓存并持续失败关闭。
-pub fn ensure_ac_runtime(
-    profile_name: &str,
-    grant_roots: &[String],
-) -> Result<&'static AcRuntime, String> {
-    let runtime = AC_RUNTIME.get_or_init(|| {
-        let guard = AppContainerGuard::create_zero_capability(profile_name)
-            .map_err(|err| format!("profile: {err}"))?;
-        let granted = guard
-            .grant_runtime_paths(grant_roots)
-            .map_err(|err| format!("grant: {err}"))?;
-        Ok(AcRuntime { guard, granted_roots: granted })
-    });
-    runtime.as_ref().map_err(|err| err.clone())
-}
-
-impl AcRuntime {
-    /// AC 进程专用 cwd：%LOCALAPPDATA%\Packages\<profile>\AC。
-    /// （系统默认对该 SID 开放；绝不触碰工作区 DACL。）
-    pub fn working_dir(&self) -> std::path::PathBuf {
-        let base = std::env::var_os("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .map(|u| {
-                        std::path::PathBuf::from(u).join("AppData").join("Local")
-                    })
-                    .unwrap_or_else(|| std::path::PathBuf::from("."))
-            });
-        let dir = base
-            .join("Packages")
-            .join(self.guard.profile_name_utf8_lossy())
-            .join("AC");
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    }
-}
-
-impl AppContainerGuard {
-    /// N1b：为该 AC SID 授予一组运行时目录的读/执行权限（继承到子树）。
-    pub fn grant_runtime_paths(&self, paths: &[String]) -> io::Result<Vec<String>> {
-        let advapi = load_module("advapi32.dll");
-        unsafe {
-            let get_dacl: unsafe extern "system" fn(
-                *const u16,
-                i32,
-                u32,
-                *mut PSID,
-                *mut PSID,
-                *mut *mut windows_sys::Win32::Security::ACL,
-                *mut *mut windows_sys::Win32::Security::ACL,
-                *mut *mut core::ffi::c_void,
-            ) -> u32 = std::mem::transmute(get_proc(
-                advapi,
-                "GetNamedSecurityInfoW",
-            )?);
-            let set_dacl: unsafe extern "system" fn(
-                *mut u16,
-                i32,
-                u32,
-                PSID,
-                PSID,
-                *const windows_sys::Win32::Security::ACL,
-                *const windows_sys::Win32::Security::ACL,
-            ) -> u32 = std::mem::transmute(get_proc(
-                advapi,
-                "SetNamedSecurityInfoW",
-            )?);
-            let set_entries: unsafe extern "system" fn(
-                u32,
-                *const ExplicitAccessW,
-                *const windows_sys::Win32::Security::ACL,
-                *mut *mut windows_sys::Win32::Security::ACL,
-            ) -> u32 = std::mem::transmute(get_proc(
-                advapi,
-                "SetEntriesInAclW",
-            )?);
-
-            #[repr(C)]
-            struct TrusteeW {
-                multiple_trustee: *mut core::ffi::c_void,
-                multiple_trustee_operation: i32,
-                trustee_form: i32,
-                trustee_type: i32,
-                ptstr_name: *mut u16,
-            }
-            #[repr(C)]
-            struct ExplicitAccessW {
-                grf_access_permissions: u32,
-                grf_access_mode: i32,
-                grf_inheritance: u32,
-                trustee: TrusteeW,
-            }
-
-            let mut granted = Vec::new();
-            for path in paths {
-                ac_trace(&format!("grant begin {path}"));
-                let mut path16 = wide0(path);
-                let mut old_dacl: *mut windows_sys::Win32::Security::ACL =
-                    std::ptr::null_mut();
-                let mut sd: *mut core::ffi::c_void = std::ptr::null_mut();
-                // SE_FILE_OBJECT=1, DACL_SECURITY_INFORMATION=4
-                if get_dacl(
-                    path16.as_ptr(),
-                    1,
-                    4,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    &mut old_dacl,
-                    std::ptr::null_mut(),
-                    &mut sd,
-                ) != 0
-                {
-                    let err = io::Error::last_os_error();
-                    ac_trace(&format!("grant FAIL {path}: {err}"));
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!("ac:grant {path}: {err}"),
-                    ));
-                }
-                let ea = ExplicitAccessW {
-                    grf_access_permissions: 0x8000_0000 | 0x2000_0000,
-                    grf_access_mode: 1,  // GRANT_ACCESS
-                    grf_inheritance: 3,  // OBJECT | CONTAINER
-                    trustee: TrusteeW {
-                        multiple_trustee: std::ptr::null_mut(),
-                        multiple_trustee_operation: 0,
-                        trustee_form: 0, // TRUSTEE_IS_SID
-                        trustee_type: 1, // TRUSTEE_IS_UNKNOWN
-                        ptstr_name: self.sid as *mut u16,
-                    },
-                };
-                let mut new_dacl: *mut windows_sys::Win32::Security::ACL =
-                    std::ptr::null_mut();
-                if set_entries(1, &ea, old_dacl, &mut new_dacl) != 0 {
-                    let err = io::Error::last_os_error();
-                    free_local(sd);
-                    ac_trace(&format!("grant FAIL {path}: {err}"));
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!("ac:grant {path}: {err}"),
-                    ));
-                }
-                let ok = set_dacl(
-                    path16.as_mut_ptr(),
-                    1,
-                    4,
-                    std::ptr::null_mut(),
-                    std::ptr::null_mut(),
-                    new_dacl,
-                    std::ptr::null(),
-                );
-                free_local(new_dacl as *mut core::ffi::c_void);
-                free_local(sd);
-                if ok != 0 {
-                    let err = io::Error::last_os_error();
-                    ac_trace(&format!("grant FAIL {path}: {err}"));
-                    return Err(io::Error::new(
-                        err.kind(),
-                        format!("ac:grant {path}: {err}"),
-                    ));
-                }
-                granted.push(path.clone());
-                ac_trace(&format!("grant ok {path}"));
-            }
-            Ok(granted)
         }
     }
 }
@@ -949,23 +716,22 @@ impl AppContainerGuard {
 
 static PTY_READY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-/// 首次调用时以 cmd 回显探针实证 ConPTY 附着：
-/// 附着有效 → 管道内出现回显标记；环境受限（本机实证：属性表附着不生效，
-/// 与 AC 加载链限制同源）→ false，pty 请求一律结构化拒绝。
+/// 首次调用时以真实管道回显核对 ConPTY；探针失败时保持拒绝。
 pub fn pty_environment_ready() -> bool {
     *PTY_READY.get_or_init(probe_pty_attachment)
 }
 
 fn probe_pty_attachment() -> bool {
-    let argv = vec![
-        "C:\\Windows\\System32\\cmd.exe".to_string(),
-        "/d".to_string(),
-        "/c".to_string(),
-        "echo PTYPROBE-OK".to_string(),
-    ];
     let cwd = std::env::var_os("SystemRoot")
         .map(|value| value.to_string_lossy().to_string())
         .unwrap_or_else(|| ".".to_string());
+    let argv = vec![
+        format!("{cwd}\\System32\\cmd.exe"),
+        "/d".to_string(),
+        "/s".to_string(),
+        "/c".to_string(),
+        "echo PTYPROBE-OK".to_string(),
+    ];
     let env_block = build_environment_block(&[]);
     let spawned = match spawn_pty(&argv, &cwd, &env_block, false, false) {
         Ok(spawned) => spawned,
@@ -976,10 +742,10 @@ fn probe_pty_attachment() -> bool {
         spawned.main_thread_handle,
     );
     let console = spawned.console; // 保持会话存活至探针结束
-    drop(spawned.input_write); // 探针不写入，立即关闭输入端
+    let input = spawned.input_write; // 关闭 PTY 输入会结束控制台，必须保留到探针结束。
     let mut reader = spawned.output_read;
     let (tx, rx) = std::sync::mpsc::channel::<bool>();
-    std::thread::spawn(move || {
+    let reader_thread = std::thread::spawn(move || {
         let mut buf = [0u8; 4096];
         let mut acc: Vec<u8> = Vec::new();
         loop {
@@ -1005,6 +771,8 @@ fn probe_pty_attachment() -> bool {
         .unwrap_or(false);
     child.kill();
     drop(console);
+    drop(input);
+    let _ = reader_thread.join();
     ac_trace(&format!("pty:probe ready={ready}"));
     ready
 }
@@ -1013,187 +781,97 @@ fn probe_pty_attachment() -> bool {
 // AppContainer 启动（属性表：SECURITY_CAPABILITIES + 继承句柄白名单）
 // ---------------------------------------------------------------------------
 
+struct PendingHandles(Vec<HANDLE>);
+
+impl PendingHandles {
+    fn take(&mut self, handle: HANDLE) -> HANDLE {
+        self.0.retain(|&item| item != handle);
+        handle
+    }
+}
+
+impl Drop for PendingHandles {
+    fn drop(&mut self) {
+        for &handle in &self.0 { unsafe { CloseHandle(handle); } }
+    }
+}
+
+struct AttributeBuffer {
+    storage: Vec<usize>,
+    delete: unsafe extern "system" fn(*mut core::ffi::c_void),
+}
+
+impl Drop for AttributeBuffer {
+    fn drop(&mut self) { unsafe { (self.delete)(self.storage.as_mut_ptr().cast()); } }
+}
+
 pub fn spawn_appcontainer(
-    argv: &[String],
-    cwd: &str,
-    env_block: &[u16],
-    guard: &AppContainerGuard,
-    want_stdin: bool,
+    argv: &[String], cwd: &str, env_block: &[u16], guard: &AppContainerGuard, want_stdin: bool,
 ) -> io::Result<RestrictedSpawn> {
     unsafe {
-        let kernel32 = load_module("kernel32.dll");
-        let init_attr: unsafe extern "system" fn(
-            *mut core::ffi::c_void,
-            u32,
-            u32,
-            *mut usize,
-        ) -> i32 = std::mem::transmute(get_proc(kernel32, "InitializeProcThreadAttributeList")?);
-        let update_attr: unsafe extern "system" fn(
-            *mut core::ffi::c_void,
-            u32,
-            usize,
-            *const core::ffi::c_void,
-            usize,
-            *mut core::ffi::c_void,
-            *const core::ffi::c_void,
-        ) -> i32 = std::mem::transmute(get_proc(kernel32, "UpdateProcThreadAttribute")?);
-        let delete_attr: unsafe extern "system" fn(*mut core::ffi::c_void) =
-            std::mem::transmute(get_proc(kernel32, "DeleteProcThreadAttributeList")?);
-
-        let mut size: usize = 0;
-        let _ = init_attr(std::ptr::null_mut(), 2, 0, &mut size);
-        let mut attr_buf: Vec<u8> = vec![0u8; size];
-        let attr_list = attr_buf.as_mut_ptr() as *mut core::ffi::c_void;
-        if init_attr(attr_list, 2, 0, &mut size) == 0 {
+        let kernel = load_module("kernel32.dll");
+        let init: unsafe extern "system" fn(*mut core::ffi::c_void, u32, u32, *mut usize) -> i32 =
+            std::mem::transmute(get_proc(kernel, "InitializeProcThreadAttributeList")?);
+        let update: unsafe extern "system" fn(*mut core::ffi::c_void, u32, usize, *const core::ffi::c_void, usize, *mut core::ffi::c_void, *mut usize) -> i32 =
+            std::mem::transmute(get_proc(kernel, "UpdateProcThreadAttribute")?);
+        let delete = std::mem::transmute(get_proc(kernel, "DeleteProcThreadAttributeList")?);
+        let mut size = 0;
+        init(std::ptr::null_mut(), 2, 0, &mut size);
+        let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+        if init(storage.as_mut_ptr().cast(), 2, 0, &mut size) == 0 { return Err(io::Error::last_os_error()); }
+        let mut attributes = AttributeBuffer { storage, delete };
+        let list = attributes.storage.as_mut_ptr().cast();
+        let capabilities = windows_sys::Win32::Security::SECURITY_CAPABILITIES {
+            AppContainerSid: guard.sid, Capabilities: std::ptr::null_mut(), CapabilityCount: 0, Reserved: 0,
+        };
+        if update(list, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
+            (&capabilities as *const windows_sys::Win32::Security::SECURITY_CAPABILITIES).cast(),
+            std::mem::size_of_val(&capabilities), std::ptr::null_mut(), std::ptr::null_mut()) == 0 {
             return Err(io::Error::last_os_error());
         }
-
-        let sec_caps = windows_sys::Win32::Security::SECURITY_CAPABILITIES {
-            AppContainerSid: guard.sid,
-            Capabilities: std::ptr::null_mut(),
-            CapabilityCount: 0, // 零能力 = 全网禁
-            Reserved: 0,
+        let create_pipe: unsafe extern "system" fn(*mut HANDLE, *mut HANDLE, *const SECURITY_ATTRIBUTES, u32) -> i32 =
+            std::mem::transmute(get_proc(kernel, "CreatePipe")?);
+        let security = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(), bInheritHandle: 1 };
+        let mut handles = PendingHandles(Vec::new());
+        let mut pipe = || -> io::Result<(HANDLE, HANDLE)> {
+            let (mut read, mut write) = (std::ptr::null_mut(), std::ptr::null_mut());
+            if create_pipe(&mut read, &mut write, &security, 0) == 0 { return Err(io::Error::last_os_error()); }
+            handles.0.extend([read, write]);
+            Ok((read, write))
         };
-        if update_attr(
-            attr_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES as usize,
-            &sec_caps as *const _ as *const core::ffi::c_void,
-            std::mem::size_of::<windows_sys::Win32::Security::SECURITY_CAPABILITIES>(),
-            std::ptr::null_mut(),
-            std::ptr::null(),
-        ) == 0
-        {
-            let err = io::Error::new(
-                io::ErrorKind::Other,
-                format!("ac:update_attr_caps: {}", io::Error::last_os_error()),
-            );
-            delete_attr(attr_list);
-            return Err(err);
+        let (out_read, out_write) = pipe()?;
+        let (err_read, err_write) = pipe()?;
+        let (in_read, in_write) = pipe()?;
+        for handle in [out_read, err_read, in_write] {
+            if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) == 0 { return Err(io::Error::last_os_error()); }
         }
-
-        let sa = SECURITY_ATTRIBUTES {
-            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
-            lpSecurityDescriptor: std::ptr::null_mut(),
-            bInheritHandle: 1,
-        };
-        let make_pipe = || -> io::Result<(HANDLE, HANDLE)> {
-            let create_pipe: unsafe extern "system" fn(
-                *mut HANDLE,
-                *mut HANDLE,
-                *const SECURITY_ATTRIBUTES,
-                u32,
-            ) -> i32 = std::mem::transmute(get_proc(kernel32, "CreatePipe")?);
-            let mut r: HANDLE = std::ptr::null_mut();
-            let mut w: HANDLE = std::ptr::null_mut();
-            if create_pipe(&mut r, &mut w, &sa, 0) == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok((r, w))
-        };
-        let (out_r, out_w) = make_pipe()?;
-        let (err_r, err_w) = make_pipe()?;
-        let (in_stdin_read_end, in_w) = make_pipe()?;
-        SetHandleInformation(out_r, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(err_r, HANDLE_FLAG_INHERIT, 0);
-
-        // 继承句柄白名单：AC + bInheritHandles=TRUE 组合必须显式列举
-        //（ctypes 最小复现定位的必要条件之一）。
-        let inherit_list: [HANDLE; 3] = [in_stdin_read_end, out_w, err_w];
-        if update_attr(
-            attr_list,
-            0,
-            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-            inherit_list.as_ptr() as *const core::ffi::c_void,
-            std::mem::size_of::<[HANDLE; 3]>(),
-            std::ptr::null_mut(),
-            std::ptr::null(),
-        ) == 0
-        {
-            let err = io::Error::new(
-                io::ErrorKind::Other,
-                format!("ac:update_attr_handles: {}", io::Error::last_os_error()),
-            );
-            delete_attr(attr_list);
-            return Err(err);
+        let inherited = [in_read, out_write, err_write];
+        if update(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize, inherited.as_ptr().cast(),
+            std::mem::size_of_val(&inherited), std::ptr::null_mut(), std::ptr::null_mut()) == 0 {
+            return Err(io::Error::last_os_error());
         }
-
-        let mut command_line: Vec<u16> =
-            build_command_line(argv).encode_utf16().collect();
-        command_line.push(0);
-        let mut cwd_utf16: Vec<u16> = cwd.encode_utf16().collect();
-        cwd_utf16.push(0);
-
-        let mut startup_ex: STARTUPINFOEXW = std::mem::zeroed();
-        startup_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        startup_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-        startup_ex.StartupInfo.hStdInput = in_stdin_read_end;
-        startup_ex.StartupInfo.hStdOutput = out_w;
-        startup_ex.StartupInfo.hStdError = err_w;
-        startup_ex.lpAttributeList = attr_list;
-
-        let mut app_name: Vec<u16> = argv[0].encode_utf16().collect();
-        app_name.push(0);
-        let minimal = std::env::var_os("PA_AC_MINIMAL").is_some();
-        ac_trace(&format!("create_process begin minimal={minimal}"));
-        let mut proc_info: PROCESS_INFORMATION = std::mem::zeroed();
-        let (app_ptr, cmd_ptr, env_ptr, cwd_ptr): (
-            *const u16,
-            *mut u16,
-            *const core::ffi::c_void,
-            *const u16,
-        ) = if minimal {
-            // ctypes 成功形态：全部 None/空，仅属性表生效。
-            (std::ptr::null(), std::ptr::null_mut(), std::ptr::null(), std::ptr::null())
-        } else {
-            (
-                app_name.as_ptr(),
-                command_line.as_mut_ptr(),
-                env_block.as_ptr() as *const core::ffi::c_void,
-                cwd_utf16.as_ptr(),
-            )
-        };
-        let mut app_name: Vec<u16> = argv[0].encode_utf16().collect();
-        app_name.push(0);
-        let ok = CreateProcessW(
-            app_ptr,
-            cmd_ptr,
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-            CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            env_ptr,
-            cwd_ptr,
-            &startup_ex.StartupInfo,
-            &mut proc_info,
-        );
-        ac_trace(&format!("create_process returned ok={ok}"));
-        CloseHandle(out_w);
-        CloseHandle(err_w);
-        let stdin_write = if want_stdin {
-            Some(PipeWriter { handle: in_w })
-        } else {
-            CloseHandle(in_w);
-            None
-        };
-        CloseHandle(in_stdin_read_end);
-        delete_attr(attr_list);
-        if ok == 0 {
-            // 失败关闭：绝不降级为无沙箱执行（§11.5 / N1b 实证记录）。
-            let err = io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("ac:create_process: {}", io::Error::last_os_error()),
-            );
-            CloseHandle(out_r);
-            CloseHandle(err_r);
-            return Err(err);
+        let mut startup: STARTUPINFOEXW = std::mem::zeroed();
+        startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        startup.StartupInfo.hStdInput = in_read;
+        startup.StartupInfo.hStdOutput = out_write;
+        startup.StartupInfo.hStdError = err_write;
+        startup.lpAttributeList = list;
+        let application = wide0(&argv[0]);
+        let mut command = wide0(&build_command_line(argv));
+        let directory = wide0(cwd);
+        let mut process: PROCESS_INFORMATION = std::mem::zeroed();
+        // 挂起创建并继承宿主 Job，准备失败时由 RAII 回收所有句柄，绝不降级。
+        if CreateProcessW(application.as_ptr(), command.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1,
+            CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | 0x08000000,
+            env_block.as_ptr().cast(), directory.as_ptr(), &startup.StartupInfo, &mut process) == 0 {
+            return Err(io::Error::last_os_error());
         }
-        Ok(RestrictedSpawn {
-            process_handle: proc_info.hProcess,
-            main_thread_handle: proc_info.hThread,
-            stdout_read: PipeReader { handle: out_r },
-            stderr_read: PipeReader { handle: err_r },
-            stdin_write,
+        Ok(RestrictedSpawn { process_handle: process.hProcess, main_thread_handle: process.hThread,
+            stdout_read: PipeReader { handle: handles.take(out_read) },
+            stderr_read: PipeReader { handle: handles.take(err_read) },
+            stdin_write: if want_stdin { Some(PipeWriter { handle: handles.take(in_write) }) } else { None },
         })
     }
 }
@@ -1213,9 +891,17 @@ type HPC = *mut core::ffi::c_void;
 /// 伪控制台句柄；drop 即释放（执行移除时随状态一起回收）。
 pub struct PseudoConsole {
     handle: HPC,
+    /// 未开放 stdin 时仍保留输入端，避免 ConPTY 被误判为已断开。
+    input_keepalive: Option<PipeWriter>,
 }
 
 unsafe impl Send for PseudoConsole {}
+
+impl PseudoConsole {
+    pub fn keep_input(&mut self, input: PipeWriter) {
+        self.input_keepalive = Some(input);
+    }
+}
 
 impl Drop for PseudoConsole {
     fn drop(&mut self) {
@@ -1255,11 +941,12 @@ pub fn spawn_pty(
             unsafe extern "system" fn(Coord, HANDLE, HANDLE, u32, *mut HPC) -> i32;
         let create_pty: CreatePtyFn =
             std::mem::transmute(get_proc(kernel32, "CreatePseudoConsole")?);
+        get_proc(kernel32, "ClosePseudoConsole")?;
 
         let sa = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: std::ptr::null_mut(),
-            bInheritHandle: 1,
+            bInheritHandle: 0,
         };
         let make_pipe = || -> io::Result<(HANDLE, HANDLE)> {
             let create_pipe: unsafe extern "system" fn(
@@ -1281,23 +968,18 @@ pub fn spawn_pty(
             CloseHandle(pty_in_w);
             err
         })?;
-        // ConPTY 会话接管两端；主机侧只留写入端与读取端。
+        let mut handles = PendingHandles(vec![pty_in_r, pty_in_w, pty_out_r, pty_out_w]);
+        // 创建子进程前保留全部管道端点，失败路径由守卫释放。
         let mut hpc: HPC = std::ptr::null_mut();
         let hr = create_pty(Coord { x: 120, y: 30 }, pty_in_r, pty_out_w, 0, &mut hpc);
         ac_trace(&format!("pty:create hr={hr:#x} hpc_null={}", hpc.is_null()));
-        CloseHandle(pty_in_r);
-        CloseHandle(pty_out_w);
         if hr < 0 {
-            CloseHandle(pty_in_w);
-            CloseHandle(pty_out_r);
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 format!("pty:create_console: HRESULT {hr:#x}"),
             ));
         }
-        // 主机侧句柄一律非继承（会话经属性表传递，不靠句柄继承）。
-        SetHandleInformation(pty_in_w, HANDLE_FLAG_INHERIT, 0);
-        SetHandleInformation(pty_out_r, HANDLE_FLAG_INHERIT, 0);
+        let console = PseudoConsole { handle: hpc, input_keepalive: None };
 
         let init_attr: unsafe extern "system" fn(
             *mut core::ffi::c_void,
@@ -1322,14 +1004,12 @@ pub fn spawn_pty(
 
         let mut size: usize = 0;
         let _ = init_attr(std::ptr::null_mut(), 1, 0, &mut size);
-        let mut attr_buf: Vec<u8> = vec![0u8; size];
-        let attr_list = attr_buf.as_mut_ptr() as *mut core::ffi::c_void;
-        if init_attr(attr_list, 1, 0, &mut size) == 0 {
-            CloseHandle(pty_in_w);
-            CloseHandle(pty_out_r);
-            CloseHandle(hpc);
+        let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+        if init_attr(storage.as_mut_ptr().cast(), 1, 0, &mut size) == 0 {
             return Err(io::Error::last_os_error());
         }
+        let mut attributes = AttributeBuffer { storage, delete: delete_attr };
+        let attr_list = attributes.storage.as_mut_ptr().cast();
         // PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE = 0x00020016
         if update_attr(
             attr_list,
@@ -1341,12 +1021,7 @@ pub fn spawn_pty(
             std::ptr::null(),
         ) == 0
         {
-            let err = io::Error::last_os_error();
-            delete_attr(attr_list);
-            CloseHandle(pty_in_w);
-            CloseHandle(pty_out_r);
-            CloseHandle(hpc);
-            return Err(err);
+            return Err(io::Error::last_os_error());
         }
 
         let mut command_line: Vec<u16> = build_command_line(argv).encode_utf16().collect();
@@ -1356,25 +1031,17 @@ pub fn spawn_pty(
 
         let mut startup_ex: STARTUPINFOEXW = std::mem::zeroed();
         startup_ex.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
+        // 显式空标准句柄阻止 Windows 将宿主 JSONL 管道复制给 PTY 子进程。
+        startup_ex.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
         startup_ex.lpAttributeList = attr_list;
 
         let mut app_name: Vec<u16> = argv[0].encode_utf16().collect();
         app_name.push(0);
         let mut proc_info: PROCESS_INFORMATION = std::mem::zeroed();
         let token = if low_integrity {
-            let token = duplicate_primary_token().map_err(|err| {
-                delete_attr(attr_list);
-                CloseHandle(pty_in_w);
-                CloseHandle(pty_out_r);
-                CloseHandle(hpc);
-                err
-            })?;
+            let token = duplicate_primary_token()?;
             if let Err(err) = set_low_integrity(token) {
                 CloseHandle(token);
-                delete_attr(attr_list);
-                CloseHandle(pty_in_w);
-                CloseHandle(pty_out_r);
-                CloseHandle(hpc);
                 return Err(err);
             }
             Some(token)
@@ -1389,9 +1056,7 @@ pub fn spawn_pty(
                 std::ptr::null(),
                 std::ptr::null(),
                 0,
-                // 注意：ConPTY 子进程不得 CREATE_SUSPENDED——控制台附着在进程
-                // 初始化期完成，挂起会导致与 conhost 的连接死锁（实证：挂起态下
-                // 子进程永久无输出）。Job 成员经宿主自分配继承，无窗口风险。
+                // 沿用非挂起创建，子进程继承宿主 Job，输入端维持附着生命周期。
                 CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                 env_block.as_ptr() as *const core::ffi::c_void,
                 cwd_utf16.as_ptr(),
@@ -1411,7 +1076,7 @@ pub fn spawn_pty(
                 &mut proc_info,
             ),
         };
-        delete_attr(attr_list);
+        let spawn_error = if ok == 0 { Some(io::Error::last_os_error()) } else { None };
         if let Some(token) = token {
             CloseHandle(token);
         }
@@ -1420,19 +1085,15 @@ pub fn spawn_pty(
             if ok == 0 { io::Error::last_os_error().raw_os_error().unwrap_or(-1) } else { 0 },
             proc_info.dwProcessId,
         ));
-        if ok == 0 {
-            let err = io::Error::last_os_error();
-            CloseHandle(pty_in_w);
-            CloseHandle(pty_out_r);
-            CloseHandle(hpc);
+        if let Some(err) = spawn_error {
             return Err(err);
         }
         Ok(PtySpawn {
             process_handle: proc_info.hProcess,
             main_thread_handle: proc_info.hThread,
-            output_read: PipeReader { handle: pty_out_r },
-            input_write: PipeWriter { handle: pty_in_w },
-            console: PseudoConsole { handle: hpc },
+            output_read: PipeReader { handle: handles.take(pty_out_r) },
+            input_write: PipeWriter { handle: handles.take(pty_in_w) },
+            console,
         })
     }
 }

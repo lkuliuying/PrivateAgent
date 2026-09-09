@@ -9,6 +9,18 @@ const {
 
 const release = (...args) => parseOptions(["https://www.liuyingapi.top", "--release", "--version", "1.0.1", ...args]);
 
+test("验收候选包隔离安装与数据目录，不进入正式更新通道", () => {
+  const config = bundleConfig(parseOptions(["--unified", "--qa", "--preview-installer", "--version", "1.0.0"]), "web");
+  assert.equal(config.identifier, "com.personal-assistant.desktop.candidate");
+  assert.equal(config.productName, "PrivateAgentCandidate");
+  assert.equal(config.mainBinaryName, "privateagent-candidate");
+  assert.deepEqual(config.plugins.updater.endpoints, []);
+  assert.equal(config.bundle.createUpdaterArtifacts, false);
+  assert.equal(config.bundle.windows.nsis.installerHooks, null);
+  assert.throws(() => release("--qa"), /QA/);
+  assert.throws(() => parseOptions(["--unified", "--qa"]), /QA/);
+});
+
 test("portable CLI remains unsigned and does not inherit installer identity or channel", () => {
   const options = parseOptions(["https://www.liuyingapi.top/"]);
   const config = bundleConfig(options, "../web");

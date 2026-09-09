@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch, type ComponentPublicInstance } from "vue";
 import { useNotifications } from "../../../stores/notifications";
 import { cancelExecution, closeExecutions, executionText, listExecutions, readExecution, writeExecution, type ManagedExecution } from "../api/executions";
 
@@ -7,6 +7,8 @@ const props = defineProps<{ sessionId: number }>();
 const notify = useNotifications();
 const items = ref<ManagedExecution[]>([]);
 const output = ref<Record<string, { cursor: number; text: string; gap: boolean }>>({});
+const panelElement = ref<HTMLElement | null>(null);
+const outputElements = new Map<string, HTMLPreElement>();
 const selected = ref<string | null>(null);
 const input = ref("");
 const busy = ref(false);
@@ -17,6 +19,11 @@ let generation = 0;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let controller: AbortController | undefined;
 
+function setOutputElement(id: string, element: Element | ComponentPublicInstance | null) {
+  if (element instanceof HTMLPreElement) outputElements.set(id, element);
+  else outputElements.delete(id);
+}
+
 async function refresh(mine = generation) {
   const session = props.sessionId;
   controller?.abort();
@@ -25,13 +32,26 @@ async function refresh(mine = generation) {
   try {
     const result = await listExecutions(session, request.signal);
     if (mine !== generation) return;
+    const panel = panelElement.value;
+    const followPanel = !panel || panel.scrollHeight - panel.scrollTop - panel.clientHeight < 48;
     items.value = result.items;
     for (const item of result.items.filter(item => item.execution_id === selected.value || ["starting", "running"].includes(item.status))) {
       const old = output.value[item.execution_id] ?? { cursor: 0, text: "", gap: false };
       const page = await readExecution(session, item.execution_id, old.cursor, request.signal);
       if (mine !== generation) return;
+      const element = outputElements.get(item.execution_id);
+      const follow = !element || element.scrollHeight - element.scrollTop - element.clientHeight < 48;
       const text = old.text + page.chunks.filter(chunk => chunk.sequence > old.cursor).map(chunk => chunk.data).join("");
       output.value = { ...output.value, [item.execution_id]: { cursor: page.next_cursor, text: executionText(text).slice(-64000), gap: old.gap || page.gap || text.length > 64000 } };
+      await nextTick();
+      if (mine !== generation) return;
+      // 只跟随正在阅读尾部的用户，保留向上翻阅历史输出的位置。
+      const current = outputElements.get(item.execution_id);
+      if (follow && current) {
+        current.scrollTop = current.scrollHeight;
+        // 面板被其他区域压缩时，外层也需跟随尾部，避免最后几行被裁掉。
+        if (followPanel && panelElement.value) panelElement.value.scrollTop = panelElement.value.scrollHeight;
+      }
     }
     error.value = "";
   } catch {
@@ -63,14 +83,15 @@ watch(() => props.sessionId, () => {
   generation += 1;
   clearTimeout(timer);
   controller?.abort();
+  outputElements.clear();
   items.value = []; output.value = {}; selected.value = null; error.value = ""; input.value = ""; busy.value = false;
   void refresh();
 }, { immediate: true });
-onBeforeUnmount(() => { generation += 1; clearTimeout(timer); controller?.abort(); });
+onBeforeUnmount(() => { generation += 1; clearTimeout(timer); controller?.abort(); outputElements.clear(); });
 </script>
 
 <template>
-  <section class="execution-panel" data-testid="execution-panel" aria-label="本机会话进程">
+  <section ref="panelElement" class="execution-panel" data-testid="execution-panel" aria-label="本机会话进程">
     <div class="execution-panel__head"><strong>本机进程 · {{ active.length }} 个运行中</strong>
       <button v-if="active.length" class="pa-btn" :disabled="busy" @click="action(() => closeExecutions(sessionId))">停止本会话全部进程</button>
     </div>
@@ -85,7 +106,7 @@ onBeforeUnmount(() => { generation += 1; clearTimeout(timer); controller?.abort(
       <p v-if="item.error">{{ item.error }}</p>
       <template v-if="selected === item.execution_id || ['starting', 'running'].includes(item.status)">
         <p v-if="item.dropped_bytes || output[item.execution_id]?.gap" role="status">输出窗口存在截断或缺口，已丢弃 {{ item.dropped_bytes }} 字节；此处不代表完整日志。</p>
-        <pre>{{ output[item.execution_id]?.text || '等待输出…' }}</pre>
+        <pre :ref="element => setOutputElement(item.execution_id, element)">{{ output[item.execution_id]?.text || '等待输出…' }}</pre>
         <div v-if="item.stdin_open" class="execution-panel__stdin">
           <input v-model="input" class="pa-input" maxlength="8192" aria-label="进程输入" />
           <button class="pa-btn" :disabled="busy" @click="send(item, false)">发送</button>

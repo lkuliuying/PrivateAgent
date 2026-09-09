@@ -12,10 +12,19 @@ from pathlib import Path
 
 from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
+
+
+class OwnedConnection(sqlite3.Connection):
+    def close(self):
+        try:
+            super().close()
+        finally:
+            if getattr(self, "recovery_lock", None):
+                self.recovery_lock.close()
 
 
 def now() -> str:
@@ -31,8 +40,19 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
         self.blobs = path.parent / "artifacts"
-        self.db = sqlite3.connect(path, check_same_thread=False, timeout=5)
+        from .workspaces import FileLock
+        recovery_lock = FileLock(path.with_suffix(".owner.lock"))
         try:
+            self.db = sqlite3.connect(path, check_same_thread=False, timeout=5, factory=OwnedConnection)
+        except BaseException:
+            recovery_lock.close()
+            raise
+        self.db.recovery_lock = recovery_lock
+        try:
+            sandbox_directory = path.parent / "sandbox-leases"
+            if os.name == "nt" and sandbox_directory.exists():
+                from .windows_sandbox import SandboxLease
+                SandboxLease.recover(sandbox_directory)
             self.db.execute("PRAGMA foreign_keys=ON")
             self.db.execute("PRAGMA busy_timeout=5000")
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -49,9 +69,10 @@ class Store:
             raise
 
     @contextmanager
-    def transaction(self):
+    def transaction(self, *, run=None):
         """保存点允许消息、运行和首个事件共享一个事务。"""
         name = "tx_" + uuid.uuid4().hex
+        previous = {**run, "events": list(run.get("events", []))} if run is not None else None
         self.db.execute(f"SAVEPOINT {name}")
         try:
             yield
@@ -59,6 +80,9 @@ class Store:
         except BaseException:
             self.db.execute(f"ROLLBACK TO SAVEPOINT {name}")
             self.db.execute(f"RELEASE SAVEPOINT {name}")
+            if previous is not None:
+                run.clear()
+                run.update(previous)
             raise
 
     def _backup(self) -> dict:
@@ -78,7 +102,7 @@ class Store:
             raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
         if version == SCHEMA_VERSION:
             return
-        if version in {2, 3, 4, 5}:
+        if version in {2, 3, 4, 5, 6}:
             backup = self._backup()
             with self.transaction():
                 if version == 2:
@@ -87,8 +111,10 @@ class Store:
                     self._context_schema()
                 if version < 5:
                     self._patch_schema()
-                self._execution_schema()
-                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "managed_execution_output"})))
+                if version < 6:
+                    self._execution_schema()
+                self._recovery_schema()
+                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "recovery_controls_workspace_leases"})))
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
         names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -119,6 +145,7 @@ class Store:
             self._context_schema()
             self._patch_schema()
             self._execution_schema()
+            self._recovery_schema()
             counts = {"objects": 0, "runs": 0}
             if legacy:
                 for item_id, kind, data in self.db.execute("SELECT id,kind,data FROM legacy_objects_v1 ORDER BY id").fetchall():
@@ -161,9 +188,13 @@ class Store:
         from .execution_store import create_schema
         create_schema(self.db)
 
+    def _recovery_schema(self):
+        from .recovery import create_schema
+        create_schema(self.db)
+
     def emit(self, run, event_type, payload, *, lightweight=False):
         """事务内分配唯一序号；高频输出只追加引用，不重复保存工具历史。"""
-        with self.transaction():
+        with self.transaction(run=run):
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM events WHERE run_id=?", (run["id"],)).fetchone()[0]
             event = {"sequence": sequence, "type": event_type, "payload": payload, "step_id": None, "created_at": now()}
             if lightweight:
@@ -173,6 +204,11 @@ class Store:
                 self.db.execute("UPDATE runs SET data=? WHERE id=?", (self._pack(state), run["id"]))
             else:
                 run["last_event_sequence"] = sequence
+                if run.get("recovery_contract_version") == "1.0":
+                    from .recovery import checkpoint
+                    run["state_version"] = run.get("state_version", 0) + 1
+                    checkpoint(self, run, event_type)
+                    payload.update(state_version=run["state_version"], checkpoint_id=run["checkpoint_id"])
                 self._save_run(run, appended_event=event)
         run["last_event_sequence"] = sequence
         run.setdefault("events", []).append(event)
@@ -186,7 +222,17 @@ class Store:
                 patch.update(status="interrupted", error="执行器中断；未重放。请查看逐项落盘日志与当前文件状态")
                 self.db.execute("UPDATE patch_sets SET status=?,data=? WHERE id=?", (patch["status"], self._pack(patch), identifier))
             for run in self.runs(active_only=True):
-                run.update(status="failed", active_in_process=False, error_code="desktop_restarted",
+                if run.get("recovery_contract_version") and run["status"] == "running":
+                    row = self.db.execute("SELECT data FROM run_checkpoints WHERE id=?", (run.get("checkpoint_id"),)).fetchone()
+                    if row:
+                        saved = self._unpack(row[0])
+                        elapsed = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(saved["created_at"])).total_seconds())
+                        budget = run.setdefault("loop_budget", {})
+                        limit = run.get("context_limits", {}).get("max_active_seconds", 3600)
+                        budget["active_seconds"] = min(limit, budget.get("active_seconds", 0) + elapsed)
+                        budget["recovery_time_policy"] = "conservative_until_restart"
+                status = "interrupted" if run.get("recovery_contract_version") == "1.0" else "failed"
+                run.update(status=status, active_in_process=False, error_code="desktop_restarted",
                            error_message="本机执行服务已重启；未自动重放操作，请检查项目后重试", completed_at=now())
                 for approval in run["approvals"]:
                     if approval["status"] == "pending":
@@ -201,13 +247,26 @@ class Store:
                     run["run_outcome"] = RunOutcome(run_id=run["id"], goal_outcome="unknown",
                         unverified_items=["执行服务重启，副作用结果未确认，未自动重放"]).model_dump(mode="json")
                 sequence = len(run["events"]) + 1
-                run["events"].append({"sequence": sequence, "type": "run.failed", "step_id": None, "created_at": now(),
+                run["state_version"] = run.get("state_version", 0) + 1
+                run["events"].append({"sequence": sequence, "type": f"run.{status}", "step_id": None, "created_at": now(),
                                       "payload": {"error_code": "desktop_restarted", "replayed": False,
+                                                  "state_version": run["state_version"],
                                                   **({"run_outcome": run["run_outcome"]} if run.get("run_outcome") else {})}})
                 run["last_event_sequence"] = sequence
                 self.save_run(run)
                 if run.get("session_id"):
                     self.context.close_pending(run["session_id"], run["id"])
+                for request_id, data in self.db.execute("SELECT request_id,data FROM run_control_requests WHERE run_id=?", (run["id"],)).fetchall():
+                    record = json.loads(data)
+                    if record["kind"] == "steer" and not record.get("context_committed"):
+                        from private_agent_core.contracts import ModelMessage
+                        self.context.append(run["session_id"], run["id"], ModelMessage(role="user", content=record["message"]),
+                                            key=f"message:{record['message_id']}", source="user")
+                        record["context_committed"] = True
+                    if record["status"] == "received":
+                        record.update(status="interrupted", reason="服务重启，控制未确认生效；用户输入已保留")
+                    self.db.execute("UPDATE run_control_requests SET data=? WHERE run_id=? AND request_id=?", (encode(record), run["id"], request_id))
+            self.db.execute("UPDATE workspace_leases SET state='reconcile',updated_at=? WHERE state='held'", (now(),))
             for identifier, session_id, data in self.db.execute("SELECT id,session_id,data FROM context_checkpoints WHERE state IN ('pending','compacting')").fetchall():
                 checkpoint = self._unpack(data)
                 checkpoint.update(state="failed", error="执行器重启，未提交压缩；原历史保持可读")
@@ -327,13 +386,13 @@ class Store:
         return self._unpack(row[0]) if row else None
 
     def has_active_run(self) -> bool:
-        return self.db.execute("SELECT 1 FROM runs WHERE status IN ('created','running','waiting_approval') LIMIT 1").fetchone() is not None
+        return self.db.execute("SELECT 1 FROM runs WHERE status IN ('created','queued','running','waiting_approval','paused') LIMIT 1").fetchone() is not None
 
     def events(self, run_id: str, after: int = 0, limit: int = 1000) -> list[dict]:
         return [self._unpack(row[0]) for row in self.db.execute("SELECT data FROM events WHERE run_id=? AND sequence>? ORDER BY sequence LIMIT ?", (run_id, after, limit))]
 
     def runs(self, *, active_only=False) -> list[dict]:
-        clause = " WHERE status IN ('created','running','waiting_approval')" if active_only else ""
+        clause = " WHERE status IN ('created','queued','running','waiting_approval','paused')" if active_only else ""
         ids = self.db.execute(f"SELECT id FROM runs{clause} ORDER BY rowid DESC").fetchall()
         return [self.run(row[0]) for row in ids]
 
