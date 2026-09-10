@@ -1,5 +1,21 @@
 # 故障排查
 
+## 统一 Coding / S6 优先核对项（2026-09-09）
+
+统一客户端本机 Coding 失败时，先区分本机运行时、开发工具、模型协议和目标验证；不要套用后文业务 MySQL 修复流程。
+
+| 现象 | 核对与处理 |
+| --- | --- |
+| 创建任务提示缺少 S4 持续执行能力 | 核对实际候选目录的宿主摘要与会话 execution-capabilities；Windows 测试环境的子进程/命名管道限制也会导致能力不可用。不要删除能力门禁。 |
+| 命令有输出但目标 unknown | 续读至真实执行终态；首段输出不会自动证明退出。未知副作用保持现场，不重放命令。 |
+| 命令退出 0 仍未验证 | 查看登记的命令语义及最后一次修改后的版本。任意 `python file.py` / `node file.js` 默认不等同测试；使用项目登记的 pytest、npm test 或 cargo test，并核对实际断言。 |
+| 暂停后旧审批失效 | 这是代次保护；核对恢复面板，按新的明确操作处理，不能批准旧预览。 |
+| Rust 提示 linker 缺失 | 先执行评测 preflight。S6 合成项目读取已安装 MSVC/Windows SDK 元数据并固定本项目 `.cargo/config.toml`；不会安装或修改全局开发环境。 |
+| 运行器失败或缺少结果 | 保留该 UUID 目录的 manifest、逐次结果和 metrics。日志配额、子进程关闭失败、超时及不完整事件均保持非零结果，换新目录复跑。 |
+| 旧库版本高于当前程序 | 停止直接降级写入；参照本机 SQLite 回退边界，在独立副本上先验，不覆盖新任务数据。 |
+
+精确命令见 [测试指南](testing-guide.md)，已知未验收范围见 [S6 开发报告](analysis/coding-agent-upgrade-20260908/s6-validation-report.md)。
+
 ## 1. sidecar 拒绝启动
 
 症状：`database migration failed; refusing to start (<ErrorType>)`。

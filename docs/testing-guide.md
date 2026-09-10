@@ -1,5 +1,24 @@
 # 测试与验证指南
 
+## S6 编码评测入口（2026-09-09）
+
+使用现有开发环境，在仓库根执行；不安装依赖、不加载仓库 `.env` 或业务数据库：
+
+```powershell
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite acceptance
+.venv/Scripts/python.exe -B scripts/run_coding_acceptance.py --mode preflight
+.venv/Scripts/python.exe -B scripts/run_coding_acceptance.py --mode control
+.venv/Scripts/python.exe -B scripts/run_coding_acceptance.py --mode matrix --tasks PY01,PY09,PY10
+```
+
+`acceptance` 已纳入 `all`；`all` 也包含 S4/S5 的 execution、streaming、sandbox、recovery、history。`duration` 当前是约 130 秒旧 API 跨超时边界测试，`execution-duration` 才是独立 600 秒持续命令测试，两者不纳入 `all`。下文早期 120 秒/xfail 描述仅属当时基线。
+
+评测每次新建 `.run/coding-acceptance/<mode>-<uuid>`，保存 `manifest.json`、`attempts.jsonl`、`events/`、`artifacts/`、`metrics.json`、`report.md`。失败和未启动项均列出；进程异常与证据缺失会使运行器失败。控制模式和 Provider 回环成绩没有真实编码质量分母。
+
+打包检查沿用 `scripts/verify-unified-client.py --bundle <候选目录> --work-dir <独立测试父目录> --model-mode <service|openai|ollama> --s6`。`--s6` 在既有校验后追加正式 IPC 的流式、可信完成和拒绝授权校准。只核对当前进程启动的候选副本，不证明实际 Tauri 安装窗口、生产登录或远程供应商。
+
+30 题、18/12 划分、预算、人工审阅及真实本机模型入口详见 [S6 评测协议](analysis/coding-agent-upgrade-20260908/s6-acceptance-protocol.md)。保留旧 S0 任务清单，不能将 24/6 的旧数据与 S6 混算。实际运行成绩与限制见 [S6 开发报告](analysis/coding-agent-upgrade-20260908/s6-validation-report.md)。
+
 > **S3 仓库与补丁**：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite repository` 运行范围读取、搜索分页、实际文件补丁、故障恢复和 ASGI/SQLite 回归，已并入 `all`。前端覆盖 `PatchPreview.spec.ts`、`PatchReviewPanel.spec.ts`。支持边界、精确成绩和跳过原因见 [S3 验收报告](analysis/coding-agent-upgrade-20260908/s3-validation-report.md)。测试使用隔离数据，不触及业务数据库或真实模型。
 
 > **S2 项目指令与上下文**：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite context` 运行规则、历史与压缩边界，已并入 `all`。旧服务端隔离入口 `run_coding_legacy_validation.py` 追加 ModelGateway 与桌面模型 DTO 回归，仍禁止真实业务数据库/外部网络。前端新增 `LocalContextPanel.spec.ts`。实际成绩与保留的跳过项见 [S2 验收报告](analysis/coding-agent-upgrade-20260908/s2-validation-report.md)。

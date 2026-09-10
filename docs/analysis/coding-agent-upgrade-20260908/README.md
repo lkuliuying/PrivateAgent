@@ -1,10 +1,15 @@
 # PrivateAgent Coding Agent 改造计划书：总体路线
 
+> 阶段 B 后续（2026-09-10）：严格外部题集、独立比较与统计关联之后，本轮补充 Windows AppContainer 隔离后端、独立验收回执及污染登记。当前接口见 [阶段 B 契约](./s6-phase-b-contract.md)，最新成绩与退出核对见 [补充验收记录](./s6-phase-b-remaining-report.md)，首次交付历史见 [阶段 B 验证记录](./s6-phase-b-validation-report.md)。用户已确认尚未准备独立保留题，不能据工具开发放行 B 或 M3；本轮不进入 C～F。
+
 > 编制日期：2026-09-08（Asia/Shanghai）。
-> 状态（2026-09-09 收尾）：S0–S5 全部适用阻断门禁已通过，当前 Windows QA 范围满足 M1/M2，可进入 S6。真实安装已完成追加约束、暂停/继续、强退重启、关联恢复和变更审查；普通 ConPTY、真实符号链接拒绝、600 秒持续命令及最终前台 120 样本 p95 386.70 ms 均有通过证据。最新 636 文件源码、构建产物与安装副本一致；临时模型及所属服务已清理，原测试文件保留。详见 [S5 剩余门禁验收记录](./s5-remaining-gates-validation-report.md)，历史见 [阻断补充验收](./s5-blockers-validation-report.md)及 [S0](./s0-validation-report.md)、[S1](./s1-validation-report.md)、[S2](./s2-validation-report.md)、[S3](./s3-validation-report.md)、[S4](./s4-validation-report.md)、[S5](./s5-validation-report.md)。本轮仅本地提交 S5 后停止，S6 未开发，M3 未验收；本文件不构成发布、生产操作或付费模型调用授权。
+> 阶段 A 交付（2026-09-09）：已修复评测终态、取消竞争与证据判定，S6 专项 128 passed，完整隔离回归 477 passed、1 项既有权限跳过，公开校准 30/30、回环矩阵 15/15。详见 [阶段 A 验证记录](./s6-phase-a-validation-report.md)。本轮仅完成 A-01～A-05 后停止，B～F 未实施，M3 继续阻断。
+> 阶段 A 前验收复测（2026-09-09）：当时发现 S6 评测轮询和事件校验遗漏合法终态。后续开发顺序、任务拆解和验收条件见 [验收后续开发计划书](./s6-follow-up-development-plan.md)；既有阶段报告保留其原始时间与成绩。
+> 当前状态（2026-09-09，S6 开发）：S0–S5 前置证据已核对，S6 已实现独立评测运行器、30 题公开校准、Provider 回环矩阵、交付回归和文档。实际成绩及剩余门禁见 [S6 开发报告](./s6-validation-report.md)，复跑入口见 [评测协议](./s6-acceptance-protocol.md)。真实模型质量、独立保留题、干净安装及旧程序回退尚未验收，M3 未放行；没有因开发而获得发布、生产操作或付费模型调用授权。
+> S5 历史收尾：当时 Windows QA 范围的 M1/M2 已通过，包括真实安装协作、关联恢复、ConPTY、符号链接拒绝、600 秒持续命令及前台 120 样本 p95 386.70 ms。636 文件源码、构建产物与安装副本一致。详见 [S5 剩余门禁验收记录](./s5-remaining-gates-validation-report.md)；这些数字保留为当时证据，不是 S6 的新测量。更早记录见 [S0](./s0-validation-report.md)、[S1](./s1-validation-report.md)、[S2](./s2-validation-report.md)、[S3](./s3-validation-report.md)、[S4](./s4-validation-report.md)、[S5](./s5-validation-report.md)。
 > 原编制源码基线：`F:\Program\Agent`，`dev/1.0.0`，HEAD `8dcfa7f`；编制前工作区干净。S2 开工时已核对到 `ef54b9c`（S1），工作区干净；各阶段报告分别记录实际证据。
 > 适用产品：当前统一桌面客户端及其本机 Coding 执行链。历史普通版和 Remote 安装包单独核对。
-> S0 类型和生成校验见 [契约决议](./s0-contract-decisions.md)；S1 接入 RunOutcome、ExecutionResult，S2 接入 ContextItem 与派生压缩检查点，S3 接入 WorkspaceIdentity、读取快照与补丁日志，S4 接入持续执行、分块输出、模型增量与显式可信项目审批，S5 接入检查点、运行控制、关联恢复、工作区协调和显式 worktree。S6 尚未实施。
+> S0 类型和生成校验见 [契约决议](./s0-contract-decisions.md)；S1 接入 RunOutcome、ExecutionResult，S2 接入 ContextItem 与派生压缩检查点，S3 接入 WorkspaceIdentity、读取快照与补丁日志，S4 接入持续执行、分块输出、模型增量与显式可信项目审批，S5 接入检查点、运行控制、关联恢复、工作区协调和显式 worktree，S6 建立独立校准与证据审阅入口。阶段开发与正式交付验收分别记录。
 
 ## 1. 阅读顺序与文件组成
 

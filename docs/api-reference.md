@@ -1,5 +1,21 @@
 # API 参考
 
+## 统一客户端本机 Coding 协议（S6 核对，2026-09-09）
+
+`private_agent_local` 默认由 Tauri 私有 stdio 传输访问，关闭 `/docs` 和 `/openapi.json`；下文动态端口、launch-token 和业务 OpenAPI 描述仅适用于原完整业务后端。S6 通过正式 IPC 驱动下列既有接口，没有新增生产 API。
+
+| 接口/字段 | 当前约定 |
+| --- | --- |
+| `POST /agent-runs` | 独立协商 `completion_contract_version`、`execution_contract_version`、`recovery_contract_version`，当前均为 `1.0`。完成要求不能增加授权。 |
+| `goal_outcome` / `run_outcome` | `answered/verified/unmet/blocked/unknown`；运行终态不等于目标达成。新完成证据绑定运行、操作、执行、事件序号和内容摘要。 |
+| `GET /agent-runs/{id}/events` | `after_sequence` 游标及有界 `limit`；检查最后序号与快照，缺帧不能当作完整。 |
+| `GET /sessions/{id}/execution-capabilities` | 实际宿主的持续执行、隔离及 PTY 能力；全局 `/capabilities` 不替代该探测。 |
+| `pause/steer/resume/cancel` | S5 控制包含 `request_id`、`expected_state_version`；resume 还核对 `checkpoint_id`。cancel 兼容不带请求体的旧入口，但空对象不符合新契约。冲突不使用新请求 ID 静默重试。 |
+| `GET /agent-runs/{id}/recovery`、`/review` | 恢复阻断原因、累计预算、旧操作事实和任务变更归属；不能直接通过这些读接口解除租约或重放操作。 |
+| 云端 `/desktop/model/capabilities`、`/stream` | `stream_protocol: 1.0`；NDJSON 绑定 `attempt_id` 和连续 `sequence`，文本增量后必须有 completed。旧代理在发送推理前选用 `/complete`；断流不得重发。 |
+
+准确输入模型见 `src/private_agent_local/app.py`、`recovery.py`、`execution_tools.py` 和共享契约。评测文件是独立开发工具协议，见 [S6 评测协议](analysis/coding-agent-upgrade-20260908/s6-acceptance-protocol.md)，不是新的服务端接口。
+
 > 运行时 OpenAPI 是字段级唯一事实源：启动后访问 `http://127.0.0.1:<port>/docs` 或 `/openapi.json`。本文记录安全约束、端点分组和现代化能力边界。
 
 ## 1. 连接与认证

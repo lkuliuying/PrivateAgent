@@ -1,5 +1,15 @@
 # 应用数据库升级与回滚手册
 
+## 统一客户端本机 SQLite（S6，2026-09-09）
+
+此节适用于 `private_agent_local.Store` 的账号隔离记录；下面 MySQL/Alembic 克隆命令属于原业务数据库，不能用于本机 `projects.sqlite3`。
+
+当前 schema 为 7。Store 对现有可识别旧格式执行一致性备份后迁移，备份位置、SHA-256 和版本写入 `schema_migrations`。启动后验证记录关联和内容引用；旧完成记录缺少 `goal_outcome` 时保持未记录验证，旧活动记录按协议保守收束，不重放审批或未知副作用。
+
+S6 自动回归只构造空白隔离目录和合成 schema 3–6 数据：项目、旧完成/失败/活动记录、长内容引用、账号分隔及备份摘要。不使用真实账号数据库，不宣称所有历史安装版本均已验证。具体测试入口：`.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite acceptance`，既有 `--suite local` / `--suite recovery` 覆盖其他迁移与恢复边界。
+
+实际升级前保留一致性备份及全部内容文件；不要只复制运行中的 SQLite 主文件遗漏 WAL。程序回退与恢复升级前数据是两个操作：当前程序拒绝高于自身支持版本的数据写入，但旧二进制是否正确拒绝新格式必须逐版本验证。从旧备份恢复会遗漏升级后记录；在独立副本演练新增记录的保留/导出方案前，不提供“无损回退”承诺或生产覆盖步骤。当前回退安装组合仍待验收，见 [S6 报告](analysis/coding-agent-upgrade-20260908/s6-validation-report.md)。
+
 ## 1. 原则
 
 应用数据库升级必须先有完整、已核验且不会覆盖源库的回滚副本。现有 ZIP 备份适合导出、完整性校验、设置恢复和人工取证，但执行恢复只自动覆盖 settings；它不能单独作为全库 schema 升级的回滚手段。

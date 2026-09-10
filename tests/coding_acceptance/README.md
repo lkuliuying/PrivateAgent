@@ -1,4 +1,14 @@
-# Coding S0–S3 可复现验收入口
+# Coding S0–S6 可复现验收入口
+
+阶段 B 增加 external_public/ 下的 30 题严格 JSON 公开样例、独立输出比较及泄露/篡改测试。直接检查使用 scripts/run_coding_validation.py 的 external、isolation、custody 套件，均已纳入 acceptance/all。isolation 通过实际 AppContainer 与 Agent IPC 核对令牌、材料权限、两侧工具目录及命令限额；custody 验证来源回执、判定产物绑定和污染记录，合成回执不作为独立性证据。新增参数、严格字段与统计规则见 [阶段 B 契约](../../docs/analysis/coding-agent-upgrade-20260908/s6-phase-b-contract.md)，本轮成绩见 [补充验收记录](../../docs/analysis/coding-agent-upgrade-20260908/s6-phase-b-remaining-report.md)。样例全部已暴露，18/12 仅为分组，不能声明为未污染保留题。
+
+验收侧可运行 scripts/coding_acceptance_dataset.py qualify --catalog <清单路径>，为每题产生初始、参考、错误和用户文件保护四个控制及独立回执模板。公开题集使用 --mode control 或 --mode matrix --isolation appcontainer 可复验原生受限链路；正式 independent_evaluation 禁止参考脚本注入，需要验收方交接回执及固定摘要。该检查不启动真实模型质量实验，也不代表安装包验收。
+
+## S6 当前入口（2026-09-09）
+
+新增 `s6_fixtures.py` 的 30 题、三类语言、18/12 划分；S0 `tasks.json` 保留原样。正式 IPC 校准用 `scripts/run_coding_acceptance.py`，新测试用 `scripts/run_coding_validation.py --suite acceptance`，并入 `all`。准确预算、命令、可信项目边界、审阅流程和退出码见 [S6 评测协议](../../docs/analysis/coding-agent-upgrade-20260908/s6-acceptance-protocol.md)，实际成绩见 [开发报告](../../docs/analysis/coding-agent-upgrade-20260908/s6-validation-report.md)。
+
+下文 S0–S3 数字是历史记录。当前 `all` 包含 execution、streaming、sandbox、recovery、history、acceptance；`duration` 是约 130 秒旧 API 探针，`execution-duration` 是 600 秒持续命令，均单独运行。G10 旧 xfail 已在 S5 收尾解决，不把下文历史状态作为当前失败。
 
 在仓库根目录使用现有 Python 环境，无需安装依赖：
 
