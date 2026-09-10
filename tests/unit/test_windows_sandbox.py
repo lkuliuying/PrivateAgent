@@ -17,10 +17,27 @@ from private_agent_core.execution.exec_host_client import (
 from private_agent_local import files
 from private_agent_local.executor import host_path, run_command
 from private_agent_local.policy import powershell_plan
-from private_agent_local.windows_sandbox import SandboxLease, WindowsSecurity
+from private_agent_local.windows_sandbox import (
+    SandboxLease,
+    WindowsSecurity,
+    runtime_roots,
+)
 from private_agent_local.workspaces import FileLock
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows AppContainer 原生边界")]
+
+
+@pytest.mark.parametrize("extension", [".cmd", ".bat", ".exe"])
+async def test_python_runtime_grants_follow_the_actual_entrypoint(tmp_path, monkeypatch, extension):
+    runtime, base = tmp_path / "tool-copy", tmp_path / "unrelated-interpreter"
+    runtime.mkdir()
+    base.mkdir()
+    command = runtime / ("python" + extension)
+    command.write_bytes(b"synthetic-runtime-entry")
+    monkeypatch.setattr(sys, "base_prefix", str(base))
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    roots = runtime_roots([str(command)], {"PATH": str(runtime), "SYSTEMROOT": os.environ["SYSTEMROOT"]})
+    assert set(roots) == ({runtime, base} if extension == ".exe" else {runtime})
 
 
 async def test_journal_write_failure_releases_ownership_lock(tmp_path, monkeypatch):

@@ -201,7 +201,9 @@ def runtime_roots(argv, environment):
                 key, separator, value = line.partition("=")
                 if separator and key.strip() == "home":
                     candidates.add(Path(value.strip()))
-    if not getattr(sys, "frozen", False) and executable.stem.lower() in {"python", "python3", "pytest"}:
+    # 批处理同名入口不能证明依赖当前解释器，避免额外授权无关的开发运行时。
+    if (not getattr(sys, "frozen", False) and executable.suffix.lower() == ".exe"
+            and executable.stem.lower() in {"python", "python3", "pytest"}):
         candidates.add(Path(sys.base_prefix))
     system = Path(environment.get("SYSTEMROOT", environment.get("SystemRoot", r"C:\Windows"))).resolve()
     roots = sorted({_directory(p.resolve()) for p in candidates if p.is_dir()}, key=lambda p: len(str(p)))
