@@ -13,6 +13,12 @@ from coding_validation_process import managed_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {
+    "acceptance": ["tests/coding_acceptance/test_s6_acceptance.py", "tests/coding_acceptance/test_s6_delivery.py",
+                   "tests/coding_acceptance/test_s6_external.py", "tests/coding_acceptance/test_s6_isolation.py",
+                   "tests/coding_acceptance/test_s6_custody.py"],
+    "external": ["tests/coding_acceptance/test_s6_external.py"],
+    "isolation": ["tests/coding_acceptance/test_s6_isolation.py"],
+    "custody": ["tests/coding_acceptance/test_s6_custody.py"],
     "history": ["tests/unit/test_local_history.py"],
     "sandbox": ["tests/unit/test_windows_sandbox.py", "tests/coding_acceptance/test_host_probes.py"],
     "recovery": ["tests/unit/test_local_recovery.py"],

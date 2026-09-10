@@ -279,9 +279,19 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--model-mode", choices=["service", "ollama", "openai"], default="service")
+    parser.add_argument("--s6", action="store_true", help="追加 S6 正式 IPC 的流式、可信完成及拒绝授权校准")
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(verify(args.bundle.resolve(), args.work_dir.resolve(), args.model_mode)), ensure_ascii=False, indent=2))
+    result = asyncio.run(verify(args.bundle.resolve(), args.work_dir.resolve(), args.model_mode))
+    if args.s6:
+        from run_coding_acceptance import run
+
+        result["s6_exit_code"] = run(argparse.Namespace(mode="control", tasks="PY01,PY10", protocol=args.model_mode,
+            repetitions=1, bundle=args.bundle.resolve(), model_config=None, work_dir=args.work_dir.resolve()))
+        result["passed"] = result["passed"] and result["s6_exit_code"] == 0
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    raise SystemExit(0 if result["passed"] else 1)
