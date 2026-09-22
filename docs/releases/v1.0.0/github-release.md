@@ -106,7 +106,7 @@ Python 打包套件中的集成测试实际调用预编译 Rust 验签器，覆�
 6. 确认资产、签名及安装验收通过后，维护者人工发布并明确选择 **Set as latest release**。历史仓库中可能存在版本号更高的旧产品 Release，不依赖 GitHub 的默认 Latest 选择。见 [GitHub Release 管理说明](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)。
 7. 公开后单独验证固定更新入口和清单内安装包 URL 可匿名下载、响应内容正确、下载摘要与草稿证据一致，再记录真实客户端检查与升级结果。草稿阶段的离线成功不能证明这些公开下载路径已可用。
 
-本次正式发布的调度命令如下，仅在控制分支修复提交已推送且门禁满足后执行：
+手动调度必须选择 `codex/release-1.0.0` 控制分支，不能选择尚未合入控制配置修复的 `main`。1.0.0 的调度命令如下；该版本现已发布，重新执行会被“必须为草稿”门禁拒绝，不能用它覆盖已发布资产：
 
 ```powershell
 gh workflow run 343378685 --repo lkuliuying/PrivateAgent --ref codex/release-1.0.0 --field release_tag=v1.0.0
@@ -171,23 +171,41 @@ Python 变更通过 Ruff `E/F/I` 检查，工作流 YAML 与全部 7 段 PowerSh
 
 ### 正式 1.0.0 发布执行记录
 
-首次真实调度被 GitHub 返回 HTTP 422 拒绝：工作流在 `jobs.<job>.env` 中引用了该位置不允许使用的 `runner.temp` 上下文。拒绝发生于 GitHub 工作流解析阶段，未启动构建，也没有因此生成或验签正式安装包。此前本地 YAML、PowerShell 和门禁回归通过，不代表 GitHub 上下文语义已经验证通过。调度修复仅在隔离发布分支进行，应用标签保持不变；修复后的远程运行结果仍须单独取得证据。
+首次真实调度被 GitHub 返回 HTTP 422 拒绝：工作流在 `jobs.<job>.env` 中引用了该位置不允许使用的 `runner.temp` 上下文。拒绝发生于 GitHub 工作流解析阶段，未启动构建，也没有因此生成或验签正式安装包。此前本地 YAML、PowerShell 和门禁回归通过，不代表 GitHub 上下文语义已经验证通过。调度修复仅在隔离发布分支进行，应用标签保持不变；修复后工作流专项离线回归 **38 项通过**。
 
-随后[首次构建运行](https://github.com/lkuliuying/PrivateAgent/actions/runs/35717721814)使用控制提交 `3cc0c170466045d557333574608201b7e27798ab`，正式安装器构建和签名步骤成功。最终验收函数已执行完签名验证，但在输出中文 JSON 证据时遇到 Windows `cp1252` 的 `UnicodeEncodeError`，整项验收步骤失败，未上传任何资产。控制配置因此显式设置 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8`；本地回归使用真实 Python 子进程复现旧编码错误并验证新配置的中文管道输出，不降低验签要求。
+随后[首次构建运行](https://github.com/lkuliuying/PrivateAgent/actions/runs/35717721814)使用控制提交 `3cc0c170466045d557333574608201b7e27798ab`，正式安装器构建和签名步骤成功。最终验收函数已执行完签名验证，但在输出中文 JSON 证据时遇到 Windows `cp1252` 的 `UnicodeEncodeError`，整项验收步骤失败，未上传任何资产。控制配置因此显式设置 `PYTHONUTF8=1` 与 `PYTHONIOENCODING=utf-8`；本地回归使用真实 Python 子进程复现旧编码错误并验证新配置的中文管道输出，不降低验签要求。修复后工作流专项离线回归 **39 项通过**。
+
+[成功运行 35720222129](https://github.com/lkuliuying/PrivateAgent/actions/runs/35720222129)使用工作流控制提交 `6a3d83b7cdf4689f3bbecd159688a81f677163cd`，应用仍从固定标签 `v1.0.0` 对应的 `36c0a2446325cae041631c0abcc3f21327a96da5` 构建。构建、签名、最终验签及五项草稿资产附加成功。随后完成草稿下载核对、正式发布、Latest 设置和公开匿名下载复验；实际安装及 GUI 检查未执行，没有将其记为发布完成的附带结论。
 
 | 阶段 | 状态与需保留的证据 |
 | --- | --- |
 | 隔离发布工作树离线复验 | 已完成；结果见上节，尚不代表正式产物验收 |
 | 发布源码提交与标签 | 应用标签 `v1.0.0` 已固定到 `36c0a2446325cae041631c0abcc3f21327a96da5`；后续控制配置修复不移动此标签 |
-| 工作流控制分支 | `codex/release-1.0.0`；当前修复调度解析问题，后续运行需记录其实际提交及工作流运行链接 |
-| 草稿准备 | 旧草稿已重命名为 `legacy-remote-v1.0.0-20260830`，附件 ID 与 SHA-256 保留；新草稿 ID 为 `393643616`，尚未发布 |
-| GitHub 签名构建与验签 | 首次运行的构建和签名成功，但验收 JSON 输出编码失败，未上传资产；修复后待重试并记录完整成功证据 |
-| 草稿资产核对 | 待执行；确认五项资产齐备，记录下载文件大小与 SHA-256 |
-| 隔离安装与本机执行器验收 | 待执行；记录实际安装包摘要、Windows 环境及观察结果 |
-| 公开发布与 Latest 设置 | 待执行；记录 Release 链接及 Latest 实际指向 |
-| 匿名更新源下载与同版本检查 | 待执行；核对响应、目标、下载摘要及 1.0.0 不提示升级的预期 |
-| 更高版本真实升级 | 待后续版本；同版本检查不能覆盖下载、安装与重启升级链路 |
+| 工作流控制分支 | `codex/release-1.0.0`；成功运行的控制提交为 `6a3d83b7cdf4689f3bbecd159688a81f677163cd`，与应用构建提交分别记录 |
+| 历史草稿保留 | 旧草稿 ID `379045109` 已重命名为 `legacy-remote-v1.0.0-20260830`；附件 ID、名称、大小和摘要保持不变，仅 GitHub 临时下载 URL 随草稿名称重新生成 |
+| GitHub 签名构建与验签 | 已完成；成功运行 `35720222129`，五项资产来自同次构建 |
+| 草稿资产核对 | 已完成；五项资产实际下载，大小和 SHA-256 与 GitHub 元数据及 CI 记录一致，最终安装包用 Rust 验签器和客户端既有公钥复验通过 |
+| 公开发布与 Latest 设置 | 已完成；[PrivateAgent 1.0.0](https://github.com/lkuliuying/PrivateAgent/releases/tag/v1.0.0)，Release ID `393643616`，非草稿、非预发布，Latest 指向 `v1.0.0` |
+| 公开匿名下载 | 已完成；五项资产均在未发送认证信息的请求中返回 HTTP 200，大小和摘要与草稿阶段一致，Rust 公钥验签复验通过 |
+| 固定更新入口 | HTTP 200；`version=1.0.0`，目标为 `unified-windows-x86_64` |
+| Windows Authenticode | 实际状态为 `NotSigned`；Tauri 更新签名通过不等于 Windows 发布者签名 |
+| 实际安装、本机执行器及 GUI 更新检查 | 未实测；同版本 1.0.0 应无升级只是版本比较的逻辑预期，尚无 GUI 验收证据 |
+| 更高版本真实升级与真实模型 | 未实测；公开下载和验签不能替代安装、重启升级或模型调用验收 |
 
-仅在取得相应执行证据后更新本表，保留失败或阻塞信息。历史离线测试不证明正式产物已经生成、验签、安装或公开发布。
+发布时远端分支核对结果为 `main` 仍在 `70e507d`、`dev/1.0.0` 仍在 `0ade0a7`，本次发布未合并或移动它们；不要把本地可能过期的同名引用当作该远端核对结果。
+
+公开资产及其本次下载证据如下，均来自同一 Release：
+
+| 资产 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| [PrivateAgent_1.0.0_x64-setup.exe](https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/PrivateAgent_1.0.0_x64-setup.exe) | 34870363 | `1783be1d1ea66270335b0b2875876594da81845900bcba31ccd0ed87faf61a2e` |
+| [PrivateAgent_1.0.0_x64-setup.exe.sig](https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/PrivateAgent_1.0.0_x64-setup.exe.sig) | 424 | `fe983b0efdc6233526664a177d4047c70fb2f4c0884b56fb521b8696725ff6bb` |
+| [latest.json](https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/latest.json) | 732 | `49c72ce22ec9e58efffef0cc5e2d74e9126f79b3ade4433f8928306356f853ef` |
+| [release-verification-1.0.0.json](https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/release-verification-1.0.0.json) | 1039 | `4d858d612901a159981569955dbf66edb450c0ada8693bff557402d5fe484189` |
+| [release-manifest-1.0.0.md](https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/release-manifest-1.0.0.md) | 1616 | `0d9ebeb2c8ef5433547457252a351ccb9519c69dab899ba97f0e8e56778f2929` |
+
+长期查验从公开 Release、成功 CI 运行及上表资产进入。本次另以根工作区 `.run/release-1.0.0-20260922/` 下的 `draft-download-verification.json`、`public-download-verification.json`、`anonymous-downloads.json` 和 `public-ready-metadata.json` 核对草稿与公开下载结果；这些是本机临时证据，不随源码交付，不保证跨机器存在，也不能替代公开来源。
+
+仅在取得相应执行证据后更新未完成项，保留失败或阻塞信息。正式发布、下载和签名验证已完成；安装、GUI 及更高版本升级仍按各自证据判断。
 
 发布准备已核对 `docs/project-state.md` 与 [2026-09-20 本机化说明](../../solutions/2026-09-20-local-only-context.md)。其中 SignPath 工作流的描述反映此前方案；当前源码和本页记录的 Tauri 单签名契约覆盖该发布方式。历史状态记忆按仓库约定保留不改写，持久发布知识同步到本页、README、文档入口和签名政策，原申请材料明确标为历史未启用方案。
