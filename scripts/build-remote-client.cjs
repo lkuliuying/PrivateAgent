@@ -1,4 +1,4 @@
-// Build a remote client, or a separately identified NSIS remote update release.
+// 统一客户端与历史远程客户端共用构建、更新签名验证及发布产物保护。
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -10,6 +10,16 @@ const REMOTE_IDENTIFIER = "com.personal-assistant.desktop.remote";
 const REMOTE_TARGET = "remote-windows-x86_64";
 const UNIFIED_TARGET = "unified-windows-x86_64";
 const REMOTE_BINARY = "privateagent-remote";
+
+function githubRepository(value) {
+  const parts = value.split("/");
+  if (/\s/.test(value) || parts.length !== 2 || !/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/.test(parts[0]) ||
+      parts[0].includes("--") || !/^[A-Za-z0-9_.-]{1,100}$/.test(parts[1]) || [".", ".."].includes(parts[1])) {
+    // 输入可能误含访问令牌，错误信息不得回显仓库参数。
+    throw new Error("GitHub repository must be a valid owner/repo without a URL, credentials, query or fragment.");
+  }
+  return value;
+}
 
 function httpsUrl(value, label, originOnly = false) {
   let url;
@@ -24,7 +34,7 @@ function httpsUrl(value, label, originOnly = false) {
 
 function parseOptions(args) {
   const options = { mode: "portable", dryRun: false };
-  const values = new Set(["--version", "--update-url", "--download-base-url"]);
+  const values = new Set(["--version", "--update-url", "--download-base-url", "--github-repo"]);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--release" || arg === "--preview-installer") {
@@ -39,12 +49,17 @@ function parseOptions(args) {
     } else if (values.has(arg)) {
       const value = args[++i];
       if (!value || value.startsWith("--")) throw new Error(`Missing value for ${arg}.`);
-      const key = { "--version": "version", "--update-url": "updateUrl", "--download-base-url": "downloadBaseUrl" }[arg];
+      const key = { "--version": "version", "--update-url": "updateUrl", "--download-base-url": "downloadBaseUrl", "--github-repo": "githubRepo" }[arg];
       if (options[key]) throw new Error(`Duplicate ${arg}.`);
       options[key] = value;
     } else {
       throw new Error("Unknown option; platform API origins are no longer supported. Use --help.");
     }
+  }
+  if (options.githubRepo) {
+    options.githubRepo = githubRepository(options.githubRepo);
+    if (!options.unified || options.mode !== "release" || options.qa) throw new Error("--github-repo requires a unified release without QA mode.");
+    if (options.updateUrl || options.downloadBaseUrl) throw new Error("--github-repo cannot be combined with --update-url or --download-base-url.");
   }
   if (options.qa && (!options.unified || options.mode !== "preview" || options.updateUrl || options.downloadBaseUrl)) {
     throw new Error("QA requires --unified --preview-installer and cannot configure update channels.");
@@ -55,11 +70,17 @@ function parseOptions(args) {
     }
     return options;
   }
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(options.version || "")) {
+  if (/\s/.test(options.version || "") || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(options.version || "")) {
     throw new Error("Installer builds require --version with a stable version, for example 1.0.1.");
   }
-  if (options.unified && options.mode === "release" && !options.updateUrl) throw new Error("Unified releases require an explicit independent --update-url; old channels must not be reused implicitly.");
-  options.updateUrl = options.unified && options.mode === "preview" ? "" : httpsUrl(options.updateUrl || DEFAULT_UPDATE_URL, "update URL").href;
+  if (options.githubRepo) {
+    options.releaseTag = `v${options.version}`;
+    options.updateUrl = `https://github.com/${options.githubRepo}/releases/latest/download/latest.json`;
+    options.downloadBaseUrl = `https://github.com/${options.githubRepo}/releases/download/${options.releaseTag}`;
+    return options;
+  }
+  if (options.unified && options.mode === "release" && !options.updateUrl) throw new Error("Unified releases require an explicit independent --update-url or --github-repo; old channels must not be reused implicitly.");
+  options.updateUrl = options.unified && options.mode === "preview" && !options.updateUrl ? "" : httpsUrl(options.updateUrl || DEFAULT_UPDATE_URL, "update URL").href;
   if (!options.updateUrl) return options;
   if (!new URL(options.updateUrl).pathname.endsWith(".json")) throw new Error("Update URL must name a JSON manifest.");
   options.downloadBaseUrl = httpsUrl(options.downloadBaseUrl || new URL(".", options.updateUrl).href, "download base URL").href.replace(/\/+$/, "");
@@ -101,7 +122,8 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
     config.bundle.shortDescription = "PrivateAgent 统一本地运行时";
     config.bundle.longDescription = "使用本机模型配置与 API Key，项目、任务、命令及技术文档 MCP 在本机工作区运行，无需平台账号。";
     config.bundle.windows = { nsis: { installerHooks: null } };
-    config.plugins = { updater: { endpoints: options.mode === "release" ? [options.updateUrl] : [] } };
+    // 测试安装包可显式检查正式更新源，仍保留公钥验签且不生成可发布更新产物。
+    config.plugins = { updater: { endpoints: options.updateUrl ? [options.updateUrl] : [] } };
   }
   if (options.qa) {
     // 独立安装名称、标识和数据目录，候选包不会覆盖用户的正式客户端。
@@ -114,14 +136,28 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
 function updateManifest(options, installerName, signature) {
   if (options.mode !== "release" || !signature.trim()) throw new Error("Only a signed release can have an update manifest.");
   if (path.basename(installerName) !== installerName || !installerName.endsWith("-setup.exe")) throw new Error("Expected an NSIS installer filename.");
+  if (options.unified && installerName !== `PrivateAgent_${options.version}_x64-setup.exe`) throw new Error("Unified releases require the exact PrivateAgent versioned x64 NSIS installer filename.");
   return {
     version: options.version, notes: `PrivateAgent ${options.unified ? "Unified" : "Remote"} v${options.version}`,
     pub_date: new Date().toISOString(),
     platforms: { [options.unified ? UNIFIED_TARGET : REMOTE_TARGET]: {
-      url: `${options.downloadBaseUrl}/${options.version}/${encodeURIComponent(installerName)}`,
+      url: `${options.downloadBaseUrl}/${options.githubRepo ? "" : `${options.version}/`}${encodeURIComponent(installerName)}`,
       signature: signature.trim(),
     } },
   };
+}
+
+function writeReleaseArtifacts(options, installer, signatureFile, output) {
+  const installerName = path.basename(installer);
+  const manifest = updateManifest(options, installerName, fs.readFileSync(signatureFile, "utf8"));
+  const publish = path.join(output, "publish");
+  const assets = path.join(publish, options.version);
+  fs.mkdirSync(assets, { recursive: true });
+  fs.copyFileSync(installer, path.join(assets, installerName), fs.constants.COPYFILE_EXCL);
+  fs.copyFileSync(signatureFile, path.join(assets, `${installerName}.sig`), fs.constants.COPYFILE_EXCL);
+  fs.writeFileSync(path.join(publish, "latest.json"), JSON.stringify(manifest, null, 2) + "\n", { flag: "wx" });
+  const files = [`publish/${options.version}/${installerName}`, `publish/${options.version}/${installerName}.sig`, "publish/latest.json"];
+  return files.map(file => `${crypto.createHash("sha256").update(fs.readFileSync(path.join(output, file))).digest("hex")}  ${file}\n`).join("");
 }
 
 function assertReleaseReady(options, dirty, signingConfigured) {
@@ -148,7 +184,9 @@ function main(args = process.argv.slice(2)) {
     console.log('Usage: scripts\\build-remote-client.cmd [options]');
     console.log("  --release --version 1.0.1       signed remote NSIS installer + publish/latest.json");
     console.log("  --preview-installer --version 1.0.1  unsigned installer for local QA; no update manifest");
+    console.log("  --unified --preview-installer --version 1.0.0 --update-url HTTPS_JSON  test installer with an explicit update source; unsigned, no manifest");
     console.log("  --unified --qa                independently identified local acceptance installer");
+    console.log("  --unified --release --version 1.0.0 --github-repo lkuliuying/PrivateAgent  GitHub Release update source");
     console.log("  --update-url HTTPS_URL         default: built-in update manifest");
     console.log("  --download-base-url HTTPS_URL  default: update manifest directory; assets live under VERSION/");
     console.log("  --dry-run                      validate options and print non-secret build configuration only");
@@ -255,14 +293,8 @@ function main(args = process.argv.slice(2)) {
       fs.writeFileSync(publicKeyFile, publicKey + "\n", { flag: "wx" });
       // A valid signature from the wrong key would brick client updates; verify before publishing a manifest.
       run("cargo", ["run", "--release", "--locked", "--manifest-path", path.join(root, "scripts", "windows", "updater-signature-verifier", "Cargo.toml"), "--", installer, sig, publicKeyFile]);
-      const publish = path.join(output, "publish");
-      const assets = path.join(publish, options.version);
-      fs.mkdirSync(assets, { recursive: true });
-      fs.copyFileSync(installer, path.join(assets, installerName), fs.constants.COPYFILE_EXCL);
-      fs.copyFileSync(sig, path.join(assets, `${installerName}.sig`), fs.constants.COPYFILE_EXCL);
-      fs.writeFileSync(path.join(publish, "latest.json"), JSON.stringify(updateManifest(options, installerName, fs.readFileSync(sig, "utf8")), null, 2) + "\n", { flag: "wx" });
-      sums += `${crypto.createHash("sha256").update(fs.readFileSync(installer)).digest("hex")}  publish/${options.version}/${installerName}\n`;
-      console.log("Verified update artifacts (not uploaded): " + publish);
+      sums += writeReleaseArtifacts(options, installer, sig, output);
+      console.log("Verified update artifacts (not uploaded): " + path.join(output, "publish"));
     } else {
       fs.copyFileSync(installer, path.join(output, installerName), fs.constants.COPYFILE_EXCL);
       sums += `${crypto.createHash("sha256").update(fs.readFileSync(installer)).digest("hex")}  ${installerName}\n`;
@@ -278,6 +310,7 @@ function main(args = process.argv.slice(2)) {
     target: triple, signing: options.mode === "release" ? "updater-verified" : "unsigned", sidecar: "desktop-local",
     mode: options.mode, updateTarget: options.mode === "portable" ? null : options.unified ? UNIFIED_TARGET : REMOTE_TARGET,
     updateUrl: options.updateUrl || null, downloadBaseUrl: options.downloadBaseUrl || null,
+    githubRepo: options.githubRepo || null, releaseTag: options.releaseTag || null,
     version: options.version || JSON.parse(fs.readFileSync(path.join(desktop, "package.json"), "utf8")).version,
     createdAt: new Date().toISOString(), sha256, node: process.version,
   }, null, 2) + "\n", { flag: "wx" });
@@ -287,7 +320,7 @@ function main(args = process.argv.slice(2)) {
   if (dirty) console.log("Source has uncommitted changes; build-info.json records dirty=true.");
 }
 
-module.exports = { main, parseOptions, buildEnvironment, bundleConfig, updateManifest, assertReleaseReady, collectSourceManifest, REMOTE_TARGET, REMOTE_IDENTIFIER, UNIFIED_TARGET };
+module.exports = { main, parseOptions, buildEnvironment, bundleConfig, updateManifest, writeReleaseArtifacts, assertReleaseReady, collectSourceManifest, REMOTE_TARGET, REMOTE_IDENTIFIER, UNIFIED_TARGET };
 
 if (require.main === module) {
   try { main(); } catch (error) {

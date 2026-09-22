@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from urllib.parse import quote
 
@@ -11,6 +12,43 @@ TAURI_CONF = PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "tauri.conf.json"
 NSIS_DIR = (
     PROJECT_ROOT / "apps" / "desktop" / "src-tauri" / "target" / "x86_64-pc-windows-msvc" / "release" / "bundle" / "nsis"
 )
+
+UNIFIED_IDENTIFIER = "com.personal-assistant.desktop"
+UNIFIED_TARGET = "unified-windows-x86_64"
+
+
+def validate_github_repo(repo: str) -> str:
+    """仅接受仓库标识，错误不回显可能误填的凭据。"""
+    parts = repo.split("/") if isinstance(repo, str) else []
+    if (len(parts) != 2
+            or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?", parts[0]) is None
+            or "--" in parts[0]
+            or re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", parts[1]) is None
+            or parts[1] in {".", ".."}):
+        raise ValueError("GitHub 仓库必须为不含凭据的 owner/repo")
+    return repo
+
+
+def validate_stable_version(version: str) -> str:
+    """正式更新只接受与构建器一致的稳定版本。"""
+    if not isinstance(version, str) or re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version) is None:
+        raise ValueError("发布版本必须为稳定的 X.Y.Z")
+    return version
+
+
+def unified_installer_name(version: str) -> str:
+    return f"PrivateAgent_{validate_stable_version(version)}_x64-setup.exe"
+
+
+def github_release_tag(version: str, tag: str | None = None) -> str:
+    expected = f"v{validate_stable_version(version)}"
+    if tag is not None and tag != expected:
+        raise ValueError("GitHub 标签必须为 v<当前版本>")
+    return expected
+
+
+def github_update_url(repo: str) -> str:
+    return f"https://github.com/{validate_github_repo(repo)}/releases/latest/download/latest.json"
 
 
 def read_version() -> str:
@@ -79,7 +117,7 @@ def percent_encode_filename(name: str) -> str:
 
 
 def github_download_url(repo: str, tag: str, filename: str) -> str:
-    return f"https://github.com/{repo}/releases/download/{tag}/{percent_encode_filename(filename)}"
+    return f"https://github.com/{validate_github_repo(repo)}/releases/download/{quote(tag, safe='')}/{percent_encode_filename(filename)}"
 
 
 def read_signature(sig_path) -> str:

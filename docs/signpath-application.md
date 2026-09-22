@@ -1,8 +1,10 @@
-# SignPath Foundation 免费 OSS 签名申请清单
+# SignPath Foundation 免费 OSS 签名申请清单（历史未启用方案）
 
-本文记录 PrivateAgent 申请 SignPath Foundation 免费开源代码签名的可验证事实、已完成配置和必须由仓库所有者完成的外部步骤。
+> 2026-09-22 状态修正：当前正式发布流程已改为 Tauri 更新单签名，不依赖 SignPath，也不提供 Windows Authenticode 签名。下文保留此前申请资料、拟定步骤及待核实项，不代表申请已获批、服务已启用或签名已完成。原 `.github/workflows/signpath-release.yml` 路径已改作 GitHub Release 草稿准备，不能再按本文旧工作流描述执行。现行操作见 [1.0.0 发布说明](releases/v1.0.0/github-release.md)与[签名政策](../CODE_SIGNING_POLICY.md)。
 
-## 项目资料
+本文以下内容是此前的申请清单快照；其中远端状态和完成表述未经本轮核实。
+
+## 历史项目资料
 
 | 字段 | 内容 |
 |---|---|
@@ -18,7 +20,7 @@
 | 隐私政策 | [`PRIVACY.md`](../PRIVACY.md) |
 | Code signing policy | [`CODE_SIGNING_POLICY.md`](../CODE_SIGNING_POLICY.md) |
 
-## SignPath 条件对应
+## 历史 SignPath 条件对应
 
 - **公开源码**：主仓库已设为 Public。
 - **OSI 许可证**：仓库根目录包含 Apache-2.0 `LICENSE` 和 `NOTICE`。
@@ -33,7 +35,7 @@
 
 > PrivateAgent is a local-first desktop personal agent built with Tauri, Vue, FastAPI and open-source local AI components. The repository and complete release build scripts are public under Apache-2.0. Windows NSIS installers are reproducibly built on GitHub-hosted runners. The checked-in workflow uploads the unsigned installer as a GitHub Actions artifact, submits that artifact through SignPath's GitHub trusted build connector, waits for manual approval, verifies the returned Authenticode signature, then creates the separate Tauri updater signature and publishes release evidence. The application does not transfer user information unless the user or operator explicitly enables a networked provider, integration, or update check.
 
-## 外部步骤
+## 历史外部步骤（当前不执行）
 
 1. 仓库所有者在 GitHub 账户启用双因素认证，并确认 SignPath 账户也启用 MFA。
 2. 通过 <https://signpath.org/apply.html> 提交免费 OSS 订阅申请。表单中的姓名、邮箱和代表性声明必须由仓库所有者核对并最终提交。

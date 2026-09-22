@@ -20,6 +20,12 @@
 
 在仓库根目录使用已有虚拟环境：
 
+`desktop-packaging`（以及包含它的 `all`）会用公开签名夹具调用真实 Rust 验签器。首次运行前，在已初始化 MSVC 且具备依赖缓存的终端执行以下离线编译；不需要私钥或签名服务：
+
+```powershell
+cargo build --offline --locked --release --manifest-path scripts/windows/updater-signature-verifier/Cargo.toml
+```
+
 ```powershell
 .venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite shared-models
 .venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite desktop-packaging
