@@ -66,7 +66,7 @@ def find_installer_and_sig(version: str) -> tuple[Path, Path]:
     if not sig.exists():
         raise SystemExit(
             f"[latest.json] signature not found: {sig}\n"
-            "         Build with the updater signing key (see docs/signing-and-keys.md)."
+            "         Build with the updater signing key (see docs/archive/legacy/signing-and-keys.md)."
         )
     return installer, sig
 
@@ -79,6 +79,7 @@ def main() -> int:
     ap.add_argument("--tag", help="release tag (default: v<version>)")
     ap.add_argument("--notes", default=None, help="release notes (default: 私人助手 v<version>)")
     ap.add_argument("--out", default=None, help="output path (default: dist/latest.json)")
+    ap.add_argument("--installer", type=Path, help="明确指定本次签名安装包")
     ap.add_argument(
         "--extra-platform",
         action="append",
@@ -88,7 +89,13 @@ def main() -> int:
     args = ap.parse_args()
 
     version = read_version()
-    installer, sig = find_installer_and_sig(version)
+    if args.installer:
+        installer = args.installer.resolve(strict=True)
+        if not installer.name.endswith("-setup.exe") or f"_{version}_" not in installer.name:
+            raise SystemExit("[latest.json] 安装包与当前版本不一致")
+        sig = installer_sig(installer)
+    else:
+        installer, sig = find_installer_and_sig(version)
     signature = sig.read_text(encoding="utf-8").strip()
     if not signature:
         raise SystemExit(f"[latest.json] signature file is empty: {sig}")
@@ -103,9 +110,9 @@ def main() -> int:
 
     pub_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    # 默认 windows-x86_64 条目 + 额外平台（macOS/Linux，--extra-platform KEY:PATH）。
+    # 与统一本机桌面的 updater target 一致，不再发布旧服务端客户端更新。
     platforms = {
-        "windows-x86_64": build_platform_entry(installer, sig, repo, tag),
+        "unified-windows-x86_64": build_platform_entry(installer, sig, repo, tag),
     }
     for spec in args.extra_platform:
         key, _, path = spec.partition(":")
@@ -133,7 +140,7 @@ def main() -> int:
     print(f"  installer:  {installer.name}")
     print(f"  signature:  {len(signature)} chars")
     print(f"\nNext: upload latest.json + each platform's installer + .sig to the GitHub Release ({tag}).")
-    print("The updater endpoint in tauri.conf.json points to .../releases/latest/download/latest.json")
+    print("更新地址必须在构建时显式配置，并与本机桌面的独立更新通道一致。")
     return 0
 
 

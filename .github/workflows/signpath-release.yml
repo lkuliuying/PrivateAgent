@@ -38,6 +38,7 @@ jobs:
       SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      PRIVATEAGENT_UPDATE_URL: ${{ vars.PRIVATEAGENT_UPDATE_URL }}
 
     steps:
       - name: Check out the release source
@@ -69,6 +70,9 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Install local executor build dependencies
+        run: uv sync --locked --all-extras
+
       - name: Validate signing configuration
         run: |
           $required = @{
@@ -78,6 +82,7 @@ jobs:
             SIGNPATH_SIGNING_POLICY_SLUG = $env:SIGNPATH_SIGNING_POLICY_SLUG
             SIGNPATH_ARTIFACT_CONFIGURATION_SLUG = $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG
             TAURI_SIGNING_PRIVATE_KEY = $env:TAURI_SIGNING_PRIVATE_KEY
+            PRIVATEAGENT_UPDATE_URL = $env:PRIVATEAGENT_UPDATE_URL
           }
           $missing = @($required.GetEnumerator() | Where-Object { [string]::IsNullOrWhiteSpace($_.Value) } | ForEach-Object Key)
           if ($missing.Count -gt 0) {
@@ -100,12 +105,18 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Build the unsigned Windows installer
-        run: .\scripts\build-release.bat
+        id: build
+        run: |
+          .\scripts\build-client.cmd --release --version '${{ steps.release.outputs.version }}' --update-url $env:PRIVATEAGENT_UPDATE_URL | Tee-Object -Variable buildLog
+          if ($LASTEXITCODE -ne 0) { throw 'Local desktop build failed' }
+          $output = @($buildLog | Where-Object { $_ -like 'Build output: *' })
+          if ($output.Count -ne 1) { throw 'Expected one local build output directory' }
+          "bundle=$($output[0].Substring('Build output: '.Length))" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - name: Locate unsigned installer
         id: unsigned
         run: |
-          $installers = @(Get-ChildItem 'apps/desktop/src-tauri/target/release/bundle/nsis' -Filter '*-setup.exe' -File)
+          $installers = @(Get-ChildItem 'apps/desktop/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis' -Filter 'PrivateAgent_${{ steps.release.outputs.version }}_x64-setup.exe' -File)
           if ($installers.Count -ne 1) {
             throw "Expected exactly one NSIS installer, found $($installers.Count)."
           }
@@ -170,12 +181,14 @@ jobs:
 
       - name: Regenerate updater signature over signed bytes
         working-directory: apps/desktop
-        run: npx tauri signer sign -f '${{ steps.signed.outputs.path }}'
+        run: npx tauri signer sign '${{ steps.signed.outputs.path }}'
 
       - name: Generate updater manifest and release evidence
         run: |
-          uv run python scripts/generate-latest-json.py --repo lkuliuying/PrivateAgent --tag '${{ steps.release.outputs.tag }}'
-          uv run python scripts/generate_release_manifest.py --write
+          uv run python scripts/generate-latest-json.py --repo lkuliuying/PrivateAgent --tag '${{ steps.release.outputs.tag }}' --installer '${{ steps.signed.outputs.path }}'
+          if ($LASTEXITCODE -ne 0) { throw 'Updater manifest generation failed' }
+          uv run python scripts/generate_release_manifest.py --bundle '${{ steps.build.outputs.bundle }}' --installer '${{ steps.signed.outputs.path }}' --write
+          if ($LASTEXITCODE -ne 0) { throw 'Release evidence generation failed' }
 
       - name: Verify updater signature and manifest
         run: |
@@ -183,9 +196,11 @@ jobs:
           $sig = Get-Item "$($installer.FullName).sig"
           $manifest = Get-Content dist/latest.json -Raw | ConvertFrom-Json
           if ($manifest.version -ne '${{ steps.release.outputs.version }}') { throw 'latest.json version mismatch' }
-          if ($manifest.platforms.'windows-x86_64'.signature -ne (Get-Content $sig.FullName -Raw).Trim()) {
+          if ($manifest.platforms.'unified-windows-x86_64'.signature -ne (Get-Content $sig.FullName -Raw).Trim()) {
             throw 'latest.json updater signature mismatch'
           }
+          cargo run --release --locked --manifest-path scripts/windows/updater-signature-verifier/Cargo.toml -- $installer.FullName $sig.FullName '${{ steps.build.outputs.bundle }}/updater-public-key.txt'
+          if ($LASTEXITCODE -ne 0) { throw 'Final updater signature verification failed' }
           Get-FileHash -Algorithm SHA256 $installer.FullName
 
       - name: Upload signed release evidence

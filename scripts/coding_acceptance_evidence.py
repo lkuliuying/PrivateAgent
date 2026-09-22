@@ -9,7 +9,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from coding_acceptance_schema import fingerprint, plain_path, read_json
+from coding_acceptance_schema import fingerprint, plain_path, read_json, strict_json
 
 GATES = {
     "S6-T01": "完成真实性", "S6-T02": "写入保护", "S6-T03": "副作用恢复",
@@ -108,7 +108,7 @@ def aggregate(attempts: list[dict], expected: list[dict], *, runner_errors: list
     for item in attempts:
         plan = planned.get(item["attempt_id"])
         if plan and any(item.get(key) != plan.get(key) for key in (
-                "task_id", "model", "coding_goal", "split", "category", "family", "mode", "binding", "holdout_exposure")):
+                "task_id", "model", "coding_goal", "split", "category", "family", "mode", "connection_mode", "binding", "holdout_exposure")):
             errors.append("attempt_identity_mismatch:" + item["attempt_id"])
             mismatched.add(item["attempt_id"])
 
@@ -145,10 +145,23 @@ def aggregate(attempts: list[dict], expected: list[dict], *, runner_errors: list
         for group in ("family", "category", "split"):
             models[model][group] = {value: summarize([row for row in rows if planned.get(row["attempt_id"], row).get(group) == value])
                                     for value in sorted({item[group] for item in expected if item["model"] == model})}
-    return {"models": models, "missing_attempts": missing, "runner_errors": errors, "integrity_passed": not errors}
+    failures = [{**{key: planned.get(row["attempt_id"], row).get(key) for key in
+                    ("attempt_id", "task_id", "model", "family", "category", "split", "holdout_exposure")},
+                 "failure_class": row["failure_class"], "started": row.get("started", False),
+                 "attribution": row.get("failure_attribution", "unresolved_requires_review")}
+                for row in attempts if row.get("failure_class")]
+    return {"models": models, "missing_attempts": missing, "runner_errors": errors, "integrity_passed": not errors,
+            "failure_records": failures}
 
 
 def verify_ledger(directory: Path, manifest: dict, attempts: list[dict]) -> None:
+    plans = {plan["attempt_id"]: plan for plan in manifest["schedule"]}
+    ids = [row["attempt_id"] for row in attempts]
+    if len(plans) != len(manifest["schedule"]) or len(set(ids)) != len(ids):
+        raise ValueError("实验包含重复计划或尝试")
+    for row in attempts:
+        if row["attempt_id"] not in plans or any(row.get(key) != value for key, value in plans[row["attempt_id"]].items()):
+            raise ValueError("尝试身份与冻结计划不符")
     if manifest.get("statistics_version") != "s6-attempt-ledger-1" and all("record_sha256" not in row for row in attempts):
         return
     previous = None
@@ -166,8 +179,7 @@ def verify_ledger(directory: Path, manifest: dict, attempts: list[dict]) -> None
     starts_path = plain_path(directory / "starts.jsonl")
     if starts_path.stat().st_size > 8 * 1024 * 1024:
         raise ValueError("启动日志超过配额")
-    starts = [json.loads(line) for line in starts_path.read_text(encoding="utf-8").splitlines()]
-    plans = {plan["attempt_id"]: plan for plan in manifest["schedule"]}
+    starts = [strict_json(line) for line in starts_path.read_text(encoding="utf-8").splitlines()]
     seen = set()
     for start in starts:
         if (start["attempt_id"] in seen or start["attempt_id"] not in plans
@@ -180,6 +192,23 @@ def verify_ledger(directory: Path, manifest: dict, attempts: list[dict]) -> None
             raise ValueError("已启动状态不得重分类")
     if not seen <= {row["attempt_id"] for row in attempts}:
         raise ValueError("已启动尝试缺少结束记录")
+
+
+def experiment_status(rows: list[dict], manifest: dict, metrics: dict) -> dict:
+    schedule = manifest.get("schedule", [])
+    schedule_complete = (metrics["integrity_passed"] and len(rows) == len(schedule)
+                         and all(row.get("started") is True for row in rows))
+    model_schedules = [[row for row in schedule if row["model"] == model] for model in {row["model"] for row in schedule}]
+    complete_design = bool(model_schedules) and all(len(items) == 90
+        and len({row["task_id"] for row in items}) == 30
+        and all({row.get("repetition") for row in items if row["task_id"] == task_id} == {1, 2, 3}
+                for task_id in {row["task_id"] for row in items}) for items in model_schedules)
+    return {"schedule_complete": schedule_complete,
+            "experiment_complete": (schedule_complete and complete_design
+                and manifest.get("purpose") == "independent_evaluation"
+                and manifest.get("isolation", {}).get("verified") is True
+                and manifest.get("custody", {}).get("verified") is True
+                and all(row.get("mode") == "quality" and row.get("holdout_exposure") == "unexposed" for row in rows))}
 
 
 class Evidence:
@@ -233,19 +262,7 @@ class Evidence:
         if any(row.get("failure_class") == "started_without_final_record" for row in rows):
             errors.append("unfinished_started_attempt")
         metrics = aggregate(rows, self.manifest.get("schedule", []), runner_errors=errors)
-        metrics["schedule_complete"] = (metrics["integrity_passed"]
-            and len(rows) == len(self.manifest.get("schedule", [])) and all(row.get("started") is True for row in rows))
-        schedule = self.manifest.get("schedule", [])
-        model_schedules = [[row for row in schedule if row["model"] == model] for model in {row["model"] for row in schedule}]
-        complete_design = bool(model_schedules) and all(len(items) == 90
-            and len({row["task_id"] for row in items}) == 30
-            and all({row.get("repetition") for row in items if row["task_id"] == task_id} == {1, 2, 3}
-                    for task_id in {row["task_id"] for row in items}) for items in model_schedules)
-        metrics["experiment_complete"] = (metrics["schedule_complete"] and complete_design
-            and self.manifest.get("purpose") == "independent_evaluation"
-            and self.manifest.get("isolation", {}).get("verified") is True
-            and self.manifest.get("custody", {}).get("verified") is True
-            and all(row.get("mode") == "quality" and row.get("holdout_exposure") == "unexposed" for row in rows))
+        metrics.update(experiment_status(rows, self.manifest, metrics))
         metrics["evidence_files_sha256"] = {name: digest(self.directory / name)
                                            for name in ("manifest.json", "attempts.jsonl", "starts.jsonl")}
         gates = {key: {"name": name, "status": "not_run", "reason": "尚无覆盖完整门禁的本轮证据"} for key, name in GATES.items()}
@@ -253,11 +270,19 @@ class Evidence:
             gates[key]["partial_evidence"] = [row["attempt_id"] for row in self.rows if row.get("evidence_complete")]
         gates["S6-T09"]["reason"] = "公开校准集不具备盲评资格；真实模型、人工审阅及完整重复实验分别核对"
         gates["S6-T11"]["reason"] = "本机 IPC 产物执行不能代替干净 OS 安装、旧数据升级和旧程序回退"
-        metrics.update(gates=gates, delivery_decision="blocked", real_model_called=any(row.get("mode") == "quality" and row.get("started") for row in self.rows))
+        metrics.update(gates=gates, delivery_decision="blocked", real_model_called=any(
+            row.get("connection_mode") in {"product_proxy", "local_unbilled", "direct_provider"} and (row.get("model_requests") or 0) > 0
+            if "connection_mode" in row else row.get("mode") == "quality" and row.get("started") for row in self.rows))
+        metrics["connection_mode"] = self.manifest.get("connection_mode", "legacy_unspecified")
+        metrics["account_mode"] = self.manifest.get("account_mode", "legacy_unspecified")
+        metrics["experiment_budget"] = self.manifest.get("experiment_budget")
+        metrics["process_metrics"] = {row["attempt_id"]: row.get("process_metrics") for row in self.rows}
+        metrics["resource_metrics"] = {row["attempt_id"]: row.get("resource_metrics") for row in self.rows}
         # 确定性成绩、局部兼容检查与公开任务的正对照不解除 M3 门禁。
         write_json(self.directory / "metrics.json", metrics)
         lines = ["# S6 评测报告", "", "交付决议：**继续验收，M3 未放行**。", "",
                  f"运行模式：`{self.manifest['mode']}`；证据完整性：{'通过' if metrics['integrity_passed'] else '失败'}。",
+                 f"连接模式：`{metrics['connection_mode']}`；能力预检与真实推理结果分别记录。",
                  "真实模型质量、桌面 UI、干净安装和程序回退分别判定。未测用量与成本保留 unknown。", "",
                  "| 模型 | 启动 | 编码分母 | 独立完成 | 系统行为通过 |", "| --- | ---: | ---: | ---: | ---: |"]
         for model, groups in metrics["models"].items():
@@ -266,6 +291,10 @@ class Evidence:
         lines += ["", "## 失败与阻断", ""]
         lines.extend(f"- {value}" for value in metrics["runner_errors"])
         lines.extend(f"- {row['attempt_id']}: {row['failure_class']}" for row in self.rows if row.get("failure_class"))
+        if metrics["account_mode"] == "isolated_local_test":
+            lines += ["", "## 本机临时测试身份", "",
+                      "本次使用仅提供身份的回环账号服务，云 API 经本机 Agent 直连供应商。",
+                      "本记录不证明真实服务器账号、原生桌面或最终候选验收通过。"]
         lines += ["", "## 证据边界", "", "公开校准任务及其参考实现已暴露，保留集盲评性未验证；不得据此推荐默认模型。",
                   "最终说明的自然语言真实性需要独立审阅；未审阅时 report_matches_facts 为 null。",
                   "端到端原生桌面、真实远程 Provider、支持 Windows 矩阵及完整安装升级/回退须补充独立证据。",

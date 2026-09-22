@@ -5,9 +5,44 @@ from pathlib import Path
 
 import pytest
 from coding_acceptance_catalog import judge, load_catalog, rebuild
-from coding_acceptance_isolation import WindowsIsolation
+from coding_acceptance_isolation import WindowsIsolation, read_live_journal
 from coding_acceptance_schema import assessment_for
 from run_coding_validation import ROOT, new_directory
+
+
+def test_live_journal_disappearance_after_path_validation_is_not_a_manifest_error(tmp_path, monkeypatch):
+    import coding_acceptance_schema as schema
+
+    journal = tmp_path / "released-lease.json"
+    journal.write_text('{"paths":[]}', encoding="utf-8")
+    original = schema.plain_path
+
+    def released_after_validation(path, **kwargs):
+        checked = original(path, **kwargs)
+        # 只删除本用例新建的夹具，复现租约校验后、元数据读取前的正常清理。
+        if path == journal:
+            journal.unlink()
+        return checked
+
+    monkeypatch.setattr(schema, "plain_path", released_after_validation)
+    with pytest.raises(FileNotFoundError):
+        read_live_journal(journal)
+
+
+@pytest.mark.parametrize("kind", ["directory", "oversized", "invalid_json"])
+def test_live_journal_invalid_existing_input_is_still_rejected(tmp_path, kind):
+    from coding_acceptance_schema import LIMIT
+
+    journal = tmp_path / "invalid-lease.json"
+    if kind == "directory":
+        journal.mkdir()
+    elif kind == "oversized":
+        with journal.open("wb") as stream:
+            stream.truncate(LIMIT + 1)
+    else:
+        journal.write_text('{"paths":', encoding="utf-8")
+    with pytest.raises(ValueError):
+        read_live_journal(journal)
 
 
 @pytest.fixture(scope="module")

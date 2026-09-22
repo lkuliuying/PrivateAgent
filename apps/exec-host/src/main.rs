@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 mod sandbox;
 
+#[cfg(all(windows, feature = "readiness-probe"))]
+mod readiness_probe;
+
 const PROTOCOL_VERSION: &str = "1.0";
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const POLL_INTERVAL_MS: u64 = 50;
@@ -212,6 +215,11 @@ impl Host {
 }
 
 fn main() {
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    if let Err(error) = readiness_probe::initialize("host") {
+        eprintln!("{error}");
+        std::process::exit(78);
+    }
     // 启动期自分配 Job：此后所有子进程经继承自动入 Job；
     // KILL_ON_JOB_CLOSE 在进程退出时兜底清理孤儿孙进程。
     // 无法建立进程树生命周期边界时拒绝启动，不依赖正常退出后的 PID 猜测清理。
@@ -603,10 +611,17 @@ fn spawn_stream_reader(
     std::thread::spawn(move || {
         let mut pending: Vec<u8> = Vec::with_capacity(DELTA_LIMIT);
         let mut chunk = [0u8; READ_CHUNK_SIZE];
+        #[cfg(all(windows, feature = "readiness-probe"))]
+        let mut receipt = readiness_probe::Receipt::new(&execution_id, stream);
         loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    #[cfg(all(windows, feature = "readiness-probe"))]
+                    if let Some(receipt) = receipt.as_mut() {
+                        let received = readiness_probe::qpc();
+                        receipt.observe(&chunk[..n], received);
+                    }
                     pending.extend_from_slice(&chunk[..n]);
                     // 续读窗口每次读取即入环（不等分帧边界，§11.4 实时性）。
                     output_tail.lock().unwrap().push(&chunk[..n]);
@@ -627,6 +642,8 @@ fn spawn_stream_reader(
         if !pending.is_empty() {
             emit_delta(&execution_id, stream, &pending, &sequence);
         }
+        #[cfg(all(windows, feature = "readiness-probe"))]
+        if let Some(receipt) = receipt { receipt.finish(); }
     })
 }
 

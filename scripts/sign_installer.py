@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """第八阶段 M4：Windows 代码签名（Authenticode）编排。
 
-签名顺序（docs/signing-and-keys.md §2.4，必须遵守，否则 updater 拒绝更新）：
+签名顺序（docs/archive/legacy/signing-and-keys.md §2.4，必须遵守，否则 updater 拒绝更新）：
 1. tauri build -> NSIS exe + .sig（.sig 覆盖未签名字节）
 2. signtool sign（Authenticode，改写字节）
 3. signtool verify /pa /v
@@ -20,7 +20,7 @@ SignPath / 外部签名：CI 将 SignPath 返回的安装包复制回标准产�
 ``--verify-existing --provider SignPath``。脚本使用 Windows Authenticode API 验证
 签名并记录状态，但不会接触或导出代码签名私钥。
 
-私钥/证书不入库：.gitignore 已覆盖 *.pfx *.p12 *.key *.pem 等（见 test_phase8_signing）。
+私钥/证书不入库：.gitignore 已覆盖 *.pfx *.p12 *.key *.pem 等（见 tests/packaging/test_sign_installer.py）。
 """
 from __future__ import annotations
 

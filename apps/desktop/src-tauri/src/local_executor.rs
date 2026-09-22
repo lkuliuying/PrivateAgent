@@ -74,7 +74,6 @@ pub(crate) fn start_local_executor(
 ) -> Result<LocalConnection, String> {
     let model_json = serde_json::to_string(&model_config).map_err(|_| "模型配置无效")?;
     if !model_config.is_object() || model_json.len() > 4096 { return Err("模型配置无效".into()); }
-    let server_origin = crate::server::ACCOUNT_SERVER_ORIGIN;
     let mut guard = state.0.lock().map_err(|_| "本机执行器状态不可用")?;
     if let Some(process) = guard.as_mut() {
         if process.child.lock().map_err(|_| "无法检查本机执行器")?.try_wait().map_err(|_| "无法检查本机执行器")?.is_none() {
@@ -87,6 +86,10 @@ pub(crate) fn start_local_executor(
     *guard = None;
     let token = crate::generate_api_token()?;
     let data = app.path().app_local_data_dir().map_err(|_| "无法定位本机数据目录")?.join("local-projects");
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    let data = crate::readiness_probe::local_data_directory(data, &app.config().identifier)?;
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    crate::readiness_probe::validate_data_directory(&data)?;
     std::fs::create_dir_all(&data).map_err(|_| "无法创建本机数据目录")?;
     let executable = std::env::current_exe().map_err(|_| "无法定位客户端")?
         .with_file_name(if cfg!(windows) { "private-agent-local.exe" } else { "private-agent-local" });
@@ -94,10 +97,13 @@ pub(crate) fn start_local_executor(
         return Err("安装包缺少本机执行器，请重新安装完整客户端".into());
     }
     let mut command = Command::new(executable);
-    command.args(["--stdio", "--server", server_origin, "--model-json", &model_json,
+    // 仅从系统凭据库向受控本机执行器注入密钥，执行器启动后立即移除环境变量。
+    let model_provider_secrets = crate::collect_model_provider_secrets_for_sidecar()?;
+    command.args(["--stdio", "--model-json", &model_json,
                   "--parent-pid", &std::process::id().to_string()])
         .arg("--data-dir").arg(&data).current_dir(&data)
         .env_clear().env("PRIVATEAGENT_LOCAL_NONCE", token)
+        .env("PA_MODEL_PROVIDER_SECRETS_JSON", model_provider_secrets.as_str())
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
     for (key, value) in std::env::vars_os() {
         let name = key.to_string_lossy().to_ascii_uppercase();
@@ -126,9 +132,13 @@ pub(crate) fn start_local_executor(
                 || bytes.is_empty() || bytes.len() as u64 > MAX_FRAME || bytes.last() != Some(&b'\n') { break; }
             let Ok(frame) = serde_json::from_slice::<Value>(&bytes) else { break };
             let Some(id) = frame.get("id").and_then(Value::as_str) else { break };
+            #[cfg(all(windows, feature = "readiness-probe"))]
+            let drop_frame = crate::readiness_transport::drop_frame(&frame);
+            #[cfg(not(all(windows, feature = "readiness-probe")))]
+            let drop_frame = false;
             let Ok(mut requests) = reader_pending.lock() else { break };
             if let Some(channel) = requests.get(id) {
-                let closed = channel.send(frame.clone()).is_err();
+                let closed = !drop_frame && channel.send(frame.clone()).is_err();
                 if closed || frame.get("done") == Some(&Value::Bool(true)) || frame.get("error").is_some() {
                     requests.remove(id);
                 }
@@ -161,11 +171,15 @@ pub(crate) async fn local_executor_request(
         requests.insert(id.clone(), on_event);
     }
     let request_id = id.clone();
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    crate::readiness_transport::request(&id, &request);
     let result = tauri::async_runtime::spawn_blocking(move || {
         write_frame(&input, json!({"id": request_id, "method": "request", "params": request}))
     }).await.map_err(|_| "本机管道写入失败".to_string())?;
     if result.is_err() {
         if let Ok(mut requests) = pending.lock() { requests.remove(&id); }
+        #[cfg(all(windows, feature = "readiness-probe"))]
+        crate::readiness_transport::cancel(&id);
     }
     result
 }
@@ -175,6 +189,8 @@ pub(crate) async fn local_executor_cancel(state: State<'_, LocalExecutorState>, 
     if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err("请求标识无效".into());
     }
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    crate::readiness_transport::cancel(&id);
     let input = {
         let guard = state.0.lock().map_err(|_| "运行时状态不可用")?;
         let Some(process) = guard.as_ref() else { return Ok(()) };

@@ -5,6 +5,9 @@ edition = "2021"
 description = "PrivateAgent Exec Host: controlled JSONL process executor (AD-T02 boundary)"
 license = "Apache-2.0"
 
+[features]
+readiness-probe = []
+
 [dependencies]
 serde_json = "1"
 

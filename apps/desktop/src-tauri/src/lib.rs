@@ -1,308 +1,37 @@
-// Tauri 桌面壳：管理 Python 后端 sidecar 生命周期、端口协商、连接配置与更新检查（第五阶段）。
-//
-// 职责：
-// 1. 启动时仅注册状态（不自动 spawn sidecar）；由前端引导流程按需调用 start_sidecar。
-// 2. start_sidecar 分配空闲端口（OS 分配 127.0.0.1:0），通过 PA_API_PORT 传给 sidecar 并拉起进程。
-//    dev 模式（cfg!(debug_assertions)）下不 spawn，返回 dev_mode=true，前端回退到手动后端 127.0.0.1:8000。
-// 3. 配置命令：config_exists / read_config / write_config —— 读写 %APPDATA%/personal-assistant/.env（PA_ 前缀）。
-// 4. 依赖检测：check_dependencies（默认端口探测）/ test_connections（按配置探测 MySQL + Ollama）。
-// 5. 更新命令：check_for_updates / download_and_install_update / relaunch_app（基于 tauri-plugin-updater + process）。
-// 6. 关闭按钮可退出或隐藏到系统托盘；真正退出时终止 sidecar 子进程。
-//
-// .env 字段（与 src/personal_assistant/config.py 的 PA_ 前缀对齐）：
-//   PA_DB_HOST / PA_DB_PORT / PA_DB_USER / PA_DB_NAME / PA_DB_SECRET_REF
-//   PA_OLLAMA_BASE_URL=...   PA_LLM_MODEL=...   PA_EMBED_MODEL=...
-//   PA_CHAT_AGENT_RUNTIME_ENABLED=...   PA_CONVERSATION_SUMMARY_WORKER_ENABLED=...
-// 0.3.0 M1：两个 Agent Runtime 开关由桌面独立保存/加载，sidecar 启动时注入，
-// 修改后需重启 sidecar 才生效（与后端 Settings 的 PA_ 前缀对齐）。
-
-mod credential_prompt;
+// 桌面壳仅管理本机执行器、模型凭据、窗口和更新生命周期。
 mod credentials;
 mod local_executor;
-mod server;
+mod updater_config;
+#[cfg(all(windows, feature = "readiness-probe"))]
+#[path = "../../../exec-host/src/readiness_probe.rs"]
+mod readiness_probe;
+#[cfg(all(windows, feature = "readiness-probe"))]
+mod readiness_transport;
 
-use std::fs;
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::Duration;
-use std::{collections::BTreeMap, collections::BTreeSet};
-
+use credentials::{model_provider_account, model_provider_reference, validate_secret_alias};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::path::PathBuf;
+use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, State};
-use tauri_plugin_shell::process::{CommandChild, CommandEvent};
-use tauri_plugin_shell::ShellExt;
+use tauri::{AppHandle, Manager, RunEvent};
 use tauri_plugin_updater::UpdaterExt;
-
-use credential_prompt::PromptOutcome;
-use credentials::{
-    mcp_account, mcp_reference, model_provider_account, model_provider_reference, provider_account,
-    validate_mcp_secret_alias, CLAUDE_API_KEY_ACCOUNT, DATABASE_PASSWORD_ACCOUNT,
-    OPENAI_API_KEY_ACCOUNT,
-};
 use zeroize::{Zeroize, Zeroizing};
 
-/// sidecar 二进制名（对应 tauri.conf.json 的 externalBin，去掉平台后缀）。
-const SIDECAR_BIN: &str = "personal-assistant-server";
 const TRAY_SHOW_ID: &str = "tray-show";
 const TRAY_EXIT_ID: &str = "tray-exit";
-
-/// sidecar 状态：协商端口与子进程句柄。
-/// port 为 None 表示未启动 sidecar（dev 模式手动起后端，或尚未调用 start_sidecar）。
-struct SidecarState {
-    port: Mutex<Option<u16>>,
-    token: Mutex<Option<String>>,
-    child: Mutex<Option<CommandChild>>,
-    startup_error: Mutex<Option<String>>,
-    generation: Mutex<u64>,
-}
-
-fn classify_sidecar_startup_error(line: &str) -> Option<&'static str> {
-    if line.contains("Another Agent-enabled API process already owns this database") {
-        return Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。");
-    }
-    if line.contains("Agent runtime requires database schema revision") {
-        return Some("数据库版本过旧，请先完成数据库升级后重试。");
-    }
-    None
-}
-
-/// 连接配置（向导编辑的字段；写盘时组装成 PA_DB_URL 等）。
-/// 0.3.0 M1 起显式承载 Agent Runtime 两个灰度开关，与后端 config.py 的
-/// PA_CHAT_AGENT_RUNTIME_ENABLED / PA_CONVERSATION_SUMMARY_WORKER_ENABLED 对齐。
-/// v0.9.0 H1-C（计划 §1.3/§5.7）：承载 Coding Agent 默认切换与三档权限/
-/// 上下文能力位；发布门禁已通过，产品默认开启（可显式置 false 精确回退）。
-/// 这些是能力可用性声明，不是权限授予：默认权限模式仍为 confirm，
-/// 不扩大既有 trusted path 或命令 profile。
-#[derive(Serialize, Deserialize, Clone)]
-struct ConfigData {
-    db_host: String,
-    db_port: u16,
-    db_user: String,
-    db_name: String,
-    #[serde(default)]
-    db_password_configured: bool,
-    ollama_base_url: String,
-    llm_model: String,
-    embed_model: String,
-    #[serde(default = "default_true")]
-    mcp_enabled: bool,
-    #[serde(default)]
-    chat_agent_runtime_enabled: bool,
-    #[serde(default)]
-    conversation_summary_worker_enabled: bool,
-    #[serde(default)]
-    http_workflow_enabled: bool,
-    #[serde(default)]
-    sql_readonly_workflow_enabled: bool,
-    // === v0.9.0 能力位（默认 true：版本主题即默认切换，§1.3） ===
-    // Coding UI 通过 /agent-runs 创建执行；该 API 必须与 UI 一起默认开启，
-    // 否则后端会按隐藏端点语义返回 404。
-    #[serde(default = "default_true")]
-    agent_runs_api_enabled: bool,
-    #[serde(default = "default_true")]
-    project_bound_runs_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_run_plan_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_run_event_stream_enabled: bool,
-    // Coding Agent 的基础读取、单文件 Patch、上下文续接与可信完成校验。
-    // 这些开关此前未由安装版注入，导致 UI 提示模型调用未注册工具，且任务
-    // 重开后模型拿不到历史对话。
-    #[serde(default = "default_true")]
-    agent_run_read_only_tools_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_patch_workflow_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_context_builder_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_output_verification_enabled: bool,
-    #[serde(default = "default_true")]
-    agent_command_workflow_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_patchset_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_command_profiles_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_artifacts_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_permission_models_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_agent_ui_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_workspace_auto_approve_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_full_access_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_context_budget_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_execution_detail_enabled: bool,
-    #[serde(default = "default_true")]
-    coding_worktree_enabled: bool,
-}
-
-/// v0.9.0 能力位默认开启（发布门禁通过后的产品默认值，计划 §3.1）。
-fn default_true() -> bool {
-    true
-}
-
-impl Default for ConfigData {
-    fn default() -> Self {
-        ConfigData {
-            db_host: "127.0.0.1".into(),
-            db_port: 3306,
-            db_user: "root".into(),
-            db_name: "personal_assistant".into(),
-            db_password_configured: false,
-            ollama_base_url: "http://127.0.0.1:11434".into(),
-            llm_model: "qwen2.5:14b-instruct-q4_K_M".into(),
-            embed_model: "bge-m3".into(),
-            mcp_enabled: true,
-            chat_agent_runtime_enabled: false,
-            conversation_summary_worker_enabled: false,
-            http_workflow_enabled: false,
-            sql_readonly_workflow_enabled: false,
-            agent_runs_api_enabled: true,
-            project_bound_runs_enabled: true,
-            agent_run_plan_enabled: true,
-            agent_run_event_stream_enabled: true,
-            agent_run_read_only_tools_enabled: true,
-            agent_patch_workflow_enabled: true,
-            agent_context_builder_enabled: true,
-            agent_output_verification_enabled: true,
-            agent_command_workflow_enabled: true,
-            coding_patchset_enabled: true,
-            coding_command_profiles_enabled: true,
-            coding_artifacts_enabled: true,
-            coding_permission_models_enabled: true,
-            coding_agent_ui_enabled: true,
-            coding_workspace_auto_approve_enabled: true,
-            coding_full_access_enabled: true,
-            coding_context_budget_enabled: true,
-            coding_execution_detail_enabled: true,
-            coding_worktree_enabled: true,
-        }
-    }
-}
-
-/// start_sidecar 的返回。
-#[derive(Serialize)]
-struct SidecarStartResult {
-    ok: bool,
-    /// dev 模式未 spawn 真实 sidecar（前端回退到 127.0.0.1:8000）。
-    dev_mode: bool,
-    port: Option<u16>,
-    /// High-entropy token for this sidecar process; never persisted or logged.
-    token: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ApiConnection {
-    port: u16,
-    token: String,
-}
-
-#[derive(Serialize)]
-struct ProviderSecretStatus {
-    openai_configured: bool,
-    claude_configured: bool,
-}
-
-#[derive(Serialize)]
-struct DatabaseSecretPromptResult {
-    configured: bool,
-    cancelled: bool,
-}
-
-#[derive(Serialize)]
-struct McpSecretStatus {
-    reference: String,
-    configured: bool,
-}
-
-#[derive(Serialize)]
-struct McpSecretPromptResult {
-    reference: String,
-    configured: bool,
-    cancelled: bool,
-}
 
 #[derive(Serialize)]
 struct ModelProviderSecretStatus {
     reference: String,
     configured: bool,
 }
-
 #[derive(Default, Deserialize, Serialize)]
 struct ModelProviderSecretIndex {
     aliases: Vec<String>,
 }
-
-#[derive(Default, Deserialize, Serialize)]
-struct McpSecretIndex {
-    aliases: Vec<String>,
-}
-
-#[derive(Clone, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
-struct HttpProfileSecretEntry {
-    name: String,
-    slot: String,
-}
-
-#[derive(Default, Deserialize, Serialize)]
-struct HttpProfileSecretIndex {
-    entries: Vec<HttpProfileSecretEntry>,
-}
-
-#[derive(Serialize)]
-struct HttpProfileSecretStatus {
-    reference: String,
-    configured: bool,
-}
-
-#[derive(Default, Deserialize, Serialize)]
-struct SqlProfileSecretIndex {
-    names: Vec<String>,
-}
-
-#[derive(Serialize)]
-struct SqlProfileSecretStatus {
-    reference: String,
-    configured: bool,
-}
-
-struct LoadedConfig {
-    public: ConfigData,
-    legacy_password: Option<String>,
-    legacy_format: bool,
-    secret_ref_configured: bool,
-}
-
-/// test_connections 的返回。
-#[derive(Serialize)]
-struct ConnResult {
-    mysql_ok: bool,
-    mysql_error: Option<String>,
-    ollama_ok: bool,
-    ollama_error: Option<String>,
-    ollama_models: Vec<String>,
-    /// 配置的 llm_model 是否在 Ollama 已拉取的模型列表中。
-    llm_model_available: bool,
-    embed_model_available: bool,
-}
-
-/// check_dependencies 的返回（默认端口探测，向导首屏环境提示用）。
-#[derive(Serialize)]
-struct DepResult {
-    mysql_reachable: bool,
-    ollama_reachable: bool,
-}
-
-/// check_for_updates 的返回（无更新时为 None）。
 #[derive(Serialize)]
 struct UpdateInfo {
     version: String,
@@ -310,16 +39,10 @@ struct UpdateInfo {
     body: Option<String>,
 }
 
-// ============ 路径 ============
-
-/// 配置目录：dev=项目根下隔离的 .run/desktop-config；打包模式按平台--
-/// Windows `%APPDATA%/personal-assistant`、macOS `~/Library/Application Support/personal-assistant`、
-/// Linux `$XDG_DATA_HOME/personal-assistant`（或 `~/.local/share/personal-assistant`）。
 fn config_dir() -> PathBuf {
     if cfg!(debug_assertions) {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // Keep desktop-dev writes isolated from the project .env used by the
-        // manually started Python backend.
+        // 开发模式不读写仓库环境文件；保持已保存模型凭据索引的位置。
         manifest
             .ancestors()
             .nth(3)
@@ -329,7 +52,11 @@ fn config_dir() -> PathBuf {
         #[cfg(windows)]
         {
             let base = std::env::var("APPDATA").unwrap_or_default();
-            PathBuf::from(base).join(if cfg!(feature = "qa") { "personal-assistant-candidate" } else { "personal-assistant" })
+            PathBuf::from(base).join(if cfg!(feature = "qa") {
+                "personal-assistant-candidate"
+            } else {
+                "personal-assistant"
+            })
         }
         // macOS：~/Library/Application Support/personal-assistant（第八阶段 M5 修正，
         // 原先误用 XDG ~/.local/share，不符合 macOS 惯例且跨应用备份会遗漏）。
@@ -356,66 +83,6 @@ fn config_dir() -> PathBuf {
     }
 }
 
-fn env_path() -> PathBuf {
-    config_dir().join(".env")
-}
-
-fn mcp_secret_index_path() -> PathBuf {
-    config_dir().join("mcp-secret-index.json")
-}
-
-fn read_mcp_secret_aliases() -> Result<BTreeSet<String>, String> {
-    let path = mcp_secret_index_path();
-    if !path.exists() {
-        return Ok(BTreeSet::new());
-    }
-    let raw = fs::read_to_string(path).map_err(|_| "MCP credential index read failed")?;
-    let index: McpSecretIndex =
-        serde_json::from_str(&raw).map_err(|_| "MCP credential index is invalid")?;
-    if index.aliases.len() > 32 {
-        return Err("too many MCP credentials".to_string());
-    }
-    let mut aliases = BTreeSet::new();
-    for alias in index.aliases {
-        validate_mcp_secret_alias(&alias)?;
-        aliases.insert(alias);
-    }
-    Ok(aliases)
-}
-
-fn write_mcp_secret_aliases(aliases: &BTreeSet<String>) -> Result<(), String> {
-    if aliases.len() > 32 {
-        return Err("too many MCP credentials".to_string());
-    }
-    fs::create_dir_all(config_dir()).map_err(|_| "MCP credential index directory failed")?;
-    let encoded = serde_json::to_vec(&McpSecretIndex {
-        aliases: aliases.iter().cloned().collect(),
-    })
-    .map_err(|_| "MCP credential index serialization failed")?;
-    fs::write(mcp_secret_index_path(), encoded)
-        .map_err(|_| "MCP credential index write failed".to_string())
-}
-
-fn collect_mcp_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
-    let mut values = BTreeMap::new();
-    for alias in read_mcp_secret_aliases()? {
-        let account = mcp_account(&alias)?;
-        if let Some(secret) = credentials::get(&account)? {
-            values.insert(mcp_reference(&alias)?, secret);
-        }
-    }
-    let mut encoded = serde_json::to_string(&values)
-        .map_err(|_| "MCP credential injection serialization failed")?;
-    for secret in values.values_mut() {
-        secret.zeroize();
-    }
-    if encoded.len() > 16 * 1024 {
-        encoded.zeroize();
-        return Err("MCP credential injection exceeds the process limit".to_string());
-    }
-    Ok(Zeroizing::new(encoded))
-}
-
 fn model_provider_secret_index_path() -> PathBuf {
     config_dir().join("model-provider-secret-index.json")
 }
@@ -434,7 +101,7 @@ fn read_model_provider_secret_aliases() -> Result<BTreeSet<String>, String> {
     }
     let mut aliases = BTreeSet::new();
     for alias in index.aliases {
-        validate_mcp_secret_alias(&alias)?;
+        validate_secret_alias(&alias)?;
         aliases.insert(alias);
     }
     Ok(aliases)
@@ -474,806 +141,6 @@ fn collect_model_provider_secrets_for_sidecar() -> Result<Zeroizing<String>, Str
     Ok(Zeroizing::new(encoded))
 }
 
-// ============ v0.5.0 B3：HTTP endpoint profile 凭据通道 ============
-// 与 MCP 同构：DB 只存 keyring 引用；桌面壳把引用→明文 map 注入
-// PA_HTTP_PROFILES_SECRETS_JSON，sidecar 进程内存一次性消费。
-
-fn http_profile_secret_index_path() -> PathBuf {
-    config_dir().join("http-profile-secret-index.json")
-}
-
-fn read_http_profile_secret_entries() -> Result<BTreeSet<HttpProfileSecretEntry>, String> {
-    let path = http_profile_secret_index_path();
-    if !path.exists() {
-        return Ok(BTreeSet::new());
-    }
-    let raw = fs::read_to_string(path).map_err(|_| "HTTP profile credential index read failed")?;
-    let index: HttpProfileSecretIndex =
-        serde_json::from_str(&raw).map_err(|_| "HTTP profile credential index is invalid")?;
-    if index.entries.len() > 32 {
-        return Err("too many HTTP profile credentials".to_string());
-    }
-    let mut entries = BTreeSet::new();
-    for entry in index.entries {
-        credentials::http_profile_account(&entry.name, &entry.slot)?;
-        entries.insert(entry);
-    }
-    Ok(entries)
-}
-
-fn write_http_profile_secret_entries(
-    entries: &BTreeSet<HttpProfileSecretEntry>,
-) -> Result<(), String> {
-    if entries.len() > 32 {
-        return Err("too many HTTP profile credentials".to_string());
-    }
-    fs::create_dir_all(config_dir())
-        .map_err(|_| "HTTP profile credential index directory failed")?;
-    let encoded = serde_json::to_vec(&HttpProfileSecretIndex {
-        entries: entries.iter().cloned().collect(),
-    })
-    .map_err(|_| "HTTP profile credential index serialization failed")?;
-    fs::write(http_profile_secret_index_path(), encoded)
-        .map_err(|_| "HTTP profile credential index write failed".to_string())
-}
-
-fn collect_http_profile_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
-    let mut values = BTreeMap::new();
-    for entry in read_http_profile_secret_entries()? {
-        let account = credentials::http_profile_account(&entry.name, &entry.slot)?;
-        if let Some(secret) = credentials::get(&account)? {
-            values.insert(
-                credentials::http_profile_reference(&entry.name, &entry.slot)?,
-                secret,
-            );
-        }
-    }
-    let mut encoded = serde_json::to_string(&values)
-        .map_err(|_| "HTTP profile credential injection serialization failed")?;
-    for secret in values.values_mut() {
-        secret.zeroize();
-    }
-    if encoded.len() > 24 * 1024 {
-        encoded.zeroize();
-        return Err("HTTP profile credential injection exceeds the process limit".to_string());
-    }
-    Ok(Zeroizing::new(encoded))
-}
-
-fn read_http_profile_secret_status(
-    name: &str,
-    slot: &str,
-) -> Result<HttpProfileSecretStatus, String> {
-    let account = credentials::http_profile_account(name, slot)?;
-    let entries = read_http_profile_secret_entries()?;
-    Ok(HttpProfileSecretStatus {
-        reference: credentials::http_profile_reference(name, slot)?,
-        configured: credentials::exists(&account)?
-            && entries.contains(&HttpProfileSecretEntry {
-                name: name.to_string(),
-                slot: slot.to_string(),
-            }),
-    })
-}
-
-#[tauri::command]
-fn http_profile_secret_status(
-    name: String,
-    slot: String,
-) -> Result<HttpProfileSecretStatus, String> {
-    read_http_profile_secret_status(&name, &slot)
-}
-
-#[tauri::command]
-fn set_http_profile_secret(
-    name: String,
-    slot: String,
-    secret: String,
-) -> Result<HttpProfileSecretStatus, String> {
-    let account = credentials::http_profile_account(&name, &slot)?;
-    credentials::set(&account, &secret)?;
-    let mut entries = read_http_profile_secret_entries()?;
-    entries.insert(HttpProfileSecretEntry {
-        name: name.clone(),
-        slot: slot.clone(),
-    });
-    write_http_profile_secret_entries(&entries)?;
-    read_http_profile_secret_status(&name, &slot)
-}
-
-#[tauri::command]
-fn clear_http_profile_secret(
-    name: String,
-    slot: String,
-) -> Result<HttpProfileSecretStatus, String> {
-    let account = credentials::http_profile_account(&name, &slot)?;
-    credentials::delete(&account)?;
-    let mut entries = read_http_profile_secret_entries()?;
-    entries.remove(&HttpProfileSecretEntry {
-        name: name.clone(),
-        slot: slot.clone(),
-    });
-    write_http_profile_secret_entries(&entries)?;
-    read_http_profile_secret_status(&name, &slot)
-}
-
-#[tauri::command]
-fn prompt_http_profile_secret(
-    name: String,
-    slot: String,
-) -> Result<HttpProfileSecretPromptResult, String> {
-    let account = credentials::http_profile_account(&name, &slot)?;
-    let outcome = credential_prompt::prompt_and_store(
-        &account,
-        "PrivateAgent HTTP endpoint credential",
-        "Enter the API key for this HTTP endpoint. It will be stored in the system credential store.",
-    )?;
-    if credentials::exists(&account)? {
-        let mut entries = read_http_profile_secret_entries()?;
-        entries.insert(HttpProfileSecretEntry {
-            name: name.clone(),
-            slot: slot.clone(),
-        });
-        write_http_profile_secret_entries(&entries)?;
-    }
-    let status = read_http_profile_secret_status(&name, &slot)?;
-    Ok(HttpProfileSecretPromptResult {
-        reference: status.reference,
-        configured: status.configured,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
-}
-
-#[derive(Serialize)]
-struct HttpProfileSecretPromptResult {
-    reference: String,
-    configured: bool,
-    cancelled: bool,
-}
-
-#[derive(Serialize)]
-struct SqlProfileSecretPromptResult {
-    reference: String,
-    configured: bool,
-    cancelled: bool,
-}
-
-// ============ v0.5.0 B4：只读 SQL profile 凭据通道 ============
-// 与 HTTP 同构：密码引用 secret://os-keyring/sql/<name>/password，
-// 桌面壳收集后注入 PA_SQL_PROFILES_SECRETS_JSON。
-
-fn sql_profile_secret_index_path() -> PathBuf {
-    config_dir().join("sql-profile-secret-index.json")
-}
-
-fn read_sql_profile_secret_names() -> Result<BTreeSet<String>, String> {
-    let path = sql_profile_secret_index_path();
-    if !path.exists() {
-        return Ok(BTreeSet::new());
-    }
-    let raw = fs::read_to_string(path).map_err(|_| "SQL profile credential index read failed")?;
-    let index: SqlProfileSecretIndex =
-        serde_json::from_str(&raw).map_err(|_| "SQL profile credential index is invalid")?;
-    if index.names.len() > 32 {
-        return Err("too many SQL profile credentials".to_string());
-    }
-    let mut names = BTreeSet::new();
-    for name in index.names {
-        credentials::sql_profile_account(&name)?;
-        names.insert(name);
-    }
-    Ok(names)
-}
-
-fn write_sql_profile_secret_names(names: &BTreeSet<String>) -> Result<(), String> {
-    if names.len() > 32 {
-        return Err("too many SQL profile credentials".to_string());
-    }
-    fs::create_dir_all(config_dir())
-        .map_err(|_| "SQL profile credential index directory failed")?;
-    let encoded = serde_json::to_vec(&SqlProfileSecretIndex {
-        names: names.iter().cloned().collect(),
-    })
-    .map_err(|_| "SQL profile credential index serialization failed")?;
-    fs::write(sql_profile_secret_index_path(), encoded)
-        .map_err(|_| "SQL profile credential index write failed".to_string())
-}
-
-fn collect_sql_profile_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
-    let mut values = BTreeMap::new();
-    for name in read_sql_profile_secret_names()? {
-        let account = credentials::sql_profile_account(&name)?;
-        if let Some(secret) = credentials::get(&account)? {
-            values.insert(credentials::sql_profile_reference(&name)?, secret);
-        }
-    }
-    let mut encoded = serde_json::to_string(&values)
-        .map_err(|_| "SQL profile credential injection serialization failed")?;
-    for secret in values.values_mut() {
-        secret.zeroize();
-    }
-    if encoded.len() > 24 * 1024 {
-        encoded.zeroize();
-        return Err("SQL profile credential injection exceeds the process limit".to_string());
-    }
-    Ok(Zeroizing::new(encoded))
-}
-
-fn read_sql_profile_secret_status(name: &str) -> Result<SqlProfileSecretStatus, String> {
-    let account = credentials::sql_profile_account(name)?;
-    let names = read_sql_profile_secret_names()?;
-    Ok(SqlProfileSecretStatus {
-        reference: credentials::sql_profile_reference(name)?,
-        configured: credentials::exists(&account)? && names.contains(name),
-    })
-}
-
-#[tauri::command]
-fn sql_profile_secret_status(name: String) -> Result<SqlProfileSecretStatus, String> {
-    read_sql_profile_secret_status(&name)
-}
-
-#[tauri::command]
-fn set_sql_profile_secret(name: String, secret: String) -> Result<SqlProfileSecretStatus, String> {
-    let account = credentials::sql_profile_account(&name)?;
-    credentials::set(&account, &secret)?;
-    let mut names = read_sql_profile_secret_names()?;
-    names.insert(name.clone());
-    write_sql_profile_secret_names(&names)?;
-    read_sql_profile_secret_status(&name)
-}
-
-#[tauri::command]
-fn clear_sql_profile_secret(name: String) -> Result<SqlProfileSecretStatus, String> {
-    let account = credentials::sql_profile_account(&name)?;
-    credentials::delete(&account)?;
-    let mut names = read_sql_profile_secret_names()?;
-    names.remove(&name);
-    write_sql_profile_secret_names(&names)?;
-    read_sql_profile_secret_status(&name)
-}
-
-#[tauri::command]
-fn prompt_sql_profile_secret(name: String) -> Result<SqlProfileSecretPromptResult, String> {
-    let account = credentials::sql_profile_account(&name)?;
-    let outcome = credential_prompt::prompt_and_store(
-        &account,
-        "PrivateAgent readonly database credential",
-        "Enter the database password for this readonly connection. It will be stored in the system credential store.",
-    )?;
-    if credentials::exists(&account)? {
-        let mut names = read_sql_profile_secret_names()?;
-        names.insert(name.clone());
-        write_sql_profile_secret_names(&names)?;
-    }
-    let status = read_sql_profile_secret_status(&name)?;
-    Ok(SqlProfileSecretPromptResult {
-        reference: status.reference,
-        configured: status.configured,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
-}
-
-// ============ .env 读写 ============
-
-fn percent_encode_component(value: &str) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'.' | b'_' | b'~') {
-            out.push(*byte as char);
-        } else {
-            out.push('%');
-            out.push(HEX[(byte >> 4) as usize] as char);
-            out.push(HEX[(byte & 0x0f) as usize] as char);
-        }
-    }
-    out
-}
-
-fn percent_decode_component(value: &str) -> String {
-    let bytes = value.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let parsed = std::str::from_utf8(&bytes[i + 1..i + 3])
-                .ok()
-                .and_then(|s| u8::from_str_radix(s, 16).ok());
-            if let Some(byte) = parsed {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-fn build_db_url(cfg: &ConfigData, password: &str) -> String {
-    // IPv6 主机含 ':'，需用方括号包裹，否则 URL host 无法解析。
-    let host = if cfg.db_host.contains(':') {
-        format!("[{}]", cfg.db_host)
-    } else {
-        cfg.db_host.clone()
-    };
-    format!(
-        "mysql+aiomysql://{}:{}@{}:{}/{}?charset=utf8mb4",
-        percent_encode_component(&cfg.db_user),
-        percent_encode_component(password),
-        host,
-        cfg.db_port,
-        percent_encode_component(&cfg.db_name)
-    )
-}
-
-/// 解析 PA_DB_URL 为 (host, port, user, pass, db)。失败返回 None（保留默认）。
-fn parse_db_url(s: &str) -> Option<(String, u16, String, String, String)> {
-    let s = s.strip_prefix("mysql+aiomysql://")?;
-    let (userinfo, rest) = match s.find('@') {
-        Some(i) => (&s[..i], &s[i + 1..]),
-        None => ("", s),
-    };
-    let (user, pass) = match userinfo.find(':') {
-        Some(i) => (
-            percent_decode_component(&userinfo[..i]),
-            percent_decode_component(&userinfo[i + 1..]),
-        ),
-        None => (percent_decode_component(userinfo), String::new()),
-    };
-    let (hostport, dbpart) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i + 1..]),
-        None => (rest, ""),
-    };
-    let db = dbpart.split('?').next().unwrap_or("");
-    // hostport 可能是 "host:port"、"[ipv6]:port" 或 "[ipv6]"。
-    let (host, port) = if let Some(rest) = hostport.strip_prefix('[') {
-        let close = rest.find(']')?;
-        let h = rest[..close].to_string();
-        let p = rest[close + 1..]
-            .strip_prefix(':')
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(3306);
-        (h, p)
-    } else {
-        match hostport.rfind(':') {
-            Some(i) => (
-                hostport[..i].to_string(),
-                hostport[i + 1..].parse().unwrap_or(3306),
-            ),
-            None => (hostport.to_string(), 3306),
-        }
-    };
-    Some((host, port, user, pass, percent_decode_component(db)))
-}
-
-fn parse_config_content(content: &str) -> LoadedConfig {
-    let mut cfg = ConfigData::default();
-    let mut legacy_password = None;
-    let mut legacy_format = false;
-    let mut secret_ref_configured = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if let Some(v) = line.strip_prefix("PA_DB_URL=") {
-            if let Some((host, port, user, pass, db)) = parse_db_url(v) {
-                cfg.db_host = host;
-                cfg.db_port = port;
-                cfg.db_user = user;
-                cfg.db_name = db;
-                cfg.db_password_configured = !pass.is_empty();
-                legacy_password = Some(pass);
-                legacy_format = true;
-            }
-        } else if let Some(v) = line.strip_prefix("PA_DB_HOST=") {
-            cfg.db_host = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_DB_PORT=") {
-            cfg.db_port = v.parse().unwrap_or(3306);
-        } else if let Some(v) = line.strip_prefix("PA_DB_USER=") {
-            cfg.db_user = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_DB_NAME=") {
-            cfg.db_name = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_DB_SECRET_REF=") {
-            secret_ref_configured = v == "secret://os-keyring/database/password";
-            cfg.db_password_configured = secret_ref_configured;
-        } else if let Some(v) = line.strip_prefix("PA_OLLAMA_BASE_URL=") {
-            cfg.ollama_base_url = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_LLM_MODEL=") {
-            cfg.llm_model = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_EMBED_MODEL=") {
-            cfg.embed_model = v.to_string();
-        } else if let Some(v) = line.strip_prefix("PA_MCP_ENABLED=") {
-            cfg.mcp_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CHAT_AGENT_RUNTIME_ENABLED=") {
-            cfg.chat_agent_runtime_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=") {
-            cfg.conversation_summary_worker_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_HTTP_WORKFLOW_ENABLED=") {
-            cfg.http_workflow_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_SQL_READONLY_WORKFLOW_ENABLED=") {
-            cfg.sql_readonly_workflow_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUNS_API_ENABLED=") {
-            cfg.agent_runs_api_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_PROJECT_BOUND_RUNS_ENABLED=") {
-            cfg.project_bound_runs_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_PLAN_ENABLED=") {
-            cfg.agent_run_plan_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_EVENT_STREAM_ENABLED=") {
-            cfg.agent_run_event_stream_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=") {
-            cfg.agent_run_read_only_tools_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_PATCH_WORKFLOW_ENABLED=") {
-            cfg.agent_patch_workflow_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_CONTEXT_BUILDER_ENABLED=") {
-            cfg.agent_context_builder_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=") {
-            cfg.agent_output_verification_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_AGENT_COMMAND_WORKFLOW_ENABLED=") {
-            cfg.agent_command_workflow_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_PATCHSET_ENABLED=") {
-            cfg.coding_patchset_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_COMMAND_PROFILES_ENABLED=") {
-            cfg.coding_command_profiles_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_ARTIFACTS_ENABLED=") {
-            cfg.coding_artifacts_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_PERMISSION_MODELS_ENABLED=") {
-            cfg.coding_permission_models_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_AGENT_UI_ENABLED=") {
-            cfg.coding_agent_ui_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED=") {
-            cfg.coding_workspace_auto_approve_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_FULL_ACCESS_ENABLED=") {
-            cfg.coding_full_access_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_CONTEXT_BUDGET_ENABLED=") {
-            cfg.coding_context_budget_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_EXECUTION_DETAIL_ENABLED=") {
-            cfg.coding_execution_detail_enabled = v.eq_ignore_ascii_case("true");
-        } else if let Some(v) = line.strip_prefix("PA_CODING_WORKTREE_ENABLED=") {
-            cfg.coding_worktree_enabled = v.eq_ignore_ascii_case("true");
-        }
-    }
-    LoadedConfig {
-        public: cfg,
-        legacy_password,
-        legacy_format,
-        secret_ref_configured,
-    }
-}
-
-fn read_config_impl() -> Result<LoadedConfig, String> {
-    match fs::read_to_string(env_path()) {
-        Ok(content) => Ok(parse_config_content(&content)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(parse_config_content("")),
-        Err(_) => Err("failed to read configuration".to_string()),
-    }
-}
-
-fn validate_env_value(name: &str, value: &str) -> Result<(), String> {
-    if value.contains('\r') || value.contains('\n') {
-        return Err(format!("invalid newline in {name}"));
-    }
-    Ok(())
-}
-
-fn validate_db_host(value: &str) -> Result<(), String> {
-    use std::net::IpAddr;
-
-    if value.is_empty() || value.trim() != value {
-        return Err("invalid database host".to_string());
-    }
-    if value.parse::<IpAddr>().is_ok() {
-        return Ok(());
-    }
-    if value.len() > 253
-        || value.split('.').any(|label| {
-            label.is_empty()
-                || label.len() > 63
-                || label.starts_with('-')
-                || label.ends_with('-')
-                || !label
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        })
-    {
-        return Err("invalid database host".to_string());
-    }
-    Ok(())
-}
-
-fn render_config(cfg: &ConfigData) -> Result<String, String> {
-    for (name, value) in [
-        ("database host", cfg.db_host.as_str()),
-        ("database user", cfg.db_user.as_str()),
-        ("database name", cfg.db_name.as_str()),
-        ("Ollama URL", cfg.ollama_base_url.as_str()),
-        ("LLM model", cfg.llm_model.as_str()),
-        ("embedding model", cfg.embed_model.as_str()),
-    ] {
-        validate_env_value(name, value)?;
-    }
-    if cfg.db_host.is_empty() || cfg.db_user.is_empty() || cfg.db_name.is_empty() {
-        return Err("database host, user, and name are required".to_string());
-    }
-    validate_db_host(&cfg.db_host)?;
-    if cfg.db_port == 0 {
-        return Err("database port must be between 1 and 65535".to_string());
-    }
-
-    let secret_ref = if cfg.db_password_configured {
-        "PA_DB_SECRET_REF=secret://os-keyring/database/password\n"
-    } else {
-        ""
-    };
-    Ok(format!(
-        "PA_DB_HOST={}\nPA_DB_PORT={}\nPA_DB_USER={}\nPA_DB_NAME={}\n{}PA_OLLAMA_BASE_URL={}\nPA_LLM_MODEL={}\nPA_EMBED_MODEL={}\nPA_MCP_ENABLED={}\nPA_CHAT_AGENT_RUNTIME_ENABLED={}\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED={}\nPA_AGENT_HTTP_WORKFLOW_ENABLED={}\nPA_AGENT_SQL_READONLY_WORKFLOW_ENABLED={}\nPA_AGENT_RUNS_API_ENABLED={}\nPA_PROJECT_BOUND_RUNS_ENABLED={}\nPA_AGENT_RUN_PLAN_ENABLED={}\nPA_AGENT_RUN_EVENT_STREAM_ENABLED={}\nPA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED={}\nPA_AGENT_PATCH_WORKFLOW_ENABLED={}\nPA_AGENT_CONTEXT_BUILDER_ENABLED={}\nPA_AGENT_OUTPUT_VERIFICATION_ENABLED={}\nPA_AGENT_COMMAND_WORKFLOW_ENABLED={}\nPA_CODING_PATCHSET_ENABLED={}\nPA_CODING_COMMAND_PROFILES_ENABLED={}\nPA_CODING_ARTIFACTS_ENABLED={}\nPA_CODING_PERMISSION_MODELS_ENABLED={}\nPA_CODING_AGENT_UI_ENABLED={}\nPA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED={}\nPA_CODING_FULL_ACCESS_ENABLED={}\nPA_CODING_CONTEXT_BUDGET_ENABLED={}\nPA_CODING_EXECUTION_DETAIL_ENABLED={}\nPA_CODING_WORKTREE_ENABLED={}\n",
-        cfg.db_host,
-        cfg.db_port,
-        cfg.db_user,
-        cfg.db_name,
-        secret_ref,
-        cfg.ollama_base_url,
-        cfg.llm_model,
-        cfg.embed_model,
-        cfg.mcp_enabled,
-        cfg.chat_agent_runtime_enabled,
-        cfg.conversation_summary_worker_enabled,
-        cfg.http_workflow_enabled,
-        cfg.sql_readonly_workflow_enabled,
-        // v0.9.0 H1-C（计划 §1.3/§5.7）：能力位显式落盘，升级/回退可解释；
-        // legacy .env 无这些行时默认 true（产品默认切换），显式 false 即回退。
-        cfg.agent_runs_api_enabled,
-        cfg.project_bound_runs_enabled,
-        cfg.agent_run_plan_enabled,
-        cfg.agent_run_event_stream_enabled,
-        cfg.agent_run_read_only_tools_enabled,
-        cfg.agent_patch_workflow_enabled,
-        cfg.agent_context_builder_enabled,
-        cfg.agent_output_verification_enabled,
-        cfg.agent_command_workflow_enabled,
-        cfg.coding_patchset_enabled,
-        cfg.coding_command_profiles_enabled,
-        cfg.coding_artifacts_enabled,
-        cfg.coding_permission_models_enabled,
-        cfg.coding_agent_ui_enabled,
-        cfg.coding_workspace_auto_approve_enabled,
-        cfg.coding_full_access_enabled,
-        cfg.coding_context_budget_enabled,
-        cfg.coding_execution_detail_enabled,
-        cfg.coding_worktree_enabled
-    ))
-}
-
-fn write_config_impl(cfg: &ConfigData) -> Result<(), String> {
-    let dir = config_dir();
-    fs::create_dir_all(&dir).map_err(|_| "failed to create configuration directory".to_string())?;
-    let content = render_config(cfg)?;
-    fs::write(env_path(), content).map_err(|_| "failed to write configuration".to_string())
-}
-
-fn resolve_db_password_and_migrate(loaded: &mut LoadedConfig) -> Result<String, String> {
-    if let Some(password) = credentials::get(DATABASE_PASSWORD_ACCOUNT)? {
-        loaded.public.db_password_configured = true;
-        if loaded.legacy_format || !loaded.secret_ref_configured {
-            write_config_impl(&loaded.public)?;
-        }
-        return Ok(password);
-    }
-
-    if let Some(password) = loaded.legacy_password.as_deref() {
-        if password.is_empty() {
-            loaded.public.db_password_configured = false;
-        } else {
-            credentials::set(DATABASE_PASSWORD_ACCOUNT, password)?;
-            loaded.public.db_password_configured = true;
-        }
-        write_config_impl(&loaded.public)?;
-        return Ok(password.to_string());
-    }
-
-    if loaded.secret_ref_configured {
-        return Err("database credential is configured but unavailable".to_string());
-    }
-    Ok(String::new())
-}
-
-// ============ 网络 ============
-
-fn check_mysql_tcp(host: &str, port: u16) -> Result<(), String> {
-    let addr = format!("{}:{}", host, port);
-    let socket_addr = addr
-        .to_socket_addrs()
-        .map_err(|e| format!("解析地址失败: {}", e))?
-        .next()
-        .ok_or_else(|| "无法解析地址".to_string())?;
-    TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3))
-        .map_err(|e| format!("连接失败: {}", e))?;
-    Ok(())
-}
-
-/// 手写 HTTP GET 解析 JSON（避免引入 reqwest）。url 形如 http://host:port/api/tags。
-/// 仅支持 http://（无 TLS）；https:// 明确拒绝，避免对 TLS 端口发明文。
-fn http_get_json(url: &str) -> Result<serde_json::Value, String> {
-    let no_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "Ollama 地址仅支持 http://（不支持 https://）".to_string())?;
-    let (host_port, path) = match no_scheme.find('/') {
-        Some(i) => (&no_scheme[..i], &no_scheme[i..]),
-        None => (no_scheme, "/"),
-    };
-    let socket_addr = host_port
-        .to_socket_addrs()
-        .map_err(|e| format!("解析地址失败: {}", e))?
-        .next()
-        .ok_or_else(|| "无法解析地址".to_string())?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3))
-        .map_err(|e| format!("连接失败: {}", e))?;
-    // 读写超时：避免对非 HTTP 端口（如 MySQL 3306）read_to_end 永久阻塞。
-    let rw_timeout = Some(Duration::from_secs(5));
-    stream
-        .set_read_timeout(rw_timeout)
-        .map_err(|e| format!("设置读超时失败: {}", e))?;
-    stream
-        .set_write_timeout(rw_timeout)
-        .map_err(|e| format!("设置写超时失败: {}", e))?;
-    let req = format!(
-        "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        path, host_port
-    );
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|e| format!("发送失败: {}", e))?;
-    let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("读取失败: {}", e))?;
-    let sep = buf
-        .windows(4)
-        .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| "无响应头分隔".to_string())?;
-    let body = &buf[sep + 4..];
-    serde_json::from_slice(body).map_err(|e| format!("解析 JSON 失败: {}", e))
-}
-
-/// 手写 HTTP POST（无 body，Bearer 认证），用于请求 sidecar 优雅停机。
-/// 只关心 HTTP 状态是否 2xx；不解析响应体。
-fn http_post_bearer(url: &str, token: &str) -> Result<(), String> {
-    let no_scheme = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "仅支持 http://".to_string())?;
-    let (host_port, path) = match no_scheme.find('/') {
-        Some(i) => (&no_scheme[..i], &no_scheme[i..]),
-        None => (no_scheme, "/"),
-    };
-    let socket_addr = host_port
-        .to_socket_addrs()
-        .map_err(|e| format!("解析地址失败: {}", e))?
-        .next()
-        .ok_or_else(|| "无法解析地址".to_string())?;
-    let mut stream = TcpStream::connect_timeout(&socket_addr, Duration::from_secs(3))
-        .map_err(|e| format!("连接失败: {}", e))?;
-    let rw_timeout = Some(Duration::from_secs(3));
-    stream
-        .set_read_timeout(rw_timeout)
-        .map_err(|e| format!("设置读超时失败: {}", e))?;
-    stream
-        .set_write_timeout(rw_timeout)
-        .map_err(|e| format!("设置写超时失败: {}", e))?;
-    let req = format!(
-        "POST {} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        path, host_port, token
-    );
-    stream
-        .write_all(req.as_bytes())
-        .map_err(|e| format!("发送失败: {}", e))?;
-    let mut buf = Vec::new();
-    stream
-        .read_to_end(&mut buf)
-        .map_err(|e| format!("读取失败: {}", e))?;
-    let status_line = String::from_utf8_lossy(&buf);
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .unwrap_or(0);
-    if (200..300).contains(&status) {
-        Ok(())
-    } else {
-        Err(format!("shutdown 请求返回 HTTP {}", status))
-    }
-}
-
-/// 轮询进程是否已退出（最多 ``timeout_ms`` 毫秒）。
-fn wait_pid_exit(pid: u32, timeout_ms: u64) -> bool {
-    let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
-    loop {
-        if !pid_alive(pid) {
-            return true;
-        }
-        if std::time::Instant::now() >= deadline {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn pid_alive(pid: u32) -> bool {
-    #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return false;
-        }
-        let mut code: u32 = 0;
-        let ok = unsafe { GetExitCodeProcess(handle, &mut code) };
-        unsafe { CloseHandle(handle) };
-        ok != 0 && code == STILL_ACTIVE as u32
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
-/// 先请求优雅停机（POST /internal/shutdown），等待进程退出；超时再强杀进程树。
-/// 优雅停机让 sidecar 的 lifespan finally 写入遥测 ended_at 并收拢 coordinator，
-/// 强杀（taskkill /T /F）会丢失这些收尾（M0 门槛：正常退出写 ended_at）。
-fn stop_sidecar(state: &SidecarState, child: CommandChild) {
-    let port = *state.port.lock().unwrap();
-    let token = state.token.lock().unwrap().clone();
-    let pid = child.pid();
-    if let (Some(port), Some(token)) = (port, token) {
-        let url = format!("http://127.0.0.1:{}/internal/shutdown", port);
-        if http_post_bearer(&url, &token).is_ok() {
-            if wait_pid_exit(pid, 5_000) {
-                println!("[sidecar] 已优雅停机 pid={}", pid);
-                return;
-            }
-            eprintln!("[sidecar] 优雅停机超时，改用强杀 pid={}", pid);
-        } else {
-            eprintln!("[sidecar] 优雅停机请求失败，改用强杀 pid={}", pid);
-        }
-    }
-    kill_sidecar_tree(child);
-}
-
-/// 绑定 127.0.0.1:0 让 OS 分配一个空闲端口，立即关闭监听供 sidecar 复用。
-fn pick_free_port() -> Option<u16> {
-    TcpListener::bind("127.0.0.1:0")
-        .ok()
-        .and_then(|l| l.local_addr().ok())
-        .map(|a| a.port())
-}
-
-/// 终止 sidecar 及其整个子进程树（0.2.1 QA 修复）。
-///
-/// ``CommandChild::kill`` 只终止 sidecar 直接进程，其派生的命令执行、git、
-/// MCP stdio server 等子进程会残留为孤儿。Windows 上用 ``taskkill /T /F``
-/// 递归终止进程树（PID 会随 0.2.1+ sidecar 复用重生成，故按当前 PID 终止），
-/// 并保留 ``child.kill()`` 作为兜底；非 Windows 平台保持原 kill 语义。
-fn kill_sidecar_tree(child: CommandChild) {
-    #[cfg(target_os = "windows")]
-    {
-        let pid = child.pid();
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
-    }
-    let _ = child.kill();
-}
-
-/// Generate a 256-bit per-process bearer token using the operating system RNG.
 fn generate_api_token() -> Result<String, String> {
     let mut bytes = [0_u8; 32];
     getrandom::getrandom(&mut bytes)
@@ -1285,98 +152,6 @@ fn generate_api_token() -> Result<String, String> {
         token.push(HEX[(byte & 0x0f) as usize] as char);
     }
     Ok(token)
-}
-
-/// 比较 Ollama 模型名（去除 :tag 后缀做基名匹配，兼容 qwen2.5:14b... 这类）。
-fn model_base(name: &str) -> &str {
-    name.split(':').next().unwrap_or(name)
-}
-
-fn model_available(models: &[String], target: &str) -> bool {
-    // 精确匹配优先；仅当 target 未带 :tag 时回退到基名匹配（兼容默认 latest）。
-    if models.iter().any(|m| m == target) {
-        return true;
-    }
-    if !target.contains(':') {
-        let t = model_base(target);
-        return models.iter().any(|m| model_base(m) == t);
-    }
-    false
-}
-
-// ============ 命令 ============
-
-#[tauri::command]
-fn greet(name: &str) -> String {
-    format!("Hello, {}! You've been greeted from Rust!", name)
-}
-
-#[tauri::command]
-fn config_exists() -> bool {
-    env_path().exists()
-}
-
-#[tauri::command]
-fn read_config() -> Result<ConfigData, String> {
-    Ok(read_config_impl()?.public)
-}
-
-#[tauri::command]
-fn write_config(mut cfg: ConfigData) -> Result<(), String> {
-    let mut loaded = read_config_impl()?;
-    if loaded.legacy_format {
-        let _ = resolve_db_password_and_migrate(&mut loaded)?;
-    }
-    let credential_available = credentials::exists(DATABASE_PASSWORD_ACCOUNT)?;
-    if cfg.db_password_configured && !credential_available {
-        return Err("database credential is not available in the system credential store".into());
-    }
-    cfg.db_password_configured = cfg.db_password_configured && credential_available;
-    write_config_impl(&cfg)
-}
-
-#[tauri::command]
-fn prompt_database_password() -> Result<DatabaseSecretPromptResult, String> {
-    let outcome = credential_prompt::prompt_and_store(
-        DATABASE_PASSWORD_ACCOUNT,
-        "PrivateAgent database credential",
-        "Enter the MySQL password. It will be stored in Windows Credential Manager.",
-    )?;
-    Ok(DatabaseSecretPromptResult {
-        configured: credentials::exists(DATABASE_PASSWORD_ACCOUNT)?,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
-}
-
-fn read_provider_secret_status() -> Result<ProviderSecretStatus, String> {
-    Ok(ProviderSecretStatus {
-        openai_configured: credentials::exists(OPENAI_API_KEY_ACCOUNT)?,
-        claude_configured: credentials::exists(CLAUDE_API_KEY_ACCOUNT)?,
-    })
-}
-
-#[tauri::command]
-fn provider_secret_status() -> Result<ProviderSecretStatus, String> {
-    read_provider_secret_status()
-}
-
-#[tauri::command]
-fn set_provider_secret(provider: String, secret: String) -> Result<ProviderSecretStatus, String> {
-    let secret = secret.trim();
-    if secret.is_empty() {
-        return Err("provider API key must not be empty".to_string());
-    }
-    if secret.len() > 16_384 {
-        return Err("provider API key is too long".to_string());
-    }
-    credentials::set(provider_account(&provider)?, secret)?;
-    read_provider_secret_status()
-}
-
-#[tauri::command]
-fn clear_provider_secret(provider: String) -> Result<ProviderSecretStatus, String> {
-    credentials::delete(provider_account(&provider)?)?;
-    read_provider_secret_status()
 }
 
 fn read_model_provider_secret_status(alias: &str) -> Result<ModelProviderSecretStatus, String> {
@@ -1422,447 +197,41 @@ fn clear_model_provider_secret(alias: String) -> Result<ModelProviderSecretStatu
     read_model_provider_secret_status(&alias)
 }
 
-fn read_mcp_secret_status(alias: &str) -> Result<McpSecretStatus, String> {
-    let account = mcp_account(alias)?;
-    let aliases = read_mcp_secret_aliases()?;
-    Ok(McpSecretStatus {
-        reference: mcp_reference(alias)?,
-        configured: mcp_secret_is_configured(&aliases, alias, credentials::exists(&account)?),
-    })
-}
-
-fn mcp_secret_is_configured(aliases: &BTreeSet<String>, alias: &str, secret_exists: bool) -> bool {
-    secret_exists && aliases.contains(alias)
-}
-
-#[tauri::command]
-fn mcp_secret_status(alias: String) -> Result<McpSecretStatus, String> {
-    read_mcp_secret_status(&alias)
+fn desktop_updater(
+    app: &AppHandle,
+    endpoint: Option<&str>,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let endpoints = updater_config::resolve_endpoints(app.config(), endpoint)?;
+    // 更新地址可补充，签名公钥与安装目标仍由本客户端固定。
+    app.updater_builder()
+        .timeout(Duration::from_secs(120))
+        .target(updater_config::update_target(&app.config().identifier)?)
+        .endpoints(endpoints)
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn prompt_mcp_secret(alias: String) -> Result<McpSecretPromptResult, String> {
-    let account = mcp_account(&alias)?;
-    let outcome = credential_prompt::prompt_and_store(
-        &account,
-        "PrivateAgent MCP credential",
-        "Enter the MCP credential. It will be stored in the system credential store.",
-    )?;
-    if credentials::exists(&account)? {
-        let mut aliases = read_mcp_secret_aliases()?;
-        aliases.insert(alias.clone());
-        write_mcp_secret_aliases(&aliases)?;
-    }
-    let status = read_mcp_secret_status(&alias)?;
-    Ok(McpSecretPromptResult {
-        reference: status.reference,
-        configured: status.configured,
-        cancelled: outcome == PromptOutcome::Cancelled,
-    })
+fn get_update_configuration(app: AppHandle) -> Result<updater_config::UpdateConfiguration, String> {
+    updater_config::configuration(app.config())
 }
 
 #[tauri::command]
-fn clear_mcp_secret(alias: String) -> Result<McpSecretStatus, String> {
-    let account = mcp_account(&alias)?;
-    credentials::delete(&account)?;
-    let mut aliases = read_mcp_secret_aliases()?;
-    aliases.remove(&alias);
-    write_mcp_secret_aliases(&aliases)?;
-    read_mcp_secret_status(&alias)
-}
-
-#[tauri::command]
-async fn check_dependencies() -> DepResult {
-    let mysql_reachable = check_mysql_tcp("127.0.0.1", 3306).is_ok();
-    let ollama_reachable = http_get_json("http://127.0.0.1:11434/api/tags").is_ok();
-    DepResult {
-        mysql_reachable,
-        ollama_reachable,
-    }
-}
-
-#[tauri::command]
-async fn test_connections(cfg: ConfigData) -> ConnResult {
-    let mysql_res = check_mysql_tcp(&cfg.db_host, cfg.db_port);
-    let mysql_ok = mysql_res.is_ok();
-    let mysql_error = mysql_res.err();
-
-    let (ollama_ok, ollama_error, ollama_models) = match http_get_json(&format!(
-        "{}/api/tags",
-        cfg.ollama_base_url.trim_end_matches('/')
-    )) {
-        Ok(v) => {
-            let models: Vec<String> = v
-                .get("models")
-                .and_then(|m| m.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|x| x.get("name").and_then(|n| n.as_str()).map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            (true, None, models)
-        }
-        Err(e) => (false, Some(e), Vec::new()),
-    };
-
-    let llm_model_available = ollama_ok && model_available(&ollama_models, &cfg.llm_model);
-    let embed_model_available = ollama_ok && model_available(&ollama_models, &cfg.embed_model);
-
-    ConnResult {
-        mysql_ok,
-        mysql_error,
-        ollama_ok,
-        ollama_error,
-        ollama_models,
-        llm_model_available,
-        embed_model_available,
-    }
-}
-
-#[tauri::command]
-async fn start_sidecar(
+async fn check_for_updates(
     app: AppHandle,
-    state: State<'_, SidecarState>,
-) -> Result<SidecarStartResult, String> {
-    // dev 模式：无 PyInstaller 产物，回退手动后端。
-    if cfg!(debug_assertions) {
-        return Ok(SidecarStartResult {
-            ok: true,
-            dev_mode: true,
-            port: None,
-            token: None,
-            error: None,
-        });
-    }
-
-    // 打包模式：尚未配置连接则不 spawn（避免拉起一个连不上 MySQL 的 sidecar）。
-    if !env_path().exists() {
-        return Ok(SidecarStartResult {
-            ok: false,
-            dev_mode: false,
-            port: None,
-            token: None,
-            error: Some("尚未配置连接，请先完成向导".into()),
-        });
-    }
-
-    let mut loaded = read_config_impl()?;
-    let db_password = match resolve_db_password_and_migrate(&mut loaded) {
-        Ok(password) => password,
-        Err(error) => {
-            return Ok(SidecarStartResult {
-                ok: false,
-                dev_mode: false,
-                port: None,
-                token: None,
-                error: Some(error),
-            })
-        }
-    };
-    let db_url = build_db_url(&loaded.public, &db_password);
-    let openai_api_key = credentials::get(OPENAI_API_KEY_ACCOUNT)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let claude_api_key = credentials::get(CLAUDE_API_KEY_ACCOUNT)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let mcp_secrets_json = if loaded.public.mcp_enabled {
-        collect_mcp_secrets_for_sidecar()?
-    } else {
-        Zeroizing::new("{}".to_string())
-    };
-    let model_provider_secrets_json = collect_model_provider_secrets_for_sidecar()?;
-    let http_profile_secrets_json = if loaded.public.http_workflow_enabled {
-        collect_http_profile_secrets_for_sidecar()?
-    } else {
-        Zeroizing::new("{}".to_string())
-    };
-    let sql_profile_secrets_json = if loaded.public.sql_readonly_workflow_enabled {
-        collect_sql_profile_secrets_for_sidecar()?
-    } else {
-        Zeroizing::new("{}".to_string())
-    };
-
-    let generation = {
-        let mut current = state.generation.lock().unwrap();
-        *current = current.wrapping_add(1);
-        *current
-    };
-    *state.startup_error.lock().unwrap() = None;
-
-    // 若已有 sidecar 在跑（重试 / 重配），先优雅停机再强杀兜底——CommandChild
-    // 不会在 Drop 时杀进程，不主动清理会留下占用端口与 DB 连接的孤儿进程。
-    // 优雅停机同时让旧进程写入遥测 ended_at（M0 门槛）。
-    if let Some(prev) = state.child.lock().unwrap().take() {
-        stop_sidecar(&state, prev);
-        *state.port.lock().unwrap() = None;
-        *state.token.lock().unwrap() = None;
-    }
-
-    let port = match pick_free_port() {
-        Some(p) => p,
-        None => {
-            return Ok(SidecarStartResult {
-                ok: false,
-                dev_mode: false,
-                port: None,
-                token: None,
-                error: Some("分配空闲端口失败".into()),
-            })
-        }
-    };
-
-    // QA-only 静态 token：仅当 Tauri 主进程环境显式设置 PA_QA_STATIC_TOKEN 时使用，
-    // 供发布验收（真实 Agent API/RAG smoke）在外部复现认证。默认保持随机注入，
-    // 不落盘、不写日志；未设置该环境变量时行为与之前完全一致。
-    let token = match std::env::var("PA_QA_STATIC_TOKEN") {
-        Ok(static_token) if static_token.len() >= 32 => static_token,
-        _ => match generate_api_token() {
-            Ok(token) => token,
-            Err(error) => {
-                return Ok(SidecarStartResult {
-                    ok: false,
-                    dev_mode: false,
-                    port: None,
-                    token: None,
-                    error: Some(error),
-                })
-            }
-        },
-    };
-
-    match app.shell().sidecar(SIDECAR_BIN) {
-        Ok(cmd) => match cmd
-            .env("PA_API_PORT", port.to_string())
-            .env("PA_API_TOKEN", token.clone())
-            .env("PA_PARENT_PID", std::process::id().to_string())
-            .env("PA_DB_URL", db_url)
-            .env("PA_OPENAI_API_KEY", openai_api_key)
-            .env("PA_CLAUDE_API_KEY", claude_api_key)
-            .env("PA_MCP_SECRETS_JSON", mcp_secrets_json.as_str())
-            .env(
-                "PA_MODEL_PROVIDER_SECRETS_JSON",
-                model_provider_secrets_json.as_str(),
-            )
-            .env(
-                "PA_HTTP_PROFILES_SECRETS_JSON",
-                http_profile_secrets_json.as_str(),
-            )
-            .env(
-                "PA_SQL_PROFILES_SECRETS_JSON",
-                sql_profile_secrets_json.as_str(),
-            )
-            // 0.3.0 M1：Agent Runtime / 摘要 worker 开关由桌面配置注入，
-            // 与 .env 落盘值一致（env 变量优先于 .env 文件），sidecar 重启后生效。
-            .env(
-                "PA_CHAT_AGENT_RUNTIME_ENABLED",
-                loaded.public.chat_agent_runtime_enabled.to_string(),
-            )
-            .env(
-                "PA_CONVERSATION_SUMMARY_WORKER_ENABLED",
-                loaded
-                    .public
-                    .conversation_summary_worker_enabled
-                    .to_string(),
-            )
-            // v0.9.0 H1-C（计划 §5.7）：安装版能力位注入——“替我批准/完全访问/
-            // 上下文用量”真实可用的前提；与 .env 落盘值一致，发布门禁通过后的
-            // 产品默认值（可显式回退）。能力可用性声明不是权限授予。
-            .env(
-                "PA_AGENT_RUNS_API_ENABLED",
-                loaded.public.agent_runs_api_enabled.to_string(),
-            )
-            .env(
-                "PA_PROJECT_BOUND_RUNS_ENABLED",
-                loaded.public.project_bound_runs_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_RUN_PLAN_ENABLED",
-                loaded.public.agent_run_plan_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_RUN_EVENT_STREAM_ENABLED",
-                loaded.public.agent_run_event_stream_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED",
-                loaded.public.agent_run_read_only_tools_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_PATCH_WORKFLOW_ENABLED",
-                loaded.public.agent_patch_workflow_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_CONTEXT_BUILDER_ENABLED",
-                loaded.public.agent_context_builder_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_OUTPUT_VERIFICATION_ENABLED",
-                loaded.public.agent_output_verification_enabled.to_string(),
-            )
-            .env(
-                "PA_AGENT_COMMAND_WORKFLOW_ENABLED",
-                loaded.public.agent_command_workflow_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_PATCHSET_ENABLED",
-                loaded.public.coding_patchset_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_COMMAND_PROFILES_ENABLED",
-                loaded.public.coding_command_profiles_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_ARTIFACTS_ENABLED",
-                loaded.public.coding_artifacts_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_PERMISSION_MODELS_ENABLED",
-                loaded.public.coding_permission_models_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_AGENT_UI_ENABLED",
-                loaded.public.coding_agent_ui_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED",
-                loaded
-                    .public
-                    .coding_workspace_auto_approve_enabled
-                    .to_string(),
-            )
-            .env(
-                "PA_CODING_FULL_ACCESS_ENABLED",
-                loaded.public.coding_full_access_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_CONTEXT_BUDGET_ENABLED",
-                loaded.public.coding_context_budget_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_EXECUTION_DETAIL_ENABLED",
-                loaded.public.coding_execution_detail_enabled.to_string(),
-            )
-            .env(
-                "PA_CODING_WORKTREE_ENABLED",
-                loaded.public.coding_worktree_enabled.to_string(),
-            )
-            .spawn()
-        {
-            Ok((mut rx, child)) => {
-                // 转发 sidecar 输出到主进程日志
-                let event_app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut detected_error: Option<String> = None;
-                    while let Some(event) = rx.recv().await {
-                        match event {
-                            CommandEvent::Stdout(line) => {
-                                println!("[sidecar] {}", String::from_utf8_lossy(&line))
-                            }
-                            CommandEvent::Stderr(line) => {
-                                let rendered = String::from_utf8_lossy(&line);
-                                if let Some(error) = classify_sidecar_startup_error(&rendered) {
-                                    detected_error = Some(error.to_string());
-                                }
-                                eprintln!("[sidecar] {}", rendered)
-                            }
-                            CommandEvent::Terminated(status) => {
-                                eprintln!("[sidecar] 进程结束: {:?}", status);
-                                let state = event_app.state::<SidecarState>();
-                                if *state.generation.lock().unwrap() == generation {
-                                    *state.port.lock().unwrap() = None;
-                                    *state.token.lock().unwrap() = None;
-                                    *state.startup_error.lock().unwrap() =
-                                        Some(detected_error.unwrap_or_else(|| {
-                                            "本地后端进程意外退出，请检查数据库配置后重试。"
-                                                .to_string()
-                                        }));
-                                }
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                });
-                // 不在此阻塞等待端口就绪——前端拿到 port 后自行轮询 /health。
-                *state.port.lock().unwrap() = Some(port);
-                *state.token.lock().unwrap() = Some(token.clone());
-                *state.child.lock().unwrap() = Some(child);
-                println!("[sidecar] 已启动 port={}", port);
-                Ok(SidecarStartResult {
-                    ok: true,
-                    dev_mode: false,
-                    port: Some(port),
-                    token: Some(token),
-                    error: None,
-                })
-            }
-            Err(e) => Ok(SidecarStartResult {
-                ok: false,
-                dev_mode: false,
-                port: None,
-                token: None,
-                error: Some(format!("spawn 失败: {}", e)),
-            }),
-        },
-        Err(e) => Ok(SidecarStartResult {
-            ok: false,
-            dev_mode: false,
-            port: None,
-            token: None,
-            error: Some(format!("未找到 sidecar 二进制: {}", e)),
-        }),
-    }
-}
-
-/// 返回协商好的后端端口；None 时前端应回退到默认 127.0.0.1:8000。
-#[tauri::command]
-fn get_api_port(state: State<SidecarState>) -> Option<u16> {
-    *state.port.lock().unwrap()
-}
-
-/// Return the in-memory connection material for the current WebView session.
-#[tauri::command]
-fn get_api_connection(state: State<SidecarState>) -> Option<ApiConnection> {
-    let port = *state.port.lock().unwrap();
-    let token = state.token.lock().unwrap().clone();
-    match (port, token) {
-        (Some(port), Some(token)) => Some(ApiConnection { port, token }),
-        _ => None,
-    }
-}
-
-/// Return only a sanitized startup failure; raw sidecar output stays in host logs.
-#[tauri::command]
-fn get_sidecar_startup_error(state: State<SidecarState>) -> Option<String> {
-    state.startup_error.lock().unwrap().clone()
-}
-
-// ============ 更新 ============
-
-fn desktop_updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let mut builder = app.updater_builder().timeout(Duration::from_secs(120));
-    // 统一客户端与旧联网客户端分别校验更新目标，拒绝误放的其他版本安装包。
-    if app.config().main_binary_name.as_deref() == Some("privateagent") {
-        builder = builder.target("unified-windows-x86_64");
-    } else if app.config().identifier == "com.personal-assistant.desktop.remote" {
-        builder = builder.target("remote-windows-x86_64");
-    }
-    builder.build().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String> {
-    let updater = desktop_updater(&app)?;
+    endpoint: Option<String>,
+) -> Result<Option<UpdateInfo>, String> {
+    let updater = desktop_updater(&app, endpoint.as_deref())?;
     match updater.check().await.map_err(|e| e.to_string())? {
-        Some(u) => Ok(Some(UpdateInfo {
-            version: u.version.clone(),
-            date: u.date.map(|d| d.to_string()),
-            body: u.body.clone(),
-        })),
+        Some(u) => {
+            updater_config::validate_release_target(&u.raw_json, &u.target)?;
+            Ok(Some(UpdateInfo {
+                version: u.version.clone(),
+                date: u.date.map(|d| d.to_string()),
+                body: u.body.clone(),
+            }))
+        }
         None => Ok(None),
     }
 }
@@ -1870,35 +239,31 @@ async fn check_for_updates(app: AppHandle) -> Result<Option<UpdateInfo>, String>
 #[tauri::command]
 async fn download_and_install_update(
     app: AppHandle,
-    state: State<'_, SidecarState>,
     expected_version: Option<String>,
+    endpoint: Option<String>,
 ) -> Result<(), String> {
-    let updater = desktop_updater(&app)?;
-    let update = updater
+    let updater = desktop_updater(&app, endpoint.as_deref())?;
+    let mut update = updater
         .check()
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "当前已是最新版本".to_string())?;
+    updater_config::validate_release_target(&update.raw_json, &update.target)?;
+    // 插件的检查超时不传给下载对象，下载也需要独立的有界等待。
+    update.timeout = Some(Duration::from_secs(120));
     if expected_version
         .as_ref()
         .is_some_and(|version| version != &update.version)
     {
         return Err("更新版本已经变化，请重新检查更新后再安装".to_string());
     }
-    // download() verifies the signature too. A network/signature failure must
-    // leave the running app and its local sidecar untouched.
+    // 先下载并验证签名，失败时保留当前运行的本机执行器。
     let bytes = update
         .download(|_chunk, _total| {}, || {})
         .await
         .map_err(|e| e.to_string())?;
-    // 安装会通过 std::process::exit 退出当前进程，绕过 RunEvent::Exit（sidecar 的唯一终止点），
-    // 因此先手动停 sidecar（优雅停机 + 强杀兜底），避免更新后留下孤儿进程。
+    // 安装可能直接退出进程，因此先清理本机执行器。
     local_executor::stop(&app);
-    if let Some(child) = state.child.lock().unwrap().take() {
-        stop_sidecar(&state, child);
-        *state.port.lock().unwrap() = None;
-        *state.token.lock().unwrap() = None;
-    }
     update.install(bytes).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -1930,8 +295,6 @@ fn exit_app(app: AppHandle) {
     request_app_exit(&app);
 }
 
-/// 先隐藏主窗口，再触发退出事件。sidecar 仍在 RunEvent::Exit 中优雅停止，
-/// 但用户不会在清理期间继续看到已经选择退出的窗口。
 fn request_app_exit(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.hide();
@@ -1972,83 +335,81 @@ fn install_system_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(all(windows, feature = "readiness-probe"))]
+fn readiness_windows(
+    config: &mut tauri::Config,
+    active: bool,
+) -> Vec<tauri::utils::config::WindowConfig> {
+    if !active {
+        return Vec::new();
+    }
+    let mut isolated = Vec::new();
+    for window in config.app.windows.iter_mut().filter(|window| window.create) {
+        isolated.push(window.clone());
+        // 阻止 Tauri 在 setup 前按 Known Folder 创建正式 WebView 数据目录。
+        window.create = false;
+    }
+    isolated
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    if let Err(error) =
+        readiness_probe::initialize("desktop").and_then(|_| readiness_probe::validate_profile())
+    {
+        eprintln!("{error}");
+        std::process::exit(78);
+    }
+    let context = tauri::generate_context!();
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    let (context, isolated_windows) = {
+        let mut context = context;
+        let windows = readiness_windows(context.config_mut(), readiness_probe::config().is_some());
+        (context, windows)
+    };
     tauri::Builder::default()
-        // Must be registered first so a duplicate process cannot spawn another sidecar.
+        // 单实例插件先注册，避免重复启动本机执行器。
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = show_main_window(app);
         }))
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
-            greet,
-            config_exists,
-            read_config,
-            write_config,
-            prompt_database_password,
-            provider_secret_status,
-            set_provider_secret,
-            clear_provider_secret,
             model_provider_secret_status,
             set_model_provider_secret,
             clear_model_provider_secret,
-            mcp_secret_status,
-            prompt_mcp_secret,
-            clear_mcp_secret,
-            http_profile_secret_status,
-            set_http_profile_secret,
-            clear_http_profile_secret,
-            prompt_http_profile_secret,
-            sql_profile_secret_status,
-            set_sql_profile_secret,
-            clear_sql_profile_secret,
-            prompt_sql_profile_secret,
-            check_dependencies,
-            test_connections,
-            server::account_server_origin,
             local_executor::start_local_executor,
             local_executor::stop_local_executor,
             local_executor::local_executor_request,
             local_executor::local_executor_cancel,
-            get_api_port,
-            get_api_connection,
-            get_sidecar_startup_error,
             check_for_updates,
+            get_update_configuration,
             download_and_install_update,
             relaunch_app,
             hide_main_window,
             exit_app,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            #[cfg(all(windows, feature = "readiness-probe"))]
+            if let Some(config) = readiness_probe::config() {
+                for window in isolated_windows {
+                    tauri::WebviewWindowBuilder::from_config(app, &window)?
+                        .data_directory(config.root.join("webview"))
+                        .build()?;
+                }
+            }
             app.manage(local_executor::LocalExecutorState::default());
-            // 仅注册状态；sidecar 由前端引导流程按需 start_sidecar。
-            app.manage(SidecarState {
-                port: Mutex::new(None),
-                token: Mutex::new(None),
-                child: Mutex::new(None),
-                startup_error: Mutex::new(None),
-                generation: Mutex::new(0),
-            });
             install_system_tray(app)?;
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running tauri application")
         .run(|app_handle, event| {
-            // 应用退出时停止 sidecar：先请求优雅停机（写遥测 ended_at、收拢
-            // coordinator），超时再强杀进程树兜底（0.2.1 QA 修复保留）。
             if let RunEvent::Exit = event {
                 local_executor::stop(app_handle);
-                if let Some(state) = app_handle.try_state::<SidecarState>() {
-                    if let Some(child) = state.child.lock().unwrap().take() {
-                        stop_sidecar(&state, child);
-                        println!("[sidecar] 已停止子进程树");
-                    }
-                }
             }
         });
 }
@@ -2058,198 +419,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sidecar_ownership_error_is_mapped_to_a_safe_actionable_message() {
-        let rendered = classify_sidecar_startup_error(
-            "personal_assistant.agents.recovery.AgentRuntimeOwnershipError: Another Agent-enabled API process already owns this database",
-        );
-        assert_eq!(
-            rendered,
-            Some("本地数据库正在被另一个 PrivateAgent 或开发后端使用。请关闭其他实例后重试。")
-        );
+    fn execution_nonce_is_random_and_has_expected_entropy() {
+        let first = generate_api_token().unwrap();
+        let second = generate_api_token().unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
     }
-
+    #[cfg(all(windows, feature = "readiness-probe"))]
     #[test]
-    fn legacy_config_is_parsed_without_serializing_the_password() {
-        let loaded = parse_config_content(
-            "PA_DB_URL=mysql+aiomysql://user:p%40ss@127.0.0.1:3307/app?charset=utf8mb4\n",
-        );
-        assert_eq!(loaded.legacy_password.as_deref(), Some("p@ss"));
-        assert_eq!(loaded.public.db_port, 3307);
-        assert!(loaded.public.db_password_configured);
-        let public_json = serde_json::to_string(&loaded.public).unwrap();
-        assert!(!public_json.contains("p@ss"));
-        assert!(!public_json.contains("db_password\""));
-    }
-
-    #[test]
-    fn rendered_config_contains_only_a_fixed_secret_reference() {
-        let cfg = ConfigData {
-            db_password_configured: true,
-            ..ConfigData::default()
-        };
-        let rendered = render_config(&cfg).unwrap();
-        assert!(rendered.contains("PA_DB_SECRET_REF=secret://os-keyring/database/password"));
-        assert!(rendered.contains("PA_MCP_ENABLED=true"));
-        assert!(!rendered.contains("PA_DB_URL="));
-    }
-
-    #[test]
-    fn explicit_mcp_enablement_survives_desktop_config_roundtrip() {
-        let loaded = parse_config_content("PA_MCP_ENABLED=true\n");
-        assert!(loaded.public.mcp_enabled);
-        assert!(render_config(&loaded.public)
-            .unwrap()
-            .contains("PA_MCP_ENABLED=true"));
-    }
-
-    #[test]
-    fn explicit_mcp_disablement_survives_desktop_config_roundtrip() {
-        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
-        assert!(!loaded.public.mcp_enabled);
-        assert!(render_config(&loaded.public)
-            .unwrap()
-            .contains("PA_MCP_ENABLED=false"));
-    }
-
-    #[test]
-    fn agent_runtime_flags_survive_desktop_config_roundtrip() {
-        let loaded = parse_config_content(
-            "PA_CHAT_AGENT_RUNTIME_ENABLED=true\nPA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n",
-        );
-        assert!(loaded.public.chat_agent_runtime_enabled);
-        assert!(loaded.public.conversation_summary_worker_enabled);
-        let rendered = render_config(&loaded.public).unwrap();
-        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=true"));
-        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true"));
-    }
-
-    #[test]
-    fn agent_runtime_flags_default_false_for_legacy_configs() {
-        // 0.2.1 及更早的 .env 没有这两个开关：解析与重写都必须保持关闭，
-        // 不能出现"升级后被静默切换"。
-        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
-        assert!(!loaded.public.chat_agent_runtime_enabled);
-        assert!(!loaded.public.conversation_summary_worker_enabled);
-        let rendered = render_config(&ConfigData::default()).unwrap();
-        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=false"));
-        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=false"));
-        // 旧配置（无开关行）经 render 后必须显式写出 false，保证 roundtrip 幂等。
-        let legacy = parse_config_content("PA_DB_HOST=127.0.0.1\n");
-        let rendered = render_config(&legacy.public).unwrap();
-        assert!(rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=false"));
-        assert!(rendered.contains("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=false"));
-        assert!(!rendered.contains("PA_CHAT_AGENT_RUNTIME_ENABLED=true"));
-    }
-
-    #[test]
-    fn agent_runtime_flags_are_independent_of_each_other() {
-        let chat_only = parse_config_content("PA_CHAT_AGENT_RUNTIME_ENABLED=true\n");
-        assert!(chat_only.public.chat_agent_runtime_enabled);
-        assert!(!chat_only.public.conversation_summary_worker_enabled);
-        let summary_only = parse_config_content("PA_CONVERSATION_SUMMARY_WORKER_ENABLED=true\n");
-        assert!(!summary_only.public.chat_agent_runtime_enabled);
-        assert!(summary_only.public.conversation_summary_worker_enabled);
-    }
-
-    #[test]
-    fn v090_capability_flags_default_true_for_legacy_configs() {
-        // v0.9.0 H1-C（计划 §1.3/§5.7）：发布门禁通过后的产品默认切换——
-        // 旧 .env（无能力位行）解析与重写都默认开启，安装版“替我批准/完全
-        // 访问/上下文用量”真实可用；能力可用性声明不是权限授予。
-        let loaded = parse_config_content("PA_MCP_ENABLED=false\n");
-        assert!(loaded.public.agent_runs_api_enabled);
-        assert!(loaded.public.coding_agent_ui_enabled);
-        assert!(loaded.public.coding_workspace_auto_approve_enabled);
-        assert!(loaded.public.coding_full_access_enabled);
-        assert!(loaded.public.coding_context_budget_enabled);
-        assert!(loaded.public.agent_run_read_only_tools_enabled);
-        assert!(loaded.public.agent_patch_workflow_enabled);
-        assert!(loaded.public.agent_context_builder_enabled);
-        assert!(loaded.public.agent_output_verification_enabled);
-        assert!(loaded.public.agent_command_workflow_enabled);
-        let rendered = render_config(&loaded.public).unwrap();
-        assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=true"));
-        assert!(rendered.contains("PA_CODING_WORKSPACE_AUTO_APPROVE_ENABLED=true"));
-        assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=true"));
-        assert!(rendered.contains("PA_CODING_CONTEXT_BUDGET_ENABLED=true"));
-        assert!(rendered.contains("PA_AGENT_RUN_READ_ONLY_TOOLS_ENABLED=true"));
-        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=true"));
-        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=true"));
-        assert!(rendered.contains("PA_AGENT_OUTPUT_VERIFICATION_ENABLED=true"));
-    }
-
-    #[test]
-    fn v090_capability_flags_support_explicit_false_rollback() {
-        // 精确回退（计划 §3.3）：显式置 false 必须被尊重并落盘。
-        let loaded = parse_config_content(
-            "PA_AGENT_RUNS_API_ENABLED=false\nPA_CODING_FULL_ACCESS_ENABLED=false\nPA_AGENT_COMMAND_WORKFLOW_ENABLED=false\nPA_AGENT_PATCH_WORKFLOW_ENABLED=false\nPA_AGENT_CONTEXT_BUILDER_ENABLED=false\n",
-        );
-        assert!(!loaded.public.agent_runs_api_enabled);
-        assert!(!loaded.public.coding_full_access_enabled);
-        assert!(!loaded.public.agent_command_workflow_enabled);
-        assert!(!loaded.public.agent_patch_workflow_enabled);
-        assert!(!loaded.public.agent_context_builder_enabled);
-        assert!(loaded.public.coding_workspace_auto_approve_enabled);
-        let rendered = render_config(&loaded.public).unwrap();
-        assert!(rendered.contains("PA_AGENT_RUNS_API_ENABLED=false"));
-        assert!(rendered.contains("PA_CODING_FULL_ACCESS_ENABLED=false"));
-        assert!(rendered.contains("PA_AGENT_COMMAND_WORKFLOW_ENABLED=false"));
-        assert!(rendered.contains("PA_AGENT_PATCH_WORKFLOW_ENABLED=false"));
-        assert!(rendered.contains("PA_AGENT_CONTEXT_BUILDER_ENABLED=false"));
-    }
-
-    #[test]
-    fn nonexistent_pid_is_reported_dead() {
-        // 0.3.0 M0：优雅停机轮询的存活判定——不存在的 PID 应视为已退出。
-        assert!(!pid_alive(u32::MAX));
-        assert!(wait_pid_exit(u32::MAX, 200));
-    }
-
-    #[test]
-    fn mcp_secret_status_requires_both_index_and_keyring_value() {
-        let aliases = BTreeSet::from(["calendar".to_string()]);
-        assert!(mcp_secret_is_configured(&aliases, "calendar", true));
-        assert!(!mcp_secret_is_configured(&aliases, "calendar", false));
-        assert!(!mcp_secret_is_configured(&aliases, "missing", true));
-    }
-
-    #[test]
-    fn database_url_percent_encodes_secret_delimiters() {
-        let cfg = ConfigData::default();
-        let url = build_db_url(&cfg, "p@ss:word");
-        assert!(url.contains("p%40ss%3Aword"));
-        assert!(!url.contains("p@ss:word"));
-    }
-
-    #[test]
-    fn config_values_cannot_inject_new_environment_lines() {
-        let cfg = ConfigData {
-            db_name: "db\nPA_API_AUTH_ENABLED=false".to_string(),
-            ..ConfigData::default()
-        };
-        assert!(render_config(&cfg).is_err());
-    }
-
-    #[test]
-    fn database_host_cannot_redirect_a_secret_bearing_url() {
-        for host in [
-            "127.0.0.1@attacker.example",
-            "host/path",
-            "host?query",
-            "host#fragment",
-        ] {
-            let cfg = ConfigData {
-                db_host: host.to_string(),
-                ..ConfigData::default()
-            };
-            assert!(render_config(&cfg).is_err(), "accepted unsafe host: {host}");
-        }
-        for host in ["localhost", "db.internal", "127.0.0.1", "::1"] {
-            let cfg = ConfigData {
-                db_host: host.to_string(),
-                ..ConfigData::default()
-            };
-            assert!(render_config(&cfg).is_ok(), "rejected valid host: {host}");
-        }
+    fn readiness_windows_cannot_create_the_default_webview_data_directory() {
+        let mut config: tauri::Config = serde_json::from_value(serde_json::json!({
+            "identifier": "com.personal-assistant.desktop", "app": {"windows": [{"label": "main"}]}
+        }))
+        .unwrap();
+        assert!(readiness_windows(&mut config, false).is_empty());
+        assert!(config.app.windows[0].create);
+        let isolated = readiness_windows(&mut config, true);
+        assert_eq!(isolated.len(), 1);
+        assert!(!config.app.windows[0].create);
+        assert!(isolated[0].create);
     }
 }

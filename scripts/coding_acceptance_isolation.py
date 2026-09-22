@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -29,6 +30,21 @@ def tree_hash(root: Path) -> dict:
             with path.open("rb") as stream:
                 result[path.relative_to(root).as_posix()] = hashlib.file_digest(stream, "sha256").hexdigest()
     return result
+
+
+def read_live_journal(path: Path) -> dict:
+    """租约替换和清理可能短暂占用文件；持续拒绝访问仍须使预检失败。"""
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            return read_json(path)
+        except PermissionError as error:
+            code = getattr(error, "winerror", None)
+            # Windows 的文件读取冲突也可能只报告 errno，仍沿用同一个短重读期限。
+            retryable = code in {5, 32, 33} or (os.name == "nt" and code is None and error.errno == errno.EACCES)
+            if not retryable or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)
 
 
 def copy_tree(source: Path, target: Path, *, excluded=()) -> None:
@@ -401,18 +417,18 @@ class WindowsIsolation:
             ])
             with RuntimeClient(area, fixture, bundle=bundle, tool_paths=[runtime["root"]],
                                tool_local_appdata=self.local_appdata()) as client:
-                client.request("/identity", "POST")
+                client.request("/identity/local", "POST")
                 project_info = client.request("/projects", "POST", {"name": "阶段 B 合成隔离探针", "root_path": str(project)})
                 workspace = client.request(f"/projects/{project_info['id']}/workspaces")[0]
                 binding = {"project_id": project_info["id"], "workspace_id": workspace["id"]}
                 session = client.request("/sessions", "POST", {**binding, "title": "阶段 B 隔离预检"})
                 run = client.request("/agent-runs", "POST", {**binding, "session_id": session["id"],
-                    "message": "执行合成权限探针", "model_profile_id": "s6-profile", "execution_contract_version": "1.0"})
+                    "message": "执行合成权限探针", "model_profile_id": fixture.profile_id, "execution_contract_version": "1.0"})
 
                 def approve(current):
                     for journal in (area / "records").glob("*/sandbox-leases/*.json"):
                         try:
-                            paths = read_json(journal)["paths"]
+                            paths = read_live_journal(journal)["paths"]
                         except FileNotFoundError:
                             continue
                         if paths not in grants:

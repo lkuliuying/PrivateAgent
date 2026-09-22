@@ -2,12 +2,54 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawnSync } = require("node:child_process");
 const path = require("node:path");
+const fs = require("node:fs");
+const os = require("node:os");
 const {
-  parseOptions, buildEnvironment, bundleConfig, updateManifest, assertReleaseReady,
+  parseOptions, buildEnvironment, bundleConfig, updateManifest, assertReleaseReady, collectSourceManifest,
   REMOTE_TARGET, REMOTE_IDENTIFIER,
 } = require("./build-remote-client.cjs");
 
-const release = (...args) => parseOptions(["https://www.liuyingapi.top", "--release", "--version", "1.0.1", ...args]);
+const release = (...args) => parseOptions(["--release", "--version", "1.0.1", ...args]);
+
+function sourceDirectory(t) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pa-build-sources-"));
+  t.after(() => {
+    assert.equal(path.dirname(directory), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(directory).startsWith("pa-build-sources-"));
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  return directory;
+}
+
+test("构建清单排除已删除源码，其他缺失文件仍报错", (t) => {
+  const directory = sourceDirectory(t);
+  fs.writeFileSync(path.join(directory, "current.vue"), "当前源码");
+  fs.writeFileSync(path.join(directory, "new.vue"), "新增源码");
+  const run = (_command, args) => args.includes("--deleted") ? "removed.vue\0" : "new.vue\0removed.vue\0current.vue\0current.vue\0";
+  const sources = collectSourceManifest(directory, directory, run);
+  assert.deepEqual(sources.map(item => item.path), ["current.vue", "new.vue"]);
+  assert.ok(sources.every(item => /^[a-f0-9]{64}$/.test(item.sha256)));
+  fs.unlinkSync(path.join(directory, "new.vue"));
+  assert.throws(() => collectSourceManifest(directory, directory, run), { code: "ENOENT" });
+});
+
+test("构建复核重新枚举源码，检测恢复、删除和内容变化", (t) => {
+  const directory = sourceDirectory(t);
+  fs.writeFileSync(path.join(directory, "current.vue"), "原内容");
+  let deleted = "removed.vue\0";
+  const run = (_command, args) => args.includes("--deleted") ? deleted : "current.vue\0removed.vue\0";
+  const initial = collectSourceManifest(directory, directory, run);
+  fs.writeFileSync(path.join(directory, "removed.vue"), "恢复内容");
+  deleted = "";
+  const restored = collectSourceManifest(directory, directory, run);
+  assert.equal(restored.length, 2);
+  assert.notDeepEqual(restored, initial);
+  fs.writeFileSync(path.join(directory, "current.vue"), "更新内容");
+  assert.notEqual(collectSourceManifest(directory, directory, run)[0].sha256, initial[0].sha256);
+  fs.unlinkSync(path.join(directory, "current.vue"));
+  deleted = "current.vue\0";
+  assert.deepEqual(collectSourceManifest(directory, directory, run).map(item => item.path), ["removed.vue"]);
+});
 
 test("验收候选包隔离安装与数据目录，不进入正式更新通道", () => {
   const config = bundleConfig(parseOptions(["--unified", "--qa", "--preview-installer", "--version", "1.0.0"]), "web");
@@ -22,7 +64,7 @@ test("验收候选包隔离安装与数据目录，不进入正式更新通道",
 });
 
 test("portable CLI remains unsigned and does not inherit installer identity or channel", () => {
-  const options = parseOptions(["https://www.liuyingapi.top/"]);
+  const options = parseOptions([]);
   const config = bundleConfig(options, "../web");
   assert.equal(options.mode, "portable");
   assert.equal(config.identifier, undefined);
@@ -56,24 +98,24 @@ test("unsafe URL inputs fail without disclosing credentials", () => {
   for (const value of ["http://downloads.example.com/latest.json", "https://user:do-not-disclose@example.com/latest.json", "https://example.com/latest.json?token=do-not-disclose", "https://example.com/latest.json#do-not-disclose"]) {
     assert.throws(() => release("--update-url", value), (error) => !error.message.includes("do-not-disclose") && /HTTPS/.test(error.message));
   }
-  assert.throws(() => parseOptions(["https://www.liuyingapi.top/private"]), /API origin/);
+  assert.throws(() => parseOptions(["https://www.liuyingapi.top/private"]), /API origins/);
   assert.throws(() => release("--download-base-url", "https://user:do-not-disclose@example.com/"), (error) => !error.message.includes("do-not-disclose"));
 });
 
 test("invalid CLI combinations cannot accidentally generate a release", () => {
   for (const args of [
-    ["https://www.liuyingapi.top", "--release"],
-    ["https://www.liuyingapi.top", "--version", "1.0.1"],
-    ["https://www.liuyingapi.top", "--release", "--preview-installer", "--version", "1.0.1"],
-    ["https://www.liuyingapi.top", "--release", "--version", "../1.0.1"],
-    ["https://www.liuyingapi.top", "--release", "--version", "01.0.1"],
-    ["https://www.liuyingapi.top", "--release", "--version", "1.0.1", "--version", "1.0.2"],
+    ["--release"],
+    ["--version", "1.0.1"],
+    ["--release", "--preview-installer", "--version", "1.0.1"],
+    ["--release", "--version", "../1.0.1"],
+    ["--release", "--version", "01.0.1"],
+    ["--release", "--version", "1.0.1", "--version", "1.0.2"],
   ]) assert.throws(() => parseOptions(args));
   assert.throws(() => release("--update-url", "https://example.com/downloads/"), /manifest/);
 });
 
 test("preview installers never inherit signing secrets or produce an update manifest", () => {
-  const options = parseOptions(["https://www.liuyingapi.top", "--preview-installer", "--version", "1.0.1"]);
+  const options = parseOptions(["--preview-installer", "--version", "1.0.1"]);
   const source = { PATH: "tools", PA_API_TOKEN: "fixture", VITE_OTHER: "fixture", TAURI_CONFIG: "unsafe override", TAURI_SIGNING_PRIVATE_KEY: "fixture", TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "fixture", GITHUB_TOKEN: "fixture" };
   const env = buildEnvironment(source, options, "target");
   assert.equal(env.PATH, "tools");
@@ -83,7 +125,8 @@ test("preview installers never inherit signing secrets or produce an update mani
   assert.equal(env.TAURI_CONFIG, undefined);
   assert.equal(env.TAURI_SIGNING_PRIVATE_KEY, undefined);
   assert.equal(env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD, undefined);
-  assert.equal(env.VITE_API_TOKEN, "");
+  assert.equal(env.VITE_API_TOKEN, undefined);
+  assert.equal(env.VITE_API_BASE_URL, undefined);
   assert.equal(env.VITE_LOCAL_EXECUTOR, "true");
   assert.equal(bundleConfig(options, "web").bundle.createUpdaterArtifacts, false);
   assert.throws(() => updateManifest(options, "app-setup.exe", "fixture"), /signed release/);
@@ -104,7 +147,7 @@ test("release mode only forwards signing credentials and refuses dirty or unsign
 });
 
 test("dry-run executes the real CLI without building or requiring signing material", () => {
-  const result = spawnSync(process.execPath, [path.join(__dirname, "build-remote-client.cjs"), "https://www.liuyingapi.top", "--release", "--version", "1.0.1", "--dry-run"], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [path.join(__dirname, "build-remote-client.cjs"), "--release", "--version", "1.0.1", "--dry-run"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   const plan = JSON.parse(result.stdout);
   assert.equal(plan.config.identifier, REMOTE_IDENTIFIER);
@@ -112,18 +155,18 @@ test("dry-run executes the real CLI without building or requiring signing materi
   assert.equal(plan.config.version, "1.0.1");
 });
 
-test("统一客户端从后端读取固定账号服务器，不接受地址覆盖", () => {
-  assert.equal(parseOptions(["--unified"]).apiBaseUrl, "https://www.liuyingapi.top");
-  assert.throws(() => parseOptions(["--unified", "https://other.example.test"]), /fixed/);
-  const options = parseOptions(["--unified", "https://www.liuyingapi.top"]);
-  assert.equal(options.apiBaseUrl, "https://www.liuyingapi.top");
+test("统一客户端无需账号地址，并拒绝旧平台地址参数", () => {
+  assert.equal(parseOptions(["--unified"]).apiBaseUrl, undefined);
+  assert.throws(() => parseOptions(["--unified", "https://other.example.test"]), /no longer supported/);
+  const options = parseOptions(["--unified"]);
+  assert.equal(options.apiBaseUrl, undefined);
   const config = bundleConfig(options, "web");
   assert.equal(config.identifier, "com.personal-assistant.desktop");
   assert.equal(config.mainBinaryName, "privateagent");
   assert.deepEqual(config.plugins.updater.endpoints, []);
-  assert.throws(() => parseOptions(["--unified", "https://www.liuyingapi.top", "--release", "--version", "1.0.0"]), /independent/);
-  const signed = parseOptions(["--unified", "https://www.liuyingapi.top", "--release", "--version", "1.0.0", "--update-url", "https://updates.example.com/unified/latest.json"]);
+  assert.throws(() => parseOptions(["--unified", "--release", "--version", "1.0.0"]), /independent/);
+  const signed = parseOptions(["--unified", "--release", "--version", "1.0.0", "--update-url", "https://updates.example.com/unified/latest.json"]);
   assert.deepEqual(Object.keys(updateManifest(signed, "app-setup.exe", "fixture").platforms), ["unified-windows-x86_64"]);
-  const preview = parseOptions(["--unified", "https://www.liuyingapi.top", "--preview-installer", "--version", "1.0.0"]);
+  const preview = parseOptions(["--unified", "--preview-installer", "--version", "1.0.0"]);
   assert.deepEqual(bundleConfig(preview, "web").plugins.updater.endpoints, []);
 });

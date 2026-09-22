@@ -1,11 +1,13 @@
-"""评测专用回环账号与正式私有 IPC 客户端，不读取真实账号配置。"""
+"""评测专用回环模型与正式私有 IPC 客户端，不读取真实账号配置。"""
 from __future__ import annotations
 
 import json
 import os
 import queue
+import re
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -15,7 +17,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from coding_acceptance_evidence import digest, redact
+from coding_acceptance_evidence import digest
 from coding_validation_process import managed_process
 from run_coding_validation import ROOT, isolated_environment
 
@@ -48,8 +50,14 @@ class Fixture:
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
+                self.accounting_headers()
                 self.end_headers()
                 self.wfile.write(body)
+
+            def accounting_headers(self):
+                if self.headers.get("X-Model-Request-Budget") == "1.0":
+                    self.send_header("X-Model-Request-Budget", "1.0")
+                    self.send_header("X-Model-Call-Id", self.headers.get("X-Model-Call-Id", ""))
 
             def authorized(self):
                 return self.headers.get("Authorization") == "Bearer " + owner.token
@@ -63,7 +71,8 @@ class Fixture:
                 elif self.path == "/agent-model-profiles?enabled_only=true":
                     self.send([{"id": "s6-profile", "model_name": owner.model_name, "context_tokens": owner.context_tokens,
                                 "provider": "ollama" if owner.protocol == "ollama" else "openai", "provider_id": "s6-provider", "is_local": owner.protocol != "service",
-                                "supports_streaming": True, "enabled": True, "is_default": True}])
+                                "supports_streaming": True, "enabled": True, "is_default": True,
+                                "native_tool_calls": True, "usage_reporting": True, "reasoning_efforts": []}])
                 elif self.path == "/model-providers":
                     self.send([{"id": "s6-provider", "protocol": "ollama" if owner.protocol == "ollama" else "openai", "enabled": True,
                                 "api_format": "ollama_chat" if owner.protocol == "ollama" else "chat_completions",
@@ -71,7 +80,7 @@ class Fixture:
                                 "api_key_configured": owner.protocol == "service",
                                 "models": [{"profile_id": "s6-profile", "model_id": owner.model_name}]}])
                 elif self.path == "/desktop/model/capabilities":
-                    self.send({} if owner.legacy_stream else {"stream_protocol": "1.0"})
+                    self.send({} if owner.legacy_stream else {"stream_protocol": "1.0", "request_budget_protocol": "1.0", "complete_compatible": True})
                 else:
                     self.send({"detail": "fixture route missing"}, 404)
 
@@ -87,7 +96,7 @@ class Fixture:
 
             def model_request(self):
                 is_service = self.path in {"/desktop/model/complete", "/desktop/model/stream"}
-                if (is_service and not self.authorized()) or (not is_service and self.headers.get("Authorization")):
+                if (is_service and not self.authorized()) or (not is_service and self.headers.get("Authorization") != getattr(owner, "provider_authorization", None)):
                     owner.errors.append("credential_boundary")
                     self.send({"detail": "fixture unauthorized"}, 401)
                     return
@@ -102,7 +111,9 @@ class Fixture:
                     owner.calls.append({"path": self.path, "stream": self.path.endswith("/stream") or payload.get("stream", False)})
                     messages = payload.get("request", payload).get("messages", [])
                     last_tool = next((entry for entry in reversed(messages) if entry.get("role") == "tool"), None)
-                    output = json.loads(last_tool["content"]).get("output", {}) if last_tool else {}
+                    output = json.loads(last_tool["content"]).get("output") if last_tool else None
+                    # 被拒绝的工具可以没有输出，合成模型仍需处理失败反馈。
+                    output = output if isinstance(output, dict) else {}
                     if output.get("status") in {"running", "starting"} and output.get("execution_id"):
                         item = reply(name="read_execution", arguments={"execution_id": output["execution_id"],
                                      "cursor": output.get("next_cursor", 0), "wait_ms": 30000})
@@ -125,6 +136,11 @@ class Fixture:
                             owner.errors.append("fixture_response_gate_timeout")
                             return
                 content, calls = item["text"], item["tool_calls"]
+                usage = item.get("usage", {})
+                openai_usage = {target: usage[source] for source, target in (
+                    ("input_tokens", "prompt_tokens"), ("output_tokens", "completion_tokens")) if source in usage}
+                if "cached_tokens" in usage:
+                    openai_usage["prompt_tokens_details"] = {"cached_tokens": usage["cached_tokens"]}
                 interrupted = item.pop("interrupt_stream", False)
                 if is_service and self.path.endswith("/complete"):
                     self.send(item)
@@ -141,23 +157,26 @@ class Fixture:
                 elif owner.protocol == "ollama":
                     message = {"role": "assistant", "content": content, "tool_calls": [{"id": c["id"], "function": {
                         "name": c["name"], "arguments": c["arguments"]}} for c in calls]}
+                    ollama_usage = {target: usage[source] for source, target in (
+                        ("input_tokens", "prompt_eval_count"), ("output_tokens", "eval_count")) if source in usage}
                     body = json.dumps({"model": owner.model_name, "message": message, "done": True,
-                                       "prompt_eval_count": 100, "eval_count": 20}) + "\n"
+                                       **ollama_usage}) + "\n"
                     mime = "application/x-ndjson" if payload.get("stream") else "application/json"
                 elif payload.get("stream"):
                     frames = [{"choices": [{"index": 0, "delta": {"role": "assistant", "content": content, "tool_calls": openai_calls}, "finish_reason": None}]},
                               {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls" if calls else "stop"}],
-                               "usage": {"prompt_tokens": 100, "completion_tokens": 20}}]
-                    body = "".join("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n" for frame in frames) + "data: [DONE]\n\n"
+                               "usage": openai_usage}]
+                    body = "".join("data: " + json.dumps(frame, ensure_ascii=False) + "\n\n" for frame in frames) + ("" if interrupted else "data: [DONE]\n\n")
                     mime = "text/event-stream"
                 else:
                     body = json.dumps({"choices": [{"message": {"role": "assistant", "content": content, "tool_calls": openai_calls},
                                                    "finish_reason": "tool_calls" if calls else "stop"}],
-                                       "usage": {"prompt_tokens": 100, "completion_tokens": 20}})
+                                       "usage": openai_usage})
                     mime = "application/json"
                 self.send_response(200)
                 self.send_header("Content-Type", mime)
                 self.send_header("Content-Length", str(len(body.encode())))
+                self.accounting_headers()
                 self.end_headers()
                 self.wfile.write(body.encode())
                 self.wfile.flush()
@@ -169,6 +188,24 @@ class Fixture:
         self.endpoint = model["endpoint"] if model else self.origin + ("/v1" if protocol == "openai" else "")
         self.model_name = model["model"] if model else "s6-fixture"
         self.context_tokens = model["context_tokens"] if model else 131072
+
+    def configure(self, client):
+        protocol = "ollama" if self.protocol == "ollama" else "openai"
+        provider = client.request("/model-providers/fixture", "PUT", {
+            "name": "隔离模型", "protocol": protocol,
+            "base_url": self.endpoint + ("/v1" if self.protocol == "service" else ""),
+            "api_format": "ollama_chat" if protocol == "ollama" else "chat_completions",
+            "models": [{"model_id": self.model_name, "context_tokens": self.context_tokens}],
+        })
+        self.profile_id = provider["models"][0]["profile_id"]
+        selected = client.request(f"/agent-model-profiles/{self.profile_id}")
+        client.request(f"/agent-model-profiles/{self.profile_id}", "PUT", {
+            "provider": protocol, "display_name": "隔离模型", "model_name": self.model_name,
+            "is_local": selected["is_local"], "context_tokens": self.context_tokens,
+            "supports_streaming": not self.legacy_stream, "native_tool_calls": True,
+        })
+        client.request("/model-settings", "PUT", {"llm_temperature": 0.7,
+            "llm_context_length": self.context_tokens, "kb_enabled_by_default": False})
 
     def __enter__(self):
         self.thread.start()
@@ -185,11 +222,21 @@ class RuntimeClient:
     def __init__(self, area: Path, fixture: Fixture, *, bundle: Path | None = None, rust_required=False,
                  tool_paths=(), tool_local_appdata=None):
         self.area, self.fixture = area, fixture
+        self.token = ""
         self.frames = queue.Queue(maxsize=128)
         self.expired_requests = set()
         self.reader_error = None
         self.stderr_bytes = 0
+        self.request_correlations = []
         environment = isolated_environment(area)
+        from coding_acceptance_local import LocalSession
+
+        if isinstance(fixture, LocalSession):
+            # 仅向本次 IPC 子进程注入；入口消费后移除，工具进程不能继承密钥。
+            environment["PA_MODEL_PROVIDER_SECRETS_JSON"] = json.dumps(fixture.runtime_credentials())
+            environment["PA_EVALUATION_SYNTHETIC_ONLY"] = "1"
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            environment["PA_EVALUATION_SYNTHETIC_ONLY"] = "1"
         environment["PYTHONPATH"] = str(ROOT / "src")
         environment.update(PRIVATEAGENT_LOCAL_NONCE=secrets.token_urlsafe(48), PATH=str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", ""))
         from coding_acceptance_catalog import rust_toolchain
@@ -218,12 +265,40 @@ class RuntimeClient:
             command = [str(staged / "private-agent-local.exe")]
         else:
             command = [sys.executable, "-B", "-m", "private_agent_local.entry"]
-        command += ["--stdio", "--server", fixture.origin, "--data-dir", str(area / "records"), "--model-json", '{"inference_mode":"auto"}']
+        config = {"inference_mode": "auto"}
+        if isinstance(fixture, Fixture):
+            # service 是历史矩阵标签；新版夹具走本机 OpenAI 协议，不恢复服务器推理。
+            config = {"inference_mode": "local", "model_protocol": "ollama" if fixture.protocol == "ollama" else "openai",
+                      "model_endpoint": fixture.endpoint + ("/v1" if fixture.protocol == "service" else ""),
+                      "model_name": fixture.model_name, "context_tokens": fixture.context_tokens,
+                      "supports_streaming": not fixture.legacy_stream}
+        command += ["--stdio", "--data-dir", str(area / "records"), "--model-json", json.dumps(config)]
+        if not isinstance(fixture, Fixture):
+            command.append("--evaluation")
         self.context = managed_process(command, cwd=area, env=environment, stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.startup_environment = environment
+        self.launch_executable = Path(command[0]).absolute()
+
+    def process_identity(self):
+        schemas = []
+        for path in sorted((self.area / "records").glob("*/projects.sqlite3")):
+            from coding_acceptance_schema import plain_path
+
+            database = sqlite3.connect(plain_path(path).as_uri() + "?mode=ro", uri=True)
+            try:
+                schemas.append(database.execute("PRAGMA user_version").fetchone()[0])
+            finally:
+                database.close()
+        return {"pid": self.process.pid, "launch_executable": str(self.launch_executable),
+                "launch_executable_sha256": digest(self.launch_executable), "project_database_schemas": schemas,
+                "scope": "this_ipc_child_and_its_test_database", "loaded_component_attestation": "unknown"}
 
     def __enter__(self):
-        self.process = self.context.__enter__()
+        try:
+            self.process = self.context.__enter__()
+        finally:
+            self.startup_environment.pop("PA_MODEL_PROVIDER_SECRETS_JSON", None)
         self.readers = [threading.Thread(target=self._read_frames, daemon=True), threading.Thread(target=self._read_errors, daemon=True)]
         for thread in self.readers:
             thread.start()
@@ -258,16 +333,39 @@ class RuntimeClient:
         if timeout <= 0 or len(self.expired_requests) >= 32:
             raise ValueError("IPC 等待期限无效或未收束请求过多")
         identity = uuid.uuid4().hex
+        correlation = None
+        if method not in {"GET", "HEAD"} and hasattr(self, "request_correlations"):
+            if len(self.request_correlations) >= 1024:
+                raise ValueError("IPC 变更请求关联记录超过配额")
+            correlation = {"ipc_request_id": identity, "method": method, "path": path.split("?", 1)[0], "response_received": False}
+            for key in ("client_request_id", "request_id", "operation_id"):
+                value = body.get(key) if isinstance(body, dict) else None
+                if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value):
+                    correlation[key] = value
+            self.request_correlations.append(correlation)
         frame = {"id": identity, "method": "request", "params": {"path": path, "method": method,
-                 "headers": {"content-type": "application/json", "authorization": "Bearer " + self.fixture.token},
+                 "headers": {"content-type": "application/json", "authorization": "Bearer " + self.token},
                  "body": json.dumps(body, ensure_ascii=False) if body is not None else ""}}
         self.process.stdin.write((json.dumps(frame, ensure_ascii=False) + "\n").encode())
         self.process.stdin.flush()
         try:
-            return self._response(identity, path, expected, time.monotonic() + timeout)
+            result = self._response(identity, path, expected, time.monotonic() + timeout)
+            if correlation is not None:
+                correlation["response_received"] = True
+                if isinstance(result, dict):
+                    correlation["result_ids"] = {key: result[key] for key in ("id", "run_id", "result_run_id", "request_id", "execution_id")
+                                                 if isinstance(result.get(key), (str, int))}
+            if path == "/identity/local" and method == "POST":
+                self.token = result["access_token"]
+                self.fixture.configure(self)
+            return result
         except TimeoutError:
             # 请求只发送一次；其迟到帧不得污染下一次只读状态查询。
             self.expired_requests.add(identity)
+            raise
+        except RuntimeError as error:
+            if correlation is not None and getattr(error, "code", None):
+                correlation.update(response_received=True, error_code=error.code)
             raise
 
     def _response(self, identity, path, expected, deadline):
@@ -296,8 +394,15 @@ class RuntimeClient:
             if item.get("done"):
                 break
         if status is None or not (status == expected if expected else 200 <= status < 300):
-            detail = redact("".join(chunks))[:500]
-            raise RuntimeError(f"本机 API 状态不符：{path} ({status})：{detail}")
+            try:
+                failure = json.loads("".join(chunks))
+            except ValueError:
+                failure = {}
+            code = failure.get("error_code") if isinstance(failure, dict) else None
+            code = code if isinstance(code, str) and re.fullmatch(r"[a-z_]{1,64}", code) else "ipc_request_failed"
+            error = RuntimeError(f"本机 API 状态不符：{path} ({status})：{code}")
+            error.code = code
+            raise error
         return json.loads("".join(chunks))
 
     def __exit__(self, *error):

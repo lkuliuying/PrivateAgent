@@ -1,4 +1,4 @@
-"""Smoke-test a packaged local executor without any account/provider credentials."""
+"""使用独立数据目录验证打包执行器，不读取账号或供应商凭据。"""
 import argparse
 import hashlib
 import json
@@ -29,15 +29,18 @@ def main():
     env["PRIVATEAGENT_LOCAL_NONCE"] = nonce
     # Deliberately no Python, project venv, database or model tools in PATH.
     env["PATH"] = str(Path(os.environ["SYSTEMROOT"]) / "System32")
-    process = subprocess.Popen([str(executable), "--port", str(port), "--server", "https://unused.example.test",
+    process = subprocess.Popen([str(executable), "--port", str(port),
                                 "--data-dir", str(output / "data"), "--parent-pid", str(os.getpid())],
                                cwd=output, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def request(path, *, method="GET", token=nonce, origin="http://tauri.localhost"):
+    def request(path, *, method="GET", token=nonce, origin="http://tauri.localhost", session=None):
+        headers = {"X-PrivateAgent-Local": token, "Origin": origin}
+        if session:
+            headers["Authorization"] = f"Bearer {session}"
         req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
-                                     headers={"X-PrivateAgent-Local": token, "Origin": origin})
+                                     headers=headers)
         try:
             with opener.open(req, timeout=2) as response:
                 return response.status, json.loads(response.read())
@@ -60,10 +63,19 @@ def main():
         assert request("/health", token="invalid")[0] == 403
         assert request("/health", origin="https://untrusted.example.test")[0] == 403
         assert request("/projects")[0] == 401
+        status, identity = request("/identity/local", method="POST")
+        assert status == 200 and identity["access_token"].startswith("local-session:")
+        session = identity["access_token"]
+        assert request("/projects", session=session) == (200, [])
+        assert request("/model-providers", session=session) == (200, [])
+        assert request("/auth/me", session=session)[0] == 404
+        assert request("/identity/clear", method="POST", session=session)[0] == 200
+        assert request("/projects", session=session)[0] == 401
         assert request("/internal/shutdown", method="POST")[0] == 200
         assert process.wait(timeout=10) == 0
         result = {"passed": True, "packaged_executable": str(executable), "sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-                  "python_on_path": False, "checks": ["startup", "health", "nonce", "origin", "account-required", "graceful-shutdown"],
+                  "python_on_path": False, "checks": ["startup", "health", "nonce", "origin", "local-session-required",
+                      "local-session-binding", "model-catalog", "platform-account-removed", "session-revocation", "graceful-shutdown"],
                   "production_requests": 0}
         (output / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(result, indent=2))

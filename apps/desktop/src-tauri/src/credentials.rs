@@ -1,17 +1,26 @@
 use keyring::{Entry, Error as KeyringError};
 use zeroize::Zeroize;
 
-// 候选包使用独立凭据命名空间，不能读取或覆盖正式客户端保存的秘密。
-const SERVICE: &str = if cfg!(feature = "qa") { "com.personal-assistant.desktop.candidate" } else { "com.personal-assistant.desktop" };
-pub const DATABASE_PASSWORD_ACCOUNT: &str = "database.password";
-pub const OPENAI_API_KEY_ACCOUNT: &str = "provider.openai.api-key";
-pub const CLAUDE_API_KEY_ACCOUNT: &str = "provider.claude.api-key";
-const MCP_ACCOUNT_PREFIX: &str = "mcp.";
+// 维持既有命名空间；候选包不能访问正式客户端的模型凭据。
+const SERVICE: &str = if cfg!(feature = "qa") {
+    "com.personal-assistant.desktop.candidate"
+} else {
+    "com.personal-assistant.desktop"
+};
 const MODEL_PROVIDER_ACCOUNT_PREFIX: &str = "model-provider.";
-const HTTP_PROFILE_ACCOUNT_PREFIX: &str = "http.";
-const SQL_PROFILE_ACCOUNT_PREFIX: &str = "sql.";
 
 fn entry(account: &str) -> Result<Entry, String> {
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    return readiness_entry(account, crate::readiness_probe::config().is_some());
+    #[cfg(not(all(windows, feature = "readiness-probe")))]
+    Entry::new(SERVICE, account).map_err(|_| credential_error("open"))
+}
+
+#[cfg(all(windows, feature = "readiness-probe"))]
+fn readiness_entry(account: &str, active: bool) -> Result<Entry, String> {
+    if active {
+        return Err("探针模式禁止访问系统凭据库".into());
+    }
     Entry::new(SERVICE, account).map_err(|_| credential_error("open"))
 }
 
@@ -53,15 +62,7 @@ pub fn delete(account: &str) -> Result<(), String> {
     }
 }
 
-pub fn provider_account(provider: &str) -> Result<&'static str, String> {
-    match provider {
-        "openai" => Ok(OPENAI_API_KEY_ACCOUNT),
-        "claude" => Ok(CLAUDE_API_KEY_ACCOUNT),
-        _ => Err("unsupported provider secret".to_string()),
-    }
-}
-
-pub fn validate_mcp_secret_alias(alias: &str) -> Result<(), String> {
+pub fn validate_secret_alias(alias: &str) -> Result<(), String> {
     if alias.is_empty()
         || alias.len() > 64
         || !alias.as_bytes()[0].is_ascii_alphanumeric()
@@ -69,90 +70,30 @@ pub fn validate_mcp_secret_alias(alias: &str) -> Result<(), String> {
             .bytes()
             .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'.' | b'_' | b'-'))
     {
-        return Err("invalid MCP credential alias".to_string());
+        return Err("invalid model provider credential alias".to_string());
     }
     Ok(())
 }
 
-pub fn mcp_account(alias: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(alias)?;
-    Ok(format!("{MCP_ACCOUNT_PREFIX}{alias}"))
-}
-
-pub fn mcp_reference(alias: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(alias)?;
-    Ok(format!("secret://os-keyring/mcp/{alias}"))
-}
-
 pub fn model_provider_account(alias: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(alias)?;
+    validate_secret_alias(alias)?;
     Ok(format!("{MODEL_PROVIDER_ACCOUNT_PREFIX}{alias}.api-key"))
 }
 
 pub fn model_provider_reference(alias: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(alias)?;
+    validate_secret_alias(alias)?;
     Ok(format!("secret://os-keyring/model-provider/{alias}"))
-}
-
-pub fn validate_http_profile_secret_slot(slot: &str) -> Result<(), String> {
-    if slot.is_empty()
-        || slot.len() > 64
-        || !slot.as_bytes()[0].is_ascii_alphanumeric()
-        || !slot
-            .bytes()
-            .all(|value| value.is_ascii_alphanumeric() || matches!(value, b'.' | b'_' | b'-'))
-    {
-        return Err("invalid HTTP profile credential slot".to_string());
-    }
-    Ok(())
-}
-
-pub fn http_profile_account(name: &str, slot: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(name)?;
-    validate_http_profile_secret_slot(slot)?;
-    Ok(format!("{HTTP_PROFILE_ACCOUNT_PREFIX}{name}.{slot}"))
-}
-
-pub fn http_profile_reference(name: &str, slot: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(name)?;
-    validate_http_profile_secret_slot(slot)?;
-    Ok(format!("secret://os-keyring/http/{name}/{slot}"))
-}
-
-pub fn sql_profile_account(name: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(name)?;
-    Ok(format!("{SQL_PROFILE_ACCOUNT_PREFIX}{name}.password"))
-}
-
-pub fn sql_profile_reference(name: &str) -> Result<String, String> {
-    validate_mcp_secret_alias(name)?;
-    Ok(format!("secret://os-keyring/sql/{name}/password"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    #[cfg(all(windows, feature = "readiness-probe"))]
     #[test]
-    fn provider_accounts_are_fixed_and_unknown_values_are_rejected() {
-        assert_eq!(provider_account("openai").unwrap(), OPENAI_API_KEY_ACCOUNT);
-        assert_eq!(provider_account("claude").unwrap(), CLAUDE_API_KEY_ACCOUNT);
-        assert!(provider_account("other").is_err());
-    }
-
-    #[test]
-    fn mcp_aliases_are_bounded_and_cannot_escape_the_reference_namespace() {
-        assert_eq!(mcp_account("github-prod").unwrap(), "mcp.github-prod");
-        assert_eq!(
-            mcp_reference("github-prod").unwrap(),
-            "secret://os-keyring/mcp/github-prod"
+    fn readiness_mode_refuses_the_system_credential_store() {
+        assert!(
+            matches!(readiness_entry("synthetic-no-secret", true), Err(error) if error == "探针模式禁止访问系统凭据库")
         );
-        for value in ["", "/escape", "two/slashes", "line\nbreak", " white"] {
-            assert!(
-                mcp_account(value).is_err(),
-                "accepted unsafe alias: {value:?}"
-            );
-        }
     }
 
     #[test]
@@ -166,41 +107,5 @@ mod tests {
             "secret://os-keyring/model-provider/zhipu-prod"
         );
         assert!(model_provider_account("bad/name").is_err());
-    }
-
-    #[test]
-    fn http_profile_references_are_bounded_and_namespaced() {
-        assert_eq!(
-            http_profile_account("weather", "api-key").unwrap(),
-            "http.weather.api-key"
-        );
-        assert_eq!(
-            http_profile_reference("weather", "api-key").unwrap(),
-            "secret://os-keyring/http/weather/api-key"
-        );
-        for name in ["", "/x", "a b", "x/y"] {
-            assert!(http_profile_account(name, "slot").is_err(), "{name:?}");
-            assert!(http_profile_reference(name, "slot").is_err(), "{name:?}");
-        }
-        for slot in ["", "/x", "a b", "x/y", "line\nbreak"] {
-            assert!(http_profile_account("name", slot).is_err(), "{slot:?}");
-            assert!(http_profile_reference("name", slot).is_err(), "{slot:?}");
-        }
-    }
-
-    #[test]
-    fn sql_profile_accounts_are_fixed_and_bounded() {
-        assert_eq!(
-            sql_profile_account("reports").unwrap(),
-            "sql.reports.password"
-        );
-        assert_eq!(
-            sql_profile_reference("reports").unwrap(),
-            "secret://os-keyring/sql/reports/password"
-        );
-        for name in ["", "/x", "a b", "x/y", "line\nbreak"] {
-            assert!(sql_profile_account(name).is_err(), "{name:?}");
-            assert!(sql_profile_reference(name).is_err(), "{name:?}");
-        }
     }
 }

@@ -24,6 +24,7 @@ def managed_process(command, **options):
 
             job = ProcessJob()
             job.assign(process.pid)
+        process.coding_job = job
         yield process
     finally:
         if job is not None:

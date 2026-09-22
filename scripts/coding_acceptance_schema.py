@@ -67,12 +67,14 @@ def plain_path(path: Path, *, must_exist=True) -> Path:
 
 def file_hash(path: Path) -> str:
     plain_path(path)
-    if not path.is_file() or path.stat().st_size > LIMIT:
+    # 活动租约可能在路径校验后正常清理；保留 FileNotFoundError 供观察器识别。
+    status = path.stat()
+    if not stat.S_ISREG(status.st_mode) or status.st_size > LIMIT:
         raise ValueError("清单输入不是有界普通文件")
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def read_json(path: Path):
+def strict_json(text: str):
     def unique(pairs):
         value = {}
         for key, item in pairs:
@@ -81,21 +83,44 @@ def read_json(path: Path):
             value[key] = item
         return value
 
-    file_hash(path)
     try:
-        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique,
+        return json.loads(text, object_pairs_hook=unique,
                           parse_constant=lambda _value: (_ for _ in ()).throw(ValueError("JSON 非有限数值")))
     except (RecursionError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError("JSON 编码、结构或深度无效") from error
 
 
-def budget(value) -> None:
-    fields(value, {*BUDGET_LIMITS, "cost_usd"})
+def read_json(path: Path):
+    file_hash(path)
+    try:
+        return strict_json(path.read_text(encoding="utf-8"))
+    except UnicodeError as error:
+        raise ValueError("JSON 编码无效") from error
+
+
+def budget(value, version=1) -> None:
+    if type(version) is not int or version not in {1, 2}:
+        raise ValueError("不支持的预算契约版本")
+    totals = {"max_total_model_requests": 2160, "max_total_tool_calls": 4320, "max_total_active_seconds": 54000}
+    required = {*BUDGET_LIMITS, "cost_usd"}
+    if version == 2:
+        required.update(totals)
+        required.add("total_cost_usd")
+    fields(value, required)
     for key, ceiling in BUDGET_LIMITS.items():
         if type(value[key]) is not int or not 1 <= value[key] <= ceiling:
             raise ValueError("预算必须为受支持范围内的整数")
-    if value["max_total_tokens"] < value["max_attempt_tokens"] or value["cost_usd"] is not None:
+    if value["max_total_tokens"] < value["max_attempt_tokens"] or version == 1 and value["cost_usd"] is not None:
         raise ValueError("总预算过小或声明了尚不支持的费用预算")
+    if version == 2:
+        for key, ceiling in totals.items():
+            if type(value[key]) is not int or not 1 <= value[key] <= ceiling or value[key] < value[key.replace("_total", "")]:
+                raise ValueError("整场预算无效或小于单次预算")
+        for key in ("cost_usd", "total_cost_usd"):
+            if value[key] is not None and (type(value[key]) not in {int, float} or not math.isfinite(value[key]) or not 0 < value[key] <= 1000):
+                raise ValueError("费用预算必须为有界正数或 null")
+        if value["cost_usd"] is not None and (value["total_cost_usd"] is None or value["cost_usd"] > value["total_cost_usd"]):
+            raise ValueError("整场费用预算不能小于单次预算")
 
 
 def file_map(value: dict, *, initial=False) -> None:
@@ -137,14 +162,14 @@ def load_external(path: Path) -> dict:
     frozen_hash = file_hash(path)
     data = read_json(path)
     fields(data, {"schema_version", "version", "purpose", "repetitions", "quality_target", "budget", "tasks", "assessment"})
-    if type(data["schema_version"]) is not int or data["schema_version"] != 1:
+    if type(data["schema_version"]) is not int or data["schema_version"] not in {1, 2}:
         raise ValueError("不支持的题集 schema 版本")
     nonempty(data["version"], 120)
     if data["purpose"] not in ("public_calibration", "independent_evaluation"):
         raise ValueError("题集用途无效")
     if type(data["repetitions"]) is not int or data["repetitions"] != 3 or type(data["quality_target"]) is not float or data["quality_target"] != 0.8:
         raise ValueError("正式计划固定为三次重复及 0.8 质量目标")
-    budget(data["budget"])
+    budget(data["budget"], data["schema_version"])
     fields(data["assessment"], {"path", "sha256"})
     safe_relative(data["assessment"]["path"])
     sha256(data["assessment"]["sha256"])
@@ -201,9 +226,14 @@ def load_external(path: Path) -> dict:
             raise ValueError("可修改范围必须为唯一的现有 src 文件")
         if task["validation_command"] != COMMANDS[task["family"]] or task["judge_contract"] != CONTRACTS[task["family"]]:
             raise ValueError("不支持的验证命令或判定契约")
-        budget(task["budget"])
+        budget(task["budget"], data["schema_version"])
         if any(task["budget"][key] > data["budget"][key] for key in BUDGET_LIMITS):
             raise ValueError("任务预算超过题集预算")
+        if data["schema_version"] == 2:
+            for key in ("cost_usd", "total_cost_usd", "max_total_model_requests", "max_total_tool_calls", "max_total_active_seconds"):
+                ceiling = data["budget"][key]
+                if ceiling is not None and (task["budget"][key] is None or task["budget"][key] > ceiling):
+                    raise ValueError("任务预算超过题集预算")
     distribution(data["tasks"])
     if file_hash(path) != frozen_hash:
         raise ValueError("加载时题集发生变化")

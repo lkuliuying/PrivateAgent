@@ -20,7 +20,7 @@ def create(client, directory, message):
     binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
     session = client.request("/sessions", "POST", {**binding, "title": message})
     return client.request("/agent-runs", "POST", {**binding, "session_id": session["id"], "message": message,
-                           "model_profile_id": "s6-profile", "execution_contract_version": "1.0", "recovery_contract_version": "1.0"})
+                           "model_profile_id": client.fixture.profile_id, "execution_contract_version": "1.0", "recovery_contract_version": "1.0"})
 
 
 def until(client, run_id, statuses):
@@ -37,12 +37,12 @@ def test_stream_interruption_is_not_replayed_as_complete(tmp_path):
     with Fixture() as fixture:
         fixture.responses.append({**reply("尚未完成"), "interrupt_stream": True})
         with RuntimeClient(tmp_path, fixture) as client:
-            client.request("/identity", "POST")
+            client.request("/identity/local", "POST")
             run = create(client, tmp_path / "project", "创建 result.txt")
             final = until(client, run["id"], {"failed", "completed"})
             assert final["goal_outcome"] != "verified"
             assert final["error_code"] == "model_stream_interrupted"
-            assert fixture.calls == [{"path": "/desktop/model/stream", "stream": True}]
+            assert fixture.calls == [{"path": "/v1/chat/completions", "stream": True}]
             assert not (tmp_path / "project/result.txt").exists()
 
 
@@ -50,13 +50,13 @@ def test_reopen_closes_old_approval_and_explicit_resume_links_new_run(tmp_path):
     with Fixture() as fixture:
         fixture.responses.append(reply(name="write_project_file", arguments={"rel_path": "result.txt", "content": "旧意图"}))
         with RuntimeClient(tmp_path, fixture) as client:
-            client.request("/identity", "POST")
+            client.request("/identity/local", "POST")
             run = create(client, tmp_path / "project", "创建 result.txt")
             until(client, run["id"], {"waiting_approval"})
             approval = client.request(f"/agent-runs/{run['id']}/approvals")[0]
         assert not (tmp_path / "project/result.txt").exists()
         with RuntimeClient(tmp_path, fixture) as client:
-            client.request("/identity", "POST")
+            client.request("/identity/local", "POST")
             old = client.request(f"/agent-runs/{run['id']}")
             assert old["status"] in {"cancelled", "interrupted"}
             old_events = events(client, old)

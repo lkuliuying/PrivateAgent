@@ -381,7 +381,7 @@ def test_formal_ipc_streaming_and_false_completion(tmp_path, protocol, legacy):
     with Fixture(protocol, legacy_stream=legacy) as fixture:
         fixture.responses.extend(reply("已创建 missing.py，全部完成。") for _ in range(3))
         with RuntimeClient(tmp_path, fixture) as client:
-            assert client.request("/identity", "POST")["ready"]
+            assert client.request("/identity/local", "POST")["ready"]
             project = tmp_path / "project"
             project.mkdir()
             created = client.request("/projects", "POST", {"name": "S6 IPC", "root_path": str(project)})
@@ -389,7 +389,7 @@ def test_formal_ipc_streaming_and_false_completion(tmp_path, protocol, legacy):
             binding = {"project_id": created["id"], "workspace_id": workspace["id"]}
             session = client.request("/sessions", "POST", {**binding, "title": "完成真实性"})
             run = client.request("/agent-runs", "POST", {**binding, "session_id": session["id"], "message": "创建 missing.py",
-                                 "model_profile_id": "s6-profile", "execution_contract_version": "1.0", "recovery_contract_version": "1.0"})
+                                 "model_profile_id": client.fixture.profile_id, "execution_contract_version": "1.0", "recovery_contract_version": "1.0"})
             import time
             deadline = time.monotonic() + 30
             while run["status"] not in {"failed", "completed", "cancelled"} and time.monotonic() < deadline:
@@ -400,7 +400,7 @@ def test_formal_ipc_streaming_and_false_completion(tmp_path, protocol, legacy):
             assert len(fixture.calls) == 3
             assert not fixture.errors
             if protocol == "service":
-                assert all(call["path"].endswith("/complete" if legacy else "/stream") for call in fixture.calls)
+                assert all(call == {"path": "/v1/chat/completions", "stream": not legacy} for call in fixture.calls)
 
 
 def test_source_identity_is_concrete():

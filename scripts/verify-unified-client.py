@@ -9,23 +9,25 @@ import os
 import secrets
 import shutil
 import sys
-import tempfile
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import httpx
+from coding_acceptance_evidence import digest, write_json
+from coding_acceptance_schema import plain_path
+from run_coding_validation import isolated_environment, new_directory
 
 
 async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
+    bundle, work = plain_path(bundle), plain_path(work, must_exist=False)
     work.mkdir(parents=True, exist_ok=True)
-    area = Path(tempfile.mkdtemp(prefix="packaged-runtime-", dir=work)).resolve()
+    area = new_directory(work, "packaged-runtime")
     staged, project = area / "binaries", area / "project"
     staged.mkdir()
     project.mkdir()
     for name in ("private-agent-local.exe", "exec-host.exe", "exec-host.sha256"):
-        shutil.copyfile(bundle / name, staged / name)
+        shutil.copyfile(plain_path(bundle / name), staged / name)
     host_digest = hashlib.sha256((staged / "exec-host.exe").read_bytes()).hexdigest()
     assert (staged / "exec-host.sha256").read_text().strip() == host_digest
     (project / "tests").mkdir()
@@ -36,10 +38,10 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
     replies: list[dict] = []
 
     fixture_token = secrets.token_urlsafe(48)
-    active = False
+    active = True
     server_calls = []
-    profile_id = "server-profile" if model_mode == "service" else "local-model"
     protocol = "ollama" if model_mode == "ollama" else "openai"
+    correlations, run_ids = [], []
 
     class AccountFixture(BaseHTTPRequestHandler):
         def reply(self, data, status=200):
@@ -63,16 +65,8 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
                 self.reply({"detail": "fixture unauthorized"}, 401)
             elif self.path == "/auth/me":
                 self.reply({"id": 7, "username": "fixture"})
-            elif self.path == "/agent-model-profiles?enabled_only=true":
-                self.reply([{"id": profile_id, "model_name": "fixture-model", "context_tokens": 65536,
-                             "provider": protocol, "provider_id": "fixture-provider", "is_local": model_mode != "service",
-                             "enabled": True, "is_default": True}])
-            elif self.path == "/model-providers":
-                self.reply([{"id": "fixture-provider", "protocol": protocol, "enabled": True,
-                             "api_format": "ollama_chat" if protocol == "ollama" else "chat_completions",
-                             "base_url": "https://model.example.invalid/v1" if model_mode == "service" else model_endpoint,
-                             "api_key_configured": model_mode == "service",
-                             "models": [{"profile_id": profile_id, "model_id": "fixture-model"}]}])
+            elif self.path in {"/agent-model-profiles?enabled_only=true", "/model-providers"}:
+                self.reply({"detail": "account server does not provide models"}, 410)
             else:
                 self.reply({"detail": "fixture route missing"}, 404)
 
@@ -109,10 +103,8 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
             elif self.path == "/auth/logout":
                 active = False
                 self.reply({"logged_out": True})
-            elif self.path == "/desktop/model/complete" and replies:
-                assert payload["model_profile_id"] == "server-profile"
-                assert "messages" in payload["request"]
-                self.reply(replies.pop(0))
+            elif self.path.startswith("/desktop/model/"):
+                self.reply({"detail": "server model execution disabled"}, 410)
             else:
                 self.reply({"detail": "fixture route missing"}, 404)
 
@@ -133,18 +125,39 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     server_origin = f"http://127.0.0.1:{server.server_port}"
-    allowed = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA"}
-    env = {key: value for key, value in os.environ.items() if key.upper() in allowed}
+    env = isolated_environment(area)
+    for key, relative in (("USERPROFILE", "home"), ("HOME", "home"),
+                          ("APPDATA", "home/AppData/Roaming"), ("LOCALAPPDATA", "home/AppData/Local")):
+        directory = area / relative
+        directory.mkdir(parents=True, exist_ok=True)
+        env[key] = str(directory)
+    if os.name == "nt":
+        from private_agent_local.windows_process import profile_environment
+
+        # AppContainer 临时目录需要系统位置；仅定位，不读取该目录中的用户设置。
+        env["LOCALAPPDATA"] = profile_environment()["LOCALAPPDATA"]
+    (area / "tmp").mkdir()
     env.update(PATH=str(Path(sys.executable).parent) + os.pathsep + env.get("PATH", ""), PRIVATEAGENT_LOCAL_NONCE=secrets.token_urlsafe(48))
-    model_endpoint = server_origin + ("/v1" if model_mode == "openai" else "")
-    # 与桌面入口一致，仅通过服务器模型配置自动决定推理位置。
+    model_endpoint = server_origin + ("/v1" if protocol == "openai" else "")
+    # service 保留历史标签，实际使用本机目录和直连 OpenAI 回环替身。
     model_config = {"inference_mode": "auto"}
     process = None
+    job = None
     token = None
+    result = {"passed": False, "evidence_kind": "packaged_ipc_fixture", "real_model_called": False,
+              "native_desktop_verified": False, "installed_copy_verified": False, "work_dir": str(area),
+              "model_mode": model_mode, "wire_protocol": protocol, "connection_mode": "fixture",
+              "artifacts_sha256": {name: digest(staged / name) for name in ("private-agent-local.exe", "exec-host.exe")}}
     try:
         process = await asyncio.create_subprocess_exec(str(staged / "private-agent-local.exe"), "--stdio", "--data-dir", str(area / "records"),
-            "--server", server_origin, "--model-json", json.dumps(model_config), cwd=area, env=env, stdin=asyncio.subprocess.PIPE,
+            "--model-json", json.dumps(model_config), cwd=area, env=env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0))
+        if os.name == "nt":
+            from private_agent_local.windows_process import ProcessJob
+
+            job = ProcessJob()
+            job.assign(process.pid)
+        result["process_id"] = process.pid
 
         async def request(path, method="GET", body=None, expected_status=None):
             identity = str(uuid.uuid4())
@@ -167,7 +180,14 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
                     if event.get("done"):
                         break
             assert status is not None and (status == expected_status if expected_status else 200 <= status < 300), f"本机接口失败：{path}，状态 {status}"
-            return json.loads("".join(chunks))
+            value = json.loads("".join(chunks))
+            if method not in {"GET", "HEAD"}:
+                correlations.append({"ipc_request_id": identity, "path": path, "method": method, "status": status,
+                                     "result_ids": {key: value[key] for key in ("id", "run_id", "result_run_id")
+                                                    if isinstance(value, dict) and key in value}})
+            if path == "/agent-runs" and method == "POST" and isinstance(value, dict) and "id" in value:
+                run_ids.append(value["id"])
+            return value
 
         async def terminal(run_id, *, approve=False):
             async with asyncio.timeout(90):
@@ -186,14 +206,18 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         await request("/auth/local", "POST", expected_status=404)
         await request("/auth/login", "POST", expected_status=404)
         await request("/projects", expected_status=401)
-        async with httpx.AsyncClient(base_url=server_origin, timeout=15, trust_env=False) as account:
-            login = await account.post("/auth/login", json={"identifier": "fixture", "password": "fixture-password"})
-            assert login.status_code == 200
-            token = login.json()["access_token"]
-        assert (await request("/identity", "POST"))["ready"]
-        if model_mode != "service":
-            discovered = await request("/local-models/discover", "POST", {"protocol": protocol, "base_url": model_endpoint})
-            assert discovered["models"][0]["model_id"] == "fixture-model"
+        token = (await request("/identity/local", "POST"))["access_token"]
+        provider = await request("/model-providers/fixture-provider", "PUT", {"name": "合成打包验证", "protocol": protocol,
+            "base_url": model_endpoint, "api_format": "ollama_chat" if protocol == "ollama" else "chat_completions",
+            "models": [{"model_id": "fixture-model", "context_tokens": 65536}]})
+        profile_id = provider["models"][0]["profile_id"]
+        configured = await request(f"/agent-model-profiles/{profile_id}")
+        await request(f"/agent-model-profiles/{profile_id}", "PUT", {"provider": protocol, "display_name": "合成",
+            "model_name": "fixture-model", "is_local": configured["is_local"], "context_tokens": 65536,
+            "supports_streaming": False, "native_tool_calls": True})
+        await request("/model-settings", "PUT", {"llm_temperature": 0.7, "llm_context_length": 65536, "kb_enabled_by_default": False})
+        discovered = await request("/model-providers/discover/models", "POST", {"provider_id": "fixture-provider", "protocol": protocol, "base_url": model_endpoint})
+        assert discovered["models"][0]["model_id"] == "fixture-model"
         created = await request("/projects", "POST", {"name": "打包隔离验证", "root_path": str(project)})
         workspace = (await request(f"/projects/{created['id']}/workspaces"))[0]
         binding = {"project_id": created["id"], "workspace_id": workspace["id"]}
@@ -247,51 +271,62 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         assert len(exported["records"]["runs"]) == 4 and exported["records"]["run_steps"]
         assert not replies
         await request("/identity/clear", "POST")
-        async with httpx.AsyncClient(base_url=server_origin, timeout=15, trust_env=False) as account:
-            logout = await account.post("/auth/logout", json={}, headers={"Authorization": "Bearer " + token})
-            assert logout.status_code == 200
         await request("/projects", expected_status=401)
-        assert server_calls.count("/auth/login") == 1 and server_calls.count("/auth/logout") == 1
-        assert "/auth/me" in server_calls
-        model_path = "/desktop/model/complete" if model_mode == "service" else "/api/chat" if model_mode == "ollama" else "/v1/chat/completions"
+        assert not any(path.startswith("/auth/") for path in server_calls)
+        model_path = "/api/chat" if model_mode == "ollama" else "/v1/chat/completions"
         assert model_path in server_calls
-        assert "/model-providers" in server_calls and "/agent-model-profiles?enabled_only=true" in server_calls
-        if model_mode != "service":
-            assert "/desktop/model/complete" not in server_calls
-        return {"model_mode": model_mode, "inference_mode": "auto", "server_login": True, "server_logout": True, "local_account_removed": True,"passed": True, "work_dir": str(area), "file_write": True, "workspace_auto_approval": True, "manual_command_approval": True, "powershell_command": True,
+        assert not any(path.startswith(("/desktop/model/", "/model-providers", "/agent-model-profiles")) for path in server_calls)
+        result.update({"inference_mode": "auto", "api_key_only": True, "local_session": True, "platform_account_removed": True,"passed": True, "file_write": True, "workspace_auto_approval": True, "manual_command_approval": True, "powershell_command": True,
                 "full_access_script": True, "context_usage": budget["used_tokens"], "tampered_host_blocked": True,
-                "history_export_runs": 4, "sandbox_available": command_output["sandbox_available"], "real_model_called": False}
+                "history_export_runs": 4, "sandbox_available": command_output["sandbox_available"]})
+        return result
+    except BaseException as error:
+        import traceback
+
+        result["failure"] = {"type": type(error).__name__, "errno": getattr(error, "errno", None),
+                             "frames": [{"file": Path(frame.filename).name, "line": frame.lineno, "function": frame.name}
+                                        for frame in traceback.extract_tb(error.__traceback__)]}
+        raise
     finally:
-        if process is not None:
-            if process.returncode is None:
-                process.stdin.write(b'{"method":"shutdown"}\n')
-                await process.stdin.drain()
-                try:
+        try:
+            if process is not None:
+                if process.returncode is None:
+                    process.stdin.write(b'{"method":"shutdown"}\n')
+                    await process.stdin.drain()
                     await asyncio.wait_for(process.wait(), 15)
-                except TimeoutError:
-                    process.kill()
-                    await process.wait()
-                    raise AssertionError("打包运行时未能正常关闭") from None
-            assert process.returncode == 0, "打包运行时异常退出"
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+                assert process.returncode == 0, "打包运行时异常退出"
+        except BaseException:
+            result.update(passed=False, cleanup_failed=True)
+            raise
+        finally:
+            if job:
+                job.close()
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            result.update(ipc_requests=correlations, run_ids=run_ids, fixture_paths=server_calls)
+            write_json(area / "verification.json", result)
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--model-mode", choices=["service", "ollama", "openai"], default="service")
-    parser.add_argument("--s6", action="store_true", help="追加 S6 正式 IPC 的流式、可信完成及拒绝授权校准")
+    parser.add_argument("--s6", action="store_true", help="完整候选另行追加 S6 公开题 AppContainer 校准")
     args = parser.parse_args()
     result = asyncio.run(verify(args.bundle.resolve(), args.work_dir.resolve(), args.model_mode))
     if args.s6:
-        from run_coding_acceptance import run
+        from run_coding_acceptance import ROOT, run
 
         result["s6_exit_code"] = run(argparse.Namespace(mode="control", tasks="PY01,PY10", protocol=args.model_mode,
-            repetitions=1, bundle=args.bundle.resolve(), model_config=None, work_dir=args.work_dir.resolve()))
+            repetitions=1, bundle=args.bundle.resolve(), model_config=None, work_dir=args.work_dir.resolve(),
+            catalog=ROOT / "tests/coding_acceptance/external_public/catalog.json", isolation="appcontainer"))
         result["passed"] = result["passed"] and result["s6_exit_code"] == 0
     print(json.dumps(result, ensure_ascii=False, indent=2))
     raise SystemExit(0 if result["passed"] else 1)

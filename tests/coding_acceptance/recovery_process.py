@@ -60,7 +60,8 @@ async def main(directory, boundary):
     project = store.create("project", {"root_path": str(root), "status": "active", "authorized": True})
     workspace = store.create("workspace", {"project_id": project["id"], "root_path": str(root), "status": "active"})
     session = store.create("session", {"project_id": project["id"], "workspace_id": workspace["id"]})
-    owner = Runtime(store, Model(boundary == "execution.started"), "fixture")
+    # 测试认证值与模型名称分离，不能触发真实的凭据泄露拦截。
+    owner = Runtime(store, Model(boundary == "execution.started"), "recovery-fixture-auth-sentinel")
     original_emit = store.emit
 
     def emit(run, kind, payload, **kwargs):

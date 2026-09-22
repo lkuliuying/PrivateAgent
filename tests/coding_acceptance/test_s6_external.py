@@ -459,13 +459,13 @@ def test_actual_ipc_read_and_trusted_command_exposure(tmp_path):
             reply("探针结束。"),
         ])
         with RuntimeClient(tmp_path, fixture) as client:
-            client.request("/identity", "POST")
+            client.request("/identity/local", "POST")
             info = client.request("/projects", "POST", {"name": "隔离探针", "root_path": str(project)})
             workspace = client.request(f"/projects/{info['id']}/workspaces")[0]
             binding = {"project_id": info["id"], "workspace_id": workspace["id"]}
             session = client.request("/sessions", "POST", {**binding, "title": "隔离探针"})
             run = client.request("/agent-runs", "POST", {**binding, "session_id": session["id"], "message": "执行合成权限探针",
-                                 "model_profile_id": "s6-profile", "execution_contract_version": "1.0"})
+                                 "model_profile_id": client.fixture.profile_id, "execution_contract_version": "1.0"})
             deadline = time.monotonic() + 20
             approval_seen = False
             while time.monotonic() < deadline:

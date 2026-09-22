@@ -2,13 +2,19 @@
 from __future__ import annotations
 
 import argparse
-import json
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 
-from coding_acceptance_evidence import aggregate, digest, verify_ledger, write_json
-from coding_acceptance_schema import plain_path, read_json, safe_relative
-from run_coding_validation import new_directory
+from coding_acceptance_evidence import (
+    aggregate,
+    digest,
+    experiment_status,
+    verify_ledger,
+    write_json,
+)
+from coding_acceptance_identity import product_identity, verify_current_product
+from coding_acceptance_schema import plain_path, read_json, safe_relative, strict_json
+from run_coding_validation import ROOT, new_directory
 
 
 def review(evidence: Path, reviews: Path) -> Path:
@@ -18,10 +24,26 @@ def review(evidence: Path, reviews: Path) -> Path:
     for path in (manifest_path, attempts_path, reviews):
         if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
             raise ValueError("审阅输入不是有界普通文件")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    attempts = [json.loads(line) for line in attempts_path.read_text(encoding="utf-8").splitlines()]
+    manifest = read_json(manifest_path)
+    attempts = [strict_json(line) for line in attempts_path.read_text(encoding="utf-8").splitlines()]
     verify_ledger(evidence, manifest, attempts)
-    receipts = json.loads(reviews.read_text(encoding="utf-8"))
+    verify_current_product(manifest.get("product", {}))
+    if manifest.get("product", {}).get("identity_version") == "s6-product-2":
+        from coding_acceptance_catalog import load_catalog
+
+        if manifest["product"].get("kind") == "bundle":
+            if not manifest.get("bundle_path") or product_identity(Path(manifest["bundle_path"])) != manifest["product"]:
+                raise ValueError("候选构建产物已变化或无法核对")
+        catalog = load_catalog(Path(manifest["catalog_path"]) if manifest.get("catalog_path") else None)
+        if catalog["catalog_sha256"] != manifest["catalog_sha256"]:
+            raise ValueError("题集或判定材料已变化")
+        for name, expected in manifest["runner_sha256"].items():
+            safe_relative(name)
+            if "/" in name or digest(plain_path(ROOT / "scripts" / name)) != expected:
+                raise ValueError("运行器或判定器已变化")
+        if manifest.get("model_config_path") and digest(plain_path(Path(manifest["model_config_path"]))) != manifest["model_config_sha256"]:
+            raise ValueError("模型配置已变化")
+    receipts = read_json(reviews)
     if set(receipts) != {"manifest_sha256", "attempts_sha256", "reviewer_role", "reviewed_at", "attempts"}:
         raise ValueError("审阅字段不符合协议")
     if receipts["manifest_sha256"] != digest(manifest_path) or receipts["attempts_sha256"] != digest(attempts_path):
@@ -59,8 +81,9 @@ def review(evidence: Path, reviews: Path) -> Path:
             raise ValueError("审阅事实、人工次数或说明无效")
         row.update(report_matches_facts=receipt["report_matches_facts"], human_interventions=receipt["human_interventions"],
                    reviewed_constraints=receipt["constraints_satisfied"])
-    original_metrics = json.loads((evidence / "metrics.json").read_text(encoding="utf-8"))
+    original_metrics = read_json(evidence / "metrics.json")
     metrics = aggregate(attempts, manifest["schedule"], runner_errors=original_metrics["runner_errors"])
+    metrics.update(experiment_status(attempts, manifest, metrics))
     metrics.update(delivery_decision="blocked", reason="人工审阅不能解除题集污染、隔离缺证据或尚未执行的桌面与安装门禁",
                    reviewed_attempts=sorted(seen), reviewer_role=receipts["reviewer_role"], reviewed_at=receipts["reviewed_at"],
                    source_manifest_sha256=digest(manifest_path), source_attempts_sha256=digest(attempts_path))

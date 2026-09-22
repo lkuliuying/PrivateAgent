@@ -4,9 +4,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
-const serverSource = fs.readFileSync(path.join(__dirname, "../apps/desktop/src-tauri/src/server.rs"), "utf8");
-const FIXED_API_ORIGIN = serverSource.match(/ACCOUNT_SERVER_ORIGIN: &str = "([^"]+)"/)?.[1];
-if (!FIXED_API_ORIGIN) throw new Error("Missing backend account server constant.");
+const DEFAULT_UPDATE_URL = "https://www.liuyingapi.top/updates/remote/latest.json";
 
 const REMOTE_IDENTIFIER = "com.personal-assistant.desktop.remote";
 const REMOTE_TARGET = "remote-windows-x86_64";
@@ -27,7 +25,6 @@ function httpsUrl(value, label, originOnly = false) {
 function parseOptions(args) {
   const options = { mode: "portable", dryRun: false };
   const values = new Set(["--version", "--update-url", "--download-base-url"]);
-  let api;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--release" || arg === "--preview-installer") {
@@ -45,14 +42,10 @@ function parseOptions(args) {
       const key = { "--version": "version", "--update-url": "updateUrl", "--download-base-url": "downloadBaseUrl" }[arg];
       if (options[key]) throw new Error(`Duplicate ${arg}.`);
       options[key] = value;
-    } else if (arg.startsWith("--") || api) {
-      throw new Error("Unknown option or multiple API origins. Use --help.");
     } else {
-      api = arg;
+      throw new Error("Unknown option; platform API origins are no longer supported. Use --help.");
     }
   }
-  options.apiBaseUrl = httpsUrl(api || FIXED_API_ORIGIN, "API origin", true).origin;
-  if (options.apiBaseUrl !== FIXED_API_ORIGIN) throw new Error("Account server is fixed in the desktop backend; API overrides are not supported.");
   if (options.qa && (!options.unified || options.mode !== "preview" || options.updateUrl || options.downloadBaseUrl)) {
     throw new Error("QA requires --unified --preview-installer and cannot configure update channels.");
   }
@@ -66,7 +59,7 @@ function parseOptions(args) {
     throw new Error("Installer builds require --version with a stable version, for example 1.0.1.");
   }
   if (options.unified && options.mode === "release" && !options.updateUrl) throw new Error("Unified releases require an explicit independent --update-url; old channels must not be reused implicitly.");
-  options.updateUrl = options.unified && options.mode === "preview" ? "" : httpsUrl(options.updateUrl || `${options.apiBaseUrl}/updates/remote/latest.json`, "update URL").href;
+  options.updateUrl = options.unified && options.mode === "preview" ? "" : httpsUrl(options.updateUrl || DEFAULT_UPDATE_URL, "update URL").href;
   if (!options.updateUrl) return options;
   if (!new URL(options.updateUrl).pathname.endsWith(".json")) throw new Error("Update URL must name a JSON manifest.");
   options.downloadBaseUrl = httpsUrl(options.downloadBaseUrl || new URL(".", options.updateUrl).href, "download base URL").href.replace(/\/+$/, "");
@@ -84,7 +77,7 @@ function buildEnvironment(source, options, targetDir) {
     }
   }
   return Object.assign(env, {
-    NODE_ENV: "production", VITE_API_BASE_URL: options.apiBaseUrl, VITE_API_TOKEN: "", VITE_LOCAL_EXECUTOR: "true", CARGO_TARGET_DIR: targetDir,
+    NODE_ENV: "production", VITE_LOCAL_EXECUTOR: "true", CARGO_TARGET_DIR: targetDir,
   });
 }
 
@@ -97,7 +90,7 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
     Object.assign(config, { version: options.version, productName: "PrivateAgentRemote", identifier: REMOTE_IDENTIFIER, mainBinaryName: REMOTE_BINARY });
     Object.assign(config.bundle, {
       targets: ["nsis"], shortDescription: "PrivateAgent 远程客户端",
-      longDescription: "账号和模型连接 PrivateAgent 服务器，项目文件及任务在本机执行，无需安装数据库或模型服务。",
+      longDescription: "使用自备 API Key 直连模型供应商，项目文件及任务在本机执行，支持技术文档 MCP，无需平台账号。",
       // Remote install/uninstall must not stop another local edition's sidecar.
       windows: { nsis: { installerHooks: null } },
     });
@@ -106,14 +99,14 @@ function bundleConfig(options, frontendDist, localExecutor = "binaries/private-a
   if (options.unified) {
     Object.assign(config, { productName: "PrivateAgent", identifier: "com.personal-assistant.desktop", mainBinaryName: "privateagent" });
     config.bundle.shortDescription = "PrivateAgent 统一本地运行时";
-    config.bundle.longDescription = "固定连接服务器账号，项目、任务与命令在本机运行，保留本机模型配置。";
+    config.bundle.longDescription = "使用本机模型配置与 API Key，项目、任务、命令及技术文档 MCP 在本机工作区运行，无需平台账号。";
     config.bundle.windows = { nsis: { installerHooks: null } };
     config.plugins = { updater: { endpoints: options.mode === "release" ? [options.updateUrl] : [] } };
   }
   if (options.qa) {
     // 独立安装名称、标识和数据目录，候选包不会覆盖用户的正式客户端。
     Object.assign(config, { productName: "PrivateAgentCandidate", identifier: "com.personal-assistant.desktop.candidate", mainBinaryName: "privateagent-candidate" });
-    config.app = { windows: [{ title: "PrivateAgent S5 验收候选版", width: 1200, height: 800, minWidth: 900, minHeight: 600 }] };
+    config.app = { windows: [{ title: `PrivateAgent 候选版 ${options.version}`, width: 1200, height: 800, minWidth: 900, minHeight: 600 }] };
   }
   return config;
 }
@@ -137,13 +130,26 @@ function assertReleaseReady(options, dirty, signingConfigured) {
   if (!signingConfigured) throw new Error("Updater signing is not configured. Use your existing protected signing environment; do not paste keys into commands or source files.");
 }
 
+function collectSourceManifest(root, desktop, run) {
+  const inputs = ["../../src", "src", "src-tauri", "../../apps/exec-host", "../../pyproject.toml", "../../requirements.txt", "../../uv.lock",
+    "package.json", "package-lock.json", "index.html", "vite.config.ts", "tsconfig.json", "tsconfig.node.json",
+    "../../scripts/build-client.cjs", "../../scripts/build-remote-client.cjs"];
+  const listed = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", ...inputs], true);
+  const deleted = new Set(run("git", ["ls-files", "-z", "--deleted", "--", ...inputs], true).split("\0"));
+  // 仅排除 Git 确认的工作树删除；其余读取失败仍中止构建，结束时重新枚举以检测集合变化。
+  return [...new Set(listed.split("\0").filter(file => file && !deleted.has(file)))].sort().map(file => ({
+    path: path.relative(root, path.resolve(desktop, file)).replaceAll("\\", "/"),
+    sha256: crypto.createHash("sha256").update(fs.readFileSync(path.resolve(desktop, file))).digest("hex"),
+  }));
+}
+
 function main(args = process.argv.slice(2)) {
   if (args.length === 1 && args[0] === "--help") {
-    console.log('Usage: scripts\\build-remote-client.cmd "[fixed backend server]"');
+    console.log('Usage: scripts\\build-remote-client.cmd [options]');
     console.log("  --release --version 1.0.1       signed remote NSIS installer + publish/latest.json");
     console.log("  --preview-installer --version 1.0.1  unsigned installer for local QA; no update manifest");
     console.log("  --unified --qa                independently identified local acceptance installer");
-    console.log("  --update-url HTTPS_URL         default: API_ORIGIN/updates/remote/latest.json");
+    console.log("  --update-url HTTPS_URL         default: built-in update manifest");
     console.log("  --download-base-url HTTPS_URL  default: update manifest directory; assets live under VERSION/");
     console.log("  --dry-run                      validate options and print non-secret build configuration only");
     console.log("Output: a new .run/remote-client-* directory; no uploads or publication. Requires desktop dependencies and MSVC.");
@@ -155,7 +161,6 @@ function main(args = process.argv.slice(2)) {
     return;
   }
   if (process.platform !== "win32") throw new Error("This build script requires Windows x64 and MSVC.");
-  const { apiBaseUrl } = options;
   const root = path.resolve(__dirname, "..");
   const desktop = path.join(root, "apps", "desktop");
   const tauriDir = path.join(desktop, "src-tauri");
@@ -178,11 +183,7 @@ function main(args = process.argv.slice(2)) {
   const commit = run("git", ["rev-parse", "HEAD"], true);
   const dirty = run("git", ["status", "--porcelain"], true).length > 0;
   assertReleaseReady(options, dirty, Boolean(env.TAURI_SIGNING_PRIVATE_KEY));
-  const sourcePaths = run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard", "--",
-    "../../src", "src", "src-tauri", "../../apps/exec-host", "../../pyproject.toml", "package.json", "package-lock.json", "../../scripts/build-remote-client.cjs"], true)
-    .split("\0").filter(Boolean).sort();
-  const sourceManifest = () => sourcePaths.map((file) => ({ path: path.relative(root, path.resolve(desktop, file)).replaceAll("\\", "/"),
-    sha256: crypto.createHash("sha256").update(fs.readFileSync(path.resolve(desktop, file))).digest("hex") }));
+  const sourceManifest = () => collectSourceManifest(root, desktop, run);
   const sources = sourceManifest();
   const sourceSha256 = crypto.createHash("sha256").update(JSON.stringify(sources)).digest("hex");
   const runDir = path.join(root, ".run");
@@ -213,8 +214,9 @@ function main(args = process.argv.slice(2)) {
   const entry = index.match(/src="([^"]+\.js)"/);
   if (!entry) throw new Error("Built frontend entry was not found.");
   const entryFile = path.join(web, entry[1].replace(/^\//, ""));
-  if (!fs.readFileSync(entryFile, "utf8").includes("account_server_origin")) {
-    throw new Error("Built frontend must obtain the account server from the desktop backend.");
+  const entrySource = fs.readFileSync(entryFile, "utf8");
+  if (!entrySource.includes("/identity/local") || entrySource.includes("account_server_origin")) {
+    throw new Error("Built frontend must initialize a local workspace without platform login.");
   }
   const triple = "x86_64-pc-windows-msvc";
   // An absolute Windows frontendDist is parsed as a URL by Tauri, omitting assets.
@@ -230,8 +232,8 @@ function main(args = process.argv.slice(2)) {
     "--target", triple, "--config", JSON.stringify(config), "--", "--locked"]);
   const builtExe = path.join(env.CARGO_TARGET_DIR, triple, "release", options.qa ? "privateagent-candidate.exe" : options.unified ? "privateagent.exe" : options.mode === "portable" ? "appsdesktop.exe" : `${REMOTE_BINARY}.exe`);
   const exeBytes = fs.readFileSync(builtExe);
-  if (exeBytes.subarray(0, 2).toString() !== "MZ" || !exeBytes.includes(Buffer.from(entry[1].split("/").pop())) || !exeBytes.includes(Buffer.from(apiBaseUrl))) {
-    throw new Error("Executable validation failed: missing PE header, current frontend entry or fixed backend account origin.");
+  if (exeBytes.subarray(0, 2).toString() !== "MZ" || !exeBytes.includes(Buffer.from(entry[1].split("/").pop()))) {
+    throw new Error("Executable validation failed: missing PE header, current frontend entry.");
   }
   const exeName = options.unified ? "PrivateAgent-windows-x64.exe" : "PrivateAgent-remote-windows-x64.exe";
   fs.copyFileSync(builtExe, path.join(output, exeName), fs.constants.COPYFILE_EXCL);
@@ -271,7 +273,7 @@ function main(args = process.argv.slice(2)) {
   if (JSON.stringify(sourceManifest()) !== JSON.stringify(sources)) throw new Error("Source changed during build; this candidate is not verified.");
   fs.writeFileSync(path.join(output, "source-manifest.json"), JSON.stringify({ sourceSha256, sources }, null, 2) + "\n", { flag: "wx" });
   fs.writeFileSync(path.join(output, "build-info.json"), JSON.stringify({
-    commit, dirty, apiBaseUrl, unified: Boolean(options.unified), qa: Boolean(options.qa), applicationIdentifier: config.identifier,
+    commit, dirty, accessMode: "api-key", unified: Boolean(options.unified), qa: Boolean(options.qa), applicationIdentifier: config.identifier,
     transport: "stdio-v2", executionHostSha256: hostSha, sourceSha256,
     target: triple, signing: options.mode === "release" ? "updater-verified" : "unsigned", sidecar: "desktop-local",
     mode: options.mode, updateTarget: options.mode === "portable" ? null : options.unified ? UNIFIED_TARGET : REMOTE_TARGET,
@@ -285,7 +287,7 @@ function main(args = process.argv.slice(2)) {
   if (dirty) console.log("Source has uncommitted changes; build-info.json records dirty=true.");
 }
 
-module.exports = { main, parseOptions, buildEnvironment, bundleConfig, updateManifest, assertReleaseReady, REMOTE_TARGET, REMOTE_IDENTIFIER, UNIFIED_TARGET };
+module.exports = { main, parseOptions, buildEnvironment, bundleConfig, updateManifest, assertReleaseReady, collectSourceManifest, REMOTE_TARGET, REMOTE_IDENTIFIER, UNIFIED_TARGET };
 
 if (require.main === module) {
   try { main(); } catch (error) {
