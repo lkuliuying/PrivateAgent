@@ -1,30 +1,23 @@
-"""服务器模式验证：不提供本机账号，模型推理可选本地，保留账号隔离与共享核心。"""
-import json
+"""本机启动、供应商推理和历史兼容边界；不依赖平台账号。"""
 import subprocess
 import sys
 
 import httpx
 import pytest
-from test_local_executor import HEADERS, NONCE, TERMINAL, close, response, setup, until
+from test_direct_models import configuration, configure, desktop, enter_local
+from test_local_executor import NONCE, TERMINAL, until
 
 from private_agent_local.app import create_app
-from private_agent_local.cloud import Cloud
-from private_agent_local.connections import ModelConfig, service_origin
-from private_agent_local.local_models import ConnectedLocalModels
+from private_agent_local.connections import ModelConfig
+from private_agent_local.direct_models import ConfiguredModels
 
 
-@pytest.mark.parametrize("url", ["", "http://cloud.example", "https://user:pass@example.test", "https://example.test/path", "https://example.test?token=fixture", "local://device"])
-def test_remote_connection_rejects_insecure_or_credential_urls(url):
-    with pytest.raises(ValueError):
-        service_origin(url)
-
-
-def test_entry_requires_server_and_rejects_removed_local_configuration(tmp_path):
-    for args in ([], ["--connection-json", '{"mode":"local"}'], ["--server", "https://server.example.test", "--connection-json", '{"mode":"local"}']):
+def test_entry_rejects_platform_and_removed_connection_arguments(tmp_path):
+    for args in (["--server", "https://server.example.test"], ["--connection-json", '{"mode":"local"}']):
         result = subprocess.run([sys.executable, "-m", "private_agent_local.entry", "--stdio",
                                  "--data-dir", str(tmp_path / "records"), *args],
                                 cwd=tmp_path, capture_output=True, text=True, timeout=15)
-        assert result.returncode != 0
+        assert result.returncode != 0 and "unrecognized arguments" in result.stderr
         assert not (tmp_path / "records").exists()
 
 
@@ -34,154 +27,56 @@ def test_shared_core_does_not_import_full_backend_configuration(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
+
 @pytest.mark.asyncio
-async def test_local_executor_never_owns_account_endpoints(tmp_path):
-    calls = []
-
-    async def server(request):
-        calls.append(request.url.path)
-        assert request.url.path == "/auth/me"
-        if request.headers.get("authorization") == "Bearer valid-server-session":
-            return httpx.Response(200, json={"id": 7})
-        return httpx.Response(401)
-
-    cloud = Cloud("https://server.example.test", transport=httpx.MockTransport(server))
-    app = create_app(data_dir=tmp_path / "data", cloud=cloud, nonce=NONCE)
+async def test_platform_routes_removed_and_local_session_required(tmp_path):
+    models = ConfiguredModels()
+    app = create_app(data_dir=tmp_path / "data", cloud=models, nonce=NONCE)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers={"X-PrivateAgent-Local": NONCE}) as client:
         try:
-            for method, path in [("POST", "/auth/local"), ("POST", "/auth/login"), ("POST", "/auth/register"),
-                                 ("GET", "/auth/me"), ("POST", "/auth/logout")]:
+            for method, path in [("POST", "/auth/login"), ("POST", "/auth/register"), ("GET", "/auth/me"), ("POST", "/auth/logout"), ("POST", "/identity")]:
                 assert (await client.request(method, path)).status_code == 404
-            assert not calls
-            assert (await client.get("/projects")).status_code == 401
-            assert (await client.post("/identity", headers={"Authorization": "Bearer invalid"})).status_code == 401
-            assert not list((tmp_path / "data").glob("*/projects.sqlite3"))
-            client.headers["Authorization"] = "Bearer valid-server-session"
-            assert (await client.post("/identity")).status_code == 200
+            denied = await client.get("/projects")
+            assert denied.status_code == 401 and denied.headers["X-PrivateAgent-Session"] == "expired"
+            await enter_local(client)
             assert (await client.get("/projects")).json() == []
             await client.post("/identity/clear")
             assert (await client.get("/projects")).status_code == 401
         finally:
             await app.state.desktop.clear()
-            await cloud.close()
+            await models.close()
 
 
 @pytest.mark.asyncio
-async def test_server_account_relogin_keeps_existing_projects_messages_and_runs(tmp_path):
-    first, client, server, root, body = await setup(tmp_path)
-    server.responses = [response(text="服务器生成内容")]
-    run = (await client.post("/agent-runs", json=body)).json()
-    await until(client, run["id"], TERMINAL)
-    await close(first, client)
-
-    cloud = Cloud("https://account.example.test", transport=httpx.MockTransport(server.handle))
-    second = create_app(data_dir=tmp_path / "data", cloud=cloud, nonce=NONCE)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=second), base_url="http://127.0.0.1", headers=HEADERS) as current:
-        try:
-            assert (await current.post("/identity")).status_code == 200
-            assert (await current.get("/projects")).json()[0]["id"] == body["project_id"]
-            assert (await current.get(f"/agent-runs/{run['id']}")).json()["output"] == "服务器生成内容"
-            server.responses = [response(text="服务器续写")]
-            another = (await current.post("/agent-runs", json=body)).json()
-            assert (await until(current, another["id"], TERMINAL))["output"] == "服务器续写"
-            messages = (await current.get(f"/sessions/{body['session_id']}/messages")).json()
-            assert len(messages) == 4
-            assert len(list((tmp_path / "data").glob("*/projects.sqlite3"))) == 1
-            assert any(path == "/desktop/model/complete" for path, _ in server.calls)
-            assert all(path in {"/auth/me", "/agent-model-profiles", "/desktop/model/complete"} for path, _ in server.calls)
-        finally:
-            await second.state.desktop.clear()
-            await cloud.close()
-
 @pytest.mark.parametrize("protocol", ["ollama", "openai"])
 @pytest.mark.parametrize("capacity", [8192, 32000])
-@pytest.mark.asyncio
-async def test_local_models_require_server_identity_and_never_receive_account_token(tmp_path, protocol, capacity):
-    requests = []
-
-    def handle(request):
-        requests.append(request)
-        assert request.url.host == "127.0.0.1"
-        assert "authorization" not in request.headers
-        if protocol == "ollama":
-            assert request.url.path == "/api/chat"
-            return httpx.Response(200, json={"model": "fixture", "message": {"role": "assistant", "content": "本地完成"}, "prompt_eval_count": 123, "eval_count": 8, "done": True})
-        assert request.url.path == "/v1/chat/completions"
-        if json.loads(request.content).get("stream"):
-            events = [{"model": "fixture", "choices": [{"delta": {"content": "本地完成"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 123, "completion_tokens": 8}}]
-            return httpx.Response(200, headers={"content-type": "text/event-stream"}, content="".join("data: " + json.dumps(event) + "\n\n" for event in events) + "data: [DONE]\n\n")
-        return httpx.Response(200, json={"model": "fixture", "choices": [{"message": {"content": "本地完成"}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 123, "completion_tokens": 8}})
-
-    config = ModelConfig(inference_mode="local", model_protocol=protocol, model_endpoint="http://127.0.0.1:11434" + ("/v1" if protocol == "openai" else ""), model_name="fixture", context_tokens=capacity)
-    def account(request):
-        assert request.url.path == "/auth/me"
-        if request.headers.get("authorization") != "Bearer valid-server-session":
-            return httpx.Response(401)
-        return httpx.Response(200, json={"id": 7})
-
-    service = ConnectedLocalModels("https://account.example.test", config, transport=httpx.MockTransport(account), model_transport=httpx.MockTransport(handle))
-    app = create_app(data_dir=tmp_path / "data", cloud=service, nonce=NONCE)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers={"X-PrivateAgent-Local": NONCE}) as client:
-        try:
-            auth = await client.post("/auth/local")
-            assert auth.status_code == 404
-            assert (await client.get("/agent-model-profiles")).status_code == 401
-            assert (await client.post("/identity", headers={"Authorization": "Bearer invalid"})).status_code == 401
-            assert not list((tmp_path / "data").glob("*/projects.sqlite3"))
-            client.headers["Authorization"] = "Bearer valid-server-session"
-            assert (await client.post("/identity")).status_code == 200
-            assert (await client.get("/agent-model-profiles")).json()[0]["model_name"] == "fixture"
-            project_root = tmp_path / "project"
-            project_root.mkdir()
-            project = (await client.post("/projects", json={"name": "本机项目", "root_path": str(project_root)})).json()
-            workspace = (await client.get(f"/projects/{project['id']}/workspaces")).json()[0]
-            binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
-            session = (await client.post("/sessions", json={**binding, "title": "本机任务"})).json()
-            run = (await client.post("/agent-runs", json={**binding, "session_id": session["id"], "message": "你好", "permission_mode": "readonly", "execution_contract_version": "1.0"})).json()
-            final = await until(client, run["id"], TERMINAL)
-            if capacity == 8192:
-                # S3 基线即超出必需输入预算；保留拒绝边界，不把窗口不足变成流式重试。
-                assert final["status"] == "limit_exceeded" and final["error_code"] == "context_limit"
-                assert final["output"] is None and not requests
-                return
+async def test_api_key_models_keep_context_limit_and_token_boundaries(tmp_path, protocol, capacity):
+    async with desktop(tmp_path, protocol) as (models, _, client, accounts, calls):
+        await configure(client, protocol)
+        value = configuration(protocol, models=[{"model_id": "fixture-model", "context_tokens": capacity}])
+        assert (await client.put("/model-providers/provider", json=value)).status_code == 200
+        await client.put("/model-settings", json={"llm_temperature": 0.7, "llm_context_length": capacity, "kb_enabled_by_default": False})
+        root = tmp_path / "project"
+        root.mkdir()
+        project = (await client.post("/projects", json={"name": "窗口测试", "root_path": str(root)})).json()
+        workspace = (await client.get(f"/projects/{project['id']}/workspaces")).json()[0]
+        binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
+        session = (await client.post("/sessions", json={**binding, "title": "本机任务"})).json()
+        run = (await client.post("/agent-runs", json={**binding, "session_id": session["id"], "message": "你好",
+            "permission_mode": "readonly", "execution_contract_version": "1.0"})).json()
+        final = await until(client, run["id"], TERMINAL)
+        if capacity == 8192:
+            assert final["status"] == "limit_exceeded" and final["error_code"] == "context_limit"
+            assert not calls
+        else:
             assert final["status"] == "completed", final
-            assert final["output"] == "本地完成"
+            assert final["output"] == "直连完成"
+            assert len(calls) == 1
             budget = (await client.get(f"/sessions/{session['id']}/context-budget")).json()
             assert budget["used_tokens"] == 123 and budget["max_context_tokens"] == capacity
-            assert len(requests) == 1
-        finally:
-            await app.state.desktop.clear()
-            await service.close()
+        assert accounts == []
+        assert all("local-session:" not in str(request.headers) for request in calls)
 
-@pytest.mark.asyncio
-async def test_switch_inference_to_local_keeps_account_projects_messages_and_runs(tmp_path):
-    first, client, server, root, body = await setup(tmp_path)
-    server.responses = [response(text="云端历史")]
-    run = (await client.post("/agent-runs", json=body)).json()
-    await until(client, run["id"], TERMINAL)
-    await close(first, client)
-
-    def infer(request):
-        assert "authorization" not in request.headers
-        return httpx.Response(200, json={"model": "fixture", "message": {"content": "本机续写"}, "prompt_eval_count": 50, "eval_count": 5, "done": True})
-
-    config = ModelConfig(inference_mode="local", model_name="fixture", context_tokens=32000)
-    service = ConnectedLocalModels("https://account.example.test", config, transport=httpx.MockTransport(server.handle), model_transport=httpx.MockTransport(infer))
-    second = create_app(data_dir=tmp_path / "data", cloud=service, nonce=NONCE)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=second), base_url="http://127.0.0.1", headers=HEADERS) as current:
-        try:
-            assert (await current.post("/identity")).status_code == 200
-            assert (await current.get("/projects")).json()[0]["id"] == body["project_id"]
-            assert (await current.get(f"/agent-runs/{run['id']}")).json()["output"] == "云端历史"
-            another = (await current.post("/agent-runs", json={**body, "model_profile_id": "local-model"})).json()
-            assert (await until(current, another["id"], TERMINAL))["output"] == "本机续写"
-            messages = (await current.get(f"/sessions/{body['session_id']}/messages")).json()
-            assert len(messages) == 4
-            assert len(list((tmp_path / "data").glob("*/projects.sqlite3"))) == 1
-            assert (await current.post("/auth/local")).status_code == 404
-        finally:
-            await second.state.desktop.clear()
-            await service.close()
 
 @pytest.mark.parametrize("payload", [
     {"server_origin": "https://other.example.test"}, {"mode": "local"},

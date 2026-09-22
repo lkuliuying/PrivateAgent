@@ -50,6 +50,77 @@ def test_request_budget_counts_schema_reserve_unknown_and_invalid_configuration(
             ContextLimits(max_model_requests=value)
 
 
+def test_compaction_uses_eighty_percent_capacity_and_not_message_count():
+    request = ModelRequest(messages=tuple(ModelMessage(role="user", content="短消息") for _ in range(120)))
+    budget = request_budget(request, 1_000_000, 2048)
+    assert not budget["should_compact"] and not budget["exceeded"]
+    size = budget["request_bytes"]
+    assert not request_budget(request, 1_000_000, 2048, previous_usage=(size, 799999))["should_compact"]
+    assert request_budget(request, 1_000_000, 2048, previous_usage=(size, 800000))["should_compact"]
+    assert budget["auto_compact_threshold_tokens"] == 800000
+
+
+def test_provider_usage_counts_cached_prefix_and_estimates_new_growth():
+    request = ModelRequest(messages=(ModelMessage(role="user", content="x" * 3000),))
+    size = request_budget(request, 32000, 2048)["request_bytes"]
+    budget = request_budget(request, 32000, 2048, previous_usage=(size - 100, 1000))
+    assert budget["estimated_input_tokens"] == 1125
+    assert budget["measurement_source"] == "provider_usage_with_growth"
+
+
+def test_large_context_wire_budget_scales_with_capacity_but_remains_bounded():
+    request = ModelRequest(messages=tuple(ModelMessage(role="user", content="x" * 400000) for _ in range(8)))
+    size = len(request.model_dump_json().encode("utf-8"))
+    below = request_budget(request, 1_000_000, 2048, previous_usage=(size, 799999))
+    assert below["request_bytes"] > 1_500_000 and below["max_request_bytes"] == 8_000_000
+    assert not below["should_compact"] and not below["exceeded"]
+    assert request_budget(request, 1_000_000, 2048, previous_usage=(size, 800000))["should_compact"]
+    assert request_budget(request, 8192, 2048, previous_usage=(size, 100))["exceeded"]
+    assert request_budget(request, 1_000_000_000, 2048)["max_request_bytes"] == 64 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_many_short_messages_below_threshold_do_not_compact_or_fail(tmp_path):
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        server.profiles[0]["context_tokens"] = 1_000_000
+        history = app.state.desktop.runtime.store.context
+        history.import_legacy(body["session_id"])
+        for index in range(120):
+            history.append(body["session_id"], "prior", ModelMessage(role="user" if index % 2 == 0 else "assistant", content="短对话"), key=str(index), source="user" if index % 2 == 0 else "model")
+        server.responses = [response(text="已回答")]
+        run = (await client.post("/agent-runs", json=body)).json()
+        final = await until(client, run["id"], TERMINAL)
+        assert final["status"] == "completed", final.get("error_message")
+        events = app.state.desktop.runtime.store.run(run["id"])["events"]
+        assert not [event for event in events if event["type"].startswith("context.compaction_")]
+        assert len(history.items(body["session_id"])) >= 122
+    finally:
+        await close(app, client)
+
+
+@pytest.mark.asyncio
+async def test_manual_compaction_recovers_failed_badge_without_deleting_history(tmp_path):
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        server.responses = [response(text="完成")]
+        created = (await client.post("/agent-runs", json=body)).json()
+        await until(client, created["id"], TERMINAL)
+        runtime = app.state.desktop.runtime
+        seed(runtime.store, body["session_id"])
+        before = runtime.store.context.items(body["session_id"])
+        run = runtime.store.run(created["id"])
+        run.update(compaction_state="failed", compaction_error="先前压缩失败")
+        runtime.store.save_run(run)
+        result = await client.post(f"/sessions/{body['session_id']}/context/compact", json={"client_request_id": "retry"})
+        assert result.json()["state"] == "completed"
+        refreshed = runtime.store.run(run["id"])
+        assert refreshed["compaction_state"] == "idle" and refreshed["compaction_error"] is None
+        assert runtime.store.context.items(body["session_id"]) == before
+    finally:
+        await close(app, client)
+
+
 def test_two_compactions_retain_original_sources_and_constraints(tmp_path):
     store, session = history_store(tmp_path)
     try:
@@ -108,6 +179,9 @@ async def test_thirty_requests_and_two_compactions_continue_to_actual_write(tmp_
             (root / f"input-{i}.txt").write_text(f"input {i}\n" + "x" * 3000, encoding="utf-8")
         server.responses = [response({"id": f"call-{i}", "name": "read_code_file", "arguments": {"rel_path": f"input-{i}.txt"}}) for i in range(32)]
         server.responses += [response(call("write_project_file", {"rel_path": "done.txt", "content": "verified data"})), response(text="已创建并回读")]
+        # 本用例验证缺少供应商计量时的连续压缩，不使用固定 3 token 伪装长上下文实测。
+        for result in server.responses:
+            result["usage"] = {"input_tokens": 0, "output_tokens": 2}
         run = (await client.post("/agent-runs", json={**body, "message": "检查项目后创建 done.txt；禁止联网", "permission_mode": "workspace"})).json()
         await asyncio.wait_for(app.state.desktop.runtime.tasks[run["id"]], 20)
         final = app.state.desktop.runtime.store.run(run["id"])

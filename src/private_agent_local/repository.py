@@ -35,7 +35,8 @@ def page(items: list, query: dict, version: str, cursor: str | None, limit: int)
                 raise ValueError
             offset = value["offset"]
         except (ValueError, TypeError, KeyError, UnicodeError):
-            raise ValueError("游标无效或查询、目录、文件已变化，请重新查询") from None
+            raise ValueError("游标无效或查询、目录、文件已变化；请用 cursor=null（JSON null，不是字符串）重新查询。"
+                             "仅翻页时原样使用同一工具、相同查询返回的 next_cursor；不要重复提交失效游标。") from None
     end = min(offset + limit, len(items))
     next_cursor = base64.urlsafe_b64encode(encode({"binding": binding, "offset": end}).encode()).decode() if end < len(items) else None
     return {"count": end - offset, "total": len(items), "next_cursor": next_cursor,
@@ -238,14 +239,24 @@ async def search(root: Path, query: str, *, content=False, relative=".", glob="*
             "skipped": skipped, "skipped_count": len(skipped)}
 
 
+async def read_thread(function, *args, **kwargs):
+    """读线程只处理有界磁盘数据；取消也等待读取释放资源，不在后台写入快照。"""
+    task = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await asyncio.gather(task, return_exceptions=True)
+        raise
+
+
 class Repository:
     def __init__(self, store):
         self.store = store
 
     def read(self, run: dict, root: Path, relative: str, start_line=1, line_count=1000, expected_version=None, start_column=1,
-             *, execution: dict | None = None) -> dict:
+             *, execution: dict | None = None, read_data=None) -> dict:
         policy.file_scope(root, relative, run["permission_mode"])
-        raw, identity = files.safe_bytes(root, relative)
+        raw, identity = read_data if read_data is not None else files.safe_bytes(root, relative)
         version = files.digest(raw)
         if expected_version and expected_version != version:
             raise ValueError("文件版本已变化，请从新版本重新读取")

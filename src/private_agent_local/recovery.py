@@ -9,11 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from private_agent_core.context import ContextLimits, configuration_version
 
-from . import files
+from . import files, reflection
+from .planning import state_digest
+from .progress import STOP_AT
 from .store import encode, now
 
 VERSION = "1.0"
-ACTIVE = {"created", "queued", "running", "waiting_approval", "paused"}
+ACTIVE = {"created", "queued", "running", "waiting_approval", "waiting_input", "paused"}
 
 
 class ControlInput(BaseModel):
@@ -43,7 +45,9 @@ def create_schema(db):
 def model_capability_version(profile):
     keys = ("id", "provider", "model_name", "context_tokens", "native_tool_calls", "supports_streaming",
             "supports_structured_output", "supports_vision", "reasoning_efforts", "usage_reporting")
-    return hashlib.sha256(encode({key: profile.get(key) for key in keys}).encode()).hexdigest()
+    data = {key: profile.get(key) for key in keys}
+    data.update({key: profile[key] for key in ("api_format", "endpoint") if key in profile})
+    return hashlib.sha256(encode(data).encode()).hexdigest()
 
 
 def checkpoint(store, run, boundary, **facts):
@@ -60,6 +64,7 @@ def checkpoint(store, run, boundary, **facts):
              "execution_contract_version": run.get("execution_contract_version"),
              "goal_version": run.get("goal_version", 1), "generation": run.get("generation", 0),
              "pending_response": run.get("pending_response"),
+             "orchestration_digest": state_digest(run),
              "operation_ids": [e.get("operation_id") for e in run.get("executions", [])], **facts}
     identifier = str(uuid.uuid4())
     digest = hashlib.sha256(encode(value).encode()).hexdigest()
@@ -117,6 +122,8 @@ class Recovery:
                 raise ValueError("检查点归属或工作区身份不一致")
         if value["event_sequence"] > run["last_event_sequence"]:
             raise ValueError("检查点引用未提交事件")
+        if value.get("orchestration_digest") is not None and value["orchestration_digest"] != state_digest(run):
+            raise ValueError("计划或进度与已提交检查点不一致，不能继续")
         # 读取会校验内容块摘要与工具关联，不能恢复损坏的历史。
         self.store.context.messages(run["session_id"])
         return value
@@ -155,6 +162,8 @@ class Recovery:
         if not for_lease and (budget.get("model_requests", 0) >= limits.max_model_requests or run["tool_call_count"] >= limits.max_tool_calls
                 or budget.get("active_seconds", 0) >= limits.max_active_seconds
                 or budget.get("failure_count", 0) >= 4
+                or reflection.stalled(run)
+                or (run.get("orchestration_progress") or {}).get("repeats", 0) >= STOP_AT
                 or limits.max_cost_usd is not None and (budget.get("cost_usd") is None or budget["cost_usd"] >= limits.max_cost_usd)):
             blockers.append("逻辑任务累计预算不足或费用未知")
         if not for_lease and self.store.get("session", run["session_id"]).get("last_run_id") != run["id"]:
@@ -170,11 +179,14 @@ class Recovery:
                 "expired_approvals": [a["id"] for a in run.get("approvals", []) if a["status"] in {"cancelled", "expired"}],
                 "limitations": ["重启后的命令不凭 PID 重新附着；身份或结果不明时阻止继续", "继续会重新核对模型与权限，并从已提交历史重新规划；不重放旧工具序列"]}
 
-    async def validate_resume(self, run, data):
+    async def validate_resume(self, run, data, *, for_plan=False):
+        from .task_constraints import restore_interpretation
+
+        restore_interpretation(self.owner, dict(run))
         report = self.inspect(run)
         if data.get("checkpoint_id") != run.get("checkpoint_id"):
             raise ControlConflict("检查点已变化，请重新核对现场", run["state_version"])
-        if not report["can_resume"]:
+        if not (report["can_resume"] or for_plan and run["status"] == "completed" and not report["blockers"]):
             raise ValueError("；".join(report["blockers"]) or "当前状态不允许继续")
         authorized = run
         if run["status"] != "paused" and run["permission_mode"] == "full_access":

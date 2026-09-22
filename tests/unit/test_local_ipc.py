@@ -3,10 +3,8 @@ import asyncio
 import json
 import os
 import sys
-import threading
 import uuid
 from contextlib import asynccontextmanager
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -17,29 +15,8 @@ NONCE = "isolated-pipe-fixture-" * 3
 
 @asynccontextmanager
 async def runtime_pipe(tmp_path):
-    class AccountServer(BaseHTTPRequestHandler):
-        def do_GET(self):
-            if self.path != "/auth/me" or self.headers.get("Authorization") != "Bearer fixture-server-session":
-                self.send_error(401)
-                return
-            body = b'{"id":7}'
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def do_POST(self):
-            self.send_error(409)
-
-        def log_message(self, *_args):
-            pass
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), AccountServer)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
     process = await asyncio.create_subprocess_exec(sys.executable, "-m", "private_agent_local.entry", "--stdio",
-        "--server", f"http://127.0.0.1:{server.server_port}", "--data-dir", str(tmp_path / "records"),
+        "--data-dir", str(tmp_path / "records"),
         cwd=tmp_path, env={**os.environ, "PRIVATEAGENT_LOCAL_NONCE": NONCE},
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
@@ -54,9 +31,6 @@ async def runtime_pipe(tmp_path):
                 process.kill()
                 await process.wait()
                 raise
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
         assert process.returncode == 0, (await process.stderr.read()).decode(errors="replace")
 
 
@@ -95,8 +69,8 @@ async def test_private_pipe_auth_unicode_and_run_event_stream(tmp_path):
         assert content(health)["mode"] == "desktop-local"
         assert (await request(process, "/projects"))[0]["status"] == 401
         assert (await request(process, "/auth/local", method="POST"))[0]["status"] == 404
-        token = "fixture-server-session"
-        assert (await request(process, "/identity", method="POST", token=token))[0]["status"] == 200
+        assert (await request(process, "/identity", method="POST"))[0]["status"] == 404
+        token = content(await request(process, "/identity/local", method="POST"))["access_token"]
         root = tmp_path / "项目"
         root.mkdir()
         project = content(await request(process, "/projects", method="POST", body={"name": "管道项目", "root_path": str(root)}, token=token))
@@ -110,6 +84,16 @@ async def test_private_pipe_auth_unicode_and_run_event_stream(tmp_path):
         assert "run.failed" in text and "run.terminal" in text
         assert frames[-1]["done"]
         assert len(list((tmp_path / "records").glob("*/projects.sqlite3"))) == 1
+        provider = await request(process, "/model-providers/fixture", method="PUT", token=token, body={
+            "name": "管道模型配置", "protocol": "openai", "base_url": "https://provider.example.test/v1",
+            "api_format": "chat_completions", "models": [{"model_id": "fixture", "context_tokens": 8192}],
+        })
+        assert provider[0]["status"] == 200
+        assert content(provider)["name"] == "管道模型配置"
+        assert (await request(process, "/model-providers/fixture/runtime-secret", method="PUT", token=token,
+                              body={"secret": "isolated-fixture-secret"}))[0]["status"] == 200
+        assert content(await request(process, "/model-providers", token=token))[0]["api_key_configured"] is True
+        assert len(list((tmp_path / "records").glob("*/model-settings.sqlite3"))) == 1
 
 
 @pytest.mark.parametrize("params", [

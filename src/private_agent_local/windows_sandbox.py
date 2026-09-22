@@ -7,14 +7,51 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
+import time
 import uuid
 from contextlib import contextmanager
 from ctypes import wintypes as w
 from pathlib import Path
 
 from .workspaces import FileLock
+
+CONTROL_NAMES = frozenset({".git", ".codex", ".agents"})
+SECRET_NAMES = frozenset({".ssh", ".aws", ".gnupg", ".npmrc", ".pypirc", ".netrc", "id_rsa", "id_ed25519", ".privateagent"})
+SECRET_SUFFIXES = frozenset({".pem", ".key", ".pfx", ".p12"})
+# 这些掩码描述限制目标；AppContainer 使用允许项收敛，不依赖包 SID 的拒绝项。
+DENY_WRITE = 0xD0156
+DENY_ALL = 0x1F01FF
+DENY_PARENT = 0xD0040
+MAX_PROTECTIONS = 16384
+MAX_JOURNAL_BYTES = 8 * 1024 * 1024
+
+
+class FileId(c.Structure):
+    _fields_ = [("volume", c.c_ulonglong), ("identifier", c.c_ubyte * 16)]
+
+
+class FileAttributes(c.Structure):
+    _fields_ = [("attributes", w.DWORD), ("reparse_tag", w.DWORD)]
+
+
+def _path_identity(path):
+    value = Path(path).lstat()
+    if stat.S_ISLNK(value.st_mode) or getattr(value, "st_file_attributes", 0) & 0x400:
+        raise ValueError("沙箱授权对象不能是链接或重解析点")
+    return {"device": value.st_dev, "inode": value.st_ino}
+
+
+def _protection_mode(relative):
+    names = [part.casefold() for part in relative.parts]
+    if (any(name == ".env" or name.startswith(".env.") or name in SECRET_NAMES for name in names)
+            or relative.suffix.casefold() in SECRET_SUFFIXES):
+        return DENY_ALL
+    if any(name in CONTROL_NAMES for name in names):
+        return DENY_WRITE
+    return 0
 
 
 class Trustee(c.Structure):
@@ -37,6 +74,9 @@ class WindowsSecurity:
         self.kernel.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
         self.kernel.OpenProcess.restype = w.HANDLE
         self.kernel.GetCurrentProcess.restype = w.HANDLE
+        self.kernel.CreateFileW.argtypes = [w.LPCWSTR, w.DWORD, w.DWORD, c.c_void_p, w.DWORD, w.DWORD, w.HANDLE]
+        self.kernel.CreateFileW.restype = w.HANDLE
+        self.kernel.GetFileInformationByHandleEx.argtypes = [w.HANDLE, c.c_int, c.c_void_p, w.DWORD]
         self.kernel.CreateMutexW.argtypes = [c.c_void_p, w.BOOL, w.LPCWSTR]
         self.kernel.CreateMutexW.restype = w.HANDLE
         self.kernel.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
@@ -50,9 +90,15 @@ class WindowsSecurity:
         self.security.GetNamedSecurityInfoW.argtypes = [w.LPCWSTR, c.c_int, w.DWORD, c.c_void_p, c.c_void_p,
                                                        c.POINTER(c.c_void_p), c.c_void_p, c.POINTER(c.c_void_p)]
         self.security.SetNamedSecurityInfoW.argtypes = [w.LPWSTR, c.c_int, w.DWORD, c.c_void_p, c.c_void_p, c.c_void_p, c.c_void_p]
+        self.security.GetSecurityInfo.argtypes = [w.HANDLE, c.c_int, w.DWORD, c.c_void_p, c.c_void_p,
+                                                 c.POINTER(c.c_void_p), c.c_void_p, c.POINTER(c.c_void_p)]
+        self.security.SetSecurityInfo.argtypes = [w.HANDLE, c.c_int, w.DWORD, c.c_void_p, c.c_void_p, c.c_void_p, c.c_void_p]
         self.security.SetEntriesInAclW.argtypes = [w.ULONG, c.POINTER(Access), c.c_void_p, c.POINTER(c.c_void_p)]
         self.security.GetAce.argtypes = [c.c_void_p, w.DWORD, c.POINTER(c.c_void_p)]
         self.security.EqualSid.argtypes = [c.c_void_p, c.c_void_p]
+        self.security.GetSecurityDescriptorControl.argtypes = [c.c_void_p, c.POINTER(w.WORD), c.POINTER(w.DWORD)]
+        self.security.InitializeAcl.argtypes = [c.c_void_p, w.DWORD, w.DWORD]
+        self.security.AddAce.argtypes = [c.c_void_p, w.DWORD, w.DWORD, c.c_void_p, w.DWORD]
         self.userenv.CreateAppContainerProfile.argtypes = [w.LPCWSTR, w.LPCWSTR, w.LPCWSTR, c.c_void_p, w.DWORD, c.POINTER(c.c_void_p)]
         self.userenv.DeriveAppContainerSidFromAppContainerName.argtypes = [w.LPCWSTR, c.POINTER(c.c_void_p)]
         self.userenv.DeleteAppContainerProfile.argtypes = [w.LPCWSTR]
@@ -125,42 +171,131 @@ class WindowsSecurity:
                 self.kernel.ReleaseMutex(handle)
             self.kernel.CloseHandle(handle)
 
-    def acl(self, path, sid, *, write=False, revoke=False):
+    def acl(self, path, sid, *, write=False, revoke=False, deny=0, inherit=True, identity=None,
+            restore_protected=None, restore_inherited=()):
         # 不同账号的数据目录仍可能共享工具目录，读改写 ACL 必须跨进程串行。
         with self.acl_writer():
-            self._acl(path, sid, write=write, revoke=revoke)
+            self._acl(path, sid, write=write, revoke=revoke, deny=deny, inherit=inherit, identity=identity,
+                      restore_protected=restore_protected, restore_inherited=restore_inherited)
 
-    def _acl(self, path, sid, *, write=False, revoke=False):
-        previous, descriptor, updated = c.c_void_p(), c.c_void_p(), c.c_void_p()
-        error = self.security.GetNamedSecurityInfoW(str(path), 1, 4, None, None, c.byref(previous), None, c.byref(descriptor))
+    @contextmanager
+    def acl_target(self, path, identity=None):
+        path = _directory(path)
+        expected = identity or _path_identity(path)
+        # 使用对象句柄改 ACL；不共享删除，阻止检查后被换成其他对象。
+        handle = self.kernel.CreateFileW(str(path), 0x60000, 3, None, 3, 0x02200000, None)
+        if handle == w.HANDLE(-1).value:
+            raise c.WinError(c.get_last_error())
+        try:
+            identifier, attributes = FileId(), FileAttributes()
+            if (not self.kernel.GetFileInformationByHandleEx(handle, 18, c.byref(identifier), c.sizeof(identifier))
+                    or not self.kernel.GetFileInformationByHandleEx(handle, 9, c.byref(attributes), c.sizeof(attributes))):
+                raise c.WinError(c.get_last_error())
+            actual = {"device": identifier.volume, "inode": int.from_bytes(identifier.identifier, "little")}
+            if attributes.attributes & 0x400 or actual != expected or _path_identity(path) != expected:
+                raise ValueError("沙箱授权对象身份发生变化，未修改权限")
+            yield handle
+        finally:
+            self.kernel.CloseHandle(handle)
+
+    def _acl(self, path, sid, *, write=False, revoke=False, deny=0, inherit=True, identity=None,
+             restore_protected=None, restore_inherited=()):
+        with self.acl_target(path, identity) as handle:
+            self._handle_acl(handle, sid, write=write, revoke=revoke, deny=deny, inherit=inherit,
+                             restore_protected=restore_protected, restore_inherited=restore_inherited)
+
+    @contextmanager
+    def descriptor(self, handle):
+        previous, descriptor = c.c_void_p(), c.c_void_p()
+        error = self.security.GetSecurityInfo(handle, 1, 4, None, None, c.byref(previous), None, c.byref(descriptor))
         if error:
             raise c.WinError(error)
         try:
             if not previous:
                 raise ValueError("目录没有显式 DACL，不能安全授予沙箱访问")
-            if revoke:
-                present = False
-                for index in range(int.from_bytes(c.string_at(previous, 8)[4:6], "little")):
-                    ace = c.c_void_p()
-                    if not self.security.GetAce(previous, index, c.byref(ace)):
-                        raise c.WinError(c.get_last_error())
-                    if c.string_at(ace, 1) == b"\x00" and self.security.EqualSid(c.c_void_p(ace.value + 8), sid):
-                        present = True
-                        break
-                # 意图先写日志；失败的授权可能从未添加 ACE，此时不触碰该目录 DACL。
-                if not present:
-                    return
-            access = Access(0x1301BF if write else 0x1200A9, 4 if revoke else 1, 3, Trustee(None, 0, 0, 0, sid.value))
-            error = self.security.SetEntriesInAclW(1, c.byref(access), previous, c.byref(updated))
-            if error:
-                raise c.WinError(error)
-            # 只删除本次独立 SID 的 ACE，不恢复旧快照覆盖其他主体的新权限。
-            error = self.security.SetNamedSecurityInfoW(str(path), 1, 4, None, None, updated, None)
-            if error:
-                raise c.WinError(error)
+            yield previous, descriptor
         finally:
-            self.kernel.LocalFree(updated)
             self.kernel.LocalFree(descriptor)
+
+    def entries(self, acl):
+        result = []
+        for index in range(int.from_bytes(c.string_at(acl, 8)[4:6], "little")):
+            ace = c.c_void_p()
+            if not self.security.GetAce(acl, index, c.byref(ace)):
+                raise c.WinError(c.get_last_error())
+            result.append(c.string_at(ace, int.from_bytes(c.string_at(ace, 4)[2:4], "little")))
+        return result
+
+    def protection_state(self, entry):
+        with self.acl_target(entry["path"], entry["identity"]) as handle, self.descriptor(handle) as (acl, descriptor):
+            entries = self.entries(acl)
+            inherited_subjects = set()
+            explicit_subjects = set()
+            for ace in entries:
+                if ace[0] not in {0, 1}:
+                    raise ValueError("敏感对象包含无法安全判定的 ACL 类型，未授权执行；请核对目录权限")
+                subject = (ace[0], ace[1] & ~16, ace[8:])
+                # 同主体、同传播标志的显式与继承项可被合并，无法可靠增量还原时拒绝。
+                if subject in inherited_subjects or ace[1] & 16 and subject in explicit_subjects:
+                    raise ValueError("敏感对象存在可能合并的显式或继承授权，不能安全恢复权限；请核对目录权限")
+                (inherited_subjects if ace[1] & 16 else explicit_subjects).add(subject)
+                if ace[0] != 0:
+                    continue
+                sid = ace[8:]
+                if len(sid) >= 16 and int.from_bytes(sid[2:8], "big") == 15 and int.from_bytes(sid[8:12], "little") == 2:
+                    universal = len(sid) == 16 and int.from_bytes(sid[12:16], "little") in {1, 2}
+                    mask = int.from_bytes(ace[4:8], "little")
+                    # 原始 ACL 可能带通用位，先按文件对象展开，避免漏掉宽泛授权。
+                    for generic, rights in ((0x10000000, 0x1F01FF), (0x80000000, 0x120089),
+                                            (0x40000000, 0x120116), (0x20000000, 0x1200A0)):
+                        if mask & generic:
+                            mask |= rights
+                    if not universal or mask & entry["deny"]:
+                        raise ValueError("敏感对象已有重叠沙箱或宽泛应用包授权，不能安全收敛权限；请结束其他执行或核对目录权限")
+            return {"original_protected": self.inheritance_protected(descriptor),
+                    "inherited_aces": [ace.hex() for ace in entries if ace[1] & 16]}
+
+    def inheritance_protected(self, descriptor):
+        control, revision = w.WORD(), w.DWORD()
+        if not self.security.GetSecurityDescriptorControl(descriptor, c.byref(control), c.byref(revision)):
+            raise c.WinError(c.get_last_error())
+        return bool(control.value & 0x1000)
+
+    def _handle_acl(self, handle, sid, *, write=False, revoke=False, deny=0, inherit=True,
+                    restore_protected=None, restore_inherited=()):
+        """deny 表示需排除的权限分类；实际只收敛允许项，并临时阻止父级授权进入。"""
+        with self.descriptor(handle) as (previous, descriptor):
+            sid_bytes = c.string_at(sid, 8 + 4 * c.string_at(sid, 2)[1])
+            old = self.entries(previous)
+            retained = [ace for ace in old if not (ace[0] in {0, 1} and ace[8:] == sid_bytes)]
+            if revoke and len(retained) == len(old) and restore_protected is None:
+                return
+            if restore_protected is False and self.inheritance_protected(descriptor):
+                # Windows 在阻继承时将继承项转成显式项，只撤去本轮转换的精确副本。
+                for encoded in restore_inherited:
+                    inherited = bytes.fromhex(encoded)
+                    converted = inherited[:1] + bytes((inherited[1] & ~16,)) + inherited[2:]
+                    if converted in retained:
+                        retained.remove(converted)
+            grants = [] if revoke or deny == DENY_ALL else (
+                [(0x1200A9, 3 if inherit else 0)] if deny == DENY_WRITE else
+                [(0x1201BF, 0), (0x1301BF, 11)] if deny else [(0x1301BF if write else 0x1200A9, 3 if inherit else 0)])
+            additions = [bytes((0, flags)) + (8 + len(sid_bytes)).to_bytes(2, "little")
+                         + mask.to_bytes(4, "little") + sid_bytes for mask, flags in grants]
+            insertion = next((index for index, ace in enumerate(retained) if ace[0] == 0 or ace[1] & 16), len(retained))
+            entries = retained[:insertion] + additions + retained[insertion:]
+            size, revision = 8 + sum(map(len, entries)), c.string_at(previous, 1)[0]
+            updated = c.create_string_buffer(size)
+            if not self.security.InitializeAcl(updated, size, revision):
+                raise c.WinError(c.get_last_error())
+            for ace in entries:
+                if not self.security.AddAce(updated, revision, 0xFFFFFFFF, ace, len(ace)):
+                    raise c.WinError(c.get_last_error())
+            # 只移除本 SID；恢复继承时使用当前父目录规则，保留其他主体并发增加的显式项。
+            flags = 4 | (0x80000000 if deny or restore_protected is True else 0x20000000 if restore_protected is False else 0)
+            error = self.security.SetSecurityInfo(handle, 1, flags, None, None, updated, None)
+            if error:
+                raise c.WinError(error)
 
 
 def _directory(path):
@@ -170,19 +305,48 @@ def _directory(path):
     return path.resolve(strict=True)
 
 
-def _check_tree(root, *, write=False):
-    count = 0
+SCAN_TIMEOUT_SECONDS = 30
+
+
+def _check_tree(root, *, write=False, deadline=None):
+    deadline = deadline if deadline is not None else time.monotonic() + SCAN_TIMEOUT_SECONDS
+    protections = {}
+
+    def protect(path, mask, inherit):
+        key = str(path)
+        if key not in protections:
+            if len(protections) >= MAX_PROTECTIONS:
+                raise ValueError("沙箱敏感对象超过安全检查上限，未授权执行；请缩小工作区")
+            protections[key] = {"path": key, "deny": mask, "inherit": inherit, "identity": _path_identity(path)}
+        else:
+            protections[key]["deny"] |= mask
+            protections[key]["inherit"] |= inherit
+
+    def check_deadline():
+        if time.monotonic() >= deadline:
+            scope = "工作区" if write else "工具目录"
+            raise ValueError(f"沙箱安全检查超过 {SCAN_TIMEOUT_SECONDS} 秒（{scope}：{root}），未授权执行；请使用较小的工作区或独立工具环境")
+
+    check_deadline()
     for current, directories, names in os.walk(root, followlinks=False, onerror=lambda error: (_ for _ in ()).throw(error)):
+        check_deadline()
         for name in [*directories, *names]:
-            count += 1
+            check_deadline()
             path = Path(current) / name
-            if count > 50000:
-                raise ValueError("沙箱授权扫描超过 50000 项，请缩小工作区或工具目录")
             if path.is_symlink() or path.is_junction():
                 raise ValueError("沙箱目录包含链接或目录联接，未授权执行")
             # 硬链接共享文件 ACL，递归授予写权限会同时影响工作区外的同一文件。
             if write and path.is_file() and path.stat().st_nlink != 1:
                 raise ValueError("可写沙箱工作区包含硬链接文件，未授权执行")
+            if write and (mask := _protection_mode(path.relative_to(root))):
+                protect(path, mask, path.is_dir())
+                # 目标不授予 DELETE 仍不够，父目录也不能向沙箱授予 DELETE_CHILD。
+                for ancestor in path.parents:
+                    protect(ancestor, DENY_PARENT, False)
+                    if ancestor == root:
+                        break
+    check_deadline()
+    return sorted(protections.values(), key=lambda item: (len(Path(item["path"]).parts), item["path"]))
 
 
 def runtime_roots(argv, environment):
@@ -244,13 +408,18 @@ class SandboxLease:
         if self.base.is_relative_to(root) or root == Path(root.anchor) or root == self.api.home():
             raise ValueError("工作区覆盖沙箱控制目录或用户根目录，不能执行")
         roots = runtime_roots(argv, environment)
-        entries = [{"path": str(p), "write": p == root} for p in [root, *roots] if p == root or not p.is_relative_to(root)]
+        entries = [{"path": str(p), "write": p == root, "identity": _path_identity(p)}
+                   for p in [root, *roots] if p == root or not p.is_relative_to(root)]
+        # 所有授权目录共享检查时限，完整检查后才能授予 ACL；正常的大型运行库不按文件数拒绝。
+        deadline = time.monotonic() + SCAN_TIMEOUT_SECONDS
+        protections = []
         for entry in entries:
-            _check_tree(Path(entry["path"]), write=entry["write"])
+            protections.extend(_check_tree(Path(entry["path"]), write=entry["write"], deadline=deadline))
         self.name = "pa.execution." + uuid.uuid4().hex
         self.lock = FileLock(self.base / (self.name + ".lock"))
         self.path = self.base / (self.name + ".json")
-        self.record = {"version": 1, "profile": self.name, "owner": self.api.identity(os.getpid()), "host": None, "paths": entries}
+        self.record = {"version": 2, "profile": self.name, "owner": self.api.identity(os.getpid()), "host": None,
+                       "paths": entries, "protections": protections}
         self.sid = None
         self.closed = False
         try:
@@ -260,8 +429,15 @@ class SandboxLease:
             raise
         try:
             self.sid = self.api.sid(self.name, create=True)
-            for entry in entries:
-                self.api.acl(entry["path"], self.sid, write=entry["write"])
+            # 完整预检与设置不可被另一租约交错；同一敏感对象不允许重叠授权。
+            with self.api.acl_writer():
+                for entry in protections:
+                    entry.update(self.api.protection_state(entry))
+                self._save()
+                for entry in entries:
+                    self.api.acl(entry["path"], self.sid, write=entry["write"], identity=entry["identity"])
+                for entry in protections:
+                    self.api.acl(entry["path"], self.sid, deny=entry["deny"], inherit=entry["inherit"], identity=entry["identity"])
             self.environment = dict(environment)
             temporary = self.api.folder(self.sid) / "Temp"
             temporary.mkdir(exist_ok=True)
@@ -271,9 +447,12 @@ class SandboxLease:
             raise
 
     def _save(self):
+        payload = json.dumps(self.record).encode("utf-8")
+        if len(payload) > MAX_JOURNAL_BYTES:
+            raise ValueError("沙箱恢复日志超过大小限制，未授权执行")
         temporary = self.path.with_suffix(".pending")
-        with temporary.open("w", encoding="utf-8") as stream:
-            json.dump(self.record, stream)
+        with temporary.open("wb") as stream:
+            stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, self.path)
@@ -288,13 +467,16 @@ class SandboxLease:
     def _cleanup(api, record):
         sid = api.sid(record["profile"])
         try:
-            for entry in record["paths"]:
-                path = Path(entry["path"])
-                if path.exists():
-                    api.acl(_directory(path), sid, revoke=True)
-            hr = api.userenv.DeleteAppContainerProfile(record["profile"])
-            if hr < 0 and hr & 0xFFFF not in {2, 3}:
-                raise OSError(f"AppContainer cleanup failed: {hr:#x}")
+            with api.acl_writer():
+                # 先撤去父级授权，再恢复原继承标志；始终保留其他主体的当前 ACL。
+                for entry in [*record["paths"], *record.get("protections", [])]:
+                    path = Path(entry["path"])
+                    if path.exists():
+                        api.acl(_directory(path), sid, revoke=True, identity=entry.get("identity"),
+                                restore_protected=entry.get("original_protected"), restore_inherited=entry.get("inherited_aces", ()))
+                hr = api.userenv.DeleteAppContainerProfile(record["profile"])
+                if hr < 0 and hr & 0xFFFF not in {2, 3}:
+                    raise OSError(f"AppContainer cleanup failed: {hr:#x}")
         finally:
             api.security.FreeSid(sid)
 
@@ -317,7 +499,7 @@ class SandboxLease:
     def recover(cls, directory):
         api = WindowsSecurity()
         for path in Path(directory).glob("pa.execution.*.json"):
-            if path.is_symlink() or path.stat().st_size > 32768:
+            if path.is_symlink() or path.stat().st_size > MAX_JOURNAL_BYTES:
                 raise ValueError("沙箱清理记录无效，已停止执行")
             try:
                 lock = FileLock(path.with_suffix(".lock"))
@@ -325,7 +507,8 @@ class SandboxLease:
                 continue
             try:
                 record = json.loads(path.read_text(encoding="utf-8"))
-                if record.get("version") != 1 or record.get("profile") != path.stem or len(record.get("paths", [])) > 128:
+                if (record.get("version") not in {1, 2} or record.get("profile") != path.stem
+                        or len(record.get("paths", [])) > 128 or len(record.get("protections", [])) > MAX_PROTECTIONS):
                     raise ValueError("沙箱清理记录版本或归属无效")
                 if any(identity and api.identity(identity["pid"]) == identity for identity in [record.get("owner"), record.get("host")]):
                     raise ValueError("旧沙箱进程仍然存活，不能清理或重新授权")

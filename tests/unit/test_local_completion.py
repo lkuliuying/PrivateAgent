@@ -7,13 +7,60 @@ from pathlib import Path
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.coding_contracts import RunOutcome
-from private_agent_core.completion import interpret_execution
+from private_agent_core.coding_contracts import Requirement, RunOutcome
+from private_agent_core.completion import interpret_execution, task_requirements
 from private_agent_local.completion import LocalCompletionVerifier
 from private_agent_local.executor import ExecutionFailure
 from private_agent_local.runtime import TERMINAL
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("message,targets", [
+    ("创建一个hello.py文件，要求能打印出hello world!", ["hello.py"]),
+    ("修改hello.py后读取verify.py文件", ["hello.py"]),
+    ("仅修改 sample.py，将 double(value) 修复为返回 value * 2。随后执行 python verify.py 并等待退出码。不要修改其他文件。", ["sample.py"]),
+    ("修复 sample.py 并运行 python -m pytest -q tests/test_sample.py", ["sample.py"]),
+    ("Fix sample.py and run python verify.py.", ["sample.py"]),
+    ("Modify src/main.py and src/util.py, then read docs/spec.md and execute python tests/check.py.", ["src/main.py", "src/util.py"]),
+    ("根据 spec.md 修复 sample.py，并读取 verify.py。", ["sample.py"]),
+    ("Read docs/spec.md, then fix sample.py and update README.md.", ["sample.py", "README.md"]),
+    ("修改 sample.py，不要修改 verify.py。", ["sample.py"]),
+    ("Do not modify verify.py; fix sample.py.", ["sample.py"]),
+    ("不要修改 sample.py，只运行 python verify.py。", []),
+    ("Only run python verify.py.", []),
+    ("sample.py 需要修复，随后读取 verify.py。", ["sample.py"]),
+    ("将 sample.py 修改为返回二倍值；不要修改 verify.py。", ["sample.py"]),
+    ("修复 src/fix.py 并运行 python tests/test.py", ["src/fix.py"]),
+    ("修复 a.py、b.py 和 c.py；运行 pytest tests/test_sample.py", ["a.py", "b.py", "c.py"]),
+    ("修改 a.py, b.py and c.py. Run pytest tests/test_sample.py.", ["a.py", "b.py", "c.py"]),
+    ("修复 a.py。修改 b.py。", ["a.py", "b.py"]),
+    ("Fix a.py without modifying b.py.", ["a.py"]),
+    ("修复 a.py，保留 b.py 和 c.py。", ["a.py"]),
+    ("修改 a.py，参考 b.py 的格式。", ["a.py"]),
+    ("修改 a.py，b.py 仅供参考。", ["a.py"]),
+    ("修复问题；运行 python verify.py", [""]),
+    ("创建 a.py 和 a.py", ["a.py"]),
+    ("修改以下文件：\n- a.py\n- b.py\n随后运行 pytest tests/check.py", ["a.py", "b.py"]),
+    ("修改以下文件：\n1. a.py\n2. b.py\n读取 spec.md", ["a.py", "b.py"]),
+    ("修改以下文件：\n\n* `a.py`\n* `b.py`\n只读取：\n- spec.md", ["a.py", "b.py"]),
+    ("修改 a.py\n不要修改：\n- b.py", ["a.py"]),
+    ("只给 sample.py 的补丁预览，不写入", []),
+])
+async def test_file_requirements_follow_write_actions_not_all_references(message, targets):
+    requirements, _ = task_requirements(message)
+    assert [item.scope for item in requirements if item.kind == "file_changed"] == targets
+
+
+async def test_explicit_requirements_and_requirement_limit_remain_enforced():
+    explicit = Requirement(requirement_id="manual", kind="manual", scope="verify.py", description="人工核对验证脚本")
+    requirements, _ = task_requirements("修复 sample.py，读取 verify.py", [explicit])
+    assert [(item.kind, item.scope, item.origin) for item in requirements] == [
+        ("file_changed", "sample.py", "intent_rule"), ("manual", "verify.py", "user")]
+    with pytest.raises(ValueError, match="超过 32 项"):
+        task_requirements("修改 " + "、".join(f"file{index}.py" for index in range(33)))
+    with pytest.raises(ValueError, match="仅预览约束"):
+        task_requirements("只给预览", [explicit])
 
 
 @pytest.fixture
@@ -71,6 +118,46 @@ async def create_run(api, message, responses, **overrides):
     return await until(client, created.json()["id"], TERMINAL)
 
 
+@pytest.mark.parametrize("command,expected_status,expected_goal", [
+    ("python -m pytest -q test_sample.py", "completed", "verified"),
+    ("python verify.py", "completed", "verified"),
+])
+async def test_write_then_verify_preserves_reference_file_and_execution_semantics(api, monkeypatch, command, expected_status, expected_goal):
+    verification = "test_sample.py" if "pytest" in command else "verify.py"
+    target = api[3] / verification
+    target.write_text("verification fixture\n", encoding="utf-8")
+    before = target.read_bytes()
+    invoked = []
+
+    async def passed(argv, *args, **kwargs):
+        invoked.append(argv)
+        return {"returncode": 0, "stdout": "3 passed", "stderr": "", "truncated": False}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    run = await create_run(api, f"修改 sample.py。随后执行 {command}。", [
+        response(call("write_project_file", {"rel_path": "sample.py", "content": "def double(value):\n    return value * 2\n"})),
+        response(call("run_project_command", {"command": command})),
+        *[response(text="文件已修改，命令实际退出码为 0。") for _ in range(3)]])
+    assert run["status"] == expected_status and run["goal_outcome"] == expected_goal
+    assert [item["scope"] for item in run["completion_requirements"] if item["kind"] == "file_changed"] == ["sample.py"]
+    assert target.read_bytes() == before
+    assert len(invoked) == 1 and run["tool_call_count"] == 2
+    results = (await api[1].get(f"/agent-runs/{run['id']}/executions")).json()
+    result = results[-1]["execution_result"]
+    assert result["outcome"] == "exited" and result["exit_code"] == 0
+    # 普通脚本只核验退出码，不把正常退出冒充已理解其业务断言。
+    assert result["validation_outcome"] == ("succeeded" if "pytest" in command else "unknown")
+    assert run["verification_state"] == "passed" and run["error_code"] is None
+
+
+async def test_reference_file_write_cannot_satisfy_missing_target_change(api):
+    run = await create_run(api, "修复 sample.py，并读取 verify.py", [
+        response(call("write_project_file", {"rel_path": "verify.py", "content": "wrong target"})),
+        *[response(text="已完成") for _ in range(3)]])
+    assert run["goal_outcome"] == "unmet" and not (api[3] / "sample.py").exists()
+    assert any("sample.py" in item for item in run["run_outcome"]["unverified_items"])
+
+
 async def test_s1_t03_search_empty_is_normal(api):
     result = interpret_execution(execution_id="e", operation_id="o", argv=["rg", "missing"], outcome="exited", exit_code=1)
     assert result.validation_outcome == "succeeded"
@@ -109,6 +196,163 @@ async def test_s1_t06_test_evidence_expires_after_write(api, monkeypatch):
     assert run["goal_outcome"] == "unmet"
     assert any("过期" in item for item in run["run_outcome"]["unverified_items"])
     assert (api[3] / "hello.py").exists()
+
+
+@pytest.mark.parametrize("history", ["diagnostics", "rejection", "both"])
+async def test_t01_auxiliary_history_does_not_override_fixed_file_and_final_tests(api, monkeypatch, history):
+    from private_agent_local.runtime import TOOLS
+
+    if "run_powershell_command" not in TOOLS:
+        pytest.skip("本场景包含 Windows PowerShell 工具")
+    root = api[3]
+    (root / "app.py").write_text("def total(price, quantity):\n    return price + quantity\n", encoding="utf-8")
+    fixed = "def total(price, quantity):\n    return price * quantity\n"
+    test_calls = []
+
+    async def execute(root, argv, **kwargs):
+        if argv[:3] == ["python", "-m", "pytest"]:
+            test_calls.append(argv)
+            return {"returncode": 1 if len(test_calls) == 1 else 0,
+                    "stdout": "4 failed" if len(test_calls) == 1 else "4 passed", "stderr": ""}
+        return {"returncode": 0, "stdout": "diagnostic output", "stderr": ""}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    responses = [response(call("read_code_file", {"rel_path": "app.py"}))]
+    if history in {"rejection", "both"}:
+        responses.append(response(call("run_powershell_command", {"command": "Get-Date", "arguments": []})))
+    if history in {"diagnostics", "both"}:
+        responses.extend([
+            response(call("run_project_command", {"command": "git status --short"})),
+            response(call("run_powershell_command", {"command": "Get-Content", "arguments": ["-LiteralPath", "app.py"]})),
+            response(call("run_project_command", {"command": "python --version"})),
+        ])
+    responses.extend([
+        response(call("run_project_command", {"command": "python -m pytest -q"})),
+        response(call("write_project_file", {"rel_path": "app.py", "content": fixed})),
+        response(call("run_project_command", {"command": "python -m pytest -q"})),
+        *[response(text="已解释错误原因、修复 app.py，并运行测试通过。") for _ in range(3)],
+    ])
+    run = await create_run(api, "请解释 app.py 中总价计算错误的原因，然后修复 app.py 并运行 python -m pytest -q。", responses)
+    assert run["goal_outcome"] == "verified" and run["status"] == "completed"
+    assert (root / "app.py").read_text(encoding="utf-8") == fixed and len(test_calls) == 2
+    assert [item["scope"] for item in run["run_outcome"]["requirements"]] == ["app.py", "python -m pytest -q"]
+    executions = (await api[1].get(f"/agent-runs/{run['id']}/executions")).json()
+    assert any(item.get("execution_result", {}).get("exit_code") == 1 for item in executions)
+    rejected = [item for item in executions if item.get("error_code") == "local_tool_rejected"]
+    assert bool(rejected) == (history in {"rejection", "both"})
+    events = (await api[1].get(f"/agent-runs/{run['id']}/events")).json()["items"]
+    assert not any(event["type"] == "tool.started" and event["payload"].get("execution_id") in {item["id"] for item in rejected}
+                   for event in events)
+
+
+async def test_recovered_auxiliary_command_before_write_remains_only_in_audit(api, monkeypatch):
+    attempts = []
+
+    async def execute(*args, **kwargs):
+        attempts.append(args)
+        return {"returncode": 2 if len(attempts) == 1 else 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    run = await create_run(api, "创建 app.py", [
+        response(call("run_project_command", {"command": "git status --short"})),
+        response(call("run_project_command", {"command": "git status --short"})),
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        *[response(text="文件已创建") for _ in range(3)],
+    ])
+    assert run["goal_outcome"] == "verified"
+    assert len(run["run_outcome"]["requirements"]) == 1 and len(attempts) == 2
+    executions = (await api[1].get(f"/agent-runs/{run['id']}/executions")).json()
+    assert [item["execution_result"]["exit_code"] for item in executions if item.get("command")] == [2, 0]
+
+
+@pytest.mark.parametrize("command", ["python -m pytest -q", "git status --short", "python helper.py"])
+async def test_unsuccessful_extra_command_still_prevents_verified_claim(api, monkeypatch, command):
+    async def failed(*args, **kwargs):
+        return {"returncode": 2, "stdout": "", "stderr": "fixture command failed"}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", failed)
+    run = await create_run(api, "创建 app.py", [
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        response(call("run_project_command", {"command": command})),
+        *[response(text="全部通过") for _ in range(3)],
+    ])
+    assert run["goal_outcome"] == "unmet"
+    assert any(item["scope"] == command for item in run["run_outcome"]["requirements"])
+
+
+async def test_successful_extra_script_with_disk_changes_still_requires_verification(api, monkeypatch):
+    async def script(root, *args, **kwargs):
+        (root / "artifact.txt").write_text("side effect", encoding="utf-8")
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", script)
+    run = await create_run(api, "创建 app.py", [
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        response(call("run_project_command", {"command": "python helper.py"})),
+        *[response(text="全部通过") for _ in range(3)],
+    ])
+    assert run["goal_outcome"] == "unmet"
+    assert any("python helper.py" in item and "过期" in item for item in run["run_outcome"]["unverified_items"])
+
+
+async def test_unknown_extra_command_is_not_discarded_as_an_observation(api, monkeypatch):
+    attempts = []
+
+    async def unknown(*args, **kwargs):
+        attempts.append(args)
+        raise ExecutionFailure("宿主失联", outcome="unknown", output={})
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", unknown)
+    run = await create_run(api, "创建 app.py", [
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        response(call("run_project_command", {"command": "python helper.py"})), response(text="全部通过"),
+    ])
+    assert run["goal_outcome"] == "unknown" and len(attempts) == 1
+    assert any("python helper.py" in item and "未知" in item for item in run["run_outcome"]["unverified_items"])
+
+
+async def test_later_observation_does_not_erase_earlier_command_disk_changes(api, monkeypatch):
+    async def script(root, *args, **kwargs):
+        (root / "artifact.txt").write_text("same content", encoding="utf-8")
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", script)
+    run = await create_run(api, "创建 app.py", [
+        response(call("run_project_command", {"command": "python helper.py"})),
+        response(call("run_project_command", {"command": "python helper.py"})),
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        *[response(text="全部通过") for _ in range(3)],
+    ])
+    assert run["goal_outcome"] == "unmet"
+    assert any("python helper.py" in item and "过期" in item for item in run["run_outcome"]["unverified_items"])
+
+
+async def test_explicit_diagnostic_requirement_still_expires_after_write(api, monkeypatch):
+    async def passed(*args, **kwargs):
+        return {"returncode": 0, "stdout": "", "stderr": ""}
+
+    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    run = await create_run(api, "创建 app.py", [
+        response(call("run_project_command", {"command": "git status --short"})),
+        response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
+        *[response(text="全部通过") for _ in range(3)],
+    ], completion_requirements=[{"requirement_id": "explicit-command", "kind": "command", "scope": "git status --short",
+                                  "description": "在最终工作区核对状态", "evidence_policy": "exit"}])
+    assert run["goal_outcome"] == "unmet"
+    assert any("git status --short" in item and "过期" in item for item in run["run_outcome"]["unverified_items"])
+
+
+async def test_explicit_rejected_command_remains_blocked(api):
+    from private_agent_local.runtime import TOOLS
+
+    if "run_powershell_command" not in TOOLS:
+        pytest.skip("本场景包含 Windows PowerShell 工具")
+    run = await create_run(api, "完成指定命令", [
+        response(call("run_powershell_command", {"command": "Get-Date", "arguments": []})), response(text="完成"),
+    ], completion_requirements=[{"requirement_id": "explicit-command", "kind": "command", "scope": "Get-Date",
+                                  "description": "执行指定命令", "evidence_policy": "exit"}])
+    assert run["goal_outcome"] == "blocked"
+    assert any("Get-Date" in item and "未登记" in item for item in run["run_outcome"]["unverified_items"])
 
 
 @pytest.mark.parametrize("retry", [
@@ -245,11 +489,12 @@ async def test_s1_t12_legacy_mapping_does_not_invent_evidence(api):
     assert "run_outcome" not in store.run_state("legacy-run")
 
 
-async def test_user_forbids_commands_preserves_test_requirement(api):
+async def test_user_forbids_commands_preserves_conflict_without_test_obligation(api):
     run = await create_run(api, "修复 hello.py 并测试，但暂时不允许运行命令", [
         response(call("write_project_file", {"rel_path": "hello.py", "content": "fixed"})), response(text="已修改，测试尚未运行")])
     assert run["goal_outcome"] == "blocked"
-    assert any(item["kind"] == "test" for item in run["run_outcome"]["requirements"])
+    assert not any(item["kind"] == "test" for item in run["run_outcome"]["requirements"])
+    assert any("同时要求测试" in item for item in run["run_outcome"]["unverified_items"])
     assert any("不运行命令" in item for item in run["run_outcome"]["unverified_items"])
 
 

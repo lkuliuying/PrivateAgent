@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from private_agent_core.contracts import ModelRequest, ModelResponse
 from private_agent_core.runtime import CancellationToken
 
-from .contracts import ModelCapabilities, ModelGatewayError, RetryPolicy
+from .contracts import ModelCapabilities, ModelGatewayError, ModelTextDelta, RetryPolicy
 
 
 class ModelAdapter(Protocol):
@@ -30,6 +30,7 @@ class ModelAdapter(Protocol):
 
 
 ModelOutputSink = Callable[[str], Awaitable[None]]
+ModelMessageSink = Callable[[ModelTextDelta], Awaitable[None]]
 
 
 class StreamingModelAdapter(ModelAdapter, Protocol):
@@ -195,6 +196,7 @@ class ModelGateway:
         *,
         cancellation: CancellationToken,
         on_delta: ModelOutputSink,
+        on_message_delta: ModelMessageSink | None = None,
     ) -> ModelResponse:
         """Stream native text deltas and still return one complete response.
 
@@ -209,20 +211,39 @@ class ModelGateway:
         if adapter_stream is None or not self.adapter.capabilities.streaming:
             response = await self.complete(request, cancellation=cancellation)
             if response.text:
+                if on_message_delta is not None:
+                    await on_message_delta(ModelTextDelta("default", response.phase, response.text))
                 await on_delta(response.text)
             return response
 
         started = perf_counter()
         last_error: ModelGatewayError | None = None
         published = False
+        message_stream = getattr(self.adapter, "complete_stream_messages", None) if on_message_delta is not None else None
+
+        async def publish_message(delta: ModelTextDelta) -> None:
+            nonlocal published
+            if not delta.delta:
+                return
+            try:
+                await on_message_delta(delta)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                raise _ModelOutputSinkError from exc
+            published = True
 
         async def publish(delta: str) -> None:
             nonlocal published
             if not delta:
                 return
             try:
+                if on_message_delta is not None and message_stream is None:
+                    await publish_message(ModelTextDelta("default", None, delta))
                 await on_delta(delta)
             except asyncio.CancelledError:
+                raise
+            except _ModelOutputSinkError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 raise _ModelOutputSinkError from exc
@@ -231,10 +252,11 @@ class ModelGateway:
         for attempt in range(1, self.retry_policy.max_attempts + 1):
             try:
                 async with asyncio.timeout(self.request_timeout_seconds):
-                    response = await adapter_stream(
+                    response = await (message_stream or adapter_stream)(
                         request,
                         cancellation=cancellation,
                         on_delta=publish,
+                        **({"on_message_delta": publish_message} if message_stream is not None else {}),
                     )
                 latency_ms = (perf_counter() - started) * 1_000
                 return response.model_copy(

@@ -25,6 +25,15 @@ from .sse import iter_sse_events
 from .url_policy import validate_remote_base_url
 
 
+def _reported_usage(input_tokens=None, output_tokens=None, cached_tokens=None) -> TokenUsage:
+    values = {key: value for key, value in {"input_tokens": input_tokens, "output_tokens": output_tokens,
+                                          "cached_tokens": cached_tokens}.items() if value is not None}
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        raise ValueError("供应商用量必须为非负整数")
+    # 默认零保留共享契约兼容性；fields_set 保存实际报告字段，直连出口据此保留 unknown。
+    return TokenUsage(**values)
+
+
 def _tool_definitions_openai(
     request: ModelRequest, *, strict: bool
 ) -> list[dict[str, Any]]:
@@ -289,10 +298,10 @@ class OpenAIChatAdapter(_HttpAdapter):
             text=str(message.get("content") or ""),
             tool_calls=calls,
             finish_reason=choice.get("finish_reason"),
-            usage=TokenUsage(
-                input_tokens=int(usage.get("prompt_tokens") or 0),
-                output_tokens=int(usage.get("completion_tokens") or 0),
-                cached_tokens=int(prompt_details.get("cached_tokens") or 0),
+            usage=_reported_usage(
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
+                cached_tokens=prompt_details.get("cached_tokens"),
             ),
             provider=self.provider_name,
             model=str(data.get("model") or self.model_name),
@@ -462,10 +471,10 @@ class OpenAIChatAdapter(_HttpAdapter):
             text="".join(text_parts),
             tool_calls=calls,
             finish_reason=finish_reason,
-            usage=TokenUsage(
-                input_tokens=int(usage.get("prompt_tokens") or 0),
-                output_tokens=int(usage.get("completion_tokens") or 0),
-                cached_tokens=int(prompt_details.get("cached_tokens") or 0),
+            usage=_reported_usage(
+                input_tokens=usage.get("prompt_tokens"),
+                output_tokens=usage.get("completion_tokens"),
+                cached_tokens=prompt_details.get("cached_tokens"),
             ),
             provider=self.provider_name,
             model=response_model,
@@ -588,9 +597,9 @@ class OllamaChatAdapter(_HttpAdapter):
             text=str(message.get("content") or ""),
             tool_calls=tuple(calls),
             finish_reason=data.get("done_reason"),
-            usage=TokenUsage(
-                input_tokens=int(data.get("prompt_eval_count") or 0),
-                output_tokens=int(data.get("eval_count") or 0),
+            usage=_reported_usage(
+                input_tokens=data.get("prompt_eval_count"),
+                output_tokens=data.get("eval_count"),
             ),
             provider=self.provider_name,
             model=str(data.get("model") or self.model_name),
@@ -683,9 +692,9 @@ class OllamaChatAdapter(_HttpAdapter):
             text="".join(text_parts),
             tool_calls=tuple(calls),
             finish_reason=final.get("done_reason"),
-            usage=TokenUsage(
-                input_tokens=int(final.get("prompt_eval_count") or 0),
-                output_tokens=int(final.get("eval_count") or 0),
+            usage=_reported_usage(
+                input_tokens=final.get("prompt_eval_count"),
+                output_tokens=final.get("eval_count"),
             ),
             provider=self.provider_name,
             model=str(final.get("model") or self.model_name),
@@ -848,10 +857,10 @@ class ClaudeMessagesAdapter(_HttpAdapter):
             text=text,
             tool_calls=calls,
             finish_reason=data.get("stop_reason"),
-            usage=TokenUsage(
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                cached_tokens=int(usage.get("cache_read_input_tokens") or 0),
+            usage=_reported_usage(
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cached_tokens=usage.get("cache_read_input_tokens"),
             ),
             provider=self.provider_name,
             model=str(data.get("model") or self.model_name),
@@ -1080,10 +1089,10 @@ class ClaudeMessagesAdapter(_HttpAdapter):
             text="".join(text_parts),
             tool_calls=tuple(calls),
             finish_reason=finish_reason,
-            usage=TokenUsage(
-                input_tokens=int(usage.get("input_tokens") or 0),
-                output_tokens=int(usage.get("output_tokens") or 0),
-                cached_tokens=int(usage.get("cache_read_input_tokens") or 0),
+            usage=_reported_usage(
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cached_tokens=usage.get("cache_read_input_tokens"),
             ),
             provider=self.provider_name,
             model=response_model,

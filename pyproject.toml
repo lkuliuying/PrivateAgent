@@ -1,41 +1,20 @@
 [project]
 name = "personal-assistant"
 version = "1.0.0"
-description = "本地优先、隐私可控的桌面私人助手 - 第一阶段"
+description = "通过 API Key 直连模型的本机桌面 Agent"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    # Web 框架
+    # 本机 IPC 和可选回环 HTTP 入口
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
-    "python-multipart>=0.0.12",
-    # v0.9.0 H0 §5：产品时区 Asia/Shanghai（zoneinfo 在无系统 tz 数据库的
-    # 环境——Windows/uv 独立解释器/容器——需要 tzdata 包）。
+    "pydantic>=2.6",
+    # Windows 运行时的时区数据库。
     "tzdata>=2024.1",
     # Provider 直接使用 httpx；socks extra 兼容桌面环境常见的 ALL_PROXY=socks5 配置。
     "httpx[socks]>=0.27",
-    # 配置与日志
-    "pydantic-settings>=2.6",
-    "structlog>=24.4",
-    # 数据库 / 迁移
-    # 注：计划书原定 asyncmy，但 Python 3.13 + Windows 无预编译 wheel、源码编译需 MySQL 开发头文件。
-    # M0 先用纯 Python 的 aiomysql（无编译、Windows 无坑），后续如需可切回 asyncmy。
-    "sqlalchemy[asyncio]>=2.0.36",
-    "aiomysql>=0.2.3",
-    "alembic>=1.14",
-    # AI 编排
-    "langchain>=0.3",
-    "langchain-ollama>=0.2",
-    "langchain-chroma>=0.1.4",
-    "langgraph>=0.2",
-    # 向量库
-    "chromadb>=0.5.20",
-    # 文档解析
-    "pypdf>=5.1",
-    "python-docx>=1.1.2",
-    "markdown>=3.7",
-    "cryptography>=49.0.0",
-    "sqlglot>=30.15.0",
+    # 模型与工具契约校验
+    "jsonschema>=4.26,<5",
     # MCP 与安全加固的 HTTP 传输（代码实际引用；与 requirements.txt 版本对齐）
     "mcp==2.0.0",
     "httpx2==2.9.1",
@@ -54,16 +33,12 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/personal_assistant", "src/private_agent_core", "src/private_agent_local"]
+packages = ["src/private_agent_core", "src/private_agent_local"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["src"]
 testpaths = ["tests"]
-filterwarnings = [
-  # aiomysql 连接在 event loop 关闭后 GC 时 close() 触发的不可抑制警告（teardown 竞态，非失败）。
-  "ignore::pytest.PytestUnraisableExceptionWarning",
-]
 
 [tool.ruff.lint]
 # 发布门禁口径（2026-08-06 固化）：E/F/I 基础规则，E501 长行属于仓库既有风格债务，

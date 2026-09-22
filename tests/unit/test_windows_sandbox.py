@@ -14,7 +14,7 @@ from private_agent_core.execution.exec_host_client import (
     ExecHostClient,
     ExecutorUnavailable,
 )
-from private_agent_local import files
+from private_agent_local import files, windows_sandbox
 from private_agent_local.executor import host_path, run_command
 from private_agent_local.policy import powershell_plan
 from private_agent_local.windows_sandbox import (
@@ -25,6 +25,55 @@ from private_agent_local.windows_sandbox import (
 from private_agent_local.workspaces import FileLock
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows AppContainer 原生边界")]
+
+
+@pytest.mark.parametrize("unsafe", [None, "junction", "hardlink"])
+async def test_large_tree_is_fully_checked_including_entries_after_50000(tmp_path, monkeypatch, unsafe):
+    ordinary, last = tmp_path / "ordinary.txt", tmp_path / "last.txt"
+    ordinary.write_text("ok")
+    last.write_text("ok")
+    if unsafe == "hardlink":
+        os.link(last, tmp_path / "alias.txt")
+    checked = []
+    def is_junction(path):
+        checked.append(path.name)
+        return unsafe == "junction" and path == last
+    # 使用重复目录项模拟大型库，最后一项使用真实文件属性验证硬链接检查仍然生效。
+    monkeypatch.setattr(windows_sandbox.os, "walk", lambda *args, **kwargs: iter([(str(tmp_path), [], [ordinary.name] * 50000 + [last.name])]))
+    monkeypatch.setattr(Path, "is_junction", is_junction)
+    monkeypatch.setattr(windows_sandbox.time, "monotonic", lambda: 0)
+    if unsafe:
+        with pytest.raises(ValueError, match="联接" if unsafe == "junction" else "硬链接"):
+            windows_sandbox._check_tree(tmp_path, write=unsafe == "hardlink")
+    else:
+        windows_sandbox._check_tree(tmp_path)
+    assert len(checked) == 50001 and checked[-1] == last.name
+
+
+async def test_scan_timeout_rejects_before_any_acl_grant(tmp_path, monkeypatch):
+    root, state = tmp_path / "project", tmp_path / "leases"
+    root.mkdir()
+    calls = []
+    monkeypatch.setattr(WindowsSecurity, "acl", lambda *args, **kwargs: calls.append(args))
+    monkeypatch.setattr(windows_sandbox, "SCAN_TIMEOUT_SECONDS", 0)
+    _, env = files.prepare_process([os.environ["COMSPEC"]])
+    with pytest.raises(ValueError, match="工作区.*未授权执行"):
+        await SandboxLease.prepare(root, [os.environ["COMSPEC"]], env, directory=state)
+    assert not calls and not list(state.glob("*.json")) and not list(state.glob("*.lock"))
+
+
+async def test_scan_directories_share_one_deadline_and_io_errors_propagate(tmp_path, monkeypatch):
+    clock = iter([0, 0, 1, 2, 31])
+    monkeypatch.setattr(windows_sandbox.time, "monotonic", lambda: next(clock))
+    windows_sandbox._check_tree(tmp_path, deadline=30)
+    with pytest.raises(ValueError, match="工具目录.*未授权执行"):
+        windows_sandbox._check_tree(tmp_path, deadline=30)
+    monkeypatch.setattr(windows_sandbox.time, "monotonic", lambda: 0)
+    def unreadable(*args, **kwargs):
+        kwargs["onerror"](PermissionError("fixture unreadable directory"))
+    monkeypatch.setattr(windows_sandbox.os, "walk", unreadable)
+    with pytest.raises(PermissionError, match="unreadable"):
+        windows_sandbox._check_tree(tmp_path)
 
 
 @pytest.mark.parametrize("extension", [".cmd", ".bat", ".exe"])
@@ -121,6 +170,17 @@ async def test_registered_powershell_stays_in_authorized_workspace(tmp_path):
     result = await run_command(root, list(plan.argv))
     assert result["returncode"] == 0, result["stderr"]
     assert "inside.txt" in result["stdout"] and "outside.txt" not in result["stdout"]
+
+
+async def test_python_from_user_path_runs_created_file_and_cleans_sandbox(tmp_path):
+    root, state = tmp_path / "hello-project", tmp_path / "leases"
+    root.mkdir()
+    (root / "hello.py").write_text("print('hello world!')\n", encoding="utf-8")
+    # 与安装客户端一样按 PATH 选择 Python，不能只用测试虚拟环境掩盖大型运行库的问题。
+    result = await run_command(root, ["python", "hello.py"], sandbox_directory=state)
+    assert result["returncode"] == 0, result["stderr"]
+    assert result["stdout"].strip() == "hello world!"
+    assert not list(state.glob("*.json"))
 
 
 async def test_distinct_sandbox_identity_does_not_grant_other_workspace(tmp_path):

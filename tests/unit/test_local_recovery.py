@@ -123,6 +123,172 @@ async def test_late_model_response_is_discarded(api, monkeypatch):
     assert any(e["type"] == "model.response_discarded" for e in owner.store.events(run_id))
 
 
+async def test_steer_invalidates_command_approval_and_does_not_replay(api, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    execute = AsyncMock()
+    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    api[2].responses = [response(call("run_project_command", {"command": "python -m pytest"})),
+                        response(text="根据新限制，未执行命令")]
+    run_id = await create(api, message="运行测试")
+    await until(api[1], run_id, {"waiting_approval"})
+    approval = (await api[1].get(f"/agent-runs/{run_id}/approvals")).json()[0]
+    await control(api, run_id, "steer", message="不运行任何命令")
+    final = await until(api[1], run_id, TERMINAL)
+    assert (await api[1].post(f"/agent-runs/{run_id}/approvals/{approval['id']}/approve")).status_code == 422
+    execute.assert_not_called()
+    current = api[0].state.desktop.runtime.store.run(run_id)
+    assert current["completion_policy"]["commands_forbidden"]
+    assert final["goal_outcome"] != "verified"
+    assert len(current["task_interpretation"]["sources"]) == 2
+
+
+async def test_tightened_test_restriction_survives_pause_and_linked_resume(api, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    (api[3] / "package.json").write_text(json.dumps({"scripts": {"qa": "pytest"}}), encoding="utf-8")
+    execute = AsyncMock()
+    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    run_id = await create(api, message="读取项目")
+    await waiting_model(api, run_id)
+    await control(api, run_id, "steer", message="不运行测试")
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    await control(api, run_id, "cancel")
+    before = api[0].state.desktop.runtime.store.run(run_id)
+    api[2].responses = [response(call("run_project_command", {"command": "npm run qa"})),
+                        response(text="保持原限制，未运行测试")]
+    _, resumed = await control(api, run_id, "resume")
+    child = resumed["result_run_id"]
+    final = await until(api[1], child, TERMINAL)
+    current = api[0].state.desktop.runtime.store.run(child)
+    assert current["completion_policy"]["tests_forbidden"]
+    assert not current["completion_policy"]["commands_forbidden"]
+    assert current["goal_version"] >= 2 and final["goal_outcome"] != "verified"
+    assert api[0].state.desktop.runtime.store.run(run_id) == before
+    execute.assert_not_called()
+
+
+async def test_legacy_restore_reparses_applied_steer_sources(api):
+    from private_agent_local.task_constraints import restore_interpretation
+
+    run_id = await create(api, message="读取项目")
+    await waiting_model(api, run_id)
+    await control(api, run_id, "steer", message="不要运行测试")
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    owner = api[0].state.desktop.runtime
+    restored = owner.store.run(run_id)
+    version = restored["goal_version"]
+    restored.pop("task_interpretation")
+    restored["completion_policy"] = {"preview_only": False, "answer_only": True, "commands_forbidden": False}
+    restore_interpretation(owner, restored)
+    assert restored["completion_policy"]["tests_forbidden"]
+    assert restored["goal_version"] == version
+    assert any(source["text"] == "不要运行测试" for source in restored["task_interpretation"]["sources"])
+
+
+async def test_verified_legacy_sources_remove_stale_global_prohibition(api):
+    from private_agent_local.task_constraints import restore_interpretation
+
+    run_id = await create(api, message="修复 A.py，另一个模块只分析")
+    await waiting_model(api, run_id)
+    await control(api, run_id, "steer", message="不要运行测试")
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    owner = api[0].state.desktop.runtime
+    restored = owner.store.run(run_id)
+    restored["task_interpretation"]["schema_version"] = "1.1"
+    restored["task_interpretation"]["policy"].update(writes_forbidden=True, commands_forbidden=True)
+    restored["completion_policy"].update(writes_forbidden=True, commands_forbidden=True)
+    previous_goal = restored["goal"]
+    restore_interpretation(owner, restored)
+    assert restored["task_interpretation"]["schema_version"] == "1.2"
+    assert not restored["completion_policy"]["writes_forbidden"] and not restored["completion_policy"]["commands_forbidden"]
+    assert restored["completion_policy"]["tests_forbidden"]
+    assert restored["goal"] == previous_goal and restored["goal_version"] == 2
+    assert any(item["kind"] == "file_changed" and item["scope"] == "A.py" for item in restored["completion_requirements"])
+
+
+async def test_unverifiable_legacy_sources_keep_cached_limits(api):
+    from private_agent_local.task_constraints import restore_interpretation
+
+    run_id = await create(api, message="读取项目")
+    await waiting_model(api, run_id)
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    owner = api[0].state.desktop.runtime
+    restored = owner.store.run(run_id)
+    restored["task_interpretation"]["schema_version"] = "1.1"
+    restored["goal_version"] = 2
+    restored["completion_policy"]["writes_forbidden"] = True
+    restore_interpretation(owner, restored)
+    assert restored["task_interpretation"]["schema_version"] == "1.1"
+    assert restored["completion_policy"]["writes_forbidden"]
+    assert any("原始来源不完整" in item for item in restored["completion_policy"]["unperformed"])
+
+
+@pytest.mark.parametrize("initial,steer,tool,args", [
+    ("不运行命令", "现在可以运行命令，请执行 python -m pytest", "run_project_command", {"command": "python -m pytest"}),
+    ("不要修改文件", "现在可以修改文件，请创建 app.py", "write_project_file", {"rel_path": "app.py", "content": "value = 1\n"}),
+])
+async def test_explicit_steer_restores_visible_tools_in_same_model_loop(api, monkeypatch, initial, steer, tool, args):
+    from unittest.mock import AsyncMock
+
+    execute = AsyncMock(return_value={"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False})
+    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    run_id = await create(api, message=initial, permission_mode="workspace")
+    await waiting_model(api, run_id)
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    await control(api, run_id, "steer", message=steer)
+    api[2].responses = [response(call(tool, args)), response(text="已按最新要求完成")]
+    _, resumed = await control(api, run_id, "resume")
+    assert resumed["result_run_id"] == run_id
+    final = await until(api[1], run_id, TERMINAL)
+    assert final["status"] == "completed" and final["goal_outcome"] == "verified"
+    requests = [json.loads(data)["request"] for path, data in api[2].calls if path == "/desktop/model/complete"]
+    assert len(requests) == 3
+    assert tool not in {item["name"] for item in requests[0]["tools"]}
+    assert tool in {item["name"] for item in requests[1]["tools"]}
+    assert any(item["role"] == "user" and item["content"] == steer for item in requests[1]["messages"])
+    first_system = [item for item in requests[0]["messages"] if item["role"] == "system"]
+    assert first_system == [item for item in requests[1]["messages"] if item["role"] == "system"]
+    hint = next(item["content"] for item in requests[1]["messages"] if item["content"].startswith("程序提取的任务状态"))
+    state = json.loads(hint.split("：", 1)[1])
+    assert state["goal_version"] == 2 and state["policy_releases"]
+    assert not state["restrictions"]["commands_forbidden"] and not state["restrictions"]["writes_forbidden"]
+    if tool == "run_project_command":
+        execute.assert_awaited_once()
+    else:
+        assert (api[3] / "app.py").read_text() == "value = 1\n"
+        execute.assert_not_called()
+
+
+async def test_released_policy_survives_cancel_and_linked_resume(api):
+    run_id = await create(api, message="不要运行测试，不要联网")
+    await waiting_model(api, run_id)
+    data, _ = await control(api, run_id, "steer", message="现在可以运行测试")
+    await control(api, run_id, "pause")
+    await until(api[1], run_id, {"paused"})
+    assert (await api[1].post(f"/agent-runs/{run_id}/steer", json=data)).status_code == 202
+    await control(api, run_id, "cancel")
+    owner = api[0].state.desktop.runtime
+    parent = owner.store.run(run_id)
+    assert not parent["completion_policy"]["tests_forbidden"]
+    assert len(parent["task_interpretation"]["policy_releases"]) == 1
+    api[2].responses = [response(text="继续依据最新用户要求分析项目")]
+    _, resumed = await control(api, run_id, "resume")
+    child_id = resumed["result_run_id"]
+    final = await until(api[1], child_id, TERMINAL)
+    child = owner.store.run(child_id)
+    assert final["status"] == "completed" and child_id != run_id
+    assert not child["completion_policy"]["tests_forbidden"] and child["completion_policy"]["network_forbidden"]
+    assert child["task_interpretation"]["policy_releases"] == parent["task_interpretation"]["policy_releases"]
+    assert child["task_interpretation"]["sources"] == parent["task_interpretation"]["sources"]
+    assert owner.store.run(run_id) == parent
+
+
 async def test_cancel_resume_creates_link_and_keeps_budget_and_old_events(api):
     run_id = await create(api)
     await waiting_model(api, run_id)
@@ -371,7 +537,7 @@ async def test_recovery_and_review_never_cross_accounts(api):
     run_id = await create(api)
     await waiting_model(api, run_id)
     assert (await api[1].get(f"/agent-runs/{run_id}/recovery", headers={"Authorization": "Bearer account-b"})).status_code == 401
-    assert (await api[1].post("/identity", headers={"Authorization": "Bearer account-b"})).status_code == 200
+    await api[0].state.desktop.activate("account-b", api[0].state.desktop.cloud.origin, 2)
     for suffix in ("recovery", "review", "events"):
         result = await api[1].get(f"/agent-runs/{run_id}/{suffix}", headers={"Authorization": "Bearer account-b"})
         assert result.status_code == 404

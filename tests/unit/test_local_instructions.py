@@ -77,7 +77,7 @@ def test_total_size_and_file_count_are_bounded(tmp_path):
 
 @pytest.mark.asyncio
 async def test_account_revocation_after_approval_prevents_write(tmp_path, monkeypatch):
-    from private_agent_local.cloud import CloudError
+    from private_agent_local.model_errors import CloudError
     app, client, server, root, body = await setup(tmp_path)
     try:
         server.responses = [response(call("write_project_file", {"rel_path": "x.txt", "content": "x"}))]
@@ -152,6 +152,75 @@ async def test_nested_write_first_delivers_rules_then_rechecks_permission(tmp_pa
         executions = app.state.desktop.runtime.store.run(run["id"])["executions"]
         assert executions[0]["status"] == "failed" and executions[1]["status"] == "completed"
         requests = [json.loads(data)["request"] for path, data in server.calls if path == "/desktop/model/complete"]
-        assert any("嵌套规则标记" in m["content"] for m in requests[1]["messages"] if m["role"] == "system")
+        assert any("嵌套规则标记" in m["content"] for m in requests[1]["messages"] if m["role"] == "user")
+        assert all("嵌套规则标记" not in m["content"] for req in requests for m in req["messages"] if m["role"] == "system")
+    finally:
+        await close(app, client)
+
+
+def test_override_precedence_and_empty_fallback_at_each_directory(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "AGENTS.md").write_text("root fallback", encoding="utf-8")
+    override = tmp_path / "AGENTS.override.md"
+    override.write_text("root override", encoding="utf-8")
+    (tmp_path / "sub/AGENTS.md").write_text("nested fallback", encoding="utf-8")
+    (tmp_path / "sub/AGENTS.override.md").write_text("\ufeff \n", encoding="utf-8")
+    loader = InstructionLoader()
+    rules = loader.load(tmp_path, "sub/file.py", trusted=True)
+    assert [r.path for r in rules] == ["AGENTS.override.md", "sub/AGENTS.md"]
+    assert [r.scope for r in rules] == [".", "sub"]
+    assert [r.priority for r in rules] == [0, 1] and all(r.trusted for r in rules)
+    override.write_text("", encoding="utf-8")
+    assert [r.path for r in loader.load(tmp_path)] == ["AGENTS.md"]
+    (tmp_path / "AGENTS.md").write_text(" \n", encoding="utf-8")
+    assert loader.load(tmp_path) == []
+
+
+@pytest.mark.parametrize("invalid", ["binary", "oversized", "directory", "linked", "unreadable"])
+def test_invalid_override_never_silently_falls_back(tmp_path, monkeypatch, invalid):
+    (tmp_path / "AGENTS.md").write_text("fallback", encoding="utf-8")
+    override = tmp_path / "AGENTS.override.md"
+    if invalid == "directory":
+        override.mkdir()
+    else:
+        override.write_bytes(b"\x00" if invalid == "binary" else b"x" * 32769 if invalid == "oversized" else b"valid")
+    if invalid == "linked":
+        original = files.linked
+        monkeypatch.setattr(files, "linked", lambda path: path == override or original(path))
+    if invalid == "unreadable":
+        original_open = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == override:
+                raise PermissionError("fixture")
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", denied)
+    with pytest.raises(InstructionError):
+        InstructionLoader().load(tmp_path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["add_override", "remove_override", "edit_override"])
+async def test_changing_selected_override_invalidates_pending_write(tmp_path, change):
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        (root / "AGENTS.md").write_text("fallback rule", encoding="utf-8")
+        override = root / "AGENTS.override.md"
+        if change != "add_override":
+            override.write_text("override rule", encoding="utf-8")
+        await client.post(f"/projects/{body['project_id']}/instruction-trust", json={"trusted": True})
+        server.responses = [response(call("write_project_file", {"rel_path": "file.txt", "content": "blocked"})),
+                            response(text="规则变化，写入停止")]
+        run = (await client.post("/agent-runs", json=body)).json()
+        await until(client, run["id"], {"waiting_approval"})
+        approval = (await client.get(f"/agent-runs/{run['id']}/approvals")).json()[0]
+        if change == "remove_override":
+            override.unlink()
+        else:
+            override.write_text("new override rule", encoding="utf-8")
+        await client.post(f"/agent-runs/{run['id']}/approvals/{approval['id']}/approve")
+        final = await until(client, run["id"], TERMINAL)
+        assert final["instructions_invalidated"] and not (root / "file.txt").exists()
     finally:
         await close(app, client)

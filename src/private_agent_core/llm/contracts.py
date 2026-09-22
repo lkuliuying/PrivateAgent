@@ -3,6 +3,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTextDelta:
+    """公开消息增量；不允许携带供应商原始条目或推理内容。"""
+
+    message_id: str
+    phase: Literal["commentary", "final_answer"] | None
+    delta: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.message_id, str) or not 1 <= len(self.message_id) <= 200:
+            raise ValueError("公开消息标识长度无效")
+        if self.phase not in {None, "commentary", "final_answer"}:
+            raise ValueError("公开消息阶段无效")
+        if not isinstance(self.delta, str):
+            raise ValueError("公开消息增量必须为字符串")
 
 
 @dataclass(frozen=True, slots=True)

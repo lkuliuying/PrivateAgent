@@ -79,7 +79,7 @@ async def test_revoke_cancels_inflight_run_and_logout_records_revocation(tmp_pat
         assert not (await client.delete(f"/full-access-grants/{grant['grant_id']}")).json()["revoked"]
         await client.post(endpoint, json={})
         await client.post("/identity/clear")
-        await client.post("/identity")
+        await app.state.desktop.activate("account-a", app.state.desktop.cloud.origin, 1)
         assert not (await client.get(endpoint)).json()["active"]
     finally:
         await close(app, client)
@@ -143,6 +143,16 @@ def test_powershell_policy_is_project_relative_and_obeys_permission_modes(tmp_pa
     ):
         with pytest.raises(ValueError):
             policy.powershell_plan(tmp_path, command, arguments, "full_access")
+
+
+@pytest.mark.skipif(os.name != "nt", reason="受控 PowerShell 只属于 Windows 客户端")
+@pytest.mark.parametrize("arguments", [["."], ["-LiteralPath ."], ["|", "Get-Content"]])
+def test_powershell_parameter_errors_offer_named_arguments_without_accepting_scripts(tmp_path, arguments):
+    with pytest.raises(ValueError, match="独立数组元素") as rejected:
+        policy.powershell_plan(tmp_path, "Get-ChildItem", arguments, "workspace")
+    assert "-literalpath" in str(rejected.value)
+    corrected = policy.powershell_plan(tmp_path, "Get-ChildItem", ["-LiteralPath", ".", "-Name"], "workspace")
+    assert corrected.display_argv == ("powershell", "Get-ChildItem", "-LiteralPath", ".", "-Name")
 
 
 @pytest.mark.asyncio

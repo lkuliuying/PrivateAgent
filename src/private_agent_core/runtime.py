@@ -168,9 +168,17 @@ class _RunContext:
                 if emit_with_checkpoint is not None:
                     await emit_with_checkpoint(event, checkpoint)
                 else:
-                    await self.sink.emit(event)
+                    emit_with_steps = getattr(self.sink, "emit_with_steps", None)
+                    if emit_with_steps is not None:
+                        await emit_with_steps(event, tuple(self.steps))
+                    else:
+                        await self.sink.emit(event)
             else:
-                await self.sink.emit(event)
+                emit_with_steps = getattr(self.sink, "emit_with_steps", None)
+                if emit_with_steps is not None:
+                    await emit_with_steps(event, tuple(self.steps))
+                else:
+                    await self.sink.emit(event)
         except Exception as exc:
             # A sink can commit an event and still lose the acknowledgement. Do
             # not consume the in-memory sequence or turn this into a synthetic
@@ -248,7 +256,6 @@ class _RunContext:
         for step in reversed(self.steps):
             if step.status == AgentStepStatus.RUNNING:
                 self.finish_step(step, status, error=error)
-                return
 
     def add_usage(self, usage: TokenUsage) -> None:
         self.input_tokens += usage.input_tokens
@@ -324,6 +331,9 @@ class AgentRuntime:
         # v0.7.0 验收修复（P0-1）：run 绑定的 reasoning_effort 透传到模型请求
         reasoning_effort: str | None = None,
         context_sink: Callable[[ModelMessage], Awaitable[None]] | None = None,
+        parallel_tool_names: frozenset[str] = frozenset(),
+        max_parallel_tools: int = 2,
+        exposed_tool_names: Callable[[], frozenset[str]] | None = None,
     ) -> None:
         effective_verification_retries = (
             1
@@ -358,6 +368,77 @@ class AgentRuntime:
         self._max_verification_retries = effective_verification_retries
         self._reasoning_effort = reasoning_effort
         self._context_sink = context_sink
+        if not 1 <= max_parallel_tools <= 2:
+            raise ValueError("只读工具并发上限必须为 1 或 2")
+        self._parallel_tool_names = parallel_tool_names
+        self._max_parallel_tools = max_parallel_tools
+        self._exposed_tool_names = exposed_tool_names
+
+    async def _dispatch_call(self, call, allowed_tool_names, cancellation):
+        if call.name not in allowed_tool_names:
+            return ToolResult(tool_call_id=call.id, name=call.name, success=False,
+                              error=f"工具未向模型注册：{call.name}；请使用本轮提供的工具，按需工具须先搜索并等待下一轮定义。",
+                              error_code="tool_not_available")
+        try:
+            return await self._tools.execute(call, cancellation=cancellation)
+        except _RunCancelled:
+            raise
+        except Exception as exc:
+            return ToolResult(tool_call_id=call.id, name=call.name, success=False,
+                              error=str(exc) or type(exc).__name__)
+
+    async def _call_batches(self, calls, allowed_tool_names, context, cancellation, *, resuming=False):
+        """只合并相邻的受信只读调用；事件、结果和后续副作用按模型顺序提交。"""
+        # 绑定产生这批调用的实际模型请求；本批搜索不能提前授予尚未展示的工具。
+        if self._exposed_tool_names is not None:
+            allowed_tool_names = frozenset(self._exposed_tool_names())
+        index = 0
+        while index < len(calls):
+            cancellation.raise_if_cancelled()
+            count = 1
+            if not (resuming and index == 0) and calls[index].name in self._parallel_tool_names:
+                while (count < self._max_parallel_tools and index + count < len(calls)
+                       and calls[index + count].name in self._parallel_tool_names
+                       and calls[index + count].name in allowed_tool_names):
+                    count += 1
+            steps = []
+            for offset, call in enumerate(calls[index:index + count]):
+                if resuming and index + offset == 0:
+                    step = next(step for step in reversed(context.steps)
+                                if step.status == AgentStepStatus.WAITING_APPROVAL)
+                else:
+                    if context.tool_call_count + 1 > context.limits.max_tool_calls:
+                        raise _RunLimitExceeded("max_tool_calls")
+                    context.tool_call_count += 1
+                    step = context.start_step(AgentStepKind.TOOL, tool_call_id=call.id, name=call.name)
+                    await context.emit(AgentEventType.TOOL_REQUESTED, step_id=step.id,
+                                       payload={"ordinal": step.ordinal, "kind": step.kind.value,
+                                                "tool_call_id": call.id, "name": call.name})
+                    await context.emit(AgentEventType.TOOL_STARTED, step_id=step.id,
+                                       payload={"tool_call_id": call.id, "name": call.name})
+                steps.append(step)
+
+            async def dispatch_batch():
+                tasks = [asyncio.create_task(self._dispatch_call(call, allowed_tool_names, cancellation))
+                         for call in calls[index:index + count]]
+                try:
+                    return await asyncio.gather(*tasks)
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+            results = await _await_with_cancellation(dispatch_batch(), cancellation)
+            if count > 1 and any(result.error_code == "approval_required" for result in results):
+                raise _RuntimeProtocolError("声明为自动授权只读的工具请求了审批")
+            for offset, (step, result) in enumerate(zip(steps, results, strict=True)):
+                call = calls[index + offset]
+                finalize = getattr(self._tools, "finalize_result", None)
+                if finalize is not None:
+                    result = await _await_with_cancellation(finalize(call, result), cancellation)
+                yield index + offset, call, step, result
+            index += count
 
     async def _record_context(self, message: ModelMessage) -> None:
         if self._context_sink is not None:
@@ -608,62 +689,8 @@ class AgentRuntime:
         pending_calls = checkpoint.pending_tool_calls
         allowed_tool_names = {tool.name for tool in tool_definitions}
 
-        for call_index, call in enumerate(pending_calls):
-            cancellation.raise_if_cancelled()
-            if call_index == 0:
-                tool_step = next(
-                    step
-                    for step in reversed(context.steps)
-                    if step.status == AgentStepStatus.WAITING_APPROVAL
-                )
-            else:
-                if context.tool_call_count + 1 > context.limits.max_tool_calls:
-                    raise _RunLimitExceeded("max_tool_calls")
-                context.tool_call_count += 1
-                tool_step = context.start_step(
-                    AgentStepKind.TOOL,
-                    tool_call_id=call.id,
-                    name=call.name,
-                )
-                await context.emit(
-                    AgentEventType.TOOL_REQUESTED,
-                    step_id=tool_step.id,
-                    payload={
-                        "ordinal": tool_step.ordinal,
-                        "kind": tool_step.kind.value,
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                    },
-                )
-                await context.emit(
-                    AgentEventType.TOOL_STARTED,
-                    step_id=tool_step.id,
-                    payload={"tool_call_id": call.id, "name": call.name},
-                )
-
-            if call.name not in allowed_tool_names:
-                result = ToolResult(
-                    tool_call_id=call.id,
-                    name=call.name,
-                    success=False,
-                    error=f"工具未向模型注册：{call.name}",
-                )
-            else:
-                try:
-                    result = await _await_with_cancellation(
-                        self._tools.execute(call, cancellation=cancellation),
-                        cancellation,
-                    )
-                except _RunCancelled:
-                    raise
-                except Exception as exc:
-                    result = ToolResult(
-                        tool_call_id=call.id,
-                        name=call.name,
-                        success=False,
-                        error=str(exc) or type(exc).__name__,
-                    )
-
+        async for call_index, call, tool_step, result in self._call_batches(
+                pending_calls, allowed_tool_names, context, cancellation, resuming=True):
             # 工具执行期间外部 durable 事件（patch_set.* 等）可能已推进
             # run.last_event_sequence，校准内存序列避免后续事件冲突（E3 §3）。
             await context.sync_sequence()
@@ -778,7 +805,9 @@ class AgentRuntime:
                 cancellation=cancellation,
             )
             response = completed_turn.response
-            await self._record_context(ModelMessage(role="assistant", content=response.text, tool_calls=response.tool_calls))
+            response.require_complete()
+            assistant_message = response.as_message()
+            await self._record_context(assistant_message)
             context.add_usage(response.usage)
             context.finish_step(model_step, AgentStepStatus.SUCCEEDED)
             await context.emit(
@@ -800,8 +829,13 @@ class AgentRuntime:
             # v0.9.0 H0 §8：逐轮公开决策摘要——只从公开事实派生（用户目标/
             # 本轮工具决策），不读取也不输出模型隐藏推理；无事实则不发射。
             await self._emit_decision_summary(
-                context, conversation, response
+                context, conversation, response, step_id=model_step.id
             )
+
+            if response.phase == "commentary" and not response.tool_calls:
+                # 阶段性说明是继续工作的状态；轮数、时长和费用仍由同一循环约束。
+                conversation.append(assistant_message)
+                continue
 
             if not response.tool_calls:
                 if self._output_verifier is None:
@@ -866,7 +900,7 @@ class AgentRuntime:
                 if not will_retry:
                     raise _OutputValidationFailed(verification)
                 conversation.append(
-                    ModelMessage(role="assistant", content=response.text)
+                    assistant_message
                 )
                 conversation.append(
                     ModelMessage(
@@ -885,60 +919,10 @@ class AgentRuntime:
             if len(context.steps) + len(response.tool_calls) > context.limits.max_steps:
                 raise _RunLimitExceeded("max_steps")
 
-            conversation.append(
-                ModelMessage(
-                    role="assistant",
-                    content=response.text,
-                    tool_calls=response.tool_calls,
-                )
-            )
+            conversation.append(assistant_message)
             allowed_tool_names = {tool.name for tool in tool_definitions}
-            for call_index, call in enumerate(response.tool_calls):
-                cancellation.raise_if_cancelled()
-                context.tool_call_count += 1
-                tool_step = context.start_step(
-                    AgentStepKind.TOOL,
-                    tool_call_id=call.id,
-                    name=call.name,
-                )
-                await context.emit(
-                    AgentEventType.TOOL_REQUESTED,
-                    step_id=tool_step.id,
-                    payload={
-                        "ordinal": tool_step.ordinal,
-                        "kind": tool_step.kind.value,
-                        "tool_call_id": call.id,
-                        "name": call.name,
-                    },
-                )
-                await context.emit(
-                    AgentEventType.TOOL_STARTED,
-                    step_id=tool_step.id,
-                    payload={"tool_call_id": call.id, "name": call.name},
-                )
-                if call.name not in allowed_tool_names:
-                    result = ToolResult(
-                        tool_call_id=call.id,
-                        name=call.name,
-                        success=False,
-                        error=f"工具未向模型注册：{call.name}",
-                    )
-                else:
-                    try:
-                        result = await _await_with_cancellation(
-                            self._tools.execute(call, cancellation=cancellation),
-                            cancellation,
-                        )
-                    except _RunCancelled:
-                        raise
-                    except Exception as exc:
-                        result = ToolResult(
-                            tool_call_id=call.id,
-                            name=call.name,
-                            success=False,
-                            error=str(exc) or type(exc).__name__,
-                        )
-
+            async for call_index, call, tool_step, result in self._call_batches(
+                    response.tool_calls, allowed_tool_names, context, cancellation):
                 # 工具执行期间外部 durable 事件（patch_set.* 等）可能已推进
                 # run.last_event_sequence，校准内存序列避免后续事件冲突（E3 §3）。
                 await context.sync_sequence()
@@ -1013,8 +997,9 @@ class AgentRuntime:
                 self._model.complete(request, cancellation=cancellation),
                 cancellation,
             )
+            response.require_complete()
             deltas = (response.text,) if response.text else ()
-            if self._output_verifier is None and (
+            if self._output_verifier is None and response.phase != "commentary" and (
                 not request.tools or not response.tool_calls
             ):
                 await self._publish_model_deltas(
@@ -1041,19 +1026,19 @@ class AgentRuntime:
             ),
             cancellation,
         )
+        response.require_complete()
         streamed_text = "".join(deltas)
         if streamed_text != response.text:
             raise _RuntimeProtocolError(
                 "streamed model deltas do not match the completed response"
             )
 
-        # Text emitted by a model turn that ultimately requests tools is not
-        # the final assistant answer. Buffer tool-enabled turns until their
-        # terminal response is known, then publish only a no-tool answer.
+        # 启用工具或验收时等待终态；工具决策和阶段性说明由独立决策事件呈现。
         if (
             self._output_verifier is None
             and buffer_until_complete
             and not response.tool_calls
+            and response.phase != "commentary"
         ):
             for delta in deltas:
                 await _await_with_cancellation(
@@ -1097,6 +1082,8 @@ class AgentRuntime:
         context: "_RunContext",
         conversation: list[ModelMessage],
         response: ModelResponse,
+        *,
+        step_id: str | None = None,
     ) -> None:
         """v0.9.0 H0 §8：公开决策摘要（decision.summary）。
 
@@ -1114,13 +1101,17 @@ class AgentRuntime:
             return
         if response.tool_calls:
             tool_names = sorted({call.name for call in response.tool_calls})
-            method = "本轮决策：调用工具 " + "、".join(tool_names)
+            method = response.text.strip() or "本轮决策：调用工具 " + "、".join(tool_names)
             next_steps = list(tool_names)[:12]
+        elif response.phase == "commentary":
+            method = response.text.strip() or "本轮提供阶段性说明，继续处理任务"
+            next_steps = []
         else:
             method = "本轮决策：给出最终回答"
             next_steps = []
         await context.emit(
             AgentEventType.DECISION_SUMMARY,
+            step_id=step_id,
             payload={
                 "goal": goal[:1000],
                 "method": method[:1000],

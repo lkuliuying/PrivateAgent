@@ -7,14 +7,6 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
-def service_origin(value: str) -> str:
-    url = urlsplit(value)
-    loopback = url.hostname in {"127.0.0.1", "localhost", "::1"}
-    if (url.scheme not in {"http", "https"} or (url.scheme == "http" and not loopback)
-            or not url.hostname or url.username or url.password or url.query or url.fragment or url.path not in {"", "/"}):
-        raise ValueError("服务地址必须是 HTTPS 源站；仅本机回环地址允许 HTTP")
-    return value.rstrip("/")
-
 class ModelConfig(BaseModel):
     """模型设置与服务器账号身份独立，不接受服务器地址或本机账号模式。"""
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -22,6 +14,7 @@ class ModelConfig(BaseModel):
     model_protocol: Literal["ollama", "openai"] = "ollama"
     model_endpoint: str = "http://127.0.0.1:11434"
     model_name: str = Field(default="", max_length=200)
+    supports_streaming: bool = True
     context_tokens: int | None = Field(default=8192, gt=0, le=1_000_000_000, strict=True)
 
     @model_validator(mode="after")

@@ -1,8 +1,59 @@
 """计量必须来源于真实用量字段；不把累计计费量或字符数当成窗口占用。"""
+import json
+
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
 from private_agent_local.context import average_cache_hit_percent, context_budget
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_model_identity_uses_selected_route_and_refreshes_between_turns(tmp_path, explicit):
+    app, client, server, _, body = await setup(tmp_path)
+    try:
+        server.profiles = [
+            {"id": "profile-a", "model_name": "deepseek-flash-v4-long-model-id", "context_tokens": 32000, "is_default": True, "enabled": True},
+            {"id": "profile-b", "model_name": "another-model-2026-09", "context_tokens": 32000, "is_default": False, "enabled": True},
+        ]
+        body.update(message="你是什么模型？")
+        for profile in (server.profiles[1], server.profiles[0]) if explicit else (server.profiles[0], server.profiles[1]):
+            if explicit:
+                body["model_profile_id"] = profile["id"]
+            else:
+                body.pop("model_profile_id", None)
+                for item in server.profiles:
+                    item["is_default"] = item["id"] == profile["id"]
+            server.responses = [response(text="合成模型回答")]
+            run = (await client.post("/agent-runs", json=body)).json()
+            assert (await until(client, run["id"], TERMINAL))["status"] == "completed"
+            request = json.loads([payload for path, payload in server.calls if path == "/desktop/model/complete"][-1])
+            identity = [message["content"] for message in request["request"]["messages"]
+                        if message["role"] == "system" and "当前请求的模型信息" in message["content"]]
+            assert len(identity) == 1
+            assert json.dumps({"model_id": profile["model_name"]}, ensure_ascii=False) in identity[0]
+            assert "直接简短回答：我是 <model_id>。" in identity[0]
+            assert "不要附加配置来源、字段名、版本边界、工具能力或其他说明" in identity[0]
+            assert "实际请求标识，不证明" not in identity[0]
+            assert request["model_profile_id"] == profile["id"]
+    finally:
+        await close(app, client)
+
+
+@pytest.mark.asyncio
+async def test_missing_model_identity_is_unknown_without_using_profile_id(tmp_path):
+    app, client, server, _, body = await setup(tmp_path)
+    try:
+        server.profiles[0].pop("model_name")
+        server.responses = [response(text="合成模型回答")]
+        run = (await client.post("/agent-runs", json={**body, "message": "当前模型 ID"})).json()
+        await until(client, run["id"], TERMINAL)
+        request = json.loads([payload for path, payload in server.calls if path == "/desktop/model/complete"][-1])["request"]
+        identity = next(message["content"] for message in request["messages"] if "当前请求的模型信息" in message["content"])
+        assert '"model_id": null' in identity and "test-profile" not in identity
+        assert "ID 为空时只回答：无法确认当前模型。" in identity
+    finally:
+        await close(app, client)
 
 
 def test_unknown_capacity_and_missing_usage_do_not_fabricate_percent():

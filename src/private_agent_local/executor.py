@@ -17,6 +17,7 @@ from private_agent_core.execution.exec_host_client import (
 )
 
 from . import files
+from .execution_diagnostics import runtime_warnings
 
 
 class ExecutionFailure(ValueError):
@@ -66,7 +67,8 @@ async def run_command(root: Path, args: list[str], *, timeout: float = 600, exec
     sandbox = None
 
     def collected():
-        return {**{key: value.decode("utf-8", errors="replace") for key, value in buffers.items()},
+        output = {key: value.decode("utf-8", errors="replace") for key, value in buffers.items()}
+        return {**output, "runtime_warnings": runtime_warnings(output["stderr"], restricted=not trusted),
                 "truncated": truncated, "execution_host_sha256": host_sha256}
 
     try:

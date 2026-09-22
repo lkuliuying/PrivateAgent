@@ -1,6 +1,7 @@
 """Packaged entrypoint; never loads server settings, databases or dotenv files."""
 import argparse
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int)
     parser.add_argument("--stdio", action="store_true")
-    parser.add_argument("--server", required=True)
+    parser.add_argument("--evaluation", action="store_true", help="允许正式会话交接指定测试模型，凭据仅留在产品进程")
     parser.add_argument("--model-json", default="{}")
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--parent-pid", type=int)
@@ -24,12 +25,25 @@ def main():
     if args.stdio == (args.port is not None):
         parser.error("必须选择 --stdio 或旧版兼容参数 --port 之一")
     nonce = os.environ.pop("PRIVATEAGENT_LOCAL_NONCE", "")
+    # 在运行用户命令前移除启动凭据环境变量，子进程不得继承模型密钥。
+    raw_secrets = os.environ.pop("PA_MODEL_PROVIDER_SECRETS_JSON", "{}")
+    try:
+        secrets = json.loads(raw_secrets) if len(raw_secrets.encode()) <= 65_536 else None
+        if not isinstance(secrets, dict) or any(not isinstance(k, str) or not isinstance(v, str) or len(v) > 16_384 for k, v in secrets.items()):
+            raise ValueError
+    except (ValueError, TypeError):
+        parser.error("本机模型凭据加载失败，请重新保存密钥并重启客户端")
+    finally:
+        del raw_secrets
     server = None
 
     def shutdown():
         server.should_exit = True
 
-    app = create_app(data_dir=args.data_dir, cloud=model_service(args.server, ModelConfig.model_validate_json(args.model_json)), nonce=nonce, port=args.port or 0, shutdown=shutdown)
+    if args.evaluation and not args.stdio:
+        parser.error("评测配置交接只支持私有 stdio IPC")
+    app = create_app(data_dir=args.data_dir, cloud=model_service(ModelConfig.model_validate_json(args.model_json), secrets=secrets), nonce=nonce, port=args.port or 0, shutdown=shutdown, evaluation=args.evaluation)
+    secrets.clear()
     if args.stdio:
         from private_agent_local.ipc import serve as serve_pipe
         asyncio.run(serve_pipe(app, nonce, sys.stdin.buffer, sys.stdout.buffer,

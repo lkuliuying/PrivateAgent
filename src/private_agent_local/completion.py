@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -15,14 +16,18 @@ from private_agent_core.coding_contracts import (
     VerificationResult,
 )
 from private_agent_core.completion import canonical_command, evaluate_requirements
+from private_agent_core.task_intent import TaskPolicy
 from private_agent_core.verification import OutputVerification
 
-from . import files, policy
+from . import files, policy, reflection, reflection_review, task_constraints
+from .observer import record_checks, selected_checks
+from .output import validate_output_schema, verify_structured_output
+from .planning import completion_blockers, proposal_blockers
 
 SCAN_IGNORED = files.IGNORED | {".pytest_cache", ".ruff_cache", ".mypy_cache", ".privateagent", ".codex"}
 MAX_SCAN_FILES = 10_000
 MAX_SCAN_BYTES = 64 * 1024 * 1024
-BLOCKING_CODES = {"operation_denied", "approval_expired", "permission_blocked", "environment_unavailable", "local_tool_rejected", "patch_conflicted"}
+BLOCKING_CODES = {"operation_denied", "approval_expired", "permission_blocked", "environment_unavailable", "local_tool_rejected", "patch_conflicted", "user_constraint"}
 
 
 def content_ref(value: dict | str) -> ContentRef:
@@ -93,6 +98,10 @@ def operation_scope(name: str, arguments: dict) -> dict:
 def denied_operation(run: dict, scope: dict, *, collection: str = "denied_operations") -> bool:
     for denial in run.get(collection, []):
         old = denial["scope"]
+        if old["kind"] == "external" or scope["kind"] == "external":
+            if old["kind"] == scope["kind"] and old.get("source_id") == scope.get("source_id") and old.get("tool") == scope.get("tool"):
+                return True
+            continue
         if old["kind"] == "command" or scope["kind"] == "command":
             return True
         for first in old.get("paths", [old.get("path", "")]):
@@ -115,19 +124,59 @@ def command_matches(requirement: Requirement, execution: dict) -> bool:
     return requirement.kind == "command" or (execution.get("execution_result") or {}).get("command_kind") == "test"
 
 
+def script_exit_check(command: str) -> bool:
+    """脚本及受限内联命令可核验退出码；测试帮助和版本查询不替代测试。"""
+    try:
+        argv = shlex.split(command)
+        if (len(argv) >= 2 and argv[0] in {"python", "python3", "node", "bun"} and not argv[1].startswith("-")
+                and Path(argv[1]).suffix.lower() in {".py", ".js", ".mjs", ".cjs"}):
+            return True
+        return policy.execution_plan(argv, "workspace").inline_code
+    except ValueError:
+        return False
+
+
+def command_is_observation(execution: dict, terminal: dict | None) -> bool:
+    """成功且未改变工作区的辅助命令只留审计；明确要求和测试仍单独验收。"""
+    result = execution.get("execution_result") or {}
+    return bool(terminal and terminal["type"] == "tool.completed"
+                and terminal["payload"].get("execution_id") == execution["id"]
+                and result.get("outcome") == "exited"
+                and result.get("command_kind") in {"search", "development", "unclassified"}
+                and result.get("validation_outcome") in {"succeeded", "unknown"}
+                and (result.get("validation_outcome") == "succeeded" or result.get("exit_code") == 0)
+                and execution.get("workspace_digest")
+                and execution.get("workspace_changed") is False)
+
+
 class LocalCompletionVerifier:
     name = "local_completion"
     output_schema = None
 
     def __init__(self, owner, run: dict, root: Path):
         self.owner, self.run, self.root = owner, run, root
+        self.output_schema = validate_output_schema(run.get("output_schema"))
         self.last_outcome: RunOutcome | None = None
         self.failed_with_error = False
         self.last_candidate_nonempty = False
+        self.constraint_message: str | None = None
 
     async def verify(self, output: str, *, attempt: int) -> OutputVerification:
+        self.constraint_message = None
+        review = None
         if getattr(self.owner, "controls", None):
             await self.owner.controls.boundary(self.run)
+        if self.output_schema is not None:
+            if self.run.get("response_generation", 0) != self.run.get("generation", 0):
+                return OutputVerification(passed=False, code="steering_superseded",
+                    message="用户约束已变化，请重新生成结构化结果", retryable=True)
+            invalid = verify_structured_output(output, self.output_schema)
+            if invalid is not None:
+                self.last_candidate_nonempty = bool(output.strip())
+                self.last_outcome = None
+                self.run["verification_state"] = "failed"
+                self.owner.store.save_run(self.run)
+                return invalid
         self.last_candidate_nonempty = bool(output.strip())
         if not self.last_candidate_nonempty:
             self.last_outcome = RunOutcome(run_id=self.run["id"], goal_outcome="unknown", unverified_items=["模型未提供任务结果说明"])
@@ -135,7 +184,45 @@ class LocalCompletionVerifier:
             self.owner.store.save_run(self.run)
             return OutputVerification(passed=False, code="empty_output", message="尚未生成任务结果说明")
         try:
+            task_constraints.refresh_interpretation(self.run)
+            self.owner.store.save_run(self.run)
+            if self.run.get("collaboration_mode") == "plan":
+                _, checks = selected_checks(self.run, self.root)
+                record_checks(self.owner, self.run, checks, [])
+                return self.verify_proposal()
             outcome = await self.load_outcome(output)
+            if self.run.get("response_generation", 0) != self.run.get("generation", 0):
+                return OutputVerification(passed=False, code="steering_superseded",
+                    message="用户约束已变化，旧完成证据不计入新目标纠错", retryable=True)
+            plan_status, plan_messages = completion_blockers(self.run)
+            if plan_status:
+                outcome = outcome.model_copy(update={
+                    "goal_outcome": "blocked" if "blocked" in {plan_status, outcome.goal_outcome} else "unmet",
+                    "unverified_items": [*outcome.unverified_items, *plan_messages],
+                })
+            changed = {item.requirement_id for item in outcome.requirements if item.kind == "file_changed"}
+            if (outcome.goal_outcome == "verified" and reflection.requires_review(self.run)
+                    and any(item.requirement_id in changed and item.status == "passed" for item in outcome.verification_results)):
+                review = await reflection_review.review_completion(self.owner, self.run, self.root, output, outcome)
+                if review.code == "steering_superseded":
+                    return review
+                if review.passed:
+                    # 复核初次扫描前也可能有外部写入；交付前重新核验原操作证据。
+                    outcome = await self.load_outcome(output)
+                else:
+                    # 复核只能阻止交付；不能把模型意见转换为文件、测试或人工验收证据。
+                    outcome = outcome.model_copy(update={
+                        "goal_outcome": "unmet" if review.retryable else "unknown",
+                        "unverified_items": [*outcome.unverified_items, review.message],
+                    })
+            if self.run.get("response_generation", 0) != self.run.get("generation", 0):
+                return OutputVerification(passed=False, code="steering_superseded",
+                    message="用户约束已变化，旧完成证据不计入新目标纠错", retryable=True)
+            correction = reflection.record_verification(self.run, outcome)
+            if correction is not None:
+                with self.owner.store.transaction(run=self.run):
+                    self.run["reflection_state"] = correction
+                    self.owner.event(self.run, "reflection.verification_observed", goal_outcome=outcome.goal_outcome)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -144,12 +231,34 @@ class LocalCompletionVerifier:
                                  unverified_items=["完成验证器异常，结果未确认（verification_error）"])
             self.last_outcome = outcome
             self.failed_with_error = True
+            if self.run.get("observer_config", {}).get("checks"):
+                self.run.pop("observer_checks", None)
+                self.owner.event(self.run, "observer.checks_failed", error_code="verification_error")
             self.run["verification_state"] = "failed"
             self.owner.store.save_run(self.run)
             return OutputVerification(passed=False, code="verification_error", message=outcome.unverified_items[0], retryable=False)
         if self.run.get("response_generation", 0) != self.run.get("generation", 0):
             return OutputVerification(passed=False, code="steering_superseded", message="用户约束已变化，请重新生成结果", retryable=True)
         self.last_outcome = outcome
+        if review is not None and not review.passed:
+            self.run["verification_state"] = "failed"
+            self.owner.store.save_run(self.run)
+            return review
+        limits = TaskPolicy.model_validate(self.run.get("completion_policy", {}))
+        required = [item for item in outcome.requirements if item.required]
+        checked = {item.requirement_id for item in outcome.verification_results
+                   if item.status == "passed" and item.evidence_ids}
+        # 仅对已核实的文件修改正常收尾；缺失证据、其他要求或先前命令不能借禁止测试放行。
+        if (outcome.goal_outcome == "unknown" and required
+                and (limits.tests_forbidden or limits.commands_forbidden) and not limits.conflicts
+                and all(item.kind == "file_changed" and item.requirement_id in checked for item in outcome.requirements)
+                and all(item.status == "passed" for item in outcome.verification_results)
+                and outcome.unverified_items and set(outcome.unverified_items) == set(limits.unperformed)):
+            skipped = "测试" if limits.tests_forbidden else "命令"
+            self.constraint_message = f"修改已完成；按用户要求未运行{skipped}，功能正确性尚未验证"
+            self.run["verification_state"] = "passed"
+            self.owner.store.save_run(self.run)
+            return OutputVerification(passed=True, code="completion_limited", message=self.constraint_message, retryable=False)
         self.run["verification_state"] = "passed" if outcome.goal_outcome in {"answered", "verified"} else "failed"
         self.owner.store.save_run(self.run)
         if outcome.goal_outcome in {"verified", "answered"}:
@@ -158,13 +267,40 @@ class LocalCompletionVerifier:
         if outcome.goal_outcome == "unknown" and not outcome.requirements:
             return OutputVerification(passed=True, code="completion_unknown", message="没有明确的机器验收条件，结果未确认")
         message = "；".join(outcome.unverified_items)[:2000] or "任务要求尚未满足"
+        missing = [{"requirement_id": item.requirement_id, "status": item.status, "evidence_ids": item.evidence_ids}
+                   for item in outcome.verification_results if item.status != "passed"][:8]
+        correction = "基于本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝。缺失检查：" + json.dumps(missing, ensure_ascii=False)
+        correction += "。先说明要修正的问题、与前次尝试的区别及预期验证，再通过已有工具取得证据。" + message
         return OutputVerification(passed=False, code="completion_" + outcome.goal_outcome, message=message,
-                                  correction=("基于以下本机事实继续处理，不得把失败或预览声明为完成，也不得绕过拒绝：" + message)[:4000],
+                                  correction=correction[:4000],
                                   retryable=outcome.goal_outcome == "unmet" and self.run.get("verification_retries", 0) < 2)
+
+    def verify_proposal(self) -> OutputVerification:
+        messages = proposal_blockers(self.run)
+        if self.run.get("pending_input"):
+            messages.append("请等待用户回答当前问题")
+        if self.run.get("response_generation", 0) != self.run.get("generation", 0):
+            messages.append("用户约束已变化，请重新核对计划")
+        self.last_outcome = RunOutcome(run_id=self.run["id"], goal_outcome="unmet" if messages else "answered",
+            requirements=[Requirement.model_validate(item) for item in self.run.get("completion_requirements", [])],
+            unverified_items=messages or ["仅完成计划制定，尚未实施或验证项目修改"])
+        self.run["verification_state"] = "failed" if messages else "passed"
+        self.owner.store.save_run(self.run)
+        return OutputVerification(passed=not messages, code="plan_incomplete" if messages else "plan_ready",
+            message="；".join(messages) if messages else "实施计划已就绪，等待用户选择执行",
+            correction="；".join(messages) if messages else None,
+            retryable=bool(messages) and self.run.get("verification_retries", 0) < 2)
 
     async def load_outcome(self, output: str) -> RunOutcome:
         persisted = self.owner.store.run(self.run["id"])
         requirements = [Requirement.model_validate(item) for item in persisted["completion_requirements"]]
+        observer_requirements, observer_checks = selected_checks(persisted, self.root)
+        observer_ids = {item.requirement_id for item in observer_requirements}
+        # 检查快照不混入用户来源；同名用户要求仍保留各自结果，不能相互撤销。
+        requirements.extend(observer_requirements)
+        if observer_checks:
+            self.owner.event(self.run, "observer.checks_started", config_version=persisted["observer_config"]["version"],
+                             check_count=len(observer_checks))
         history = [self.owner.store.run(identifier) for identifier in persisted.get("ancestor_run_ids", [])]
         if any(item.get("logical_task_id") != persisted.get("logical_task_id") or item["session_id"] != persisted["session_id"] for item in history):
             raise ValueError("恢复证据归属不一致")
@@ -172,18 +308,27 @@ class LocalCompletionVerifier:
         executions = [{**execution, "source_run_id": item["id"]} for item in history for execution in item["executions"]]
         started_ids = {event["payload"].get("execution_id") for item in history for event in item["events"] if event["type"] == "tool.started"}
         preview_only = persisted.get("completion_policy", {}).get("preview_only", False)
+        limits = TaskPolicy.model_validate(persisted.get("completion_policy", {}))
         refs: dict[str, EvidenceRef] = {}
         results = []
+        terminal_sequences = {(item["id"], event["sequence"]): event for item in history for event in item["events"]
+                              if event["type"] in {"tool.completed", "tool.failed"}}
+        commands: dict[str, dict] = {}
+        commands_with_effects: set[str] = set()
 
         def add_requirement(kind: str, scope: str, description: str, evidence_policy: str):
             if not any(item.kind == kind and item.scope == scope for item in requirements):
                 requirements.append(Requirement(requirement_id=f"tool-requirement-{len(requirements) + 1}", kind=kind,
                                                 scope=scope, description=description, origin="tool", evidence_policy=evidence_policy))
 
-        # 已尝试的副作用也必须如实结算；不能靠模糊的初始请求洗掉失败命令。
+        # 实际副作用、失败及未知结果仍需结算；工具尝试本身不新增用户目标。
         for execution in executions:
             # 预览策略已拦截的请求没有执行，不能反过来要求模型补做被禁止的修改。
-            if preview_only and execution["id"] not in started_ids:
+            if (preview_only or execution.get("error_code") == "user_constraint") and execution["id"] not in started_ids:
+                continue
+            if (execution.get("error_code") == "local_tool_rejected" and execution["id"] not in started_ids
+                    and not any(execution.get(key) for key in ("execution_result", "file_evidence", "patch_evidence"))):
+                # 参数或工具不适用且尚未启动，仅保留失败审计；用户明确指定的要求仍在下方核验。
                 continue
             if execution.get("scope", {}).get("kind") == "file":
                 target = execution.get("target_path", "")
@@ -192,13 +337,25 @@ class LocalCompletionVerifier:
                 for target in execution["scope"]["paths"]:
                     add_requirement("file_changed", target, f"补丁落盘核对：{target}", "disk")
             if execution.get("command"):
-                kind = "test" if (execution.get("execution_result") or {}).get("command_kind") == "test" else "command"
-                add_requirement(kind, execution["command"], f"{'测试结果' if kind == 'test' else '命令结果'}：{execution['command']}",
-                                "test_exit" if kind == "test" else "exit")
+                command = canonical_command(execution["command"])
+                commands[command] = execution
+                if execution["id"] in started_ids and (execution.get("workspace_changed") is not False
+                                                       or not execution.get("workspace_digest")):
+                    commands_with_effects.add(command)
+        for command, execution in commands.items():
+            terminal = terminal_sequences.get((execution["source_run_id"], execution.get("source_sequence")))
+            # 后一次只读成功不能抹掉同一命令先前已产生或无法核对的副作用。
+            if command not in commands_with_effects and execution["id"] in started_ids and command_is_observation(execution, terminal):
+                continue
+            if any(item.kind in {"test", "command"} and item.scope and canonical_command(item.scope) == command
+                   for item in requirements):
+                continue
+            kind = "test" if (execution.get("execution_result") or {}).get("command_kind") == "test" else "command"
+            add_requirement(kind, execution["command"], f"{'测试结果' if kind == 'test' else '命令结果'}：{execution['command']}",
+                            "test_exit" if kind == "test" else "exit")
         if len(requirements) > 128:
             raise ValueError("完成要求数量越界")
         current = await asyncio.to_thread(workspace_state, self.root) if any(item.kind in {"test", "command"} for item in requirements) else None
-        terminal_sequences = {(item["id"], event["sequence"]): event for item in history for event in item["events"] if event["type"] in {"tool.completed", "tool.failed"}}
 
         def evidence(execution, facts) -> list[str]:
             sequence = execution.get("source_sequence")
@@ -218,7 +375,7 @@ class LocalCompletionVerifier:
             return [key]
 
         for requirement in requirements:
-            status, message, ids = "unverified", "该条件仍需人工检查", []
+            status, message, ids = "unverified", requirement.description + "；缺少适用证据，仍需人工检查", []
             matching = []
             if requirement.kind == "preview":
                 effect_ids = {item["id"] for item in executions if item.get("scope")}
@@ -233,6 +390,8 @@ class LocalCompletionVerifier:
                                             verified_at=datetime.now(timezone.utc), workspace_version=persisted.get("workspace_version", 0))
                     ids = [key]
             elif requirement.kind == "artifact":
+                if requirement.requirement_id in observer_ids:
+                    task_constraints.guard_paths(self.run, self.root, [requirement.scope])
                 actual = await asyncio.to_thread(file_digest, self.root, requirement.scope)
                 if actual is not None:
                     sequence = persisted["last_event_sequence"]
@@ -271,6 +430,9 @@ class LocalCompletionVerifier:
                     message = f"文件回读与写入事实不一致或没有实际变化：{item['target_path']}"
             elif requirement.kind in {"command", "test"}:
                 matching = [item for item in executions if command_matches(requirement, item)]
+                if requirement.requirement_id in observer_ids:
+                    matching = [item for item in matching if item.get("cwd") == "."
+                                or item.get("tool_name") == "run_project_command"]
                 status, message = "failed", f"尚未执行要求的{'测试' if requirement.kind == 'test' else '命令'}：{requirement.scope}"
                 if matching:
                     item = matching[-1]
@@ -288,7 +450,10 @@ class LocalCompletionVerifier:
                     elif (current["digest"] != item.get("workspace_digest") or item.get("workspace_changed")
                           or item.get("workspace_version") != persisted.get("workspace_version", 0)):
                         status, message = "failed", "执行后工作区发生变化或无法完整核对，旧验证证据已过期"
-                    elif result.get("validation_outcome") == "succeeded" and ids:
+                    elif (result.get("validation_outcome") == "succeeded" or (
+                            requirement.kind == "command" and requirement.evidence_policy == "exit"
+                            and script_exit_check(item["command"])
+                            and result.get("outcome") == "exited" and result.get("exit_code") == 0)) and ids:
                         status, message = "passed", f"{item['command']} 按登记的退出码规则通过（不代表任意需求成立）"
                     else:
                         status, message = "unverified", "命令已退出，但其业务含义无法自动判定"
@@ -300,7 +465,25 @@ class LocalCompletionVerifier:
                     status, message = "blocked", "用户要求暂不运行命令，验证受阻"
                 elif requirement.kind in {"file_changed", "command", "test"} and persisted.get("permission_mode") == "readonly":
                     status, message = "blocked", "当前只读模式不允许执行写入或命令"
+                if requirement.kind in {"command", "test"} and requirement.scope and requirement.scope not in message:
+                    message = f"{requirement.scope}：{message}"
             results.append(VerificationResult(requirement_id=requirement.requirement_id, status=status,
                                               message=message[:2000], evidence_ids=ids))
+        unperformed = list(limits.unperformed)
+        scope_issue = persisted.get("command_scope_issue")
+        if scope_issue:
+            unperformed.append(scope_issue["message"])
+        # 追加限制不能抹去已执行事实；是否通过仍由上面的版本和证据检查决定。
+        prior_commands = [item for item in executions if item["id"] in started_ids and item.get("command")]
+        if any((item.get("execution_result") or {}).get("command_kind") == "test" for item in prior_commands):
+            unperformed = ["用户禁止继续运行测试；先前测试记录保留，未据此推定当前目标全部通过"
+                           if item.startswith("用户禁止运行测试") else item for item in unperformed]
+        if prior_commands:
+            unperformed = ["用户禁止继续运行命令；先前执行记录保留，未据此推定当前目标全部通过"
+                           if item.startswith("用户要求不运行命令") else item for item in unperformed]
+        if self.run.get("generation", 0) == persisted.get("generation", 0):
+            record_checks(self.owner, self.run, observer_checks, results)
         return evaluate_requirements(persisted["id"], requirements, results, evidence_refs=refs.values(),
-                                     answered=not requirements or persisted.get("completion_policy", {}).get("preview_only", False))
+                                     answered=not requirements or preview_only,
+                                     unperformed=unperformed, conflicts=[*limits.conflicts,
+                                         *([scope_issue["message"]] if scope_issue and scope_issue["status"] == "violated" else [])])

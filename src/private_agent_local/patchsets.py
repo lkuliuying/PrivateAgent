@@ -15,7 +15,7 @@ from private_agent_core.patches import (
     updated_bytes,
 )
 
-from . import files, policy
+from . import files, policy, task_constraints
 from .repository import Repository
 from .store import encode, now
 
@@ -48,6 +48,19 @@ def _diff(relative: str, before: dict, after: dict) -> str:
         return ("+" if after["kind"] == "directory" else "-") + relative + "/\n"
     return "".join(difflib.unified_diff(before.get("text", "").splitlines(True), after.get("text", "").splitlines(True),
                                          fromfile="a/" + relative, tofile="b/" + relative))
+
+
+def _line_stats(before: dict, after: dict) -> dict[str, int]:
+    """按完整版本统计文本行，避免预览截断、无末尾换行和 diff 头部影响计数。"""
+    matcher = difflib.SequenceMatcher(None, before.get("text", "").splitlines(True),
+                                     after.get("text", "").splitlines(True))
+    additions = deletions = 0
+    for operation, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if operation in {"insert", "replace"}:
+            additions += new_end - new_start
+        if operation in {"delete", "replace"}:
+            deletions += old_end - old_start
+    return {"additions": additions, "deletions": deletions}
 
 
 def preview_hash(patch: dict) -> str:
@@ -131,7 +144,7 @@ class PatchService:
                     "creates_file": item["before"]["kind"] == "missing" and item["after"]["kind"] == "file",
                     "before_kind": item["before"]["kind"], "after_kind": item["after"]["kind"],
                     "old_sha256": item["before"].get("sha256"), "new_sha256": item["after"].get("sha256"),
-                    "diff_chars": len(item["diff"])} for item in patch["changes"]]
+                    "diff_chars": len(item["diff"]), **_line_stats(item["before"], item["after"])} for item in patch["changes"]]
         full = "\n".join(item["diff"] for item in patch["changes"])
         return {"patch_set_id": patch["patch_set_id"], "run_id": patch["run_id"], "operation_id": patch["operation_id"],
                 "preview_sha256": patch["preview_sha256"], "status": patch["status"], "kind": patch["kind"],
@@ -221,6 +234,8 @@ class PatchService:
             raise ValueError("批准绑定的内容、权限或工作区已变化")
         if run["permission_mode"] == "readonly" or run.get("completion_policy", {}).get("preview_only"):
             raise ValueError("当前任务只允许预览，不能落盘")
+        task_constraints.refresh_interpretation(run)
+        task_constraints.guard_paths(run, root, [item["rel_path"] for item in patch["changes"]], write=True)
 
     async def apply(self, run: dict, root: Path, patch_id: str, preview_sha256: str, guard) -> dict:
         async with self.lock:

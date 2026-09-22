@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 class AgentRunStatus(StrEnum):
@@ -132,7 +132,15 @@ class TokenUsage(ContractModel):
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cached_tokens: int = Field(default=0, ge=0)
-    cost_usd: float | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+
+
+class ProviderState(ContractModel):
+    """供应商原生输出仅用于同一路由续接，不进入公开正文或工具结果。"""
+
+    api_format: Literal["responses"] = "responses"
+    route: str = Field(pattern=r"^[a-f0-9]{64}$")
+    output_json: str = Field(min_length=2, max_length=1_500_000, repr=False)
 
 
 class ModelMessage(ContractModel):
@@ -141,6 +149,17 @@ class ModelMessage(ContractModel):
     name: str | None = Field(default=None, max_length=200)
     tool_call_id: str | None = Field(default=None, max_length=200)
     tool_calls: tuple[ToolCall, ...] = ()
+    phase: Literal["commentary", "final_answer"] | None = None
+    provider_state: ProviderState | None = Field(default=None, repr=False)
+
+    @model_serializer(mode="wrap")
+    def serialize_message(self, handler):
+        data = handler(self)
+        # 旧协议不增加空字段，保持既有小窗口预算和持久化兼容性。
+        for key in ("phase", "provider_state"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
     @model_validator(mode="after")
     def validate_role_fields(self) -> ModelMessage:
@@ -148,6 +167,8 @@ class ModelMessage(ContractModel):
             raise ValueError("tool 消息必须包含 name 和 tool_call_id")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("只有 assistant 消息可以携带 tool_calls")
+        if self.role != "assistant" and (self.phase is not None or self.provider_state is not None):
+            raise ValueError("只有 assistant 消息可以携带供应商续接状态")
         return self
 
 
@@ -250,6 +271,27 @@ class ModelResponse(ContractModel):
     model: str | None = Field(default=None, max_length=200)
     request_id: str | None = Field(default=None, max_length=300)
     latency_ms: float | None = Field(default=None, ge=0)
+    phase: Literal["commentary", "final_answer"] | None = None
+    provider_state: ProviderState | None = Field(default=None, repr=False)
+
+    @model_serializer(mode="wrap")
+    def serialize_response(self, handler):
+        data = handler(self)
+        for key in ("phase", "provider_state"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
+    def as_message(self) -> ModelMessage:
+        return ModelMessage(role="assistant", content=self.text, tool_calls=self.tool_calls,
+                            phase=self.phase, provider_state=self.provider_state)
+
+    def require_complete(self) -> None:
+        """部分响应不能成为工具执行请求或最终验收候选。"""
+        if self.finish_reason in {"length", "max_tokens", "max_output_tokens", "incomplete", "failed", "cancelled", "content_filter"}:
+            raise ValueError("模型响应未完整结束，不能执行工具或确认完成")
+        if self.phase == "final_answer" and self.tool_calls:
+            raise ValueError("最终回答不能同时包含尚待执行的工具")
 
     @model_validator(mode="after")
     def require_unique_tool_call_ids(self) -> ModelResponse:

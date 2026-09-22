@@ -17,10 +17,12 @@ from private_agent_core.execution.exec_host_client import (
     ExecutorUnavailable,
 )
 
-from . import files
+from . import files, task_constraints
 from .completion import content_ref, workspace_state
+from .execution_diagnostics import runtime_warnings
 from .execution_store import ACTIVE
 from .executor import host_path, verify_host
+from .secret_filter import SecretFilter
 from .store import now
 
 
@@ -31,6 +33,7 @@ class ExecutionSessions:
         self.slots = {}
         self.lock = asyncio.Lock()
         self.closed = False
+        self.secret_filter = SecretFilter(lambda: (*getattr(owner.cloud, "secrets", {}).values(), owner.token))
 
     def _check(self, run, root):
         if self.closed or not self.owner.token:
@@ -42,12 +45,16 @@ class ExecutionSessions:
         if self.owner.project_context_set and self.owner.active_project_id != run["project_id"] and run.get("recovery_contract_version") != "1.0":
             raise ValueError("当前项目已切换")
         self.owner.require_grant(run)
-        if self.owner.store.get("session", run["session_id"]).get("archived_at"):
-            raise ValueError("会话已关闭，不能继续执行")
+        self.owner.store.get("session", run["session_id"])
 
     async def start(self, run, execution, root, cwd, argv, args, *, prepared=None):
         generation = run.get("generation", 0)
         self.owner.controls.guard(run, generation)
+        task_constraints.refresh_interpretation(run)
+        task_constraints.guard_command(run, root, argv, cwd=cwd.relative_to(root).as_posix())
+        execution["command_scope"] = task_constraints.capture_command_scope(run, root, argv, cwd.relative_to(root).as_posix())
+        if execution["command_scope"] and "before_manifest" not in execution:
+            execution["before_manifest"] = await asyncio.to_thread(workspace_state, root)
         self._check(run, root)
         async with self.lock:
             if len(self.slots) >= 4 or sum(s["record"]["workspace_id"] == run["workspace_id"] for s in self.slots.values()) >= 2:
@@ -59,9 +66,10 @@ class ExecutionSessions:
             command, env = prepared or files.prepare_process(argv)
             client = ExecHostClient([str(path)], cwd=str(root), env=env)
             record = {"execution_id": execution["id"], "operation_id": execution["operation_id"],
+                      "step_id": execution.get("step_id"),
                       "host_instance_id": str(uuid.uuid4()), "run_id": run["id"], "session_id": run["session_id"],
                       "project_id": run["project_id"], "workspace_id": run["workspace_id"], "tool_call_id": execution["tool_call_id"],
-                      "argv": argv, "cwd": args.cwd, "status": "starting", "state_version": 1,
+                      "argv": self.secret_filter.redact_value(argv), "cwd": args.cwd, "status": "starting", "state_version": 1,
                       "retention": args.retention, "stdin_open": args.stdin, "tty": args.tty,
                       "execution_mode": args.execution_mode, "network_policy": args.network_policy,
                       "host_sha256": digest, "timeout_ms": args.timeout_ms,
@@ -98,6 +106,7 @@ class ExecutionSessions:
                     raise ValueError("当前宿主不支持 PTY")
                 self._check(run, root)
                 self.owner.controls.guard(run, generation)
+                task_constraints.guard_command(run, root, argv, cwd=cwd.relative_to(root).as_posix())
                 await client.start_execution(ExecStartParams(execution_id=record["execution_id"], argv=command, cwd=str(cwd), env_diff=env,
                     timeout_ms=args.timeout_ms, output_limit_bytes=1024 * 1024, sandbox_policy_hash=record["authorization_sha256"],
                     network_policy=args.network_policy, appcontainer=restricted,
@@ -128,6 +137,9 @@ class ExecutionSessions:
         record, client, run = slot["record"], slot["client"], slot["run"]
         chunks, expected, cancelled, last_flush, last_auth = [], 0, False, time.monotonic(), time.monotonic()
         first_received_at = None
+        filters = {}
+        latest_sequences = {}
+        latest_received = {}
 
         def flush():
             nonlocal chunks, last_flush, first_received_at
@@ -135,7 +147,8 @@ class ExecutionSessions:
                 self.store.append(record, chunks)
                 self.owner.store.emit(run, "execution.output", {"execution_id": record["execution_id"],
                     "last_output_sequence": record["last_output_sequence"], "dropped_bytes": record["dropped_bytes"],
-                    "first_host_sequence": chunks[0][2], "received_at_unix_ms": first_received_at}, lightweight=True)
+                     "first_host_sequence": chunks[0][2], "received_at_unix_ms": first_received_at},
+                    lightweight=True, step_id=record.get("step_id"))
                 chunks = []
                 first_received_at = None
                 slot["changed"].set()
@@ -158,9 +171,13 @@ class ExecutionSessions:
                         raise ExecutorUnavailable("宿主输出序号缺失或执行归属不匹配")
                     expected += 1
                     if event.stream and event.data:
-                        if not chunks:
-                            first_received_at = event._received_at_unix_ms
-                        chunks.append((event.stream, event.data, event.sequence))
+                        filtered = filters.setdefault(event.stream, self.secret_filter.stream()).feed(event.data)
+                        latest_sequences[event.stream] = event.sequence
+                        latest_received[event.stream] = event._received_at_unix_ms
+                        if filtered:
+                            if not chunks:
+                                first_received_at = event._received_at_unix_ms
+                            chunks.append((event.stream, filtered, event.sequence))
                     if event.notification.value == "execution/cancelled":
                         cancelled = True
                     if event.notification.value == "execution/failed":
@@ -186,20 +203,30 @@ class ExecutionSessions:
                 record.update(status="unknown", stopped=False, error="无法确认进程树已停止")
             record.update(completed_at=now(), stdin_open=False, state_version=record["state_version"] + 1)
             try:
+                # 退出、取消和断连都安全收尾；未完成敏感尾部不能原样落库。
+                for stream, secret_filter in filters.items():
+                    tail = secret_filter.finish()
+                    if tail:
+                        if not chunks:
+                            first_received_at = latest_received[stream]
+                        chunks.append((stream, tail, latest_sequences[stream]))
                 # 证据检查完成前不发布终态，避免续读先看到退出而工具结果尚未保存。
                 after = await asyncio.to_thread(workspace_state, slot["root"])
                 flush()
                 self.store.save(record)
                 execution = slot["execution"]
+                before = execution.pop("before_manifest", {})
                 if run.get("recovery_contract_version"):
                     from .run_review import changes
-                    execution["candidate_changes"] = changes(execution.pop("before_manifest", {}), after)
+                    execution["candidate_changes"] = changes(before, after)
                 page = self.store.read(record)
                 output = {"execution_id": record["execution_id"], "args": record["argv"],
                           "stdout": "".join(chunk["data"] for chunk in page["chunks"] if chunk["stream"] == "stdout"),
                           "stderr": "".join(chunk["data"] for chunk in page["chunks"] if chunk["stream"] == "stderr"),
                           "truncated": bool(record["dropped_bytes"] or page["has_more"]), "stopped": record["stopped"],
                           "returncode": record["exit_code"] if record["status"] == "exited" else None}
+                record["runtime_warnings"] = runtime_warnings(output["stderr"], restricted=record["execution_mode"] == "restricted")
+                output["runtime_warnings"] = record["runtime_warnings"]
                 result = interpret_execution(execution_id=record["execution_id"], operation_id=record["operation_id"],
                     argv=record["argv"], outcome=record["status"], exit_code=record["exit_code"] if record["status"] == "exited" else None,
                     output_ref=content_ref(output))
@@ -209,12 +236,20 @@ class ExecutionSessions:
                 execution.update(output=output, execution_result=result.model_dump(mode="json"), completed_at=now(),
                     status="completed" if record["status"] == "exited" and result.validation_outcome != "failed" else "failed",
                     error_code=None if record["status"] == "exited" and result.validation_outcome != "failed" else "execution_unknown" if record["status"] == "unknown" else "command_failed")
+                task_constraints.check_command_scope(run, execution, slot["root"], before, after)
+                if execution.get("scope_check", {}).get("status") in {"violated", "unverified"}:
+                    record["error"] = execution["error_message"]
                 with self.owner.store.transaction():
+                    if run.get("command_scope_issue"):
+                        state = self.owner.store.run_state(run["id"])
+                        state["command_scope_issue"] = run["command_scope_issue"]
+                        self.store.db.execute("UPDATE runs SET data=? WHERE id=?", (self.owner.store._pack(state), run["id"]))
                     record["execution_result"] = execution["execution_result"]
                     self.store.save(record)
                     event = self.owner.store.emit(run, "tool.failed" if execution["status"] == "failed" else "tool.completed",
-                        {"name": "exec_command", "tool_call_id": execution["tool_call_id"], "execution_id": execution["id"],
-                         "operation_id": execution["operation_id"], "error_type": execution["error_code"]}, lightweight=True)
+                        {"name": execution["tool_name"], "tool_call_id": execution["tool_call_id"], "execution_id": execution["id"],
+                          "operation_id": execution["operation_id"], "error_type": execution["error_code"]},
+                        lightweight=True, step_id=record.get("step_id"))
                     execution["source_sequence"] = event["sequence"]
                     if execution["error_code"] == "execution_unknown" and execution.get("scope"):
                         uncertain = {"operation_id": execution["operation_id"], "scope": execution["scope"]}
@@ -224,7 +259,7 @@ class ExecutionSessions:
                         self.store.db.execute("UPDATE runs SET data=? WHERE id=?", (self.owner.store._pack(state), run["id"]))
                     self.store.db.execute("UPDATE executions SET data=? WHERE run_id=? AND id=?", (self.owner.store._pack(execution), run["id"], execution["id"]))
                 self.owner.store.emit(run, "execution.terminal", {"execution_id": record["execution_id"], "status": record["status"],
-                    "stopped": record["stopped"], "exit_code": record["exit_code"]}, lightweight=True)
+                    "stopped": record["stopped"], "exit_code": record["exit_code"]}, lightweight=True, step_id=record.get("step_id"))
             except Exception:
                 # 输出仓库失败时仍尝试保存最小终态；失败不能伪装成命令成功。
                 record.update(status="unknown", error="进程已请求回收，但执行证据无法完整保存")
@@ -259,7 +294,7 @@ class ExecutionSessions:
                 record.update(status="unknown", stopped=False, error="活动进程的内存状态缺失，无法确认执行结果")
         return records
 
-    async def write(self, execution_id, session_id, data, close, version):
+    async def write(self, execution_id, session_id, data, close, version, *, before_send=None):
         record = self.store.get(execution_id, session_id)
         slot = self.slots.get(execution_id)
         if not slot:
@@ -267,8 +302,18 @@ class ExecutionSessions:
         async with slot["lock"]:
             record = slot["record"]
             self._check(slot["run"], slot["root"])
+            current_run = self.owner.live.get(record["run_id"]) or self.owner.store.run(record["run_id"])
+            self.owner.controls.guard(current_run)
+            if current_run.get("recovery_contract_version") and any(
+                    item["kind"] == "steer" and item["status"] == "received"
+                    for item in self.owner.recovery.controls(current_run["id"])):
+                raise task_constraints.TaskConstraintError("追加限制等待应用，stdin 暂不发送")
+            task_constraints.refresh_interpretation(current_run)
+            task_constraints.guard_command(current_run, slot["root"], [], stdin=True)
             if record["state_version"] != version or not record["stdin_open"]:
                 raise ValueError("执行状态已变化或 stdin 已关闭，请重新读取状态")
+            if before_send is not None:
+                before_send(record)
             await slot["client"].write_stdin(ExecStdinParams(execution_id=execution_id, session_nonce=slot["nonce"], data=data, close=close))
             slot["record"]["state_version"] += 1
             slot["record"]["stdin_open"] = not close

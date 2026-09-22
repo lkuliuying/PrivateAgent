@@ -63,6 +63,31 @@ def test_directory_pagination_is_stable_and_invalidated(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cursor", ["null", "0", "not-a-cursor"])
+async def test_invalid_cursor_is_rejected_with_restart_guidance(tmp_path, cursor):
+    (tmp_path / "app.py").write_text("needle\n")
+    with pytest.raises(ValueError, match="cursor=null"):
+        repository.directory(tmp_path, cursor=cursor)
+    with pytest.raises(ValueError, match="cursor=null"):
+        await repository.search(tmp_path, "app", cursor=cursor)
+    assert repository.directory(tmp_path, cursor=None)["entries"][0]["name"] == "app.py"
+    assert (await repository.search(tmp_path, "app", cursor=None))["results"][0]["rel_path"] == "app.py"
+
+
+@pytest.mark.asyncio
+async def test_cursor_cannot_cross_tools_and_changed_queries_restart_explicitly(tmp_path):
+    for name in ("app.py", "other.py"):
+        (tmp_path / name).write_text("needle\n")
+    first = repository.directory(tmp_path, limit=1)
+    with pytest.raises(ValueError, match="cursor=null"):
+        await repository.search(tmp_path, ".py", cursor=first["next_cursor"])
+    search = await repository.search(tmp_path, ".py", limit=1)
+    with pytest.raises(ValueError, match="cursor=null"):
+        await repository.search(tmp_path, "app", cursor=search["next_cursor"])
+    assert (await repository.search(tmp_path, "app", cursor=None))["count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_cancel_search_stops_scanning_at_next_file(tmp_path, monkeypatch):
     for name in ("a.py", "b.py"):
         (tmp_path / name).write_text("needle\n")

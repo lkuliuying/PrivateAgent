@@ -7,6 +7,7 @@ import pytest
 from private_agent_local import files
 from private_agent_local.repository import Repository
 from private_agent_local.store import Store
+from private_agent_local.workspace_files import preview
 
 
 @pytest.fixture
@@ -59,6 +60,45 @@ def test_hardlink_binary_invalid_encoding_and_case_alias(repository):
         (root / name).write_bytes(value)
         with pytest.raises((ValueError, UnicodeError)):
             repo.read(run, root, name)
+
+
+@pytest.mark.asyncio
+async def test_workspace_browser_uses_authorized_workspace_and_bounded_versioned_read(tmp_path):
+    from test_local_executor import setup, close
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        (root / "中文.py").write_text("print('hello world!')\n" + "x" * 40000, encoding="utf-8")
+        (root / ".env").write_text("synthetic test data", encoding="utf-8")
+        (root / "binary.bin").write_bytes(b"a\x00b")
+        base = f"/projects/{body['project_id']}/workspaces/{body['workspace_id']}"
+        listing = await client.get(base + "/files")
+        assert listing.status_code == 200
+        assert {item['name'] for item in listing.json()['entries']} == {"中文.py", "binary.bin"}
+        first = (await client.get(base + "/file", params={"path": "中文.py"})).json()
+        assert len(first['content']) == 32000 and first['next_offset'] == 32000
+        second = await client.get(base + "/file", params={"path": "中文.py", "offset": 32000, "version": first['sha256']})
+        assert second.status_code == 200 and second.json()['next_offset'] is None
+        (root / "中文.py").write_text("changed", encoding="utf-8")
+        stale = await client.get(base + "/file", params={"path": "中文.py", "offset": 32000, "version": first['sha256']})
+        assert stale.status_code == 422 and "已变化" in stale.json()['detail']
+        for path in ["../outside", ".env", ".codex/config", "binary.bin"]:
+            assert (await client.get(base + "/file", params={"path": path})).status_code == 422
+        assert (await client.get(f"/projects/999/workspaces/{body['workspace_id']}/files")).status_code != 200
+        app.state.desktop.runtime.store.update("project", body['project_id'], authorized=False)
+        assert (await client.get(base + "/files")).status_code == 422
+    finally:
+        await close(app, client)
+
+
+def test_workspace_preview_rejects_links_invalid_ranges_and_preserves_empty_file(repository):
+    _, _, root = repository
+    (root / "empty.txt").write_bytes(b"")
+    assert preview(root, "empty.txt")["content"] == ""
+    with pytest.raises(ValueError):
+        preview(root, "empty.txt", 1)
+    os.link(root / "empty.txt", root / "hard.txt")
+    with pytest.raises(ValueError):
+        preview(root, "hard.txt")
 
 
 def test_actual_symlink_rejected(repository, tmp_path):

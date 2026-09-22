@@ -12,10 +12,16 @@ from pathlib import Path
 
 from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
+from . import observer_steps
+
 SCHEMA_VERSION = 7
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
+
+
+class DeletionConflict(ValueError):
+    """仍有运行或进程占用记录，不能删除其执行依据。"""
 
 
 class OwnedConnection(sqlite3.Connection):
@@ -192,11 +198,13 @@ class Store:
         from .recovery import create_schema
         create_schema(self.db)
 
-    def emit(self, run, event_type, payload, *, lightweight=False):
+    def emit(self, run, event_type, payload, *, lightweight=False, step_id=None):
         """事务内分配唯一序号；高频输出只追加引用，不重复保存工具历史。"""
         with self.transaction(run=run):
+            step_id, payload = observer_steps.event_metadata(run, event_type, payload, step_id)
+            observer_steps.observe_wait(run, event_type, step_id, payload)
             sequence = self.db.execute("SELECT COALESCE(MAX(sequence),0)+1 FROM events WHERE run_id=?", (run["id"],)).fetchone()[0]
-            event = {"sequence": sequence, "type": event_type, "payload": payload, "step_id": None, "created_at": now()}
+            event = {"sequence": sequence, "type": event_type, "payload": payload, "step_id": step_id, "created_at": now()}
             if lightweight:
                 self.db.execute("INSERT INTO events VALUES (?,?,?)", (run["id"], sequence, encode(event)))
                 state = self.run_state(run["id"])
@@ -234,6 +242,8 @@ class Store:
                 status = "interrupted" if run.get("recovery_contract_version") == "1.0" else "failed"
                 run.update(status=status, active_in_process=False, error_code="desktop_restarted",
                            error_message="本机执行服务已重启；未自动重放操作，请检查项目后重试", completed_at=now())
+                observer_steps.finish_interrupted_steps(run, status, run["completed_at"])
+                pending_input = run.pop("pending_input", None)
                 for approval in run["approvals"]:
                     if approval["status"] == "pending":
                         approval["status"] = "cancelled"
@@ -253,6 +263,9 @@ class Store:
                                                   "state_version": run["state_version"],
                                                   **({"run_outcome": run["run_outcome"]} if run.get("run_outcome") else {})}})
                 run["last_event_sequence"] = sequence
+                if pending_input and run.get("recovery_contract_version") == "1.0":
+                    from .recovery import checkpoint
+                    checkpoint(self, run, "input.invalidated", input_id=pending_input["input_id"])
                 self.save_run(run)
                 if run.get("session_id"):
                     self.context.close_pending(run["session_id"], run["id"])
@@ -337,10 +350,83 @@ class Store:
             self._put_object(kind, item)
         return item
 
-    def _save_run(self, run: dict, *, appended_event: dict | None = None):
+    def ensure_deletable(self, kind: str, item_id: int) -> None:
+        column = {"project": "project_id", "session": "session_id"}[kind]
+        self.get(kind, item_id)
+        active = self.db.execute(
+            f"SELECT 1 FROM runs WHERE {column}=? AND status IN ('created','queued','running','waiting_approval','waiting_input','paused') LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        executing = self.db.execute(
+            f"SELECT 1 FROM managed_executions WHERE run_id IN (SELECT id FROM runs WHERE {column}=?) AND status IN ('starting','running','unknown') LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        leased = self.db.execute(
+            f"SELECT 1 FROM workspace_leases WHERE run_id IN (SELECT id FROM runs WHERE {column}=?) AND state!='released' LIMIT 1",
+            (item_id,),
+        ).fetchone()
+        if active or executing or leased:
+            raise DeletionConflict("仍有任务、进程或待核对的执行现场，请先停止并核对后再操作")
+
+    def _delete_runs(self, column: str, item_id: int) -> None:
+        if column not in {"session_id", "project_id"}:
+            raise ValueError("不支持的运行删除范围")
+        selected = f"SELECT id FROM runs WHERE {column}=?"
+        self.db.execute(
+            f"DELETE FROM execution_chunks WHERE execution_id IN (SELECT id FROM managed_executions WHERE run_id IN ({selected}))",
+            (item_id,),
+        )
+        self.db.execute(
+            f"DELETE FROM patch_journal WHERE patch_set_id IN (SELECT id FROM patch_sets WHERE run_id IN ({selected}))",
+            (item_id,),
+        )
+        for table in ("managed_executions", "file_snapshots", "patch_sets", "events", "approvals", "executions",
+                      "run_checkpoints", "run_control_requests", "workspace_leases"):
+            self.db.execute(f"DELETE FROM {table} WHERE run_id IN ({selected})", (item_id,))
+        self.db.execute(f"DELETE FROM runs WHERE {column}=?", (item_id,))
+
+    def delete_session(self, session_id: int) -> None:
+        """关联记录在一个事务内删除；保留审计和全局标识，避免旧请求命中新会话。"""
+        with self.transaction():
+            selected = self.get("session", session_id)
+            family = {session_id}
+            sessions = [item for item in self.list("session") if item.get("project_id") == selected.get("project_id")]
+            while True:
+                run_ids = {row[0] for item in family for row in self.db.execute("SELECT id FROM runs WHERE session_id=?", (item,))}
+                additions = {item["id"] for item in sessions if item.get("agent_parent_run_id") in run_ids} - family
+                if not additions:
+                    break
+                family.update(additions)
+            for identifier in family:
+                self.ensure_deletable("session", identifier)
+            for identifier in sorted(family):
+                self._delete_runs("session_id", identifier)
+                for table in ("context_items", "context_checkpoints", "messages", "grants"):
+                    self.db.execute(f"DELETE FROM {table} WHERE session_id=?", (identifier,))
+                self.db.execute("DELETE FROM sessions WHERE id=?", (identifier,))
+                self.audit("session.deleted", session_id=identifier)
+
+    def delete_project(self, project_id: int) -> None:
+        """只删除本机项目记录及关联历史，不操作工作目录或 Git worktree。"""
+        with self.transaction():
+            self.ensure_deletable("project", project_id)
+            session_ids = self.db.execute("SELECT id FROM sessions WHERE project_id=?", (project_id,)).fetchall()
+            for (session_id,) in session_ids:
+                if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
+                    self.delete_session(session_id)
+            self._delete_runs("project_id", project_id)
+            for table in ("messages", "grants", "workspaces"):
+                self.db.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
+            self.db.execute("DELETE FROM projects WHERE id=?", (project_id,))
+            self.audit("project.deleted", project_id=project_id, session_count=len(session_ids))
+
+    def _save_run_state(self, run: dict):
         value = {key: value for key, value in run.items() if key not in COLLECTIONS}
         self.db.execute("INSERT INTO runs(id,session_id,project_id,status,client_request_id,data) VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET status=excluded.status,data=excluded.data",
                         (run["id"], run.get("session_id"), run.get("project_id"), run["status"], run.get("client_request_id") or None, self._pack(value)))
+
+    def _save_run(self, run: dict, *, appended_event: dict | None = None):
+        self._save_run_state(run)
         for table, key in COLLECTIONS.items():
             items = [appended_event] if table == "events" and appended_event is not None else run.get(table, [])
             for index, item in enumerate(items, 1):
@@ -357,6 +443,12 @@ class Store:
         run["updated_at"] = now()
         with self.transaction():
             self._save_run(run)
+
+    def save_run_state(self, run: dict) -> None:
+        """只同步步骤等运行快照，不重复扫描不可变事件和工具历史。"""
+        run["updated_at"] = now()
+        with self.transaction():
+            self._save_run_state(run)
 
     def append_event(self, run: dict, event: dict) -> None:
         """运行中的热路径只追加新事件，避免每次事件都重读整条历史。"""
@@ -386,13 +478,13 @@ class Store:
         return self._unpack(row[0]) if row else None
 
     def has_active_run(self) -> bool:
-        return self.db.execute("SELECT 1 FROM runs WHERE status IN ('created','queued','running','waiting_approval','paused') LIMIT 1").fetchone() is not None
+        return self.db.execute("SELECT 1 FROM runs WHERE status IN ('created','queued','running','waiting_approval','waiting_input','paused') LIMIT 1").fetchone() is not None
 
     def events(self, run_id: str, after: int = 0, limit: int = 1000) -> list[dict]:
         return [self._unpack(row[0]) for row in self.db.execute("SELECT data FROM events WHERE run_id=? AND sequence>? ORDER BY sequence LIMIT ?", (run_id, after, limit))]
 
     def runs(self, *, active_only=False) -> list[dict]:
-        clause = " WHERE status IN ('created','queued','running','waiting_approval','paused')" if active_only else ""
+        clause = " WHERE status IN ('created','queued','running','waiting_approval','waiting_input','paused')" if active_only else ""
         ids = self.db.execute(f"SELECT id FROM runs{clause} ORDER BY rowid DESC").fetchall()
         return [self.run(row[0]) for row in ids]
 

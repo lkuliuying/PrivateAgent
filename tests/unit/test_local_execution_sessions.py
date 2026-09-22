@@ -4,17 +4,45 @@ import sys
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_local import files
+from private_agent_local import execution_diagnostics, files
 from private_agent_local.entry import parent_alive
 from private_agent_local.execution_tools import ExecArgs
 from private_agent_local.runtime import Runtime
 from private_agent_local.store import Store
 
 pytestmark = pytest.mark.asyncio
+
+
+@pytest.mark.parametrize("stderr, restricted, platform, expected", [
+    ("Failed to find real location of C:\\Python\\python.EXE\r\n", True, "nt", True),
+    ("Failed to find real location of C:\\ProgramSoftware\\Environment\\python\\python.EXE\n", True, "nt", True),
+    ("Failed to find real location of C:\\Program Files\\Python\\python.EXE\n", True, "nt", True),
+    ("Failed to find real location of C:/Python/python3.13.exe\n", True, "nt", True),
+    ("Failed to find real location of C:\\Python\\python.exe\nTraceback: actual error", True, "nt", True),
+    ("Failed to find real location of C:\\Python\\python.exe\n", False, "nt", False),
+    ("Failed to find real location of /usr/bin/python.exe\n", True, "posix", False),
+    ("Failed to find real location of C:\\Other\\node.exe", True, "nt", False),
+    ("prefix Failed to find real location of C:\\Python\\python.exe", True, "nt", False),
+    ("Failed to find real location of C:\\Python\\py", True, "nt", False),
+    ("", True, "nt", False),
+])
+async def test_runtime_diagnostic_is_bounded_to_known_windows_sandbox_warning(monkeypatch, stderr, restricted, platform, expected):
+    monkeypatch.setattr(execution_diagnostics, "os", SimpleNamespace(name=platform))
+    warnings = execution_diagnostics.runtime_warnings(stderr, restricted=restricted)
+    assert bool(warnings) is expected
+    if expected:
+        assert len(warnings) == 1 and warnings[0]["code"] == "python_path_resolution_warning"
+        assert "仅根据 stderr 警告文本匹配" in warnings[0]["message"]
+        assert "本次执行的根因尚未核实" in warnings[0]["message"]
+        assert "可能原因之一" in warnings[0]["message"]
+        assert "不能直接套用其他环境的定位结论" in warnings[0]["message"]
+        assert "不能据此保证其他用途正常" in warnings[0]["message"]
+        assert "C:" not in warnings[0]["message"]
 
 
 class Identity:
@@ -31,7 +59,7 @@ async def session(tmp_path):
     workspace = store.create("workspace", {"project_id": project["id"], "root_path": str(root), "status": "active"})
     item = store.create("session", {"project_id": project["id"], "workspace_id": workspace["id"]})
     run = {"id": str(uuid.uuid4()), "project_id": project["id"], "workspace_id": workspace["id"], "session_id": item["id"],
-           "permission_mode": "workspace", "status": "running", "events": [], "executions": [], "approvals": [],
+           "permission_mode": "workspace", "execution_contract_version": "1.0", "status": "running", "events": [], "executions": [], "approvals": [],
            "last_event_sequence": 0, "root_identity": files.file_identity(root), "tool_call_count": 0, "output": None}
     store.save_run(run)
     owner = Runtime(store, Identity(), "fixture")
@@ -43,8 +71,9 @@ async def session(tmp_path):
 
 async def start(session, code, **options):
     owner, run, root = session
+    tool_name = options.pop("tool_name", "exec_command")
     execution = {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "tool_call_id": str(uuid.uuid4()),
-                 "arguments_sha256": "a" * 64, "status": "running", "tool_name": "exec_command"}
+                 "arguments_sha256": "a" * 64, "status": "running", "tool_name": tool_name}
     run["executions"].append(execution)
     owner.store.save_run(run)
     args = ExecArgs(argv=[sys.executable, "-c", code], **{"execution_mode": "trusted_project", "network_policy": "approved", **options})
@@ -59,6 +88,72 @@ async def finished(session, execution_id):
             return result
         await asyncio.sleep(0.025)
     pytest.fail("真实执行没有结束")
+
+
+async def test_scoped_test_process_persists_violation_before_terminal_result(session):
+    from private_agent_core.task_intent import interpret_task
+    from private_agent_local.task_constraints import (
+        TaskConstraintError,
+        guard_paths,
+        store_interpretation,
+    )
+
+    owner, run, root = session
+    store_interpretation(run, interpret_task("只修改 A.py，然后运行测试"))
+    (root / "test_scope.py").write_text(
+        "from pathlib import Path\ndef test_effect():\n    Path('B.py').write_text('unexpected')\n", encoding="utf-8")
+    execution = {"id": str(uuid.uuid4()), "operation_id": str(uuid.uuid4()), "tool_call_id": str(uuid.uuid4()),
+                 "arguments_sha256": "a" * 64, "status": "running", "tool_name": "exec_command"}
+    run["executions"].append(execution)
+    owner.store.save_run(run)
+    args = ExecArgs(argv=[sys.executable, "-m", "pytest", "--noconftest", "-p", "no:cacheprovider", "test_scope.py"],
+                    execution_mode="trusted_project", network_policy="approved", yield_time_ms=0)
+    result = await owner.execution_sessions.start(run, execution, root, root, args.argv, args)
+    final = await finished(session, result["execution_id"])
+    assert final["exit_code"] == 0 and "B.py" in final["error"]
+    persisted = owner.store.run(run["id"])
+    assert persisted["command_scope_issue"]["paths"] == ["B.py"]
+    assert persisted["executions"][0]["scope_check"]["status"] == "violated"
+    assert persisted["executions"][0]["error_code"] == "user_constraint"
+    with pytest.raises(TaskConstraintError, match="B.py"):
+        guard_paths(persisted, root, ["A.py"], write=True)
+    assert (root / "B.py").read_text() == "unexpected"
+
+
+@pytest.mark.parametrize("options, expected", [
+    ({"execution_mode": "restricted", "network_policy": "approved"}, 'network_policy="none"'),
+    ({"execution_mode": "restricted", "tty": True}, "tty=false"),
+    ({"execution_mode": "trusted_project", "network_policy": "none"}, "用户明确审批"),
+])
+async def test_invalid_execution_combinations_are_rejected_before_approval_or_launch(session, options, expected):
+    owner, run, root = session
+    result = await owner.tool(run, root, call("exec_command", {"argv": ["python", "-m", "pytest", "-q"], **options}))
+    assert result["error_code"] == "invalid_execution_options" and expected in result["error"]
+    assert run["executions"][-1]["status"] == "failed"
+    assert not run["approvals"] and not owner.execution_sessions.slots
+    assert not any(event["type"] == "tool.started" for event in run["events"])
+
+
+async def test_no_network_blocks_advanced_mode_before_approval(session):
+    owner, run, root = session
+    run["completion_policy"] = {"network_forbidden": True}
+    result = await owner.tool(run, root, call("request_execution", {
+        "argv": ["python", "-m", "pytest", "-q"],
+        "execution_mode": "trusted_project", "network_policy": "approved",
+    }))
+    assert result["error_code"] == "user_constraint"
+    assert not run["approvals"] and not owner.execution_sessions.slots
+
+
+async def test_advanced_execution_terminal_event_keeps_original_tool_name(session):
+    result = await start(session, "print('ok')", tool_name="request_execution", yield_time_ms=0)
+    final = await finished(session, result["execution_id"])
+    assert final["status"] == "exited" and final["exit_code"] == 0
+    run = session[0].store.run(session[1]["id"])
+    execution = run["executions"][0]
+    event = next(item for item in run["events"] if item["sequence"] == execution["source_sequence"])
+    assert event["payload"]["name"] == "request_execution"
+    assert event["payload"]["tool_call_id"] == execution["tool_call_id"]
 
 
 async def test_yield_is_not_timeout_and_small_unicode_output_arrives(session):
@@ -79,6 +174,25 @@ async def test_restricted_session_enforces_workspace_and_releases_lease(session)
     assert "DENIED" in "".join(chunk["data"] for chunk in final["chunks"])
     assert (session[2] / "inside.txt").read_text() == "ok" and not (session[2].parent / "outside.txt").exists()
     assert not list((session[0].store.path.parent / "sandbox-leases").glob("*.json"))
+
+
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_python_path_diagnostic_preserves_stderr_exit_and_replay(session, exit_code):
+    warning = "Failed to find real location of C:\\Python\\python.exe\n"
+    raw = (warning + "other warning\n").encode()
+    code = f"import os,sys; os.write(2, {raw!r}); sys.exit({exit_code})"
+    result = await start(session, code, execution_mode="restricted", network_policy="none", yield_time_ms=1000)
+    final = await finished(session, result["execution_id"])
+    owner, run, _ = session
+    replay = await owner.execution_sessions.read(result["execution_id"], run["session_id"])
+    execution = owner.store.run(run["id"])["executions"][0]
+    assert replay["runtime_warnings"] == final["runtime_warnings"] == execution["output"]["runtime_warnings"]
+    assert final["runtime_warnings"][0]["code"] == "python_path_resolution_warning"
+    assert "本次执行的根因尚未核实" in final["runtime_warnings"][0]["message"]
+    assert "可能原因之一" in final["runtime_warnings"][0]["message"]
+    assert warning in execution["output"]["stderr"] and "other warning" in execution["output"]["stderr"]
+    assert final["exit_code"] == execution["output"]["returncode"] == exit_code
+    assert execution["execution_result"]["validation_outcome"] == ("failed" if exit_code else "unknown")
 
 
 async def test_delayed_failure_updates_original_tool_and_s1_evidence(session):

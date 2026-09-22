@@ -1,161 +1,91 @@
-"""自动模型路由只使用账号配置；失败不回退，所有网络由测试替身隔离。"""
-import json
-
+"""本机模型配置决定调用路由；无效配置和网络错误均不能回退服务器。"""
 import httpx
 import pytest
-from test_local_executor import HEADERS, NONCE, TERMINAL, until
+from test_direct_models import REQUEST, configure, desktop, enter_local
+from test_direct_models import configuration as provider_configuration
+from test_local_executor import HEADERS, NONCE
 
 from private_agent_local.app import create_app
-from private_agent_local.cloud import CloudError
 from private_agent_local.connections import ModelConfig
 from private_agent_local.local_models import (
     ConfiguredModels,
     LocalInference,
     model_service,
 )
+from private_agent_local.model_errors import CloudError
 
 
-def configuration(protocol="ollama", endpoint="http://127.0.0.1:11434"):
-    profile = {"id": "selected", "provider_id": "provider", "provider": protocol, "model_name": "fixture",
-               "is_default": True, "is_local": protocol == "ollama", "enabled": True, "context_tokens": 8192}
-    provider = {"id": "provider", "protocol": protocol, "base_url": endpoint, "enabled": True,
-                "api_format": "ollama_chat" if protocol == "ollama" else "chat_completions",
-                "api_key_configured": False, "models": [{"profile_id": "selected", "model_id": "fixture"}]}
-    return profile, provider
+def configuration():
+    return {}, {}
 
 
 class Services:
-    def __init__(self, profile, provider):
-        self.profile, self.provider = profile, provider
+    def __init__(self, *_args):
         self.cloud_calls = []
-        self.local_calls = []
 
     def server(self, request):
         self.cloud_calls.append(request.url.path)
+        assert request.url.path == "/auth/me"
         assert request.headers["authorization"] == HEADERS["Authorization"]
-        if request.url.path == "/auth/me":
-            return httpx.Response(200, json={"id": 7})
-        if request.url.path == "/model-providers":
-            return httpx.Response(200, json=[self.provider])
-        if request.url.path == "/agent-model-profiles":
-            return httpx.Response(200, json=[self.profile])
-        assert request.url.path == "/desktop/model/complete"
-        assert json.loads(request.content)["model_profile_id"] == self.profile["id"]
-        return httpx.Response(200, json={"text": "供应商完成", "provider": "openai", "model": "fixture",
-                                        "usage": {"input_tokens": 200, "cached_tokens": 100}, "tool_calls": []})
-
-    def local(self, request):
-        self.local_calls.append(request.url.path)
-        assert "authorization" not in request.headers
-        assert request.url.host in {"127.0.0.1", "localhost", "::1"}
-        if self.provider["protocol"] == "ollama":
-            assert request.url.path == "/api/chat"
-            assert json.loads(request.content)["options"]["num_ctx"] == 8192
-            return httpx.Response(200, json={"model": "fixture", "message": {"content": "本机完成"},
-                                            "prompt_eval_count": 100, "eval_count": 4, "done": True})
-        assert request.url.path == "/v1/chat/completions"
-        return httpx.Response(200, json={"model": "fixture", "choices": [{"message": {"content": "本机完成"}, "finish_reason": "stop"}],
-                                        "usage": {"prompt_tokens": 100, "completion_tokens": 4}})
+        return httpx.Response(200, json={"id": 7})
 
     def service(self):
-        return ConfiguredModels("https://account.example.test", transport=httpx.MockTransport(self.server),
-                                model_transport=httpx.MockTransport(self.local))
+        return ConfiguredModels()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("protocol,endpoint,local", [
-    ("ollama", "http://127.0.0.1:11434", True),
-    ("openai", "http://localhost:9000/v1", True),
-    ("openai", "http://[::1]:9000/v1", True),
-    ("openai", "https://provider.example.test/v1", False),
-])
-async def test_selected_model_drives_actual_runtime_without_execution_switch(tmp_path, protocol, endpoint, local):
-    services = Services(*configuration(protocol, endpoint))
-    service = services.service()
-    app = create_app(data_dir=tmp_path / "data", cloud=service, nonce=NONCE)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=HEADERS) as client:
-        try:
-            assert (await client.post("/identity")).status_code == 200
-            root = tmp_path / "project"
-            root.mkdir()
-            project = (await client.post("/projects", json={"name": "测试", "root_path": str(root)})).json()
-            workspace = (await client.get(f"/projects/{project['id']}/workspaces")).json()[0]
-            binding = {"project_id": project["id"], "workspace_id": workspace["id"]}
-            session = (await client.post("/sessions", json={**binding, "title": "测试"})).json()
-            # 不传模型 ID 时使用配置中的默认模型，并把实际 ID 固定到运行记录。
-            run = (await client.post("/agent-runs", json={**binding, "session_id": session["id"], "message": "测试", "permission_mode": "readonly"})).json()
-            final = await until(client, run["id"], TERMINAL)
-            assert final["status"] == "completed", final
-            assert final["model_profile_id"] == "selected"
-            assert final["output"] == ("本机完成" if local else "供应商完成")
-            assert bool(services.local_calls) is local
-            assert ("/desktop/model/complete" in services.cloud_calls) is not local
-        finally:
-            await app.state.desktop.clear()
-            await service.close()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["disabled", "missing", "unknown", "mismatch", "nonloopback", "credentials", "protocol", "capacity"])
-async def test_invalid_local_configuration_never_sends_prompt_or_falls_back(change):
-    profile, provider = configuration()
-    if change == "disabled":
-        provider["enabled"] = False
-    elif change == "missing":
-        provider["models"] = []
-    elif change == "mismatch":
-        provider["models"][0]["model_id"] = "different"
-    elif change == "nonloopback":
-        provider["base_url"] = "https://other.example.test"
-    elif change == "credentials":
-        provider["api_key_configured"] = True
-    elif change == "protocol":
-        provider["api_format"] = "anthropic_messages"
-    elif change == "capacity":
-        profile["context_tokens"] = None
-    services = Services(profile, provider)
-    service = services.service()
-    try:
+@pytest.mark.parametrize("change", ["disabled", "missing", "unknown", "mismatch", "nonloopback", "protocol", "capacity"])
+async def test_invalid_local_configuration_never_sends_prompt_or_falls_back(tmp_path, change):
+    async with desktop(tmp_path, "ollama") as (service, _, client, accounts, calls):
+        identifier = await configure(client, "ollama")
+        provider = service.catalog.provider("provider")
+        profile = service.catalog.data["profiles"][identifier]
+        if change == "disabled":
+            provider["enabled"] = False
+        elif change == "missing":
+            provider["models"] = []
+        elif change == "mismatch":
+            provider["models"][0]["model_id"] = "different"
+        elif change == "nonloopback":
+            provider["base_url"] = "https://other.example.test"
+        elif change == "protocol":
+            provider["api_format"] = "anthropic_messages"
+        elif change == "capacity":
+            profile["context_tokens"] = None
         with pytest.raises(CloudError):
-            await service.complete("account-a", "unknown" if change == "unknown" else "selected", {"messages": [{"role": "user", "content": "测试"}]})
-        assert not services.local_calls
-        assert "/desktop/model/complete" not in services.cloud_calls
-    finally:
-        await service.close()
+            await service.complete(service.token, "unknown" if change == "unknown" else identifier, REQUEST)
+        assert not calls and accounts == []
 
 
 @pytest.mark.asyncio
-async def test_configuration_changes_take_effect_without_restarting_service():
-    services = Services(*configuration())
-    service = services.service()
-    request = {"messages": [{"role": "user", "content": "测试"}]}
-    try:
-        assert (await service.complete("account-a", "selected", request))["text"] == "本机完成"
-        services.profile, services.provider = configuration("openai", "https://provider.example.test/v1")
-        assert (await service.complete("account-a", "selected", request))["text"] == "供应商完成"
-        assert len(services.local_calls) == 1
-    finally:
-        await service.close()
+async def test_configuration_changes_take_effect_without_restarting_service(tmp_path):
+    async with desktop(tmp_path) as (service, _, client, accounts, calls):
+        identifier = await configure(client)
+        assert (await service.complete(service.token, identifier, REQUEST))["text"] == "直连完成"
+        assert (await client.put("/model-providers/provider", json=provider_configuration(enabled=False))).status_code == 200
+        with pytest.raises(CloudError):
+            await service.complete(service.token, identifier, REQUEST)
+        assert (await client.put("/model-providers/provider", json=provider_configuration())).status_code == 200
+        assert (await service.complete(service.token, identifier, REQUEST))["text"] == "直连完成"
+        assert len(calls) == 2 and accounts == []
 
 
 @pytest.mark.asyncio
-async def test_unavailable_local_service_does_not_retry_on_server():
-    services = Services(*configuration())
+async def test_unavailable_local_service_does_not_retry_on_server(tmp_path):
     def unavailable(request):
         raise httpx.ConnectError("fixture", request=request)
-    service = ConfiguredModels("https://account.example.test", transport=httpx.MockTransport(services.server),
-                               model_transport=httpx.MockTransport(unavailable))
-    try:
-        with pytest.raises(CloudError):
-            await service.complete("account-a", None, {"messages": [{"role": "user", "content": "测试"}]})
-        assert "/desktop/model/complete" not in services.cloud_calls
-    finally:
-        await service.close()
+
+    async with desktop(tmp_path, handle=unavailable) as (service, _, client, accounts, calls):
+        identifier = await configure(client)
+        with pytest.raises(CloudError) as error:
+            await service.complete(service.token, identifier, REQUEST)
+        assert error.value.code == "model_network_error"
+        assert len(calls) == 1 and accounts == []
 
 
 @pytest.mark.asyncio
 async def test_default_factory_uses_automatic_routing():
-    service = model_service("https://account.example.test", ModelConfig())
+    service = model_service(ModelConfig())
     try:
         assert isinstance(service, ConfiguredModels)
     finally:
@@ -199,7 +129,7 @@ async def test_discovery_is_authenticated_locally_and_does_not_invent_capacity(t
             data = {"protocol": protocol, "base_url": "http://127.0.0.1:9000" + ("/v1" if protocol == "openai" else "")}
             assert (await client.post("/local-models/discover", json=data)).status_code == 401
             assert not calls
-            await client.post("/identity")
+            await enter_local(client)
             result = await client.post("/local-models/discover", json=data)
             assert result.status_code == 200
             assert result.json() == {"models": [{"model_id": "fixture", "context_tokens": None, "max_output_tokens": None, "metadata_source": "unknown"}]}

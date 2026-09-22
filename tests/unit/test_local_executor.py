@@ -1,6 +1,8 @@
-"""Desktop/cloud boundary tests using temporary projects and a fake HTTPS service."""
+"""临时项目与进程内模型替身的本机执行边界回归。"""
 import asyncio
+import json
 import os
+import subprocess
 import sys
 
 import httpx
@@ -8,8 +10,8 @@ import pytest
 
 from private_agent_local import files
 from private_agent_local.app import create_app
-from private_agent_local.cloud import Cloud, CloudError
 from private_agent_local.entry import parent_alive
+from private_agent_local.model_errors import CloudError
 from private_agent_local.runtime import TERMINAL
 from private_agent_local.store import Store
 
@@ -26,11 +28,6 @@ class Server:
 
     async def handle(self, request):
         self.calls.append((request.url.path, request.content))
-        if request.url.path == "/auth/me":
-            token = request.headers.get("authorization")
-            if token == "Bearer invalid":
-                return httpx.Response(401)
-            return httpx.Response(200, json={"id": 1 if token == "Bearer account-a" else 2})
         if request.url.path == "/agent-model-profiles":
             return httpx.Response(200, json=self.profiles)
         assert request.url.path == "/desktop/model/complete"
@@ -47,12 +44,44 @@ def call(name, arguments):
     return {"id": f"call-{name}", "name": name, "arguments": arguments}
 
 
+class FixtureModels:
+    """只调用测试对象，不建立网络连接或保留旧服务器代理实现。"""
+    origin = "local-fixture://model"
+
+    def __init__(self, server):
+        self.server = server
+
+    async def identity(self, token):
+        if token not in {"account-a", "account-b"}:
+            raise CloudError(401, "测试本机会话无效", code="local_session_expired")
+        return {"id": 1 if token == "account-a" else 2}
+
+    async def profiles(self, token):
+        await self.identity(token)
+        result = await self.server.handle(httpx.Request("GET", "https://fixture.test/agent-model-profiles"))
+        return result.json()
+
+    async def complete(self, token, profile, request):
+        await self.identity(token)
+        result = await self.server.handle(httpx.Request("POST", "https://fixture.test/desktop/model/complete",
+            json={"model_profile_id": profile, "request": request}))
+        return result.json()
+
+    async def complete_stream(self, token, profile, request, *, on_delta):
+        if hasattr(self.server, "model_stream"):
+            return await self.server.model_stream(on_delta)
+        return await self.complete(token, profile, request)
+
+    async def close(self):
+        pass
+
+
 async def setup(tmp_path, server=None):
     server = server or Server()
-    cloud = Cloud("https://account.example.test", transport=httpx.MockTransport(server.handle))
+    cloud = FixtureModels(server)
     app = create_app(data_dir=tmp_path / "data", cloud=cloud, nonce=NONCE)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=HEADERS)
-    assert (await client.post("/identity")).status_code == 200
+    await app.state.desktop.activate("account-a", cloud.origin, 1)
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     result = await client.post("/projects", json={"name": "本机项目", "root_path": str(project_dir)})
@@ -78,6 +107,35 @@ async def close(app, client):
     await app.state.desktop.clear()
     await app.state.desktop.cloud.close()
     await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("glob,received", [
+    ("", '空字符串（""）'), (None, "null"), (False, "布尔值"), (123, "数值"),
+    (["hidden-array-content"], "数组（1 项，内容已隐藏）"),
+    ({"hidden-key": "hidden-object-content"}, "对象（内容已隐藏）"),
+    ("x" * 201, "字符串（201 字符，内容已隐藏）"),
+])
+async def test_invalid_search_glob_exposes_safe_diagnostics_without_starting(tmp_path, glob, received):
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        arguments = {"query": "hidden-query-content", "glob": glob, "cursor": None,
+                     "unknown-field": "hidden-unknown-content"}
+        server.responses = [response(call("search_project_files", arguments)), response(text="参数被拒绝")]
+        created = (await client.post("/agent-runs", json={**body, "permission_mode": "readonly"})).json()
+        await until(client, created["id"], TERMINAL)
+        result = await client.get(f"/agent-runs/{created['id']}/executions")
+        execution, = result.json()
+        assert execution["status"] == "failed" and execution["error_code"] == "invalid_tool_arguments"
+        detail, = execution["output"]["parameter_errors"]
+        assert detail["field"] == "glob" and detail["received"] == received
+        assert '填写 "*"' in detail["hint"]
+        assert "hidden-" not in result.text and "unknown-field" not in result.text
+        events = (await client.get(f"/agent-runs/{created['id']}/events")).json()["items"]
+        assert not any(event["type"] == "tool.started" for event in events)
+        assert list(root.iterdir()) == []
+    finally:
+        await close(app, client)
 
 
 @pytest.mark.asyncio
@@ -146,12 +204,12 @@ async def test_account_switch_cancels_old_work_and_cannot_rebind_by_stale_reques
         await until(client, run_id, {"running"})
         client.headers["Authorization"] = "Bearer account-b"
         assert (await client.get("/projects")).status_code == 401  # Explicit bind required.
-        assert (await client.post("/identity")).status_code == 200
+        await app.state.desktop.activate("account-b", app.state.desktop.cloud.origin, 2)
         assert (await client.get("/projects")).json() == []
         assert (await client.get(f"/agent-runs/{run_id}")).status_code == 404
         client.headers["Authorization"] = "Bearer account-a"
         assert (await client.get("/projects")).status_code == 401
-        await client.post("/identity")
+        await app.state.desktop.activate("account-a", app.state.desktop.cloud.origin, 1)
         assert len((await client.get("/projects")).json()) == 1
         assert (await client.get(f"/agent-runs/{run_id}")).json()["status"] == "cancelled"
         await client.post("/identity/clear")
@@ -169,7 +227,7 @@ async def test_loopback_nonce_origin_identity_and_validation(tmp_path):
         assert (await client.get("/projects", headers={"X-PrivateAgent-Local": "wrong"})).status_code == 403
         assert (await client.get("/projects", headers={"Origin": "https://evil.example"})).status_code == 403
         assert (await client.get("/health", headers={"Host": "evil.example"})).status_code == 403
-        assert (await client.post("/identity", headers={"Authorization": "Bearer invalid"})).status_code == 401
+        assert (await client.get("/projects", headers={"Authorization": "Bearer invalid"})).status_code == 401
         assert (await client.post("/agent-runs", json={**body, "permission_mode": "full_access"})).status_code == 422
         assert (await client.post("/projects", json={"name": "invalid", "root_path": "relative-folder"})).status_code == 422
         preflight = await client.options("/projects", headers={"Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "authorization,x-privateagent-local"})
@@ -253,57 +311,8 @@ def test_restart_marks_unfinished_operations_failed_without_replay(tmp_path):
     restarted.db.close()
 
 
-@pytest.mark.asyncio
-async def test_cloud_refuses_redirect_and_unsafe_origin():
-    with pytest.raises(ValueError):
-        Cloud("http://example.test")
-    calls = []
-
-    def handle(request):
-        calls.append(request.url.host)
-        return httpx.Response(302, headers={"Location": "https://other.example/auth/me"})
-
-    cloud = Cloud("https://cloud.example", transport=httpx.MockTransport(handle))
-    try:
-        with pytest.raises(CloudError):
-            await cloud.identity("fixture")
-        assert calls == ["cloud.example"]
-    finally:
-        await cloud.close()
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("status,code,expected_code,message", [
-    (502, "unauthorized", "model_unauthorized", "模型供应商认证失败"),
-    (503, "missing_api_key", "model_missing_api_key", "未配置 API Key"),
-    (422, "not_configured", "model_not_configured", "未配置默认模型"),
-    (429, "rate_limited", "model_rate_limited", "请求限额"),
-    (504, "timeout", "model_timeout", "响应超时"),
-    (502, "fixture-secret-code", "cloud_unavailable", "HTTP 502"),
-    (422, "", "cloud_unavailable", "模型或请求参数不可用"),
-    (401, "unauthorized", "cloud_auth_required", "重新登录"),
-    (403, "", "cloud_auth_required", "重新登录"),
-    (404, "", "cloud_interface_missing", "升级服务器"),
-])
-async def test_cloud_uses_only_safe_error_codes_without_reading_error_body(status, code, expected_code, message):
-    class UnreadableBody(httpx.AsyncByteStream):
-        async def __aiter__(self):
-            pytest.fail("错误正文可能包含凭据或代理页面，不应读取")
-            yield b"fixture-secret-body"
-
-    def handler(request):
-        return httpx.Response(status, headers={"X-Model-Error-Code": code}, stream=UnreadableBody())
-
-    cloud = Cloud("https://cloud.example", transport=httpx.MockTransport(handler))
-    try:
-        with pytest.raises(CloudError) as error:
-            await cloud.complete("fixture-token", None, {})
-        assert error.value.code == expected_code
-        assert message in str(error.value)
-        assert "fixture" not in str(error.value)
-        assert error.value.status == ({403: 401, 404: 503}.get(status, status))
-    finally:
-        await cloud.close()
 
 
 @pytest.mark.asyncio
@@ -323,5 +332,123 @@ async def test_model_error_classification_is_preserved_in_local_run_and_events(t
         assert run["tool_call_count"] == 0
         events = (await client.get(f"/agent-runs/{created['id']}/events")).json()
         assert events["items"][-1]["payload"]["error_code"] == "model_unauthorized"
+    finally:
+        await close(app, client)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows 原生启动环境")
+def test_prepare_process_accepts_complete_native_profile_environment(tmp_path):
+    # 原生启动器将三个目录分别注入，系统默认的 AppData 子目录可以不存在。
+    environment = {key: value for key, value in os.environ.items() if key.upper() in {
+        "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "PYTHONPATH",
+    }}
+    for key, name in (("USERPROFILE", "profile"), ("APPDATA", "roaming"), ("LOCALAPPDATA", "local"),
+                      ("TEMP", "tmp"), ("TMP", "tmp")):
+        path = tmp_path / name
+        path.mkdir(exist_ok=True)
+        environment[key] = str(path)
+    environment.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1")
+    code = """
+import json
+import os
+import sys
+from private_agent_local.files import prepare_process
+command, environment = prepare_process([sys.executable])
+print(json.dumps({"command_preserved": command == [sys.executable],
+    "profile_preserved": all(environment[name] == os.environ[name]
+        for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA"))}))
+"""
+    result = subprocess.run([sys.executable, "-B", "-c", code], cwd=tmp_path, env=environment,
+                            capture_output=True, text=True, encoding="utf-8", timeout=20, check=False)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"command_preserved": True, "profile_preserved": True}
+    assert not (tmp_path / "profile/AppData").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows 目录回填")
+@pytest.mark.parametrize("missing", ["USERPROFILE", "APPDATA", "LOCALAPPDATA"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_prepare_process_fills_only_missing_or_empty_profile_values(tmp_path, monkeypatch, missing, empty):
+    from private_agent_local import windows_process
+
+    expected = {name: str(tmp_path / name) for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA")}
+    for key, value in expected.items():
+        monkeypatch.setenv(key, value)
+    if empty:
+        monkeypatch.setenv(missing, "")
+    else:
+        monkeypatch.delenv(missing)
+    fallback = {name: str(tmp_path / ("system-" + name)) for name in expected}
+    calls = []
+
+    def profile_environment():
+        calls.append(True)
+        return fallback
+
+    monkeypatch.setattr(windows_process, "profile_environment", profile_environment)
+    monkeypatch.setenv("UNRELATED_FIXTURE_VALUE", "must-not-inherit")
+    _, environment = files.prepare_process([sys.executable])
+    assert calls == [True]
+    assert {key: environment[key] for key in expected} == {**expected, missing: fallback[missing]}
+    assert "UNRELATED_FIXTURE_VALUE" not in environment
+
+
+@pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows 目录查询失败")
+def test_prepare_process_missing_profile_lookup_failure_is_not_suppressed(monkeypatch):
+    from private_agent_local import windows_process
+
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    def unavailable():
+        raise ValueError("无法定位系统应用数据目录，不能启动受限进程")
+
+    monkeypatch.setattr(windows_process, "profile_environment", unavailable)
+    with pytest.raises(ValueError, match="无法定位系统应用数据目录"):
+        files.prepare_process([sys.executable])
+
+
+@pytest.mark.parametrize("arguments", [[], ["bad\x00argument"], ["x" * 2001], ["x"] * 41])
+def test_prepare_process_invalid_arguments_remain_rejected(arguments):
+    with pytest.raises(ValueError, match="命令参数超出限制"):
+        files.prepare_process(arguments)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows 原生环境和真实宿主")
+async def test_native_profile_run_creation_retry_and_binding_rejection(tmp_path, monkeypatch):
+    for key, name in (("USERPROFILE", "profile"), ("APPDATA", "roaming"), ("LOCALAPPDATA", "local")):
+        path = tmp_path / name
+        path.mkdir()
+        monkeypatch.setenv(key, str(path))
+    app, client, server, root, body = await setup(tmp_path)
+    payload = {**body, "permission_mode": "confirm", "model_profile_id": None,
+               "completion_contract_version": "1.0", "execution_contract_version": "1.0",
+               "recovery_contract_version": "1.0", "client_request_id": "native-create"}
+    try:
+        capabilities = (await client.get(f"/sessions/{body['session_id']}/execution-capabilities")).json()
+        assert capabilities["contract"]["execution"] is True
+        assert capabilities["file_write_isolation"] is True
+        assert capabilities["network_isolation"] is True
+        assert (await client.post("/agent-runs", json={**payload, "message": ""})).status_code == 422
+        assert (await client.post("/agent-runs", json={**payload, "workspace_id": body["workspace_id"] + 100})).status_code == 422
+        assert (await client.post("/agent-runs", json=payload, headers={"Authorization": "Bearer different-account"})).status_code == 401
+        assert app.state.desktop.runtime.store.runs() == []
+        first, duplicate = await asyncio.gather(client.post("/agent-runs", json=payload), client.post("/agent-runs", json=payload))
+        assert first.status_code == duplicate.status_code == 201
+        run_id = first.json()["id"]
+        assert duplicate.json()["id"] == run_id
+        assert len(app.state.desktop.runtime.store.runs()) == 1
+        assert (await client.post("/agent-runs", json={**payload, "client_request_id": "conflicting-create"})).status_code == 422
+        assert (await client.post(f"/agent-runs/{run_id}/cancel")).status_code == 200
+        assert (await until(client, run_id, TERMINAL))["status"] == "cancelled"
+        repeated = await client.post("/agent-runs", json=payload)
+        assert repeated.status_code == 201 and repeated.json()["id"] == run_id
+        retry = await client.post("/agent-runs", json={**payload, "client_request_id": "explicit-new-create"})
+        assert retry.status_code == 201 and retry.json()["id"] != run_id
+        assert (await client.post(f"/agent-runs/{retry.json()['id']}/cancel")).status_code == 200
+        assert (await until(client, retry.json()["id"], TERMINAL))["status"] == "cancelled"
+        assert len(app.state.desktop.runtime.store.runs()) == 2
+        assert not app.state.desktop.runtime.execution_sessions.slots
+        assert not list(root.iterdir())
     finally:
         await close(app, client)

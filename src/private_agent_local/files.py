@@ -210,10 +210,13 @@ def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
                          "USERPROFILE", "APPDATA", "LOCALAPPDATA", "LANG", "LC_ALL", "NUMBER_OF_PROCESSORS"}
     env = {key: value for key, value in os.environ.items() if key.upper() in environment_names}
     if os.name == "nt":
-        from .windows_process import profile_environment
-        for key, value in profile_environment().items():
-            if not any(existing.upper() == key for existing in env):
-                env[key] = value
+        provided = {key.upper() for key, value in env.items() if value}
+        # 原生启动器可指定独立目录；仅缺项时查询系统目录，避免无关的默认目录阻断执行。
+        if not {"USERPROFILE", "APPDATA", "LOCALAPPDATA"}.issubset(provided):
+            from .windows_process import profile_environment
+            for key, value in profile_environment().items():
+                if key not in provided:
+                    env[key] = value
     if getattr(sys, "frozen", False):
         bundle = str(getattr(sys, "_MEIPASS", ""))
         env["PATH"] = os.pathsep.join(part for part in env.get("PATH", "").split(os.pathsep)
@@ -222,7 +225,8 @@ def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:
     env.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
     executable = shutil.which(args[0], path=env.get("PATH", ""))
     if not executable:
-        raise ValueError("本机尚未安装该命令所需的开发工具：" + args[0])
+        from private_agent_core.tool_specs import ToolFailure
+        raise ToolFailure("program_unavailable", "本机尚未安装该命令所需的开发工具：" + args[0])
     command = [executable, *args[1:]]
     if os.name == "nt" and Path(executable).suffix.lower() in {".cmd", ".bat"}:
         # 批处理只接收已经验证的参数，拒绝 shell 元字符。

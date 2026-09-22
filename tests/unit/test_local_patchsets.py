@@ -1,5 +1,6 @@
 """S3 真实文件、持久日志、受保护回滚与主链验收。"""
 import asyncio
+import json
 import os
 import sqlite3
 import uuid
@@ -43,6 +44,36 @@ def existing(service, relative, operation="update", **extra):
 async def apply(service, patch):
     svc, run, root = service
     return await svc.apply(run, root, patch["patch_set_id"], patch["preview_sha256"], guard)
+
+
+@pytest.mark.parametrize(("before", "after", "expected"), [
+    (None, "", (0, 0)),
+    (None, "one\ntwo", (2, 0)),
+    ("old", "new", (1, 1)),
+    ("keep\r\nold\r\n", "keep\nnew\n", (1, 1)),
+    ("--- header\n", "+++ header\n", (1, 1)),
+])
+def test_public_patch_line_stats_use_complete_text_versions(service, before, after, expected):
+    _, _, root = service
+    target = root / "stats.txt"
+    if before is None:
+        operation = {"operation": "create", "rel_path": "stats.txt", "content": after}
+    else:
+        target.write_bytes(before.encode())
+        operation = existing(service, "stats.txt", content=after)
+    change = service[0].public(propose(service, [operation]))["changes"][0]
+    assert (change["additions"], change["deletions"]) == expected
+    assert target.exists() == (before is not None)
+    if before is not None:
+        assert target.read_bytes() == before.encode()
+
+
+def test_public_patch_counts_full_changes_even_when_diff_is_truncated(service):
+    patch = service[0].public(propose(service, [{"operation": "create", "rel_path": "large.txt",
+                                               "content": "abcdefghij\n" * 3000}]))
+    assert patch["truncated"]
+    assert patch["changes"][0]["additions"] == 3000
+    assert patch["changes"][0]["deletions"] == 0
 
 
 @pytest.mark.asyncio
@@ -291,7 +322,11 @@ def test_all_powershell_file_write_actions_are_closed(service, mode):
 
 
 @pytest.mark.asyncio
-async def test_runtime_patch_asgi_approval_completion_and_rollback(tmp_path):
+@pytest.mark.parametrize("replacement", [
+    {"edits": [{"start_line": 1, "delete_count": 1, "text": "after\n"}]},
+    {"content": "after\n", "edits": []},
+])
+async def test_runtime_patch_asgi_approval_completion_and_rollback(tmp_path, replacement):
     app, client, server, root, body = await setup(tmp_path)
     try:
         (root / "x.py").write_text("before\n")
@@ -307,7 +342,7 @@ async def test_runtime_patch_asgi_approval_completion_and_rollback(tmp_path):
             if stage == 2:
                 return response(call("propose_project_patch", {"operations": [
                     {"operation": "update", "rel_path": "x.py", "snapshot_id": runtime.repository.latest(run["id"], "x.py"),
-                     "edits": [{"start_line": 1, "delete_count": 1, "text": "after\n"}]},
+                     **replacement},
                     {"operation": "create", "rel_path": "new.txt", "content": "new"}]}))
             if stage == 3:
                 patch = runtime.patches.list(run["id"])[0]
@@ -338,8 +373,52 @@ async def test_runtime_patch_asgi_approval_completion_and_rollback(tmp_path):
         assert repeated.json() == result.json()
         assert len(runtime.store.events(run_id)) == events_before and (root / "x.py").stat().st_mtime_ns == stamp
         client.headers["Authorization"] = "Bearer account-b"
-        await client.post("/identity")
+        await app.state.desktop.activate("account-b", app.state.desktop.cloud.origin, 2)
         assert (await client.get(f"/agent-runs/{run_id}/patches")).status_code == 404
+    finally:
+        await close(app, client)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("edits", [None, "private-input-marker", {"unexpected": "private-input-marker"}])
+async def test_runtime_invalid_patch_array_has_actionable_private_feedback(tmp_path, edits):
+    app, client, server, root, body = await setup(tmp_path)
+    try:
+        target = root / "x.py"
+        target.write_text("before\n", encoding="utf-8")
+        runtime = app.state.desktop.runtime
+        server.profiles[0]["context_tokens"] = 128000
+        stage = 0
+
+        async def model(*_):
+            nonlocal stage
+            stage += 1
+            run = runtime.store.runs()[0]
+            if stage == 1:
+                return response(call("read_code_file", {"rel_path": "x.py"}))
+            if stage == 2:
+                return response(call("propose_project_patch", {"operations": [{
+                    "operation": "update", "rel_path": "x.py", "new_rel_path": None,
+                    "snapshot_id": runtime.repository.latest(run["id"], "x.py"),
+                    "content": "private-input-marker\n", "edits": edits,
+                }]}))
+            return response(text="补丁参数校验失败，文件未修改。")
+
+        runtime.cloud.complete = model
+        created = (await client.post("/agent-runs", json={**body, "message": "修改 x.py"})).json()
+        await until(client, created["id"], TERMINAL)
+        stored = runtime.store.run(created["id"])
+        execution = stored["executions"][-1]
+        assert execution["tool_name"] == "propose_project_patch"
+        assert execution["status"] == "failed" and execution["error_code"] == "invalid_tool_arguments"
+        assert "edits 必须是数组" in execution["error_message"] and "[]" in execution["error_message"]
+        assert "private-input-marker" not in execution["error_message"]
+        messages = runtime.store.context.messages(body["session_id"])
+        feedback = next(message for message in messages if message.role == "tool" and message.name == "propose_project_patch")
+        assert "edits 必须是数组" in json.loads(feedback.content)["error"]
+        assert "private-input-marker" not in feedback.content
+        assert target.read_text(encoding="utf-8") == "before\n"
+        assert runtime.patches.list(created["id"]) == [] and stored["approvals"] == []
     finally:
         await close(app, client)
 

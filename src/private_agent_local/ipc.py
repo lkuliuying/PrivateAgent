@@ -24,7 +24,7 @@ def request_scope(frame: dict, nonce: str) -> tuple[dict, bytes]:
     if url.scheme or url.netloc or url.fragment or url.path.startswith("/internal/"):
         raise ValueError("管道只接受公开的本机接口路径")
     method = request.get("method", "GET")
-    if method not in {"GET", "HEAD", "POST", "PATCH", "DELETE"}:
+    if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}:
         raise ValueError("不支持的请求方法")
     text = request.get("body", "")
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_BODY:
