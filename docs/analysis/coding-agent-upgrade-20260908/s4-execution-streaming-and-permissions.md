@@ -13,7 +13,7 @@
 
 [exec-host](../../../apps/exec-host/src/main.rs)已有执行、stdin、输出读取、取消及部分 PTY/Windows 隔离实现；[共享客户端](../../../src/private_agent_core/execution/exec_host_client.py)已有相应协议操作。当前[本机 executor](../../../src/private_agent_local/executor.py)每条命令新建并关闭宿主，集中收集输出后返回，未将完整会话能力接通。
 
-[模型适配器](../../../src/private_agent_core/llm/adapters.py)存在流式处理资产，但[本机适配层](../../../src/private_agent_local/core_adapter.py)只提供 complete；[云端代理](../../../src/personal_assistant/api/routes_desktop_model.py)与[本机 Cloud](../../../src/private_agent_local/cloud.py)须一起检查流式链路，不能把 HTTP 客户端使用 stream 读取完整 JSON 误称为 token 流。
+[模型适配器](../../../src/private_agent_core/llm/adapters.py)存在流式处理资产，但[本机适配层](../../../src/private_agent_local/core_adapter.py)只提供 complete；云端代理（历史路径：`src/personal_assistant/api/routes_desktop_model.py`，已移除）与本机 Cloud（历史路径：`src/private_agent_local/cloud.py`，已移除）须一起检查流式链路，不能把 HTTP 客户端使用 stream 读取完整 JSON 误称为 token 流。
 
 [上游 Unified Exec](https://github.com/openai/codex/blob/95327467c3af9533ac25b171b3496b951fe425ed/codex-rs/core/src/unified_exec/mod.rs)可供会话管理参考。Windows 隔离必须以本项目实际可用能力与对照测试为准。
 

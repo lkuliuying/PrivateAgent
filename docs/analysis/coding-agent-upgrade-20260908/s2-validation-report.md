@@ -84,7 +84,7 @@ Provider 参数的官方参考为 [OpenAI Chat Completions](https://developers.o
 | scripts/run_coding_legacy_validation.py | 既有隔离入口纳入桌面模型与网关纯单测。 |
 | docs/context-design.md | 区分本机 S2 与旧服务端设计，记录当前契约和边界。 |
 | docs/testing-guide.md | 记录 S2 专项及适配器验证入口。 |
-| docs/unified-desktop-runtime.md | 同步 schema 4、迁移和本机上下文能力。 |
+| docs/archive/legacy/unified-desktop-runtime.md | 同步 schema 4、迁移和本机上下文能力。 |
 | docs/analysis/coding-agent-upgrade-20260908/README.md | 更新阶段状态并区分原编制与 S2 开工基线。 |
 | docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md | 补记 S2 实际接入及 S3 应复用的关联契约。 |
 | docs/analysis/coding-agent-upgrade-20260908/s2-instructions-and-context.md | 标注已实现状态，区分原拟议设计与当前契约。 |

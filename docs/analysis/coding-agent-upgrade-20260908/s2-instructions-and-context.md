@@ -15,7 +15,7 @@
 
 [本机 Runtime](../../../src/private_agent_local/runtime.py)仅取最近 12 条消息并截取正文；[适配器](../../../src/private_agent_local/core_adapter.py)最多允许 24 次模型请求、90 条消息和有界请求体；[本机 context](../../../src/private_agent_local/context.py)主要计算最近 usage 展示。
 
-可审查复用[ContextBuilder](../../../src/personal_assistant/context/builder.py)、[上下文契约](../../../src/personal_assistant/context/contracts.py)、[预算逻辑](../../../src/personal_assistant/core/context_budget.py)、[摘要逻辑](../../../src/personal_assistant/core/context_summaries.py)。其中数据库、配置和 RAG 依赖不能直接带入纯共享核心；只复用适合本机主链的算法与接口。
+可审查复用ContextBuilder（历史路径：`src/personal_assistant/context/builder.py`，已移除）、上下文契约（历史路径：`src/personal_assistant/context/contracts.py`，已移除）、预算逻辑（历史路径：`src/personal_assistant/core/context_budget.py`，已移除）、摘要逻辑（历史路径：`src/personal_assistant/core/context_summaries.py`，已移除）。其中数据库、配置和 RAG 依赖不能直接带入纯共享核心；只复用适合本机主链的算法与接口。
 
 Codex 的[指令加载](https://github.com/openai/codex/blob/95327467c3af9533ac25b171b3496b951fe425ed/codex-rs/core/src/agents_md.rs)和[压缩](https://github.com/openai/codex/blob/95327467c3af9533ac25b171b3496b951fe425ed/codex-rs/core/src/compact.rs)提供机制参考。本项目的优先级和授权规则以自身用户约定为准。
 

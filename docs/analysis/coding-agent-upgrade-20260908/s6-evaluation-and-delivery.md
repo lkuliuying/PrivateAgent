@@ -173,13 +173,13 @@
 
 | 文档 | 应同步的信息 |
 | --- | --- |
-| [使用指南](../../usage-guide.md) | 项目选择、规则、审批、终端、停止/继续和审查 |
+| [使用指南](../../archive/legacy/usage-guide.md) | 项目选择、规则、审批、终端、停止/继续和审查 |
 | [测试指南](../../testing-guide.md) | 隔离启动器、准确命令、评测入口和证据口径 |
-| [API 参考](../../api-reference.md) | 已实现的新字段、事件、状态和兼容要求 |
-| [安全模型](../../security-model.md) | 实际隔离能力、权限模式、可信项目限制与撤权 |
-| [故障排查](../../troubleshooting.md) | 模型/工具失败、权限问题、恢复受阻、磁盘配额 |
-| [发布检查清单](../../release-checklist.md) | 产物一致性、安装升级和未通过门禁 |
-| [数据库升级手册](../../database-upgrade-runbook.md) | 本机记录迁移及数据回退边界，区分业务数据库 |
+| [API 参考](../../archive/legacy/api-reference.md) | 已实现的新字段、事件、状态和兼容要求 |
+| [安全模型](../../archive/legacy/security-model.md) | 实际隔离能力、权限模式、可信项目限制与撤权 |
+| [故障排查](../../archive/legacy/troubleshooting.md) | 模型/工具失败、权限问题、恢复受阻、磁盘配额 |
+| [发布检查清单](../../archive/legacy/release-checklist.md) | 产物一致性、安装升级和未通过门禁 |
+| [数据库升级手册](../../archive/legacy/database-upgrade-runbook.md) | 本机记录迁移及数据回退边界，区分业务数据库 |
 
 本轮已在上述文档中补充统一 Coding 的实际接口、能力和未验收边界。历史部署结论保留日期与环境；项目状态记忆按仓库入口约定在明确要求维护时更新，不将待验收功能写成已完成。
 

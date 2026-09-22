@@ -101,6 +101,8 @@ Python 副本包含已安装 pytest 及依赖，python.cmd 设置 --confcutdir=.
 
 ## 独立题集交接与污染登记
 
+个人学习可按 [本地学习验收说明](./s6-phase-b-local-learning-validation.md) 使用已知样例验证题集、判定器和 AppContainer 链路。该用途不要求独立回执，也不获得正式盲评资格；下述正式题集门禁保持不变。
+
 独立验收方在其保管的 30 题目录运行 coding_acceptance_dataset.py qualify。它先核对材料权限，然后对每题分别重建 initial、reference、wrong、protected 四个候选，产生 120 次有摘要链的启动/结束记录、逐次 verdict、qualification.json、contamination.json 和 custody-template.json。只有 reference 应通过；initial/wrong 的断言、程序或接口错误才能作有效反例，超时、输出超限、隔离失败或判定器变化不能算“正确拒绝”。protected 必须因用户保护文件改变被拒绝。
 
 qualify 本身不证明人员独立或题目代表性。wrong 是固定契约的错误实现对照，不能代替独立验收方审查更多取巧实现。回执模板默认留空保管人、独立性说明和来源产物摘要，并将未调试声明设为 false，因此模板不能直接放行。公开校准的污染记录自动登记所有题目。

@@ -37,13 +37,13 @@
 | [本报告](./s6-validation-report.md) | 新增实测证据、失败归因、交付限制与后续验收责任。 |
 | [总体路线](./README.md) | 更新 S6 开发状态，保留 S5 历史证据日期及环境边界。 |
 | [S6 阶段说明](./s6-evaluation-and-delivery.md) | 增加实际开发入口，保留原始验收目标及未放行结论。 |
-| [使用指南](../../usage-guide.md) | 补充项目、规则、审批、终端、恢复与审查使用方式。 |
+| [使用指南](../../archive/legacy/usage-guide.md) | 补充项目、规则、审批、终端、恢复与审查使用方式。 |
 | [测试指南](../../testing-guide.md) | 同步隔离启动、精确参数、证据位置及测试层次。 |
-| [API 参考](../../api-reference.md) | 同步已实现的完成、执行、控制与代理流契约。 |
-| [安全模型](../../security-model.md) | 区分 OS 限制、可信项目、公开校准与真实账号边界。 |
-| [故障排查](../../troubleshooting.md) | 补充宿主、命令验证、暂停、Rust 和评测错误定位。 |
-| [发布检查清单](../../release-checklist.md) | 补充当前 Coding S6 的产物身份与阻断门禁。 |
-| [数据库升级手册](../../database-upgrade-runbook.md) | 区分本机 SQLite 与旧业务数据库，说明迁移及回退限制。 |
+| [API 参考](../../archive/legacy/api-reference.md) | 同步已实现的完成、执行、控制与代理流契约。 |
+| [安全模型](../../archive/legacy/security-model.md) | 区分 OS 限制、可信项目、公开校准与真实账号边界。 |
+| [故障排查](../../archive/legacy/troubleshooting.md) | 补充宿主、命令验证、暂停、Rust 和评测错误定位。 |
+| [发布检查清单](../../archive/legacy/release-checklist.md) | 补充当前 Coding S6 的产物身份与阻断门禁。 |
+| [数据库升级手册](../../archive/legacy/database-upgrade-runbook.md) | 区分本机 SQLite 与旧业务数据库，说明迁移及回退限制。 |
 
 ## 验证结果
 

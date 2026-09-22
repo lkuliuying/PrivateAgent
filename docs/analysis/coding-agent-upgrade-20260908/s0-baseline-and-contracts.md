@@ -11,11 +11,11 @@
 
 ## 2. 开工输入与现有依据
 
-- [统一客户端说明](../../unified-desktop-runtime.md)与[当前本机运行时](../../../src/private_agent_local/runtime.py)。
+- [统一客户端说明](../../archive/legacy/unified-desktop-runtime.md)与[当前本机运行时](../../../src/private_agent_local/runtime.py)。
 - [前端本机分流](../../../apps/desktop/src/services/localExecutor.ts)、[私有传输](../../../apps/desktop/src/services/privateTransport.ts)、[本机 IPC](../../../src/private_agent_local/ipc.py)。
 - [本机 Store](../../../src/private_agent_local/store.py)、[共享运行时](../../../src/private_agent_core/runtime.py)。
-- [服务端工具与完成入口](../../../src/personal_assistant/api/routes_agent_runs.py)、[工具引擎](../../../src/personal_assistant/agent_v2/application/tool_engine.py)。
-- [协议生成器](../../../scripts/protocol_codegen.py)、[导入边界检查](../../../scripts/check_agent_v2_imports.py)。
+- 服务端工具与完成入口（历史路径：`src/personal_assistant/api/routes_agent_runs.py`，已移除）、工具引擎（历史路径：`src/personal_assistant/agent_v2/application/tool_engine.py`，已移除）。
+- [协议生成器](../../../scripts/protocol_codegen.py)、导入边界检查（历史路径：`scripts/check_agent_v2_imports.py`，已移除）。
 - [本机执行测试](../../../tests/unit/test_local_executor.py)、[权限测试](../../../tests/unit/test_local_permissions.py)、[模型契约测试](../../../tests/unit/test_local_model_contract.py)。
 
 再次读取适用 AGENTS.md、项目记忆、最新 Git 状态和构建入口；不要继承旧文档中的“测试已通过”结论。

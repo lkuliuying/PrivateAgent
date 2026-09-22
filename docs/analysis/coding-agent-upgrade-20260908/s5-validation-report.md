@@ -156,7 +156,7 @@ Python 证据位于被 Git 忽略的 `.run/coding-agent-validation/<上述目录
 | `tests/coding_acceptance/recovery_process.py` | 新增真实进程退出的边界注入助手。 |
 | `tests/unit/test_local_store.py`、`test_local_context_history.py`、`test_local_patchsets.py` | 适配 schema 7 迁移夹具及 Store 所有权锁，保留旧行为断言。 |
 | `tests/coding_acceptance/test_baseline.py`、`scripts/run_coding_validation.py` | 新能力断言及 recovery 验证入口。 |
-| 本报告、同目录 `README.md`、`s5-recovery-steering-and-review.md`、`docs/unified-desktop-runtime.md` | 同步实现、schema、支持边界、实际测试和剩余验收。 |
+| 本报告、同目录 `README.md`、`s5-recovery-steering-and-review.md`、`docs/archive/legacy/unified-desktop-runtime.md` | 同步实现、schema、支持边界、实际测试和剩余验收。 |
 
 ## 项目记忆与后续操作
 

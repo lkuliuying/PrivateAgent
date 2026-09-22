@@ -157,7 +157,7 @@ S1 专项 37 项、本机全套 162 项、旧服务端纯单测 56 项、桌面�
 | `tests/coding_acceptance/s1-wire-examples.json` | 新增六类真实本机 API 载荷 |
 | `tests/coding_acceptance/README.md` | S1 复跑、同源样例和隔离边界 |
 | `docs/testing-guide.md` | 增补 S1 专项和旧纯单测入口 |
-| `docs/unified-desktop-runtime.md` | 增补当前完成语义及验证边界 |
+| `docs/archive/legacy/unified-desktop-runtime.md` | 增补当前完成语义及验证边界 |
 | `docs/analysis/coding-agent-upgrade-20260908/README.md` | 更新 S1/G01/G02 状态和后续阶段 |
 | `docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md` | 保留 S0 历史，追加 S1 实际接入决议 |
 | `docs/analysis/coding-agent-upgrade-20260908/s1-completion-and-verification.md` | 标明交付状态，校正已实现契约与事件名 |

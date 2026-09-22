@@ -198,7 +198,7 @@ HTTPS 恢复后，候选界面的账号菜单和模型设置可正常打开。�
 | `scripts/s5_acceptance_model.py` | 新增只绑定回环、无账号认证头的确定性模型替身。 |
 | `tests/coding_acceptance/test_host_probes.py`、`tests/unit/test_windows_sandbox.py` | 移除两项 strict xfail，增加原生正反对照及边界回归。 |
 | `tests/unit/test_local_exec_host.py`、`tests/unit/test_local_execution_sessions.py`、`tests/unit/test_local_permissions.py`、`tests/unit/test_local_history.py` | 宿主能力、受限运行、审批参数及导出兼容测试。 |
-| `docs/analysis/coding-agent-upgrade-20260908/README.md`、`s5-recovery-steering-and-review.md`、`s5-validation-report.md`、`s5-blockers-validation-report.md`、`docs/unified-desktop-runtime.md` | 分开记录历史结论、当前实现、候选证据和仍未完成的真实验收。 |
+| `docs/analysis/coding-agent-upgrade-20260908/README.md`、`s5-recovery-steering-and-review.md`、`s5-validation-report.md`、`s5-blockers-validation-report.md`、`docs/archive/legacy/unified-desktop-runtime.md` | 分开记录历史结论、当前实现、候选证据和仍未完成的真实验收。 |
 
 ## 文档与项目记忆
 

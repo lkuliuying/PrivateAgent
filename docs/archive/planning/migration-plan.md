@@ -4,7 +4,7 @@
 > 日期：2026-08-02
 > 原则：先止损、后建契约、再切流量；每阶段可验证、可回退、可保留现有数据
 
-> **当前状态（2026-08-06）**：本文 Phase 0–8 的执行台账属于历史记录（**历史执行台账（不得当作当前状态）**），其中「主库仍为 `0012`」「未获授权迁移」「发布未放行」等描述只代表对应切片当时的时点事实，不得据此重复迁移或重新 rollout。当前事实：应用主库已获授权迁移到 `0021 (head)`（`0020` 为 2026-08-05 迁移基线，2026-08-06 新增 `0021` telemetry 表；回滚克隆 `personal_assistant_preupgrade_20260805111304`、`personal_assistant_preupgrade_20260806070435` 保留）；versioned RAG indexing/retrieval 已生产启用（4 个 canonical 文档、10 个 reviewed case 全通过）；RAG 证据充分性与 Agent Runtime 批 A 已生产开启，聊天接管与自动摘要仍默认关闭。Windows `0.2.1` 为当前发布候选。详见 `docs/database-design.md`、`docs/rag-design.md` 顶部摘要。
+> **当前状态（2026-08-06）**：本文 Phase 0–8 的执行台账属于历史记录（**历史执行台账（不得当作当前状态）**），其中「主库仍为 `0012`」「未获授权迁移」「发布未放行」等描述只代表对应切片当时的时点事实，不得据此重复迁移或重新 rollout。当前事实：应用主库已获授权迁移到 `0021 (head)`（`0020` 为 2026-08-05 迁移基线，2026-08-06 新增 `0021` telemetry 表；回滚克隆 `personal_assistant_preupgrade_20260805111304`、`personal_assistant_preupgrade_20260806070435` 保留）；versioned RAG indexing/retrieval 已生产启用（4 个 canonical 文档、10 个 reviewed case 全通过）；RAG 证据充分性与 Agent Runtime 批 A 已生产开启，聊天接管与自动摘要仍默认关闭。Windows `0.2.1` 为当前发布候选。详见 `docs/archive/legacy/database-design.md`、`docs/archive/legacy/rag-design.md` 顶部摘要。
 
 ## 1. 总体策略
 
@@ -52,7 +52,7 @@
 ### 3.1 已完成的基线工作
 
 - 完成代码、依赖、配置、迁移、API、前端、模型、工具、任务、记忆、RAG 与数据库只读盘点。
-- 形成 `docs/analysis/modernization-audit.md`、`docs/target-architecture.md` 和本文。
+- 形成 `docs/archive/legacy/analysis/modernization-audit.md`、`docs/archive/legacy/target-architecture.md` 和本文。
 - 验证 Rust 构建、前端单测和前端生产构建；验证 API、MySQL、Chroma 健康路径。
 - 识别 pytest 连接应用主库和 E2E 选择器滞后等基线阻断项。
 
@@ -231,7 +231,7 @@ Phase 4 退出条件：任何重建失败都不影响在线检索，质量和延
 - 发现的 tools/resources/prompts 经过内部 schema 和策略转换。
 - 调用统一使用超时、取消、输出上限、脱敏和审计。
 
-当前实现状态（2026-08-02）：Slice 1 已落地且默认关闭。官方 SDK stdio 测试服务器已完成真实初始化、分页发现和工具调用；Streamable HTTP 适配器已实现 HTTPS 默认、无重定向、无环境代理、DNS 私网拒绝和资源上限，但尚未完成带认证的真实外部服务器互操作。服务器必须依次经过显式 trust、enable 和工具 allowlist；适配后的 MCP 工具继续经过内部 capability policy、`confirm` 审批、checkpoint、durable execution 与不含正文的调用审计。桌面设置、待审批刷新恢复和 continuation SSE 已接入。详细边界见 `docs/mcp-design.md`。
+当前实现状态（2026-08-02）：Slice 1 已落地且默认关闭。官方 SDK stdio 测试服务器已完成真实初始化、分页发现和工具调用；Streamable HTTP 适配器已实现 HTTPS 默认、无重定向、无环境代理、DNS 私网拒绝和资源上限，但尚未完成带认证的真实外部服务器互操作。服务器必须依次经过显式 trust、enable 和工具 allowlist；适配后的 MCP 工具继续经过内部 capability policy、`confirm` 审批、checkpoint、durable execution 与不含正文的调用审计。桌面设置、待审批刷新恢复和 continuation SSE 已接入。详细边界见 `docs/archive/legacy/mcp-design.md`。
 
 ### 8.2 服务端
 

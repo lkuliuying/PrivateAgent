@@ -121,7 +121,7 @@ S1 开工项：接入完成验证器、建立 RunOutcome、区分测试失败与
 | `docs/analysis/coding-agent-upgrade-20260908/README.md` | 更新 S0 状态与交付入口 |
 | `docs/analysis/coding-agent-upgrade-20260908/s0-baseline-and-contracts.md` | 更新工作项交付状态和实际文件入口 |
 | `docs/testing-guide.md` | 增加本机 Coding 隔离测试入口 |
-| `docs/unified-desktop-runtime.md` | 增加当前 S0 源码基线入口，保留历史记录 |
+| `docs/archive/legacy/unified-desktop-runtime.md` | 增加当前 S0 源码基线入口，保留历史记录 |
 
 `docs/README.md` 和 S1–S6 计划是开工前已有内容，不计入本轮改动。没有修改产品运行行为、schema 版本、权限默认值或依赖。
 

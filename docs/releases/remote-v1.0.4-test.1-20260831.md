@@ -74,7 +74,7 @@ git diff --check
 
 服务器在 `/opt/private-agent/current` 核对当前分支及未提交修改后，拉取 `dev/1.0.0`。不要强制覆盖服务器既有修改；出现冲突或非快进时停止处理。
 
-**只拉取源码不保证运行副本生效。** 历史证据显示服务加载 `site-packages`，需按[服务器 1.0.4 更新步骤](../connected-runtime-1.0.3-repair.md#104-修复复用拉取源码后同步运行包)执行预检，必要时停止单个服务并应用五文件补丁。为本次更新使用 `--backup-dir /opt/private-agent/rollback-connected-runtime-1.0.4`，保留旧备份；遇到未知摘要、备份冲突、`BACKOFF` 或 `FATAL` 时停止，不绕过校验。
+**只拉取源码不保证运行副本生效。** 历史证据显示服务加载 `site-packages`，需按[服务器 1.0.4 更新步骤](../archive/legacy/connected-runtime-1.0.3-repair.md#104-修复复用拉取源码后同步运行包)执行预检，必要时停止单个服务并应用五文件补丁。为本次更新使用 `--backup-dir /opt/private-agent/rollback-connected-runtime-1.0.4`，保留旧备份；遇到未知摘要、备份冲突、`BACKOFF` 或 `FATAL` 时停止，不绕过校验。
 
 还需要在用户电脑安装新版联网客户端，并验证真实账号发送指令、模型配置和管理员时间。未执行本安装包的真实安装/升级、真实账号模型调用、生产服务器更新、Linux 运行权限验证或完整数据库集成测试。模拟测试不能证明生产 502 没有其他配置、供应商或代理原因。
 

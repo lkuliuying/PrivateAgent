@@ -17,7 +17,7 @@
 3. 安装 `PrivateAgent_1.0.1_x64-setup.exe`，进入后使用服务器用户名和密码登录。
 4. 如需本机模型，在设置中的“模型执行设置”选择本机模型，并核对协议、回环地址、模型名和上下文容量。
 
-不需要用户填写账号服务器地址或修改 hosts 文件。不要删除 AppData / SQLite 来清除旧本机账号。旧 `local://device` 记录保留，但不会自动归入服务器账号；旧 PrivateAgentRemote 的独立应用目录也不会自动合并。具体历史迁移规则见[统一运行时说明](../unified-desktop-runtime.md)。
+不需要用户填写账号服务器地址或修改 hosts 文件。不要删除 AppData / SQLite 来清除旧本机账号。旧 `local://device` 记录保留，但不会自动归入服务器账号；旧 PrivateAgentRemote 的独立应用目录也不会自动合并。具体历史迁移规则见[统一运行时说明](../archive/legacy/unified-desktop-runtime.md)。
 
 **服务器 git pull 不能更新已安装的桌面客户端。** 本次修改不新增业务表迁移，不替用户操作或重启服务器；若服务器模型、管理或历史接口仍不可用，按实际服务器回执另行核对。不能把本次客户端发行当作服务器部署验收。
 

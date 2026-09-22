@@ -147,7 +147,7 @@ $s3PythonFiles = @(git diff --name-only -- '*.py') + @(git ls-files --others --e
 | `docs/analysis/coding-agent-upgrade-20260908/s3-repository-and-patches.md` | 保留计划并链接实际验收。 |
 | `docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md` | 追加 S3 ID、版本、存储与证据契约。 |
 | `docs/analysis/coding-agent-upgrade-20260908/s3-validation-report.md` | 新增本验收报告。 |
-| `docs/unified-desktop-runtime.md` | 同步当前 schema、工具行为及历史状态标记。 |
+| `docs/archive/legacy/unified-desktop-runtime.md` | 同步当前 schema、工具行为及历史状态标记。 |
 | `docs/context-design.md` | 同步 S3 大正文投影、多目标规则及 schema。 |
 | `docs/testing-guide.md` | 增加 S3 验证入口。 |
 

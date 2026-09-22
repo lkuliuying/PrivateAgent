@@ -53,6 +53,26 @@
 
 ## 契约维护
 
+### S6 D 本地准备（2026-09-15）
+
+`scripts/run_coding_validation.py --suite phase-d` 验证候选身份、冻结输入变化、严格审阅、不完整实验及 IPC 关联，已纳入 `acceptance/all`。源码身份 `s6-product-2` 覆盖桌面、Rust 宿主、本机核心和构建输入。构建产物还须核对非空、无重复且完整的源码清单总摘要，以及桌面、sidecar、宿主和构建记录；源码、产物、安装和进程分别记载，缺失证据保持 `unknown`。历史身份只按原范围解释，不能补造新的验收证明。
+
+每次尝试开始前和实验结束时核对产品、题集、判定器与配置。审阅入口重新核对当前输入和候选产物，拒绝重复 JSON 字段、重复尝试和摘要变化，重算实验完整性。`failure_records` 保留逐次原始分类和归属；尚未核实的归属为 `unresolved_requires_review`。原始尝试日志不因审阅改写，公开题独立完成分子仍为零。
+
+新版身份的 `files` 是路径索引，`source_files` 是 `{path, sha256}` 记录数组，避免含 `Secrets` 等合法文件名使摘要被通用凭据脱敏器误遮蔽；源码与 bundle 都需通过落盘/读回验证。历史来源摘要算法不变，旧身份按其历史范围解释；缺新版完整身份时不能提升为当前候选证明。
+
+`verify-unified-client.py --bundle <独立构建目录> --work-dir <独立输出父目录> --model-mode service|openai|ollama` 的基础验证使用合成账号和本机模型设置、回环替身及打包 sidecar/宿主；`service` 为历史标签，实际使用本机 OpenAI 传输。输出 `verification.json` 记录文件摘要、启动 PID、请求与运行关联及失败状态；它不是原生桌面或安装证据。`--s6` 另外要求完整候选清单并使用公开题 AppContainer 校准，不能给不完整二进制目录补造冻结身份。
+
+本轮命令、600 秒专项、失败上下文、复验范围和未验证项见 [阶段 D 报告](../../docs/analysis/coding-agent-upgrade-20260908/s6-phase-d-local-development-validation.md)。UI 指标只有取得“宿主收到输出至 UI 可见”的至少 100 个前台样本及负载记录才可判断，后端耗时不替代该指标。
+
+桌面浏览器验证使用 `coding-run.spec.ts`、`coding-artifact.spec.ts`、`coding-workbench.spec.ts` 与合成账号夹具。隔离运行须关闭 Vite `.env` 读取、使用独立端口且不复用已有服务；只在该子进程设置 `VITE_LOCAL_FULL_BACKEND=true`，全部 API 由路由替身响应。具体独立配置与已执行命令见 D 报告。没有完成证据的旧终态应显示“结果未确认”；普通用户的旧 `ui=v1` 参数不能恢复下线的兼容壳。空项目及失效工作区通过现有新建项目对话框操作，不再跳转下线的 projects 视图。
+
+S6 阶段 C 的 `run_coding_validation.py --suite model-evaluation` 纳入 acceptance/all。2026-09-15 起覆盖 schema 2 `direct_provider` 的正式会话、IPC 配置交接、直连三协议、预算和过程指标；旧代理的纯协议测试继续解释历史兼容行为，实际 `product_proxy` 执行明确拒绝。无凭据配置、`preflight/probe` 命令及授权边界见 [阶段 C 报告](../../docs/analysis/coding-agent-upgrade-20260908/s6-phase-c-validation-report.md)。本页 S0 的历史 token 限制说明不代表 C：实际模型评测通过 `ContextLimits.max_total_tokens` 在下一请求前执行软预算门禁。
+
+control/matrix 保留 fixture 身份和 service/OpenAI/Ollama 的历史计划标签；service 标签现通过本机 OpenAI 适配器消费回环替身，实际 wire 路径和协议单独记录。`legacy_stream` 场景在发送前选普通响应。原六种终态、取消竞争、事件连续性、独立判定和追加式账本继续复验，不能用恢复服务器推理满足旧路径断言。所有校准及公开样例保持 M3 blocked。
+
+模型评测测试使用合成账号/密钥；正常产品交接由 Agent 查询一个系统凭据，测试子进程设置 `PA_EVALUATION_SYNTHETIC_ONLY=1` 阻止该访问。这个保护仅在 pytest 内传入，不修改全局环境，也不阻断将来已授权的交互式预检。已有 Python、Node/npm 和宿主是前提，测试不会安装依赖。
+
 从 `private_agent_core/coding_contracts.py` 修改类型，再运行 `scripts/protocol_codegen.py`。`--check` 校验旧协议与新 Coding 生成物，`test_contracts.py` 校验 Schema、实例及业务不变量。S1 已接通本机完成要求、运行结果和命令结果；其他类型不代表能力已启用。准确责任见 [契约决议](../../docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md)。
 
 ## S1 事实、前端与兼容回归

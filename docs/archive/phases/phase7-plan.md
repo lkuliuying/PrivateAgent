@@ -83,8 +83,8 @@
 - [x] 新增 `docs/archive/phases/phase7-requirements.md`。
 - [x] 新增 `docs/archive/phases/phase7-plan.md`。
 - [x] 更新 README 第七阶段引用。
-- [x] 更新 `docs/requirements.md` 后续阶段表。
-- [x] 更新 `docs/usage-guide.md` 路线图。
+- [x] 更新 `docs/archive/legacy/requirements.md` 后续阶段表。
+- [x] 更新 `docs/archive/legacy/usage-guide.md` 路线图。
 - [x] 明确第七阶段不重写架构、不引入云同步账户、不把 OCR 大依赖作为硬内置。
 
 验收：
@@ -401,8 +401,8 @@
 任务：
 
 - [x] 更新 `README.md`。
-- [x] 更新 `docs/usage-guide.md`。
-- [x] 更新 `docs/release-checklist.md`。
+- [x] 更新 `docs/archive/legacy/usage-guide.md`。
+- [x] 更新 `docs/archive/legacy/release-checklist.md`。
 - [x] 更新 API 列表。
 - [x] 更新数据模型说明。
 - [x] 更新常见问题：
@@ -560,11 +560,11 @@ alembic/versions/0010_phase7_reliable_daily_layer.py
 - `README.md`
   - 第七阶段状态。
   - 相关文档链接。
-- `docs/usage-guide.md`
+- `docs/archive/legacy/usage-guide.md`
   - 全局搜索、命令面板、快速捕获、OCR、通知中心、诊断中心、数据体检使用说明。
-- `docs/requirements.md`
+- `docs/archive/legacy/requirements.md`
   - 后续阶段表补充第七阶段。
-- `docs/release-checklist.md`
+- `docs/archive/legacy/release-checklist.md`
   - 第七阶段 smoke 和 QA 项。
 - `docs/archive/phases/phase7-requirements.md`
   - 勾选验收清单。

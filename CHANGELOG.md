@@ -130,7 +130,7 @@
 
 - `/health` 错误分类：`ollama_not_running` / `ollama_timeout` / `ollama_http_error` /
   `ollama_model_missing` + `missing_models`；`scripts/ollama_lifecycle_check.py` 与文档
-  `docs/ollama-lifecycle.md`（embed P50 87ms / P95 111ms 实测）。
+  `docs/archive/legacy/ollama-lifecycle.md`（embed P50 87ms / P95 111ms 实测）。
 
 ### Agent Runtime 灰度（批 A）
 

@@ -73,7 +73,7 @@ core/admin_logs.py
 
 ### 4. 服务器应用步骤与待验收项
 
-完整命令、停止条件和回滚步骤见[服务器修复操作说明](../connected-runtime-1.0.3-repair.md)。本总结不替代该操作说明。
+完整命令、停止条件和回滚步骤见[服务器修复操作说明](../archive/legacy/connected-runtime-1.0.3-repair.md)。本总结不替代该操作说明。
 
 - [ ] 只读预检得到 `CHECK_PASSED`，停止单个服务后应用补丁，取得 `APPLIED_AND_VERIFIED` 或 `ALREADY_APPLIED`。
 - [ ] 仅修改必要模型开关，重新加载该程序并确认状态稳定为 `RUNNING`。
@@ -102,11 +102,11 @@ core/admin_logs.py
 
 | 文件 | 用途 |
 | --- | --- |
-| [routes_desktop_model.py](../../src/personal_assistant/api/routes_desktop_model.py) | 模型代理推理强度字段修复 |
-| [test_desktop_model.py](../../tests/unit/test_desktop_model.py) | 真实 ORM 对象及请求边界回归测试 |
-| [repair-connected-runtime.py](../../scripts/repair-connected-runtime.py) | 固定范围的检查、应用和回滚工具 |
-| [test_connected_runtime_repair.py](../../tests/unit/test_connected_runtime_repair.py) | 修复工具正常、异常和恢复路径测试 |
-| [connected-runtime-1.0.3-repair.md](../connected-runtime-1.0.3-repair.md) | 服务器应用、配置、验收与回滚操作说明 |
+| routes_desktop_model.py（历史路径：`src/personal_assistant/api/routes_desktop_model.py`，已移除） | 模型代理推理强度字段修复 |
+| test_desktop_model.py（历史路径：`tests/unit/test_desktop_model.py`，已移除） | 真实 ORM 对象及请求边界回归测试 |
+| repair-connected-runtime.py（历史路径：`scripts/repair-connected-runtime.py`，已移除） | 固定范围的检查、应用和回滚工具 |
+| test_connected_runtime_repair.py（历史路径：`tests/unit/test_connected_runtime_repair.py`，已移除） | 修复工具正常、异常和恢复路径测试 |
+| [connected-runtime-1.0.3-repair.md](../archive/legacy/connected-runtime-1.0.3-repair.md) | 服务器应用、配置、验收与回滚操作说明 |
 
 临时诊断脚本保存在本机被忽略的 `.run/incident-1.0.3/` 中，不作为已提交或可随仓库分发的产物。
 

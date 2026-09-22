@@ -113,8 +113,8 @@ $env:PYTHONIOENCODING='utf-8'
 - 修改：`apps/desktop/src/services/localExecutor.spec.ts`
 - 修改：`apps/desktop/src/services/localExecutor.ts`
 - 修改：`apps/desktop/src/stores/auth.ts`
-- 修改：`docs/unified-desktop-runtime.md`
-- 修改：`docs/unified-preview-server-update.md`
+- 修改：`docs/archive/legacy/unified-desktop-runtime.md`
+- 修改：`docs/archive/legacy/unified-preview-server-update.md`
 - 修改：`scripts/build-client.cjs`
 - 修改：`scripts/build-remote-client.cjs`
 - 修改：`scripts/build-remote-client.test.cjs`

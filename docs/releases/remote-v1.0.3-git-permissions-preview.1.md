@@ -81,7 +81,7 @@
   /opt/private-agent/current/scripts/update-connected-server.py
 ```
 
-仅包含本批差异时预期返回 `CODE_SYNCED_NO_RESTART`。如果返回本地修改、分叉、依赖/迁移/配置、更新工具变化或未知文件等人工审阅结果，立即停止，不执行 `reset --hard`、`clean`、强制合并或修改白名单绕过保护，按[服务器源码更新指南](../server-code-update-workflow.md)处理。
+仅包含本批差异时预期返回 `CODE_SYNCED_NO_RESTART`。如果返回本地修改、分叉、依赖/迁移/配置、更新工具变化或未知文件等人工审阅结果，立即停止，不执行 `reset --hard`、`clean`、强制合并或修改白名单绕过保护，按[服务器源码更新指南](../archive/legacy/server-code-update-workflow.md)处理。
 
 更新后核对：
 
@@ -102,4 +102,4 @@ supervisorctl -c /etc/supervisord.conf status private-agent
 
 ## 项目记忆检查
 
-已读取 `AGENTS.md` 和 `docs/project-state.md`，并重新核对当前 Git、源码、测试、构建和 GitHub Releases。项目记忆是 2026-08-31 的历史快照，本次以实时开发机和远端证据为准。权限、分支与 PowerShell 的持久行为已同步到 `docs/unified-desktop-runtime.md`，发行证据记录在本文。按仓库约定，本次未改写 `docs/project-state.md` 或全局记忆。
+已读取 `AGENTS.md` 和 `docs/project-state.md`，并重新核对当前 Git、源码、测试、构建和 GitHub Releases。项目记忆是 2026-08-31 的历史快照，本次以实时开发机和远端证据为准。权限、分支与 PowerShell 的持久行为已同步到 `docs/archive/legacy/unified-desktop-runtime.md`，发行证据记录在本文。按仓库约定，本次未改写 `docs/project-state.md` 或全局记忆。

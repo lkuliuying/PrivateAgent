@@ -190,7 +190,7 @@ node .run/s5-remaining-20260909/verify-installed-closeout.cjs
 | `docs/analysis/coding-agent-upgrade-20260908/s5-remaining-gates-handoff-prompt.md` | 新增 | 保留用户指定的剩余门禁交接快照。 |
 | `docs/analysis/coding-agent-upgrade-20260908/s5-remaining-gates-validation-report.md` | 新增 | 记录修复、分层门禁、失败证据、最终验证和清理。 |
 | `docs/analysis/coding-agent-upgrade-20260908/s5-validation-report.md` | 新增 | 保留首次 S5 开发和兼容验证记录。 |
-| `docs/unified-desktop-runtime.md` | 修改 | 同步 schema 7、恢复和最终已验证能力。 |
+| `docs/archive/legacy/unified-desktop-runtime.md` | 修改 | 同步 schema 7、恢复和最终已验证能力。 |
 | `scripts/build-remote-client.cjs` | 修改 | 隔离 QA 安装身份和冻结源码摘要。 |
 | `scripts/build-remote-client.test.cjs` | 修改 | 验证 QA 不配置正式更新通道。 |
 | `scripts/run_coding_validation.py` | 修改 | 增加恢复、沙箱、历史专项并去重完整套件。 |

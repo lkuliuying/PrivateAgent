@@ -154,7 +154,7 @@ $s4PythonFiles = @(git diff --name-only -- '*.py') + @(git ls-files --others --e
 - `apps/desktop/src/features/coding/composables/useRunStream.spec.ts`、`apps/desktop/src/features/coding/model/runProjector.spec.ts`：分页重连、公开文本与 durable 游标。
 - `docs/analysis/coding-agent-upgrade-20260908/README.md`、`s4-execution-streaming-and-permissions.md`、`s0-contract-decisions.md`：阶段状态和实际契约同步。
 - `docs/analysis/coding-agent-upgrade-20260908/s4-validation-report.md`（本文件新增）：实现、验证及限制记录。
-- `docs/unified-desktop-runtime.md`：schema 6、新执行批准规则与兼容说明。
+- `docs/archive/legacy/unified-desktop-runtime.md`：schema 6、新执行批准规则与兼容说明。
 
 ## 项目记忆与交付限制
 

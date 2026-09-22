@@ -1,57 +1,52 @@
 # PrivateAgent 文档中心
 
-这里是项目文档的统一入口。根目录仅保留持续维护的产品、架构、开发和运维文档；阶段性计划、历史材料、版本检查点和二进制参考资料分别归档。
+当前源码以 **2026-09-20 的 API Key 本机桌面链**为准：Tauri/Vue、Python 本机执行器、共享 AgentRuntime、SQLite。旧服务器、账号系统、MySQL/Alembic、RAG 和个人中枢页面已经退役。
 
-> 当前会话接手入口：[共享项目状态记忆](./project-state.md)（2026-08-31）。以下版本阶段说明保留历史，不代表当前联网版或生产部署状态。
+## 当前入口
 
-> 历史文档状态（2026-08-20）：当时 `v0.5.0-rc.4` 已作为 Coding Agent 工程基线，可进入 `v0.6.0` 开发；自然日观察统一顺延到 `v1.0.0-rc.1` 功能开发完成后执行。检查点文档用于记录当时事实，不等同于正式发布公告。
+| 需要了解 | 文档 |
+| --- | --- |
+| 产品、架构、开发环境与构建 | [项目 README](../README.md) |
+| 会话约定与历史状态 | [AGENTS.md](../AGENTS.md) · [项目状态记忆](project-state.md) |
+| 当前源码范围与已知验证限制 | [本机化与上下文改进](solutions/2026-09-20-local-only-context.md) |
+| API Key、模型调用与身份空间 | [本机模型直连](direct-model-execution.md) |
+| 搜索、任务控制、审阅、Skills、通用 MCP 与浏览器证据 | [工作台使用说明](workbench-guide.md) · [2026-09-21 交付记录](solutions/2026-09-21-workbench-upgrade.md) |
+| 工具契约、审批、Git 与文档 MCP | [本机工具系统](local-tool-system.md) |
+| 上下文预算、压缩与原文续读 | [上下文设计](context-design.md) |
+| 本机记忆与用户控制 | [记忆设计](memory-design.md) |
+| 测试目录、隔离运行与验证命令 | [测试指南](testing-guide.md) |
+| 签名政策与申请资料 | [签名政策](../CODE_SIGNING_POLICY.md) · [SignPath 申请记录](signpath-application.md) |
+| 本次目录整理及删除依据 | [清理记录](solutions/2026-09-20-project-cleanup.md) |
 
-## 快速入口
+项目状态记忆保留 2026-09-19 及更早日期的事实，不代表 2026-09-20 之后的代码或部署状态。当前实现以源码和对应日期的交付记录核对；外部签名、部署及安装状态需要各自证据。
 
-- 会话接手：[共享项目状态记忆](./project-state.md)、[仓库会话约定](../AGENTS.md)
-- Coding 改造专项：[2026-09-08 总体路线与 S0–S6 详细开发计划](./analysis/coding-agent-upgrade-20260908/README.md)（基于当前统一桌面主链；开发提案，尚未实施）
-- 本次部署与换机：[2026-08-30 部署交接总结](./deployment-handoff-20260830.md)、[在另一台 Windows 电脑继续开发](./new-computer-development.md)
-- 本次故障修复：[1.0.3 模型与管理员日志修复总结](./solutions/2026-08-31-privateagent-1-0-3.md)、[服务器修复操作说明](./connected-runtime-1.0.3-repair.md)
-- 后续代码修复：[指令 HTTP 502 与管理员上海时间](./solutions/2026-08-31-model-502-admin-timezone.md)
-- 后续更新流程：[开发机提交、服务器拉取与重启](./server-code-update-workflow.md)（含一次性历史整理、源码入口切换、检查工具与回退边界；生产切换待执行）
-- 最新测试安装包：[联网版 1.0.4 手动安装交付记录](./releases/remote-v1.0.4-test.1-20260831.md)（已上传 GitHub 草稿；服务器由维护者更新，未完成生产验收）
-- 使用产品：[使用指南](./usage-guide.md)、[故障排查](./troubleshooting.md)
-- 搭建环境：[部署指南](./deployment-guide.md)、[跨平台说明](./cross-platform.md)
-- 参与开发：[需求说明](./requirements.md)、[目标架构](./target-architecture.md)、[测试指南](./testing-guide.md)、[Coding Agent 重构计划](./coding-agent-refactor-plan.md)
-- 当前策略：[观察期顺延决策](./releases/observation-policy-20260820.md)、[v0.6.0 开工审计](./releases/v0.6.0/v0.6.0-readiness-20260820.md)
-- 工程基线：[v0.5.0 开发计划](./releases/v0.5.0/v0.5.0-development-plan-20260809.md)、[rc.4 检查点](./releases/v0.5.0/v0.5.0-rc.4-checkpoint-20260810.md)、[Day 10 历史记录](./releases/v0.5.0/observation-day10-20260820.md)
-- 后续版本：[Coding Agent 版本路线图](./releases/coding-agent-version-roadmap-20260820.md)、[v0.6.0 开工审计](./releases/v0.6.0/v0.6.0-readiness-20260820.md)、[C0 契约](./releases/v0.6.0/v0.6.0-c0-contracts-20260820.md)、[v0.6.0 开发计划](./releases/v0.6.0/v0.6.0-development-plan-20260820.md) 至 [v1.0.0](./releases/v1.0.0/v1.0.0-development-plan-20260820.md)
-- 发布维护：[发布检查清单](./release-checklist.md)、[远程客户端更新](./remote-client-updates.md)、[数据库升级手册](./database-upgrade-runbook.md)、[签名与密钥](./signing-and-keys.md)
+## 目录分工
 
-## 长期维护文档
+| 目录 | 用途 |
+| --- | --- |
+| `docs/` | 当前入口、持续维护的本机说明与项目记忆 |
+| [`analysis/`](analysis/) | Coding 专项与三步改进计划，按各自日期和验收状态阅读 |
+| [`solutions/`](solutions/) | 带日期的修复、验证与整理记录 |
+| [`archive/legacy/`](archive/legacy/README.md) | 已退役架构、服务器操作、旧产品手册和 RAG 研究 |
+| [`archive/`](archive/README.md) | 更早的阶段计划、路线图和设计过程资料 |
+| [`releases/`](releases/README.md) | 历史版本契约、检查点、ADR 和验收记录 |
+| [`examples/`](examples/) | 可复制的配置模板；生成的真实发布清单不作为模板保存 |
+| [`assets/`](assets/README.md)、[`evidence/`](evidence/) | 被文档引用的图片和历史验收证据 |
+| [`third-party/`](third-party/) | 上游采用与归属记录 |
 
-| 主题 | 文档 |
-|---|---|
-| 产品与使用 | [需求说明](./requirements.md) · [使用指南](./usage-guide.md) · [故障排查](./troubleshooting.md) |
-| 系统架构 | [目标架构](./target-architecture.md) · [Coding Agent 重构计划](./coding-agent-refactor-plan.md) · [上下文设计](./context-design.md) · [Agent Runtime](./agent-runtime.md) |
-| 核心能力 | [工具系统](./tool-system.md) · [MCP 设计](./mcp-design.md) · [记忆设计](./memory-design.md) · [RAG 设计](./rag-design.md) |
-| 数据与接口 | [数据库设计](./database-design.md) · [API 参考](./api-reference.md) · [领域验证器](./domain-verifiers.md) |
-| 安全与运行 | [安全模型](./security-model.md) · [Ollama 生命周期](./ollama-lifecycle.md) · [灰度验证](./agent-runtime-gray-verification.md) |
-| 交付与质量 | [测试指南](./testing-guide.md) · [部署指南](./deployment-guide.md) · [发布检查清单](./release-checklist.md) |
+## 查阅历史
 
-## 目录说明
+- [2026-09-17 三步改进计划](analysis/agent-improvement-20260917/README.md)及其试用记录。
+- [2026-09-08 Coding 改造计划](analysis/coding-agent-upgrade-20260908/README.md)及 S0–S6 验收记录。
+- [2026-09-19 API Key 单模式交付](solutions/2026-09-19-api-key-only.md)。
+- [旧服务器与产品文档索引](archive/legacy/README.md)。
 
-| 目录 | 内容 |
-|---|---|
-| [`analysis/`](./analysis/) | 现代化审计、缺口分析等专题分析 |
-| [`solutions/`](./solutions/) | 故障根因、修复方案、验证结果与交付边界 |
-| [`releases/`](./releases/) | 按版本保存开发计划、契约、进度和检查点 |
-| [`archive/`](./archive/) | 已结束阶段计划、旧路线图、历史提示词和工具包 |
-| [`examples/`](./examples/) | 可复制使用的 JSON 配置与评估样例 |
-| [`assets/`](./assets/) | 图片、PDF 等非 Markdown 参考资料 |
-| [`evidence/`](./evidence/) | 质量门槛、演练和验收证据 |
-| [`vue-desktop-code/`](./vue-desktop-code/) | 桌面端工程规范与参考资料 |
-| [`webfront-code/`](./webfront-code/) | Web 前端工程规范与参考资料 |
+历史记录保留原有结论、未完成项和失败证据。归档中的源码路径、命令、版本和截图反映记录当时的系统，不能据此执行当前部署或宣布当前功能可用。
 
 ## 维护规则
 
-1. 持续有效的架构、接口、测试和运维文档放在 `docs/` 根目录。
-2. 版本计划、契约和检查点放在 `releases/vX.Y.Z/`，文件名保留版本号与日期。
-3. 已完成或被替代的阶段计划移入 `archive/`，不要删除其中的历史结论。
-4. JSON 示例放在 `examples/`；图片和 PDF 放在 `assets/`；运行生成的证据放在 `evidence/` 或 `dist/`。
-5. 新增或移动文档后，必须更新本索引并检查仓库内的本地链接和路径契约。
+1. 当前使用方式和可执行命令进入本页对应的本机说明。
+2. 旧功能文档进入历史归档；日期明确的阶段记录保留在原专题或版本目录。
+3. 移动文件时同步本地链接；测试文件按现有职责分组，入口同步到隔离运行器。
+4. 不将运行日志、安装包、测试结果、个人配置或本机工具副本写入正式文档目录。
+5. `.run/`、`.tmp/` 和被 Git 忽略的外部规范副本是本机材料，不保证其他工作区存在。

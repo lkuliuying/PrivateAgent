@@ -572,7 +572,7 @@
 - [x] 关键列表接口有分页或上限，长耗时任务有状态。
 - [x] 至少一条自动化 smoke 覆盖今日页真实数据；桌面窗口级 Playwright/Tauri E2E 后续增强。
 - [x] `uv run pytest -q`、`npm run build`、`cargo check`、`uv run alembic current` 通过。
-- [x] README、`docs/usage-guide.md` 和发布 checklist 更新第七阶段说明。
+- [x] README、`docs/archive/legacy/usage-guide.md` 和发布 checklist 更新第七阶段说明。
 
 ---
 

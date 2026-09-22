@@ -1,6 +1,62 @@
 # PrivateAgent 共享项目状态记忆
 
-最后整理：**2026-08-31（Asia/Shanghai）**。适用工作区：`E:\Program\Agent`。其他路径或 worktree 应先核对各自 Git 状态，不能直接继承这里的未提交修改。
+最后整理：**2026-09-19（Asia/Shanghai）**。本次核对工作区：`F:\Program\Agent`，分支 `dev/1.0.0`，HEAD `1dde393e29f3dbacd3647d11834b39824ac8323f`。工作区已有大量其他会话的未提交修改，本次在其基础上完成工具改进及桌面 API Key 单模式调整，未提交、推送、打包或部署。其他路径或 worktree 应先核对各自状态。
+
+## 2026-09-19 后续：桌面仅保留 API Key
+
+用户在五项工具改进后要求删除平台登录注册、移除自动化、插件显示“开发中”，并让 MCP 在 API Key 模式工作、处理 401。本节是同日后续证据，覆盖下方工具交付时及 2026-08-31 历史记录中的桌面账号入口描述。
+
+- 当前桌面启动链直接启动本机执行器、调用 `POST /identity/local`，保存本机令牌后再加载 Coding。登录、注册、管理员页面和服务、平台令牌 store、固定账号源站 Tauri 命令及执行器 `--server` 参数已删除。
+- 当前客户端只调用本机项目和模型 API。已移除的服务接口返回 `410 feature_removed`；仅标记 `X-PrivateAgent-Session: expired` 的本机 401 触发重新连接，不自动重放失败写请求。模型供应商的 401 保留工作区并显示模型错误。
+- 自动化页面、主导航和专用接口/类型删除；插件页为“开发中”占位。设置不再请求旧全局设置、备份、扩展注册表或平台历史导出；本机历史导入/导出保留。
+- 技术文档 MCP 在本机会话下使用已有项目配置、逐次审批、版本绑定和结果记录。补充了 API Key Agent 实际批准/拒绝 MCP 工具的隔离回归，没有改变权限边界。
+- 本机空间摘要保持不变，既有本机项目/模型/凭据可复用；旧平台空间保留，不自动合并或复制密钥。没有数据库迁移或数据清空。
+- 构建脚本不再接收账号源站位置参数或注入平台令牌。模型验收脚本直接建立本机会话，已删除平台会话输入与本机联调临时账号服务；记录来源清单排除 Git 确认删除的文件，其他缺失仍报错。
+
+用户已明确要求同时删除旧服务器账号模块。`personal_assistant` 的登录、注册、账号管理、管理员日志和账号历史导出接口，以及密码、登录会话、验证码/SMTP 服务均已移除。独立后端仅接受配置的服务令牌，保留 Host/Origin 防护和审计；模型供应商 Key 不能充当服务令牌。历史表映射、外键及迁移保留以避免删除数据，审计清理不再操作账号表。旧 1.0.3 补丁工具只适用于历史归档，不能对当前源码生成账号补丁；本次未执行任何服务器操作。
+
+证据为源码差异、实际隔离测试、浏览器回归和构建：前端相关 99 项通过；界面 7 项通过，并在最后清理历史导出后重跑 API Key 页面通过；工具/权限套件 449 passed、1 skipped，本机套件 88 passed，流式套件 32 passed，候选身份套件 19 passed。旧后端新增验证为纯鉴权边界 16 项、真实路由/配置/模型接口/审计 63 项通过，全部在隔离配置中执行，未连接业务数据库。历史补丁与回滚 34 项通过、1 项因符号链接权限跳过；测试改用经摘要核验的历史快照，当前源码不能生成旧账号补丁。前端构建和 Rust 离线检查通过，保留已有分包和 dead-code 警告。
+
+扩展模型验收未全部通过：direct-models 为 59 passed / 1 failed；model-evaluation 为 126 passed / 3 failed；local-probe 为 56 passed / 33 failed。失败涉及完成证据、需求解析与小窗口上下文限制。已用修改前源码复现直接模型文案断言，并用旧验收提示函数复现 30 项需求解析差异；其余端到端失败的归因尚未全部完成，不宣称完整模型验收通过，也未删除或放宽失败断言。详见[本次交付记录](./solutions/2026-09-19-api-key-only.md)。
+
+记忆核对：旧[模型直连说明](./direct-model-execution.md)和 README 仍描述可选平台登录、账号服务器及旧构建参数，与本次源码不一致。已根据启动链、HTTP 分流、原生执行器参数及测试修正当前说明；早期服务器记录保持历史标识。没有调用真实付费模型、读取真实密钥、安装新包或操作服务器。
+
+## 2026-09-19 先前工具系统交付记录
+
+本节按用户明确要求更新项目记忆。证据为本工作区源码、Git 只读核对、隔离测试和公共文档 MCP 探测；不是线上状态。此前 2026-08-31 的 E 盘、旧 HEAD、服务器代理推理和本机能力限制与当前源码不一致。通过 `private_agent_local/app.py`、`direct_models.py`、`runtime.py`、前端请求分流及[模型直连说明](./direct-model-execution.md)交叉核对，当前桌面支持本机使用空间及模型供应商直连，工具仍在本机执行；旧历史保留在后文，不据此宣布服务器已升级。
+
+本次完成五项工具改进：
+
+| 项目 | 当前实现与边界 |
+| --- | --- |
+| 统一工具契约 | `private_agent_core/tool_specs.py` 与 `private_agent_local/tool_registry.py` 统一名称、版本、schema、副作用、能力、审批、取消和并行元数据；输入与输出校验进入现有执行链 |
+| 原生工具优先 | 保留原生文件/搜索/补丁，新增受保护路径、分页与版本校验的只读 Git 状态和单文件 diff；不新增任意 Shell 或 Git 写操作 |
+| 简化命令入口 | 普通 `exec_command` 展示 5 个基础参数；高级选项用 `request_execution`，新增 `get_execution_capabilities` 和稳定错误；保留旧协议和审批边界 |
+| 有界并行读取 | 相邻安全只读调用最多两个并行；写入、命令、控制、外部调用串行；结果按调用顺序记录，取消和追加约束处理整个批次，旧读取不进入新目标上下文 |
+| 技术文档 MCP | 项目独立配置、目录发现、显式选择启用、逐次审批、配置和目录版本绑定、不可信结果记录；桌面“设置 → MCP”接入；首次用途为用户选择的技术文档检索 |
+
+详细源码职责、API、限制与复跑命令见[本机 Agent 工具系统](./local-tool-system.md)。依赖与锁文件未修改；配置保存在现有项目记录，不新增数据库表。未给任何真实项目自动创建或启用文档源。
+
+验证中发现新增说明会影响原有 26k 小窗口用例；使用任务开始前保留的运行时模块在隔离进程对照确认原实现可通过，随后按项目状态减少未用工具定义并精简说明。没有提高窗口、削弱测试或改变压缩规则；上下文套件 35 项通过，包含 34 轮请求、至少两次压缩和最终真实文件写入。前端设置/API 测试 17 项、浏览器 MCP 配置流程 1 项、相关 Python Ruff 检查通过。
+
+最终验证记录：
+
+| 实际命令 | 观察结果与边界 |
+| --- | --- |
+| `.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite tool-evolution` | **447 passed、1 skipped**；跳过原因是本机 Windows 未授予创建真实符号链接权限。覆盖并行中断、先完成兄弟读取丢弃、逐次 MCP 审批、真实 SDK 协议、禁止联网、Git、命令、文件、上下文和既有任务约束 |
+| `node node_modules/vitest/vitest.mjs run src/components/DocumentationMcpPanel.spec.ts src/api/documentationMcp.spec.ts src/components/SettingsView.spec.ts` | 在 `apps/desktop` 执行，**17 passed** |
+| `node node_modules/@playwright/test/cli.js test e2e/documentation-mcp.spec.ts` | 在 `apps/desktop` 执行，**1 passed**；真实浏览器、模拟本机 IPC，已检查宽/窄窗口截图 |
+| `npm run build` | 在 `apps/desktop` 执行，`vue-tsc --noEmit` 和 Vite 生产构建通过；仍报告 Ant Design 分包约 814 kB 超过 500 kB 阈值，不把警告写成已解决 |
+
+早期回归遇到 Windows 受限工具环境的命名管道权限错误，以及兼容入口过滤过严、错误码测试预期和小窗口开销问题；分别使用获准的隔离测试进程、恢复旧入口兼容、核对新的错误契约和精简提示修正。最终表中的结果来自修正后的实际运行。没有跳过失败用例或提高窗口上限来取得通过。
+
+公共网络验证：Microsoft Learn MCP 真实目录发现返回 3 个工具，公开 PowerShell 文档检索成功。OpenAI 文档 MCP 在本机网络返回 HTTP 403，未确认可用；预填示例因此采用 Microsoft Learn。没有发送项目文件、访问模型密钥或调用付费模型。MCP 首版仅支持公开 HTTPS 无认证服务；stdio、OAuth、私有文档库、含引用或正则的复杂 schema 尚未支持。
+
+旧三阶段改进计划仍按其自身验收状态管理：本次工具并行和文档能力不等于 M2/M3 全部完成；既有试用包 1.0.13 的记录也不能作为本次源码改动已安装的证明。
+
+## 2026-08-31 历史快照（以下第 1～8 节）
+
+记录时工作区为 `E:\Program\Agent`。下面的“当前”“本轮”均指 2026-08-31 的故障排查；对应环境未经本次生产复核，历史结论不覆盖上面的 2026-09-19 桌面源码状态。
 
 **先记住：联网版 1.0.3 模型和管理员日志故障已定位；本机代码修复、修复工具和相关验证已完成，但没有收到服务器应用补丁、重启及真实账号验收回执。当前不能宣称“已上线修复”。**
 
@@ -30,9 +86,9 @@
 | 普通版 | 完整本机业务后端；MySQL、Ollama 等依赖按使用场景配置 | [根 README](../README.md)、[常规 Tauri 配置](../apps/desktop/src-tauri/tauri.conf.json) |
 | 联网版桌面壳 | 独立 `PrivateAgentRemote` 标识与更新通道，启动捆绑的 `private-agent-local.exe` | [联网版构建脚本](../scripts/build-remote-client.cjs)、[执行器生命周期](../apps/desktop/src-tauri/src/local_executor.rs) |
 | 本机执行器 | `/projects`、`/sessions`、`/agent-runs`、`/capabilities`、`/chat` 分流到本机；项目文件与按账号隔离的 SQLite 元数据在本机 | [请求分流](../apps/desktop/src/services/localExecutor.ts)、[本机 API](../src/private_agent_local/app.py)、[本机存储](../src/private_agent_local/store.py) |
-| 云端接口 | 账号、模型 profile、供应商配置与 `/admin/*` | [HTTP 客户端](../apps/desktop/src/api/http.ts)、[模型配置接口](../src/personal_assistant/api/routes_model_profiles.py) |
-| 模型执行 | 本机执行器经 `POST /desktop/model/complete` 请求服务器，由服务器解析账号模型并调用供应商 | [本机云端调用](../src/private_agent_local/cloud.py)、[桌面模型代理](../src/personal_assistant/api/routes_desktop_model.py) |
-| 管理员日志 | 仅管理员访问固定来源，进行有界尾部读取和脱敏，不接受任意路径 | [日志 API](../src/personal_assistant/api/routes_admin_logs.py)、[日志读取](../src/personal_assistant/core/admin_logs.py) |
+| 云端接口 | 账号、模型 profile、供应商配置与 `/admin/*` | [HTTP 客户端](../apps/desktop/src/api/http.ts)、模型配置接口（历史路径：`src/personal_assistant/api/routes_model_profiles.py`，已移除） |
+| 模型执行 | 本机执行器经 `POST /desktop/model/complete` 请求服务器，由服务器解析账号模型并调用供应商 | 本机云端调用（历史路径：`src/private_agent_local/cloud.py`，已移除）、桌面模型代理（历史路径：`src/personal_assistant/api/routes_desktop_model.py`，已移除） |
+| 管理员日志 | 仅管理员访问固定来源，进行有界尾部读取和脱敏，不接受任意路径 | 历史文件 `api/routes_admin_logs.py`、`core/admin_logs.py`（2026-09-19 已移除） |
 
 不要扩展这些结论：
 
@@ -48,11 +104,11 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [routes_desktop_model.py](../src/personal_assistant/api/routes_desktop_model.py) | ORM 推理强度字段修复 |
-| [test_desktop_model.py](../tests/unit/test_desktop_model.py) | 真实 ORM 对象与边界回归覆盖 |
-| [repair-connected-runtime.py](../scripts/repair-connected-runtime.py) | 新增的运行包定向检查、应用与回滚工具 |
-| [test_connected_runtime_repair.py](../tests/unit/test_connected_runtime_repair.py) | 新增修复工具测试 |
-| [服务器修复操作说明](./connected-runtime-1.0.3-repair.md) | 新增的服务器应用、配置和回滚指南 |
+| routes_desktop_model.py（历史路径：`src/personal_assistant/api/routes_desktop_model.py`，已移除） | ORM 推理强度字段修复 |
+| test_desktop_model.py（历史路径：`tests/unit/test_desktop_model.py`，已移除） | 真实 ORM 对象与边界回归覆盖 |
+| repair-connected-runtime.py（历史路径：`scripts/repair-connected-runtime.py`，已移除） | 新增的运行包定向检查、应用与回滚工具 |
+| test_connected_runtime_repair.py（历史路径：`tests/unit/test_connected_runtime_repair.py`，已移除） | 新增修复工具测试 |
+| [服务器修复操作说明](./archive/legacy/connected-runtime-1.0.3-repair.md) | 新增的服务器应用、配置和回滚指南 |
 | [1.0.3 修复总结](./solutions/2026-08-31-privateagent-1-0-3.md) | 新增的根因、修复和验证记录 |
 | [文档索引](./README.md) | 新增修复与记忆入口 |
 
@@ -90,7 +146,7 @@
 
 必要配置项仅为 `PA_CODING_PERMISSION_MODELS_ENABLED="true"`，不顺带开启其他 Coding 开关。保留 Supervisor 现有环境项，包括 `PA_PARENT_PID`、日志路径与秘密文件引用；保留 `alembic/env.py` 和其他服务器修复。不 reset/clean，不整体覆盖配置，不改数据库或 Nginx 权限。
 
-这是安装副本应急补丁，不更新 wheel 的 `dist-info/RECORD`，不等于正规重构建；后续重装可能覆盖补丁。精确操作、失败停止条件和回滚只按[操作说明](./connected-runtime-1.0.3-repair.md)核对，不按旧交接中的部署命令重复操作。
+这是安装副本应急补丁，不更新 wheel 的 `dist-info/RECORD`，不等于正规重构建；后续重装可能覆盖补丁。精确操作、失败停止条件和回滚只按[操作说明](./archive/legacy/connected-runtime-1.0.3-repair.md)核对，不按旧交接中的部署命令重复操作。
 
 ### 诊断脚本的退出超时
 
@@ -125,8 +181,8 @@ f8409dc1b80590b3ee707e9f25a8e32749bf4e113d63c52757cbc84ccfe3fb2f
 
 | 历史材料 | 易误读内容 | 正确使用方式 |
 | --- | --- | --- |
-| [2026-08-30 交接提示](./next-agent-handoff-1.0.3.md) | “根因尚未确认”“五文件已部署、Supervisor 恢复” | 是此前记录；后续诊断查明补丁没有进入实际安装副本，不能证明本轮修复已上线 |
-| [初期部署交接](./deployment-handoff-20260830.md)、[换机开发指南](./new-computer-development.md) | 旧远程客户端“不启动本地 Python sidecar”、旧草稿/测试 EXE 入口 | 初期云端执行方案，不适用于当前捆绑轻量本机执行器的联网版；不能让 Linux 接管 Windows 项目目录 |
+| [2026-08-30 交接提示](./archive/legacy/next-agent-handoff-1.0.3.md) | “根因尚未确认”“五文件已部署、Supervisor 恢复” | 是此前记录；后续诊断查明补丁没有进入实际安装副本，不能证明本轮修复已上线 |
+| [初期部署交接](./archive/legacy/deployment-handoff-20260830.md)、[换机开发指南](./archive/legacy/new-computer-development.md) | 旧远程客户端“不启动本地 Python sidecar”、旧草稿/测试 EXE 入口 | 初期云端执行方案，不适用于当前捆绑轻量本机执行器的联网版；不能让 Linux 接管 Windows 项目目录 |
 | [根 README](../README.md) | 普通版依赖、源码版本与大量能力描述 | 基础工程概览，不是联网版运行状态或当前生产能力证明 |
 | [文档索引](./README.md) | 2026-08-20 的 v0.5.0 / v0.6.0 阶段说明 | 历史工程阶段，不能作为当前部署/客户端版本 |
 

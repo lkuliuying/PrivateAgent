@@ -13,7 +13,7 @@
 
 - [本机 files.py](../../../src/private_agent_local/files.py)：授权范围、敏感路径、链接检查、摘要、单文件预览和写后校验。
 - [本机 policy.py](../../../src/private_agent_local/policy.py)：PowerShell 文件动作与项目路径限制。
-- [PatchOperation 领域模型](../../../src/personal_assistant/agent_v2/domain/patch_operations.py)、[补丁适配器](../../../src/personal_assistant/agent_v2/application/patch_adapter.py)：审查纯逻辑后按需复用。
+- PatchOperation 领域模型（历史路径：`src/personal_assistant/agent_v2/domain/patch_operations.py`，已移除）、补丁适配器（历史路径：`src/personal_assistant/agent_v2/application/patch_adapter.py`，已移除）：审查纯逻辑后按需复用。
 - [Git 工作区](../../../src/private_agent_local/git_workspace.py)：保留本地分支查询和切换保护。
 - [DiffArtifact](../../../apps/desktop/src/features/coding/components/DiffArtifact.vue)：复用现有展示与审批界面。
 

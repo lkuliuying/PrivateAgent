@@ -24,13 +24,13 @@
 
 ## 改动文件与提交分组
 
-完整功能文件清单见[运行时说明第 9 节](../unified-desktop-runtime.md#9-2026-08-31-界面与自动模型路由验证)。本次发行按以下三组提交，共 27 个文件，不包含原有 README 改动：
+完整功能文件清单见[运行时说明第 9 节](../archive/legacy/unified-desktop-runtime.md#9-2026-08-31-界面与自动模型路由验证)。本次发行按以下三组提交，共 27 个文件，不包含原有 README 改动：
 
 | 分组 | 实际文件 |
 | --- | --- |
 | 本机运行时与测试，10 个文件 | 修改 `src/private_agent_local/` 下的 `app.py`、`cloud.py`、`connections.py`、`context.py`、`core_adapter.py`、`local_models.py`、`runtime.py`、`store.py`；修改 `tests/unit/test_local_context.py`；新增 `tests/unit/test_local_model_routing.py` |
 | 桌面界面与调用链，14 个文件 | 修改 `apps/desktop/src/RootApp.vue`、`RootApp.spec.ts`；修改 `api/modelProviders.ts`、`api/modelProviders.spec.ts`；修改 `components/ModelProvidersPanel.vue`、`components/SettingsView.vue`、`components/SettingsView.spec.ts`；删除 `components/ConnectionSettings.vue`、`components/ConnectionSettings.spec.ts`；修改 `features/agent/ContextUsageRing.vue`、`features/agent/ContextUsageRing.spec.ts`；修改 `services/localExecutor.ts`、`services/localExecutor.spec.ts`、`services/serverLogin.integration.spec.ts`。上述缩写路径均相对 `apps/desktop/src/` |
-| 打包验证与发行说明，3 个文件 | 修改 `scripts/verify-unified-client.py` 和 `docs/unified-desktop-runtime.md`；新增本文 |
+| 打包验证与发行说明，3 个文件 | 修改 `scripts/verify-unified-client.py` 和 `docs/archive/legacy/unified-desktop-runtime.md`；新增本文 |
 
 冻结执行器验证脚本改为与桌面入口一致的 `inference_mode=auto`，三种测试协议均通过服务器配置选路，覆盖真实打包二进制，避免只验证旧手动模式。
 
@@ -85,10 +85,10 @@ git diff --check
 /opt/private-agent/venv/bin/python -I -B /opt/private-agent/current/scripts/update-connected-server.py
 ```
 
-预期只有本批差异时返回 `CODE_SYNCED_NO_RESTART`。实际分类以服务器当前 HEAD 到目标的完整差异为准；如仍使用旧更新工具、存在本地修改或发现专项审阅文件，停止并按[服务器更新指南](../server-code-update-workflow.md)核对，不修改白名单绕过保护。核对最终 HEAD 等于发行标签提交，并确认服务持续 RUNNING。
+预期只有本批差异时返回 `CODE_SYNCED_NO_RESTART`。实际分类以服务器当前 HEAD 到目标的完整差异为准；如仍使用旧更新工具、存在本地修改或发现专项审阅文件，停止并按[服务器更新指南](../archive/legacy/server-code-update-workflow.md)核对，不修改白名单绕过保护。核对最终 HEAD 等于发行标签提交，并确认服务持续 RUNNING。
 
 本次未操作服务器，未实际安装/升级已装客户端，未完成真实账号或供应商验收。工具权限和 SHA-256 校验不构成操作系统沙箱，打包验证中 `sandbox_available=false`。未签名预览包可能触发 Windows 提示；不将其宣称为正式签名或自动更新发行。
 
 ## 项目记忆检查
 
-已读取 `AGENTS.md` 与 `docs/project-state.md`，并核对当前 Git、源码、测试、构建与 GitHub 发行。项目记忆中的 Git 和服务器快照属于较早记录；本轮以实时开发机及 GitHub 证据为准，不把历史生产状态改写为已验收。当前自动路由、缓存统计及旧配置兼容边界已同步至 `docs/unified-desktop-runtime.md`，本次构建与发布边界记录在本文。按仓库明确约定，本次没有改写 `docs/project-state.md` 或全局记忆。
+已读取 `AGENTS.md` 与 `docs/project-state.md`，并核对当前 Git、源码、测试、构建与 GitHub 发行。项目记忆中的 Git 和服务器快照属于较早记录；本轮以实时开发机及 GitHub 证据为准，不把历史生产状态改写为已验收。当前自动路由、缓存统计及旧配置兼容边界已同步至 `docs/archive/legacy/unified-desktop-runtime.md`，本次构建与发布边界记录在本文。按仓库明确约定，本次没有改写 `docs/project-state.md` 或全局记忆。

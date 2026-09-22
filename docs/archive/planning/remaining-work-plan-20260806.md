@@ -16,7 +16,7 @@
 > - **R2.2 完成**：Windows 交付模式定为**外部 Ollama 由用户管理**（用户决策）；`/health` 增加
 >   `error_code`（`ollama_not_running`/`ollama_timeout`/`ollama_http_error`/`ollama_model_missing`）与
 >   `missing_models`；`scripts/ollama_lifecycle_check.py` + 证据报告
->   （embed P50 87ms / P95 111ms，bge-m3 常驻 1.6 GB）；文档 `docs/ollama-lifecycle.md`。
+>   （embed P50 87ms / P95 111ms，bge-m3 常驻 1.6 GB）；文档 `docs/archive/legacy/ollama-lifecycle.md`。
 > - **R3 二轮（2026-08-06）**：① 预算口径统一——旧聊天历史按 `llm_context_length` 截断
 >   （保留最近）、远程审计改用 `ConservativeTokenEstimator`，`tests/test_chat_budget.py`；
 >   ② tokenizer 校准——真实 usage 抽样（5 类文本）显示原公式 4/5 低估，
@@ -34,7 +34,7 @@
 >   文件 Diff（回读 SHA/交叉校验/路径越界）、代码（白名单+标记）、Shell（退出码/stderr/超时/截断/取消）、
 >   API（状态码/Schema/重试/幂等）、数据库（提交/约束/影响行/读回）、多步骤完成条件（可信谓词）；
 >   `ValidatedToolDispatcher` 新增 `result_verifier` 挂钩，失败写 durable `agent_tool_executions` 并给有界反馈；
->   `propose_patch` 已接入真实只读工作流；18 个新测试 + runtime 端到端；文档 `docs/domain-verifiers.md`。
+>   `propose_patch` 已接入真实只读工作流；18 个新测试 + runtime 端到端；文档 `docs/archive/legacy/domain-verifiers.md`。
 
 ## 1. 已完成且不得重复实施
 

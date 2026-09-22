@@ -1,5 +1,7 @@
 # PrivateAgent Coding Agent 改造计划书：总体路线
 
+> **当前范围（2026-09-17）：仅供用户在当前电脑运行和学习 Agent，E、F 阶段已取消。** 活动路线在 A–D 的本机功能与问题修复处收尾，不再安排多系统适配、干净安装、旧版本升级/回退、正式发布或服务器更新。完成标准见 [本机学习计划](s6-follow-up-development-plan.md#1-目标与完成边界)，当前记录见 [本机学习使用检查](s6-pre-e-readiness.md#36-本机学习范围调整ef-阶段取消)。下方原正式 M3、安装和发布要求保留历史设计语境，不作为本次学习前置；已有失败不改写为通过。
+
 > 阶段 B 后续（2026-09-10）：严格外部题集、独立比较与统计关联之后，本轮补充 Windows AppContainer 隔离后端、独立验收回执及污染登记。当前接口见 [阶段 B 契约](./s6-phase-b-contract.md)，最新成绩与退出核对见 [补充验收记录](./s6-phase-b-remaining-report.md)，首次交付历史见 [阶段 B 验证记录](./s6-phase-b-validation-report.md)。用户已确认尚未准备独立保留题，不能据工具开发放行 B 或 M3；本轮不进入 C～F。
 
 > 编制日期：2026-09-08（Asia/Shanghai）。
@@ -61,7 +63,7 @@
 | 私有管道与进程管理 | [IPC](../../../src/private_agent_local/ipc.py)、[Tauri 宿主](../../../apps/desktop/src-tauri/src/local_executor.rs) | 当前默认不是开放本机 TCP API |
 | Rust 命令宿主 | [exec-host](../../../apps/exec-host/src/main.rs)、[客户端](../../../src/private_agent_core/execution/exec_host_client.py) | 存在 stdin/PTY 等底层协议；桌面接通程度须分开判断 |
 | 编码工作台与事件投影 | [Coding 功能目录](../../../apps/desktop/src/features/coding/) | 不把 UI 组件、模拟预览当作真实运行证据 |
-| 完成契约、工具目录、补丁领域模型 | [agent_v2](../../../src/personal_assistant/agent_v2/) | 部分接入服务端路径，须适配本机存储与生命周期 |
+| 完成契约、工具目录、补丁领域模型 | agent_v2（历史路径：`src/personal_assistant/agent_v2`，已移除） | 部分接入服务端路径，须适配本机存储与生命周期 |
 
 ### 3.2 缺口与阶段映射
 
@@ -87,7 +89,7 @@ G01/G02 的隔离探针使用内存假模型与假命令，证明状态路径，
 
 ### 3.3 历史文档冲突的处理
 
-[项目状态记忆](../../project-state.md)是 2026-08-31 的历史快照，其工作区、HEAD 和部分能力描述已落后于当前源码。[统一客户端说明](../../unified-desktop-runtime.md)更接近当前执行方式，但其中历史验收仍不能继承到本机。以“当前文件、调用路径、隔离测试、实际安装验证”分别记录事实，不将文档中的规划改写为已完成。
+[项目状态记忆](../../project-state.md)是 2026-08-31 的历史快照，其工作区、HEAD 和部分能力描述已落后于当前源码。[统一客户端说明](../../archive/legacy/unified-desktop-runtime.md)更接近当前执行方式，但其中历史验收仍不能继承到本机。以“当前文件、调用路径、隔离测试、实际安装验证”分别记录事实，不将文档中的规划改写为已完成。
 
 原计划编制阶段只新增计划和索引；后续 S0 开发的实际改动与新证据见 [S0 验证报告](./s0-validation-report.md)。按仓库入口约定，不自动改写 `docs/project-state.md`；将来需要维护共享状态时，应在明确授权下记录新增证据及其环境。
 
