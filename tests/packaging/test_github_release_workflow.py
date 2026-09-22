@@ -147,6 +147,23 @@ def test_job_environment_uses_dispatch_available_contexts():
     assert "UV_CACHE_DIR:" not in job_env
 
 
+def test_job_python_environment_preserves_chinese_json_through_stdout_pipe(release_context):
+    job_env = TEXT.split("    env:\n", 1)[1].split("\n    steps:", 1)[0]
+    python_env = dict(re.findall(r"^      (PYTHONUTF8|PYTHONIOENCODING): '([^']+)'$", job_env, re.M))
+    # 模拟 Windows runner 的 cp1252 管道，先复现失败，再应用工作流中的真实环境值。
+    env = {**release_context[2], "PYTHONUTF8": "0", "PYTHONIOENCODING": "cp1252"}
+    command = [sys.executable, "-B", "-c",
+               "import json,sys; print(json.dumps({'notes':'\\u4e2d\\u6587\\u9a8c\\u6536',"
+               "'encoding':sys.stdout.encoding,'utf8_mode':sys.flags.utf8_mode}, ensure_ascii=False))"]
+    failed = subprocess.run(command, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+    assert failed.returncode != 0
+    assert b"UnicodeEncodeError" in failed.stderr
+    result = subprocess.run(command, env={**env, **python_env}, stdin=subprocess.DEVNULL,
+                            capture_output=True, timeout=30, check=False)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert json.loads(result.stdout.decode("utf-8")) == {"notes": "中文验收", "encoding": "utf-8", "utf8_mode": 1}
+
+
 def test_input_exports_runner_cache_outside_checkout_for_later_steps(release_context):
     result = execute("Validate release input", release_context)
     assert result.returncode == 0, result.stderr
