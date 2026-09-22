@@ -75,6 +75,9 @@ def release_context(tmp_path):
         "RELEASE_TAG": "v1.0.0",
         "RELEASE_VERSION": "1.0.0",
         "GITHUB_OUTPUT": str(tmp_path / "github-output.txt"),
+        "GITHUB_ENV": str(tmp_path / "github-env.txt"),
+        "GITHUB_WORKSPACE": str(tmp_path),
+        "RUNNER_TEMP": str(tmp_path.parent / f"{tmp_path.name}-runner-temp"),
         "EXPECTED_RELEASE_ID": "RE_test_release",
         "MOCK_HEAD_COMMIT": "a" * 40,
         "MOCK_TAG_COMMIT": "a" * 40,
@@ -131,11 +134,29 @@ def test_workflow_is_manual_tagged_and_secret_scoped():
         if "        run: |" in block:
             assert "${{" not in run_body(name)
     assert "TAURI_SIGNING_PRIVATE_KEY" not in TEXT.split("    steps:", 1)[0]
-    cache_path = re.search(r"^      UV_CACHE_DIR: (.+)$", TEXT, re.M).group(1)
-    assert cache_path == "${{ runner.temp }}\\privateagent-uv-cache"
     assert "--github-repo $env:RELEASE_REPOSITORY" in run_body("Build the Tauri-signed Windows installer")
     assert "scripts/verify_update_release.py" in run_body("Verify final updater assets and record evidence")
     assert all(re.fullmatch(r"[0-9a-f]{40}", pin) for pin in re.findall(r"uses: [^@]+@([^\s]+)", TEXT))
+
+
+def test_job_environment_uses_dispatch_available_contexts():
+    job_env = TEXT.split("    env:\n", 1)[1].split("\n    steps:", 1)[0]
+    # job.env 在分配 runner 前解析，不能使用仅步骤执行时可用的 runner 上下文。
+    contexts = set(re.findall(r"\$\{\{\s*([A-Za-z_]+)\.", job_env))
+    assert contexts <= {"github", "needs", "strategy", "matrix", "vars", "secrets", "inputs"}
+    assert "UV_CACHE_DIR:" not in job_env
+
+
+def test_input_exports_runner_cache_outside_checkout_for_later_steps(release_context):
+    result = execute("Validate release input", release_context)
+    assert result.returncode == 0, result.stderr
+    env = release_context[2]
+    lines = Path(env["GITHUB_ENV"]).read_text(encoding="utf-8-sig").splitlines()
+    expected = Path(env["RUNNER_TEMP"]) / "privateagent-uv-cache"
+    assert lines == [f"UV_CACHE_DIR={expected}"]
+    assert not expected.is_relative_to(Path(env["GITHUB_WORKSPACE"]))
+    assert TEXT.index("- name: Validate release input") < TEXT.index("- name: Set up uv")
+    assert TEXT.index("- name: Validate release input") < TEXT.index("- name: Install local executor build dependencies")
 
 
 def test_all_powershell_blocks_parse(release_context):
