@@ -23,6 +23,7 @@ describe("coding api 映射层", () => {
       id: 1,
       name: "PrivateAgent",
       status: "active",
+      pinnedAt: null,
       updatedAt: "2026-08-22T00:00:00Z",
     });
     expect(JSON.stringify(summary)).not.toContain("root_path");
@@ -75,9 +76,8 @@ describe("coding api 映射层", () => {
       workspaceId: 101,
       updatedAt: "2026-08-22T02:00:00Z",
       lastRunId: "run-abc",
-      // v0.9.0 H4：置顶/归档/类型事实（additive）
+      // 只保留置顶和类型，旧归档字段不再进入工作台状态。
       pinnedAt: null,
-      archivedAt: null,
       kind: "coding",
     });
   });
@@ -98,6 +98,11 @@ describe("coding api 映射层", () => {
     const fallback = await toCodingApiError(htmlError);
     expect(fallback.code).toBe("unknown");
     expect(fallback.status).toBe(502);
+
+    const localError = await toCodingApiError(new Response(
+      JSON.stringify({ detail: "请选择本机上确实存在的绝对目录" }), { status: 422 }
+    ));
+    expect(localError).toEqual({ status: 422, code: "unknown", message: "请选择本机上确实存在的绝对目录" });
   });
 
   // v0.9.0 H1-D（§5.8）：profile 详情映射（含具体模型路由字段与默认标记）

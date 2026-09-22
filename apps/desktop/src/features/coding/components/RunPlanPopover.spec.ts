@@ -12,6 +12,18 @@ const PLAN = {
 };
 
 describe("RunPlanPopover", () => {
+  it("提示目标变化，展示公开说明并区分进度与验收", async () => {
+    const wrapper = mount(RunPlanPopover, { props: { plan: { ...PLAN, needs_review: true,
+      explanation: "先补充边界检查", items: [{ ...PLAN.items[0], evidence_calls: ["read-1"] }] } } });
+    expect(wrapper.get('[role="status"]').text()).toContain("目标已变化");
+    expect(wrapper.text()).toContain("先补充边界检查");
+    expect(wrapper.text()).toContain("关联 1 次工具调用");
+    expect(wrapper.text()).toContain("步骤进度不代表验证通过");
+    await wrapper.setProps({ plan: { ...PLAN, needs_review: false } });
+    expect(wrapper.find('[role="status"]').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
   it("呈现版本与条目，当前项高亮", () => {
     const wrapper = mount(RunPlanPopover, { props: { plan: PLAN } });
     expect(wrapper.text()).toContain("v3");

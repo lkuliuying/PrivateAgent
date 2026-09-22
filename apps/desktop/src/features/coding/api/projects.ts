@@ -18,6 +18,7 @@ export function toProjectSummary(dto: Project): CodingProjectSummary {
   return {
     id: dto.id,
     name: dto.name,
+    pinnedAt: dto.pinned_at ?? null,
     status: dto.status,
     updatedAt: dto.updated_at,
   };
@@ -39,6 +40,30 @@ export function toWorkspaceSummary(dto: ProjectWorkspace, projectId: number): Co
 export async function fetchCodingProjects(): Promise<CodingProjectSummary[]> {
   const list = await codingFetchJson<Project[]>("/projects");
   return list.filter((dto) => dto.status === "active").map(toProjectSummary);
+}
+
+/** 目录仅供编辑弹窗临时展示，不进入项目树和通知历史。 */
+export async function fetchCodingProjectDetails(projectId: number): Promise<Project> {
+  return codingFetchJson<Project>(`/projects/${projectId}`);
+}
+
+export async function updateCodingProject(projectId: number, input: {
+  name: string; root_path?: string; authorize_scope?: boolean;
+}): Promise<CodingProjectSummary> {
+  return toProjectSummary(await codingFetchJson<Project>(
+    `/projects/${projectId}`, codingJsonInit("PATCH", input)
+  ));
+}
+
+export async function setCodingProjectPinned(projectId: number, pinned: boolean): Promise<CodingProjectSummary> {
+  return toProjectSummary(await codingFetchJson<Project>(
+    `/projects/${projectId}/${pinned ? "pin" : "unpin"}`, codingJsonInit("POST", {})
+  ));
+}
+
+/** 删除项目及其会话记录，项目文件由本机执行器保留。 */
+export async function deleteCodingProject(projectId: number): Promise<void> {
+  await codingFetchJson(`/projects/${projectId}`, { method: "DELETE" });
 }
 
 export async function fetchCodingWorkspaces(projectId: number): Promise<CodingWorkspaceSummary[]> {
@@ -229,3 +254,12 @@ export async function createCodingProject(
   );
   return toProjectSummary(dto);
 }
+
+export async function createIsolatedWorkspace(projectId: number, ref: string, requestId: string): Promise<CodingWorkspaceSummary> {
+  return toWorkspaceSummary(await codingFetchJson<ProjectWorkspace>(`/projects/${projectId}/workspaces/worktree`, codingJsonInit("POST", { ref, request_id: requestId })), projectId);
+}
+export interface HandoffRecord { request_id: string; session_id: number; created_at: string; state: string; error?: string; files: { rel_path: string; state: string }[] }
+export const fetchHandoffs = (projectId: number, signal?: AbortSignal) => codingFetchJson<{ items: HandoffRecord[] }>(`/projects/${projectId}/handoffs`, { signal });
+export interface HandoffPreview { version: string; source_workspace_id: number; target_workspace_id: number; changes: { rel_path: string; operation: string; diff: string }[]; conflicts: { rel_path: string; reason: string }[] }
+export const previewHandoff = (projectId: number, workspaceId: number) => codingFetchJson<HandoffPreview>(`/projects/${projectId}/workspaces/${workspaceId}/handoff-preview`, codingJsonInit("POST", {}));
+export const applyHandoff = (projectId: number, workspaceId: number, sessionId: number, version: string, requestId: string) => codingFetchJson<{ state: string; error?: string; files: { rel_path: string; state: string }[] }>(`/projects/${projectId}/workspaces/${workspaceId}/handoff`, codingJsonInit("POST", { session_id: sessionId, version, request_id: requestId }));

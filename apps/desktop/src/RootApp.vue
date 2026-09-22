@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 
 import { cmdExitApp, cmdHideMainWindow, listenForMainWindowClose } from "./api/tauri";
 import CloseBehaviorDialog from "./components/CloseBehaviorDialog.vue";
+import ButtonTooltipHost from "./design/ButtonTooltipHost.vue";
 import {
   getSavedWindowCloseBehavior,
   saveWindowCloseBehavior,
@@ -14,9 +15,17 @@ import {
   backendStartupState,
   retryDesktopBackendStartup,
 } from "./services/backendStartup";
-import { useAuthStore } from "./stores/auth";
+import { resetCodingWorkspace } from "./features/coding/model/codingWorkspaceStore";
+import { wallpaperTheme } from "./services/wallpaperTheme/controller";
+import { wallpaperAntTheme } from "./services/wallpaperTheme/antTheme";
+import { useNotifications } from "./stores/notifications";
+import "./design/wallpaper.css";
 
-const auth = useAuthStore();
+const antTheme = computed(() => wallpaperAntTheme(wallpaperTheme.palette.value));
+const wallpaperStyle = computed(() => ({
+  backgroundImage: `linear-gradient(var(--wallpaper-panel), var(--wallpaper-panel)), url("${wallpaperTheme.imageUrl.value}")`,
+}));
+
 const route = useRoute();
 const router = useRouter();
 const closeDialogOpen = ref(false);
@@ -29,13 +38,9 @@ let unlistenWindowClose: (() => void) | null = null;
 let rootUnmounted = false;
 
 function handleSessionExpired(): void {
-  auth.clearSession();
-  if (route.name !== "login" && route.name !== "register") {
-    void router.replace({
-      name: "login",
-      query: { redirect: route.fullPath },
-    });
-  }
+  resetCodingWorkspace();
+  // 只恢复连接，不重放导致失效的写操作。
+  void retryBackendStartup();
 }
 
 async function performClose(behavior: WindowCloseBehavior): Promise<void> {
@@ -90,13 +95,16 @@ async function retryBackendStartup(): Promise<void> {
     await retryDesktopBackendStartup();
     await router.replace(route.fullPath);
   } catch {
-    // backendStartupState already carries the sanitized user-facing error.
+    // 启动状态已保存可展示的错误，保留重试入口。
   } finally {
     backendRetryBusy.value = false;
   }
 }
 
 onMounted(() => {
+  void wallpaperTheme.restore().then(() => {
+    if (!rootUnmounted && wallpaperTheme.error.value) useNotifications().warning("壁纸主题未恢复", wallpaperTheme.error.value);
+  });
   window.addEventListener("pa:session-expired", handleSessionExpired);
   void listenForMainWindowClose(handleWindowCloseRequest)
     .then((unlisten) => {
@@ -110,13 +118,16 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   rootUnmounted = true;
+  wallpaperTheme.dispose();
   unlistenWindowClose?.();
   window.removeEventListener("pa:session-expired", handleSessionExpired);
 });
 </script>
 
 <template>
-  <a-config-provider :locale="zhCN">
+  <a-config-provider :locale="zhCN" :theme="antTheme">
+    <div v-if="wallpaperTheme.enabled.value" class="app-wallpaper" :style="wallpaperStyle" aria-hidden="true" data-testid="app-wallpaper" />
+    <ButtonTooltipHost />
     <RouterView v-if="backendStartupState.status === 'ready'" />
     <main
       v-if="backendStartupState.status === 'idle' || backendStartupState.status === 'starting'"
@@ -145,7 +156,7 @@ onBeforeUnmount(() => {
           :disabled="backendRetryBusy"
           @click="retryBackendStartup"
         >
-          {{ backendRetryBusy ? "正在重试…" : "关闭其他实例后重试" }}
+          {{ backendRetryBusy ? "正在重试…" : "重试连接" }}
         </button>
       </section>
     </main>

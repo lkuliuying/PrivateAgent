@@ -1,13 +1,20 @@
-import { mount } from "@vue/test-utils";
+import { mount as mountComponent } from "@vue/test-utils";
 import { describe, expect, it } from "vitest";
 import { nextTick } from "vue";
 import SettingsModuleNav from "./SettingsModuleNav.vue";
+import { Dropdown } from "ant-design-vue";
+
+const mount: typeof mountComponent = (component, options) => mountComponent(component, {
+  ...options,
+  global: { ...options?.global, components: { ADropdown: Dropdown, ...options?.global?.components } },
+});
 
 describe("SettingsModuleNav", () => {
   it("按模块呈现设置入口并只高亮当前模块", async () => {
     const wrapper = mount(SettingsModuleNav, { props: { active: "current-model" } });
 
-    expect(wrapper.findAll(".settings-nav__item")).toHaveLength(6);
+    expect(wrapper.findAll(".settings-nav__item")).toHaveLength(8);
+    expect(wrapper.find('[data-testid="settings-section-memories"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="settings-section-status"]').exists()).toBe(false);
     expect(wrapper.text()).not.toContain("运行状态");
     expect(wrapper.find('[data-testid="settings-section-profile"]').exists()).toBe(true);

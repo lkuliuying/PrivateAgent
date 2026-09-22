@@ -11,6 +11,7 @@
  */
 import type {
   AgentRunStatus,
+  PendingPlanInput,
   RunArtifactRecord,
   RunPlanItemRecord,
   RunPlanItemStatus,
@@ -29,7 +30,25 @@ export type ToolActivityState =
   | "completed"
   | "failed";
 
+export interface PublicModelOutput {
+  attemptId: string;
+  messageId: string | null;
+  phase: "commentary" | "final_answer" | null;
+  generation: number | null;
+  text: string;
+  state: "streaming" | "finished" | "interrupted";
+  hasToolCalls: boolean | null;
+  truncated: boolean;
+}
+
 export type TranscriptEntry =
+  | {
+      kind: "context-compaction";
+      key: string;
+      sequence: number;
+      state: "started" | "completed" | "failed";
+      message: string | null;
+    }
   | {
       kind: "run-start";
       key: string;
@@ -42,7 +61,7 @@ export type TranscriptEntry =
       kind: "context";
       key: string;
       sequence: number;
-      estimatedTokens: number;
+      estimatedTokens: number | null;
       truncated: boolean;
     }
   | {
@@ -57,6 +76,11 @@ export type TranscriptEntry =
       usageComplete?: boolean;
       latencyMs: number | null;
     }
+  | {
+      kind: "model-output";
+      key: string;
+      sequence: number;
+    } & PublicModelOutput
   | {
       kind: "plan";
       key: string;
@@ -90,7 +114,7 @@ export type TranscriptEntry =
       sequence: number;
       verifier: string;
       attempt: number;
-      state: "started" | "passed" | "failed";
+      state: "started" | "passed" | "failed" | "unverified";
       message: string | null;
       willRetry: boolean;
     }
@@ -101,6 +125,7 @@ export type TranscriptEntry =
       artifactId: string;
       artifactKind: string;
       title: string;
+      relPath: string | null;
     }
   | {
       kind: "patch-set";
@@ -139,7 +164,13 @@ export interface RunUsage {
 }
 
 export interface RunProjection {
-  modelOutput?: { attemptId: string; text: string; state: "streaming" | "finished" | "interrupted" } | null;
+  projectId?: number | null;
+  workspaceId?: number | null;
+  sessionId?: number | null;
+  collaborationMode?: "default" | "plan";
+  pendingInput?: PendingPlanInput | null;
+  stateVersion?: number;
+  modelOutput?: PublicModelOutput | null;
   runOutcome: RunOutcome;
   completionRequirements: Requirement[];
   verifying: boolean;
@@ -152,6 +183,9 @@ export interface RunProjection {
   /** 本次 run 的用户消息（创建时提交，非 durable 事件） */
   userMessage: string | null;
   output: string | null;
+  /** 缺省代表旧事件；null 表示最终正文经过验收替换，不能按文本隐藏候选。 */
+  finalOutputAttemptId?: string | null;
+  structuredOutput?: Record<string, unknown> | null;
   error: { code: string | null; message: string | null } | null;
   usage: RunUsage;
   startedAt: string | null;
@@ -211,6 +245,14 @@ function nullableNum(payload: Record<string, unknown>, key: string): number | nu
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function outputPhase(value: unknown): PublicModelOutput["phase"] {
+  return value === "commentary" || value === "final_answer" ? value : null;
+}
+
+function structuredOutput(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
 function upsertEntry(projection: RunProjection, entry: TranscriptEntry, byKey = true): void {
   if (byKey) {
     const index = projection.entries.findIndex((item) => item.key === entry.key);
@@ -264,8 +306,42 @@ function normalizePlanItems(raw: unknown): RunPlanItemRecord[] {
       title: typeof item.title === "string" ? item.title : String(item.item_key ?? `步骤 ${index + 1}`),
       detail: typeof item.detail === "string" ? item.detail : null,
       status: (typeof item.status === "string" ? item.status : "pending") as RunPlanItemStatus,
+      ...(Array.isArray(item.requirement_ids) ? { requirement_ids: item.requirement_ids.filter((id): id is string => typeof id === "string") } : {}),
+      ...(Array.isArray(item.evidence_calls) ? { evidence_calls: item.evidence_calls.filter((id): id is string => typeof id === "string") } : {}),
+      ...(Array.isArray(item.supersedes) ? { supersedes: item.supersedes.filter((id): id is string => typeof id === "string") } : {}),
     }))
     .sort((a, b) => a.ordinal - b.ordinal);
+}
+
+function parsePendingInput(raw: unknown): PendingPlanInput | null {
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as Record<string, unknown>;
+  if (typeof value.input_id !== "string" || !Array.isArray(value.questions)
+      || value.questions.length < 1 || value.questions.length > 3) return null;
+  const questions: PendingPlanInput["questions"] = [];
+  for (const rawQuestion of value.questions) {
+    if (!rawQuestion || typeof rawQuestion !== "object") return null;
+    const item = rawQuestion as Record<string, unknown>;
+    if (typeof item.id !== "string" || typeof item.question !== "string" || !Array.isArray(item.options)) return null;
+    const options: PendingPlanInput["questions"][number]["options"] = [];
+    for (const rawOption of item.options) {
+      if (!rawOption || typeof rawOption !== "object") return null;
+      const option = rawOption as Record<string, unknown>;
+      if (typeof option.label !== "string" || typeof option.description !== "string") return null;
+      options.push({ label: option.label, description: option.description });
+    }
+    questions.push({ id: item.id, question: item.question, options });
+  }
+  return { input_id: value.input_id, questions, goal_version: num(value, "goal_version", 1),
+    generation: num(value, "generation"), created_at: str(value, "created_at") };
+}
+
+function planMetadata(raw: Pick<RunPlanState, "goal_version" | "needs_review" | "explanation">): Partial<RunPlanState> {
+  return {
+    ...(typeof raw.goal_version === "number" ? { goal_version: raw.goal_version } : {}),
+    ...(typeof raw.needs_review === "boolean" ? { needs_review: raw.needs_review } : {}),
+    ...(typeof raw.explanation === "string" ? { explanation: raw.explanation } : {}),
+  };
 }
 
 /** 终态 durable 事件的 payload（runtime _terminal_payload） */
@@ -285,8 +361,21 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
   }
   projection.lastSequence = frame.sequence;
   const payload = frame.payload ?? {};
+  if (typeof payload.state_version === "number") projection.stateVersion = payload.state_version;
 
   switch (frame.type) {
+    case "input.requested":
+      if (isTerminalRunStatus(projection.status)) break;
+      projection.pendingInput = parsePendingInput(payload.pending_input);
+      projection.status = "waiting_input";
+      break;
+    case "input.resolved":
+    case "input.invalidated":
+      if (projection.pendingInput?.input_id === payload.input_id) {
+        projection.pendingInput = null;
+        if (projection.status === "waiting_input") projection.status = "running";
+      }
+      break;
     case "run.paused":
       projection.status = "paused";
       break;
@@ -298,23 +387,57 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       break;
     case "model.output.delta": {
       const attemptId = str(payload, "attempt_id");
-      if (!attemptId) break;
-      const previous = projection.modelOutput?.attemptId === attemptId ? projection.modelOutput.text : "";
-      projection.modelOutput = { attemptId, text: (previous + str(payload, "delta")).slice(-64000), state: "streaming" };
+      const delta = str(payload, "delta");
+      if (!attemptId || !delta) break;
+      const messageId = str(payload, "message_id") || null;
+      const key = messageId === null ? `model-output:${attemptId}` : `model-output:${JSON.stringify([attemptId, messageId])}`;
+      const previous = projection.entries.find((entry): entry is Extract<TranscriptEntry, { kind: "model-output" }> =>
+        entry.kind === "model-output" && entry.key === key);
+      // 请求级终结覆盖所有消息；迟到的新消息也不能重新打开已经结束的请求。
+      if (projection.entries.some(entry => entry.kind === "model-output" && entry.attemptId === attemptId && entry.state !== "streaming")) break;
+      const text = (previous?.text ?? "") + delta;
+      const output: PublicModelOutput = {
+        attemptId, messageId,
+        phase: outputPhase(payload.phase) ?? previous?.phase ?? null,
+        generation: nullableNum(payload, "generation") ?? previous?.generation ?? null,
+        text: text.slice(-64000), state: "streaming", hasToolCalls: null,
+        truncated: previous?.truncated === true || payload.truncated === true || text.length > 64000,
+      };
+      upsertEntry(projection, { kind: "model-output", key, sequence: previous?.sequence ?? frame.sequence, ...output });
+      projection.modelOutput = output;
       break;
     }
     case "model.output.finished":
     case "model.output.interrupted": {
-      if (projection.modelOutput?.attemptId === str(payload, "attempt_id")) projection.modelOutput.state = frame.type === "model.output.finished" ? "finished" : "interrupted";
+      const attemptId = str(payload, "attempt_id");
+      const entries = projection.entries.filter((item): item is Extract<TranscriptEntry, { kind: "model-output" }> =>
+        item.kind === "model-output" && item.attemptId === attemptId);
+      // 空正文只保留原事件，不生成虚假的进展段落。
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      for (const entry of entries) {
+        if (entry.state !== "streaming") continue;
+        const metadata = messages.find((item): item is Record<string, unknown> =>
+          item !== null && typeof item === "object" && item.message_id === entry.messageId);
+        const output: PublicModelOutput = {
+          attemptId, messageId: entry.messageId, generation: entry.generation, text: entry.text,
+          phase: outputPhase(metadata?.phase) ?? entry.phase ?? (entries.length === 1 ? outputPhase(payload.phase) : null),
+          state: frame.type === "model.output.finished" ? "finished" : "interrupted",
+          hasToolCalls: typeof payload.has_tool_calls === "boolean" ? payload.has_tool_calls : null,
+          truncated: entry.truncated || metadata?.truncated === true,
+        };
+        upsertEntry(projection, { ...entry, ...output });
+        if (projection.modelOutput?.attemptId === attemptId && projection.modelOutput.messageId === entry.messageId) projection.modelOutput = output;
+      }
       break;
     }
     case "execution.output":
     case "execution.terminal":
       break;
     case "run.started": {
+      projection.collaborationMode = payload.collaboration_mode === "plan" ? "plan" : "default";
       projection.completionRequirements = parseRequirements(payload.completion_requirements);
       projection.status = "running";
-      projection.startedAt = null; // 时间戳以快照为准（SSE 帧不含）
+      // 事件不携带时间戳，保留快照已确认的开始时间。
       upsertEntry(projection, {
         kind: "run-start",
         key: "run-start",
@@ -325,12 +448,26 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       });
       break;
     }
+    case "context.compaction_started":
+    case "context.compaction_completed":
+    case "context.compaction_failed": {
+      const key = `compaction:${str(payload, "checkpoint_id") || frame.sequence}`;
+      const previous = projection.entries.find(entry => entry.key === key);
+      upsertEntry(projection, {
+        kind: "context-compaction", key, sequence: previous?.sequence ?? frame.sequence,
+        state: frame.type === "context.compaction_started" ? "started"
+          : frame.type === "context.compaction_completed" ? "completed" : "failed",
+        message: str(payload, "error") || null,
+      });
+      break;
+    }
     case "context.prepared": {
+      const estimate = "estimated_input_tokens" in payload ? payload.estimated_input_tokens : payload.estimated_tokens;
       upsertEntry(projection, {
         kind: "context",
         key: "context",
         sequence: frame.sequence,
-        estimatedTokens: num(payload, "estimated_tokens", 0),
+        estimatedTokens: typeof estimate === "number" && Number.isSafeInteger(estimate) && estimate >= 0 ? estimate : null,
         truncated: payload.truncated === true,
       });
       break;
@@ -401,7 +538,7 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
         frame.type === "output.validation_started"
           ? ("started" as const)
           : frame.type === "output.validation_passed"
-            ? ("passed" as const)
+            ? (verifier === "local_completion" && payload.code === "completion_limited" ? "unverified" as const : "passed" as const)
             : ("failed" as const);
       upsertEntry(
         projection,
@@ -472,7 +609,8 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
     }
     case "plan.created": {
       const version = num(payload, "plan_version", 1);
-      projection.plan = { version, items: normalizePlanItems(payload.items) };
+      if (projection.plan && version < projection.plan.version) break;
+      projection.plan = { ...planMetadata(payload), version, items: normalizePlanItems(payload.items) };
       upsertEntry(projection, {
         kind: "plan",
         key: `plan:${version}`,
@@ -485,9 +623,11 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
     }
     case "plan.updated": {
       const version = num(payload, "plan_version");
-      projection.plan = projection.plan
-        ? { ...projection.plan, version }
-        : { version, items: [] };
+      if (projection.plan && version < projection.plan.version) break;
+      projection.plan = {
+        ...projection.plan, ...planMetadata(payload), version,
+        items: Array.isArray(payload.items) ? normalizePlanItems(payload.items) : projection.plan?.items ?? [],
+      };
       upsertEntry(projection, {
         kind: "plan",
         key: `plan:${version}`,
@@ -500,17 +640,18 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
     }
     case "plan.item_changed": {
       if (projection.plan) {
+        if (num(payload, "plan_version", projection.plan.version) < projection.plan.version) break;
         const itemKey = str(payload, "item_key");
         const status = str(payload, "status") as RunPlanItemStatus;
         const index = projection.plan.items.findIndex((item) => item.item_key === itemKey);
         if (index >= 0) {
           const items = [...projection.plan.items];
           items[index] = { ...items[index], status };
-          projection.plan = { version: projection.plan.version, items };
+          projection.plan = { ...projection.plan, items };
         } else {
           // 未见 plan.created 的增量（理论不发生，快照纠偏兜底）：以 item_key 占位
           projection.plan = {
-            version: projection.plan.version,
+            ...projection.plan,
             items: [
               ...projection.plan.items,
               { item_key: itemKey, ordinal: projection.plan.items.length + 1, title: itemKey, detail: null, status },
@@ -521,13 +662,16 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       break;
     }
     case "artifact.created": {
+      const key = `artifact:${str(payload, "artifact_id")}`;
+      const existing = projection.entries.find(entry => entry.kind === "artifact" && entry.key === key);
       upsertEntry(projection, {
         kind: "artifact",
-        key: `artifact:${str(payload, "artifact_id")}`,
+        key,
         sequence: frame.sequence,
         artifactId: str(payload, "artifact_id"),
         artifactKind: str(payload, "kind"),
         title: str(payload, "title"),
+        relPath: str(payload, "rel_path") || (existing?.kind === "artifact" ? existing.relPath : null),
       });
       break;
     }
@@ -602,6 +746,8 @@ export function applyRunFrame(projection: RunProjection, frame: RunStreamFrame):
       const status = TERMINAL_EVENT_STATUS[frame.type];
       projection.runOutcome = parseRunOutcome(payload.run_outcome, projection.runId);
       projection.verifying = false;
+      if ("final_output_attempt_id" in payload) projection.finalOutputAttemptId = str(payload, "final_output_attempt_id") || null;
+      if ("structured_output" in payload) projection.structuredOutput = structuredOutput(payload.structured_output);
       applyTerminal(projection, status, frame.sequence, {
         output: typeof payload.output === "string" ? payload.output : null,
         errorCode: str(payload, "error_code") || null,
@@ -647,7 +793,8 @@ function applyTerminal(
   }
 ): void {
   projection.status = status;
-  projection.completedAt = null; // 时间戳以快照为准
+  projection.pendingInput = null;
+  // 重放终态时保留快照时间；新运行由独立投影初始化。
   if (facts.output !== null) projection.output = facts.output;
   if (facts.errorCode || facts.errorMessage) {
     projection.error = {
@@ -702,10 +849,18 @@ export function reconcileRunWithSnapshot(
     return projection; // 旧快照：不回退已应用事实
   }
   projection.status = snapshot.status;
+  projection.projectId = snapshot.project_id;
+  projection.workspaceId = snapshot.workspace_id;
+  projection.sessionId = snapshot.session_id;
+  projection.collaborationMode = snapshot.collaboration_mode === "plan" ? "plan" : "default";
+  projection.pendingInput = isTerminalRunStatus(snapshot.status) ? null : parsePendingInput(snapshot.pending_input);
+  projection.stateVersion = snapshot.state_version;
   projection.runOutcome = parseRunOutcome(snapshot.run_outcome, projection.runId);
   projection.completionRequirements = parseRequirements(snapshot.completion_requirements);
   projection.verifying = snapshot.verification_state === "started" && !isTerminalRunStatus(snapshot.status);
   projection.output = snapshot.output ?? projection.output;
+  if ("final_output_attempt_id" in snapshot) projection.finalOutputAttemptId = snapshot.final_output_attempt_id ?? null;
+  if ("structured_output" in snapshot) projection.structuredOutput = structuredOutput(snapshot.structured_output);
   projection.error = snapshot.error_code
     ? { code: snapshot.error_code, message: snapshot.error_message ?? null }
     : projection.error;
@@ -717,8 +872,9 @@ export function reconcileRunWithSnapshot(
   };
   projection.startedAt = snapshot.started_at;
   projection.completedAt = snapshot.completed_at;
-  if (snapshot.plan) {
+  if (snapshot.plan && snapshot.plan.version >= (projection.plan?.version ?? 0)) {
     projection.plan = {
+      ...planMetadata(snapshot.plan),
       version: snapshot.plan.version,
       items: normalizePlanItems(snapshot.plan.items),
     };
@@ -744,8 +900,12 @@ export function reconcileRunWithSnapshot(
 
 function mergeArtifact(projection: RunProjection, artifact: RunArtifactRecord): void {
   const key = `artifact:${artifact.id}`;
-  const exists = projection.entries.some((item) => item.key === key);
-  if (exists) return; // 事件条目已在，避免重复
+  const existing = projection.entries.find((item) => item.key === key);
+  if (existing?.kind === "artifact") {
+    // 旧事件可能没有文件定位信息，快照只补齐已确认的路径，不重复生成产物卡。
+    upsertEntry(projection, { ...existing, relPath: artifact.rel_path ?? existing.relPath ?? null });
+    return;
+  }
   projection.entries.push({
     kind: "artifact",
     key,
@@ -753,5 +913,6 @@ function mergeArtifact(projection: RunProjection, artifact: RunArtifactRecord): 
     artifactId: artifact.id,
     artifactKind: artifact.kind,
     title: artifact.title,
+    relPath: artifact.rel_path ?? null,
   });
 }

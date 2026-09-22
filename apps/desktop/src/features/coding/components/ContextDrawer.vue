@@ -21,6 +21,7 @@ const props = withDefaults(
     permissionMode?: string | null;
     sessionId?: number | null;
     contextEnabled?: boolean;
+    initialTab?: "files" | "context" | "sources" | "artifacts";
   }>(),
   {
     permissionMode: null,
@@ -33,12 +34,12 @@ const emit = defineEmits<{
 
 type TabKey = "files" | "context" | "sources" | "artifacts";
 const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "files", label: "Files" },
-  { key: "context", label: "Context" },
-  { key: "sources", label: "Sources" },
-  { key: "artifacts", label: "Artifacts" },
+  { key: "files", label: "文件" },
+  { key: "context", label: "上下文" },
+  { key: "sources", label: "来源" },
+  { key: "artifacts", label: "产物" },
 ];
-const activeTab = ref<TabKey>("files");
+const activeTab = ref<TabKey>(props.initialTab ?? "files");
 
 const changedFiles = computed(() => {
   const files: Array<{ relPath: string; creates: boolean | null }> = [];

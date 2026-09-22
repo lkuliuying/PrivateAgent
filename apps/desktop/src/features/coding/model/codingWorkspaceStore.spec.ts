@@ -322,4 +322,68 @@ describe("codingWorkspaceStore", () => {
     expect(serialized).not.toContain("root_path");
     expect(serialized).not.toContain("C:");
   });
+
+  it("项目置顶优先，刷新保留所选项目，取消置顶恢复来源顺序", async () => {
+    const list: CodingProjectSummary[] = [project(1), { ...project(2), pinnedAt: "2026-09-19T00:00:00Z" }];
+    const store = createCodingWorkspaceStore(baseFetchers({ projects: async () => list }));
+    await store.bootstrap();
+    expect(store.tree.value.map((node) => node.project.id)).toEqual([2, 1]);
+    store.selectProject(1);
+    await store.refresh();
+    expect(store.selectedProjectId.value).toBe(1);
+    list[1].pinnedAt = null;
+    await store.refresh();
+    expect(store.projects.value.map((item) => item.id)).toEqual([1, 2]);
+  });
+
+  it("删除当前对话立即清理选择和首轮输入，保留同项目其他对话", async () => {
+    const store = createCodingWorkspaceStore(baseFetchers());
+    await store.bootstrap();
+    store.selectThread(11);
+    store.pendingFirstTurn.value = { threadId: 11 } as NonNullable<typeof store.pendingFirstTurn.value>;
+    store.removeDeletedThread(11);
+    expect(store.selectedThreadId.value).toBeNull();
+    expect(store.pendingFirstTurn.value).toBeNull();
+    expect(store.selectedProjectId.value).toBe(1);
+    expect(store.threadsByProject.value[1].map((item) => item.id)).toEqual([12, 13]);
+  });
+
+  it("删除其他项目保留当前会话，删除最后一个项目清理全部选择", async () => {
+    const store = createCodingWorkspaceStore(baseFetchers());
+    await store.bootstrap();
+    store.selectThread(11);
+    store.removeDeletedProject(2);
+    expect(store.selectedThreadId.value).toBe(11);
+    store.selectedBranchName.value = "main";
+    store.removeDeletedProject(1);
+    expect(store.projects.value).toEqual([]);
+    expect(store.workspacesByProject.value).toEqual({});
+    expect(store.threadsByProject.value).toEqual({});
+    expect(store.selectedProjectId.value).toBeNull();
+    expect(store.selectedWorkspaceId.value).toBeNull();
+    expect(store.selectedBranchName.value).toBeNull();
+    expect(store.selectedThreadId.value).toBeNull();
+  });
+
+  it("刷新发现会话已删除时清理选择，删除后迟到的刷新不能复活记录", async () => {
+    let list = [thread(11, 1, 101)];
+    const store = createCodingWorkspaceStore(baseFetchers({ threads: async () => list }));
+    await store.bootstrap();
+    store.selectThread(11);
+    list = [];
+    await store.refresh();
+    expect(store.selectedThreadId.value).toBeNull();
+    let resolve: (value: CodingProjectSummary[]) => void = () => {};
+    const projects = vi.fn(async () => [project(1)]);
+    const raced = createCodingWorkspaceStore(baseFetchers({ projects }));
+    await raced.bootstrap();
+    projects.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const refresh = raced.refresh();
+    await flushPromises();
+    raced.removeDeletedProject(1);
+    resolve([project(1)]);
+    await refresh;
+    expect(raced.projects.value).toEqual([]);
+    expect(raced.loadPhase.value).toBe("ready");
+  });
 });

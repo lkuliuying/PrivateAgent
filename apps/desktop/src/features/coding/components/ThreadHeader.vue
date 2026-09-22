@@ -74,6 +74,7 @@ const STATUS_ICONS: Record<AgentRunStatus, Component> = {
   interrupted: PhWarning,
   running: PhCircleNotch,
   waiting_approval: PhWarning,
+  waiting_input: PhClockClockwise,
   completed: PhCheckCircle,
   failed: PhWarningCircle,
   cancelled: PhProhibit,
@@ -155,6 +156,7 @@ const titleTooltip = computed(() =>
         />
         {{ statusMeta.label }}
       </span>
+      <slot name="tools">
       <button
         v-if="planAvailable"
         class="plan-toggle"
@@ -177,6 +179,7 @@ const titleTooltip = computed(() =>
       >
         <PhSidebarSimple :size="15" />
       </button>
+      </slot>
       <button
         v-if="cancellable"
         class="cancel-btn"
@@ -196,7 +199,9 @@ const titleTooltip = computed(() =>
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
+  min-height: 70px;
+  flex-shrink: 0;
+  padding: var(--space-3) var(--space-6);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
@@ -269,7 +274,7 @@ const titleTooltip = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
-  margin: 2px 0 0;
+  margin: 6px 0 0;
   color: var(--color-fg-muted);
   font-size: var(--pa-text-meta);
 }
@@ -297,8 +302,8 @@ const titleTooltip = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: transparent;
@@ -344,7 +349,7 @@ const titleTooltip = computed(() =>
 .plan-toggle,
 .cancel-btn {
   display: inline-flex;
-  height: 28px;
+  height: 32px;
   align-items: center;
   gap: var(--space-1);
   padding: 0 var(--space-2);
@@ -376,6 +381,11 @@ const titleTooltip = computed(() =>
 }
 .spin {
   animation: header-spin 0.9s linear infinite;
+}
+@media (max-width: 600px) {
+  .thread-header { padding-inline: var(--space-3); gap: var(--space-2); flex-wrap: wrap; }
+  .header-copy { flex-basis: 55%; }
+  .header-trailing { gap: var(--space-1); margin-left: auto; }
 }
 @keyframes header-spin {
   to { transform: rotate(360deg); }

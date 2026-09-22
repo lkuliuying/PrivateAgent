@@ -33,6 +33,7 @@ export interface RuntimeCapabilities {
   coding_full_access_audit?: boolean;
   coding_full_access_revoke?: boolean;
   coding_diagnostic_commands_enabled?: boolean;
+  coding_planning_contract_version?: "1.0";
 }
 
 /**

@@ -3,24 +3,23 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, shallowRef 
 import { useRoute } from "vue-router";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppShell from "./components/AppShell.vue";
-import TaskWorkspace from "./components/TaskWorkspace.vue";
 import SettingsView from "./components/SettingsView.vue";
 import SettingsModuleNav from "./components/SettingsModuleNav.vue";
-import DiagnosticsView from "./components/DiagnosticsView.vue";
-import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
+import ExtensionRegistryPanel from "./components/CapabilityRegistryPanel.vue";
 import { ensureDesktopBackendReady } from "./services/backendStartup";
 import ToastHost from "./components/ToastHost.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import CommandPalette from "./components/CommandPalette.vue";
-import GlobalSearch from "./components/GlobalSearch.vue";
+import { fetchCodingThread, setThreadArchived } from "./features/coding/api/threads";
+import type { WorkspaceSearchHit } from "./features/coding/api/workspaceSearch";
+import { useNotifications } from "./stores/notifications";
 import {
   isDesktopRuntime,
 } from "./api";
 import type { View } from "./types";
 import type { SettingsSection } from "./models/settingsSections";
 import { viewLabel } from "./models/viewRegistry";
-import { useAuthStore } from "./stores/auth";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
 import { isCodingWorkspaceEnabled } from "./config/uiFlags";
@@ -40,10 +39,9 @@ import UiLab from "./dev/UiLab.vue";
 const uiLabEnabled =
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("ui-lab") === "1";
-const authStore = useAuthStore();
 const route = useRoute();
-// 普通用户端固定使用 Coding 工作台；管理员由路由隔离到独立后台。
-const codingEnabled = computed(() => isCodingWorkspaceEnabled(authStore.isAdmin));
+// 客户端统一使用本机 Coding 工作台。
+const codingEnabled = computed(() => isCodingWorkspaceEnabled());
 const codingStore = useCodingWorkspace();
 // ?coding-preview=<key>：首页六状态开发预览（动态 import，生产构建不进入）
 const codingPreviewKey = import.meta.env.DEV
@@ -73,10 +71,26 @@ const codingThreadKey = computed(
 );
 // 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
-// 全局搜索开关（命令面板的「全局搜索」命令触发）
-const searchOpen = ref(false);
+const searchTarget = ref<{ messageId: number; seq: number } | null>(null);
+let searchOpening = false;
+async function openSearchResult(hit: WorkspaceSearchHit) {
+  if (searchOpening) return;
+  searchOpening = true;
+  try {
+    const store = codingActiveStoreRef.value;
+    if (hit.session_id !== null) {
+      if (hit.archived) await setThreadArchived(hit.session_id, false);
+      const thread = await fetchCodingThread(hit.session_id, hit.project_id);
+      store.threadsByProject.value = { ...store.threadsByProject.value, [hit.project_id]: [...(store.threadsByProject.value[hit.project_id] ?? []).filter(t => t.id !== thread.id), thread] };
+      store.selectThread(thread.id);
+    } else { store.selectProject(hit.project_id); store.startNewTask(); }
+    searchTarget.value = hit.message_id ? { messageId: hit.message_id, seq: Date.now() } : null;
+    onNavigate("coding"); commandPaletteOpen.value = false;
+  } catch (cause) { useNotifications().error("无法打开搜索结果", (cause as { message?: string }).message || "请重试"); }
+  finally { searchOpening = false; }
+}
 
-// 工作台只等待服务器配置和本机执行器，不再启动完整业务后端。
+// 工作台准备本机执行器；本机模式不需要服务器账号会话。
 type BootState = "checking" | "starting" | "done" | "error";
 const bootState = ref<BootState>("checking");
 const bootError = ref("");
@@ -95,13 +109,11 @@ function clearBootLoading() {
   bootLoadingVisible.value = false;
 }
 
-// 普通用户工作区只保留图二中的 Coding、自动化、插件及其设置/诊断入口。
+// 旧版本导航记录中的已移除模块会回到 Coding 首页。
 const CODING_ALLOWED_VIEWS = new Set<View>([
   "coding",
-  "tasks",
   "extensions",
   "settings",
-  "diagnostics",
 ]);
 
 // 导航历史：旧版本持久化的模块在渲染和初始化时统一归一到 Coding 首页。
@@ -131,7 +143,10 @@ function onResize() {
 onMounted(() => {
   window.addEventListener("resize", onResize);
   boot();
-  if (route.query.view === "settings") onNavigate("settings");
+  if (route.query.view === "settings") {
+    onNavigate("settings");
+    if (route.query.section === "provider") settingsSection.value = "provider";
+  }
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
@@ -267,15 +282,6 @@ function onPaletteNavigate(v: View) {
   commandPaletteOpen.value = false;
   onNavigate(v);
 }
-function onPaletteOpenSearch() {
-  commandPaletteOpen.value = false;
-  searchOpen.value = true;
-}
-function onSearchNavigate(v: View) {
-  searchOpen.value = false;
-  onNavigate(v);
-}
-
 // ============ 会话 / 对话 ============
 
 async function initializeConnectedWorkspace() {
@@ -298,7 +304,7 @@ async function initializeConnectedWorkspace() {
       class="boot-card"
     >
       <div class="spinner" />
-      <p>正在准备服务器连接与本机执行器…</p>
+      <p>正在准备工作区…</p>
       <p class="hint">首次启动可能需要数秒</p>
     </div>
 
@@ -325,13 +331,15 @@ async function initializeConnectedWorkspace() {
     data-animation-root
     :view="workspaceView"
     :title="pageTitle"
+    :workspace-header="workspaceView === 'coding' ? '工作台' : pageTitle"
     :show-dev-tag="!!codingPreviewStore"
-    :rail-collapsed="railCollapsed"
+    :rail-collapsed="workspaceView !== 'settings' && railCollapsed"
     :rail-hidden="viewportWidth < CODING_RAIL_DRAWER_MAX"
     :can-go-back="history.state().canGoBack"
     :can-go-forward="history.state().canGoForward"
     @go-back="onGoBack"
     @go-forward="onGoForward"
+    @open-profile="onNavigate('settings'); settingsSection = 'profile'"
   >
     <template #rail>
       <SettingsModuleNav
@@ -363,6 +371,7 @@ async function initializeConnectedWorkspace() {
     <CodingThreadWorkspace
       v-else-if="workspaceView === 'coding'"
       :key="codingThreadKey"
+      :search-target="searchTarget"
       :store="codingActiveStoreRef"
       @navigate="onNavigate"
       @configure-provider="openModelSettings('coding')"
@@ -375,9 +384,7 @@ async function initializeConnectedWorkspace() {
       @return="onSettingsReturn"
       @select-section="settingsSection = $event"
     />
-    <DiagnosticsView v-else-if="workspaceView === 'diagnostics'" />
     <ExtensionRegistryPanel v-else-if="workspaceView === 'extensions'" />
-    <TaskWorkspace v-else-if="workspaceView === 'tasks'" />
 
   </AppShell>
 
@@ -387,15 +394,10 @@ async function initializeConnectedWorkspace() {
   <NotificationCenter />
   <CommandPalette
     v-if="commandPaletteOpen"
-    coding-only
+    :projects="codingActiveStoreRef.projects.value"
+    @open-result="openSearchResult"
     @navigate="onPaletteNavigate"
-    @open-search="onPaletteOpenSearch"
     @close="commandPaletteOpen = false"
-  />
-  <GlobalSearch
-    v-if="searchOpen"
-    @navigate="onSearchNavigate"
-    @close="searchOpen = false"
   />
 </template>
 

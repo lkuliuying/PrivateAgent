@@ -14,6 +14,7 @@
 export interface CodingProjectSummary {
   id: number;
   name: string;
+  pinnedAt?: string | null;
   status: "active" | "archived";
   updatedAt: string;
 }
@@ -53,9 +54,8 @@ export interface CodingThreadSummary {
   workspaceId: number | null;
   updatedAt: string;
   lastRunId: string | null;
-  /** v0.9.0 H4：置顶/归档事实（可选，旧构造不受影响） */
+  /** 置顶事实（可选，兼容旧记录）。 */
   pinnedAt?: string | null;
-  archivedAt?: string | null;
   /** legacy/unbound 会话（更多工作区次级入口） */
   kind?: string | null;
 }
@@ -203,6 +203,7 @@ export interface CodingThreadCreateInput {
 
 /** 新对话首轮输入：先在草稿态选择上下文，首次发送时再创建会话并执行。 */
 export interface CodingFirstTurnPayload {
+  collaborationMode?: "default" | "plan";
   message: string;
   permissionMode: string;
   modelProfileId: string | null;

@@ -12,6 +12,7 @@ import {
 } from "../model/runProjector";
 import type {
   RunApprovalPreviewRecord,
+  RunApprovalRecord,
   RunExecutionOutputPage,
   RunExecutionRecord,
   RunStreamFrame,
@@ -48,7 +49,7 @@ const CONTEXT_PREPARED: RunStreamFrame = {
   sequence: 2,
   type: "context.prepared",
   payload: {
-    estimated_tokens: 3521,
+    estimated_input_tokens: 3521,
     section_tokens: { history: 1800, memory: 240, rag: 1200, summary: 281 },
     history_included: 4,
     memory_included: 2,
@@ -410,6 +411,7 @@ const W3_OUTPUT_PAGE: RunExecutionOutputPage = {
 
 export interface CodingRunPreviewResult {
   projection: RunProjection;
+  approvals?: RunApprovalRecord[];
   approvalPreviews?: Record<string, RunApprovalPreviewRecord | null>;
   executions?: RunExecutionRecord[];
   outputPages?: Record<string, RunExecutionOutputPage | null>;
@@ -421,6 +423,18 @@ export function createStaticProjection(key: CodingRunPreviewKey): CodingRunPrevi
   for (const frame of frames(key)) {
     applyRunFrame(projection, frame);
   }
+  // 静态预览也必须提供审批详情，避免缺记录被呈现为已处理授权。
+  const approvals: RunApprovalRecord[] = projection.entries.flatMap((entry) =>
+    entry.kind === "approval" ? [{
+      id: entry.approvalId, run_id: projection.runId, step_id: null,
+      tool_call_id: "tc-write", tool_name: entry.toolName, tool_version: "1.0.0",
+      arguments_sha256: "1".repeat(64), risk_level: "confirm",
+      required_capabilities: ["filesystem.write"], status: entry.resolved ? "consumed" : "pending",
+      expires_at: "2026-08-22T01:00:00Z", created_at: "2026-08-22T00:00:00Z",
+      decision_at: entry.resolved ? "2026-08-22T00:01:00Z" : null,
+      consumed_at: entry.resolved ? "2026-08-22T00:01:00Z" : null,
+    }] : []
+  );
   if (key === "completed") {
     projection.startedAt = "2026-08-28T12:00:00.000Z";
     projection.completedAt = "2026-08-28T12:38:58.000Z";
@@ -428,13 +442,14 @@ export function createStaticProjection(key: CodingRunPreviewKey): CodingRunPrevi
   if (key === "command-output") {
     return {
       projection,
+      approvals,
       approvalPreviews: W3_APPROVAL_PREVIEWS,
       executions: W3_EXECUTIONS,
       outputPages: { "exec-cmd-1": W3_OUTPUT_PAGE },
     };
   }
   if (key === "patch-preview" || key === "conflict" || key === "partial-unknown") {
-    return { projection, approvalPreviews: W3_APPROVAL_PREVIEWS };
+    return { projection, approvals, approvalPreviews: W3_APPROVAL_PREVIEWS };
   }
-  return { projection };
+  return { projection, approvals };
 }

@@ -17,6 +17,19 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); });
 
+it("完成记录默认收起，失败与仍在运行的进程自动展开", async () => {
+  vi.mocked(listExecutions).mockResolvedValue({ items: [{ ...item, status: "exited", stopped: true, exit_code: 0 }] });
+  const wrapper = mount(ExecutionPanel, { props: { sessionId: 1 } });
+  await flushPromises();
+  expect(wrapper.get("details").attributes("open")).toBeUndefined();
+  vi.mocked(listExecutions).mockResolvedValue({ items: [{ ...item, status: "failed", error: "沙箱检查超时" }] });
+  await vi.advanceTimersByTimeAsync(2000);
+  await flushPromises();
+  expect(wrapper.get("details").attributes("open")).toBeDefined();
+  expect(wrapper.text()).toContain("沙箱检查超时");
+  wrapper.unmount();
+});
+
 it("输出按文本展示，重复块去重，卸载清理轮询", async () => {
   const wrapper = mount(ExecutionPanel, { props: { sessionId: 1 } });
   await flushPromises();

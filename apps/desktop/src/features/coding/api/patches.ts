@@ -7,6 +7,8 @@ export interface PatchChange {
   before_kind: string;
   after_kind: string;
   diff_chars: number;
+  additions?: number;
+  deletions?: number;
 }
 export interface PatchSummary {
   patch_set_id: string | null;
@@ -14,6 +16,7 @@ export interface PatchSummary {
   preview_sha256: string;
   status: string;
   kind: "patch" | "rollback";
+  rollback_of?: string | null;
   changes: PatchChange[];
   conflicts: { rel_path: string; reason: string }[];
   error?: string | null;

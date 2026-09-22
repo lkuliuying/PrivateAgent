@@ -1,8 +1,10 @@
-import { flushPromises, mount } from "@vue/test-utils";
+import { enableAutoUnmount, flushPromises, mount } from "@vue/test-utils";
 import { nextTick } from "vue";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import RootApp from "./RootApp.vue";
+import { resetCodingWorkspace } from "./features/coding/model/codingWorkspaceStore";
+enableAutoUnmount(afterEach);
 import { saveWindowCloseBehavior } from "./services/windowClose";
 
 const desktopMocks = vi.hoisted(() => ({
@@ -28,9 +30,7 @@ vi.mock("./api/tauri", () => ({
   ),
 }));
 
-vi.mock("./stores/auth", () => ({
-  useAuthStore: () => ({ clearSession: vi.fn() }),
-}));
+vi.mock("./features/coding/model/codingWorkspaceStore", () => ({ resetCodingWorkspace: vi.fn() }));
 
 vi.mock("./services/backendStartup", () => ({
   backendStartupState: backendMocks.state,
@@ -39,7 +39,7 @@ vi.mock("./services/backendStartup", () => ({
 
 vi.mock("vue-router", () => ({
   RouterView: { template: '<div data-testid="router-view" />' },
-  useRoute: () => ({ name: "login", fullPath: "/login" }),
+  useRoute: () => ({ name: "workspace", fullPath: "/app" }),
   useRouter: () => ({ replace: vi.fn() }),
 }));
 
@@ -125,4 +125,16 @@ describe("RootApp window close lifecycle", () => {
     await flushPromises();
     expect(backendMocks.retry).toHaveBeenCalledTimes(1);
   });
+  it("本机会话失效恢复连接并清理旧工作区，卸载后不再响应", async () => {
+    const wrapper = await mountRoot();
+    vi.mocked(resetCodingWorkspace).mockClear();
+    window.dispatchEvent(new CustomEvent("pa:session-expired"));
+    await flushPromises();
+    expect(resetCodingWorkspace).toHaveBeenCalledTimes(1);
+    expect(backendMocks.retry).toHaveBeenCalledTimes(1);
+    wrapper.unmount();
+    window.dispatchEvent(new CustomEvent("pa:session-expired"));
+    expect(backendMocks.retry).toHaveBeenCalledTimes(1);
+  });
+
 });

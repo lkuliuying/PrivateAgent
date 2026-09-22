@@ -1,10 +1,31 @@
 import { describe, expect, it } from "vitest";
 import samples from "../../../../../../tests/coding_acceptance/s1-wire-examples.json";
-import { parseExecutionResult, parseRunOutcome, runResultMeta } from "./runOutcome";
+import { parseExecutionResult, parseRunOutcome, runResultMeta, unknownRunOutcome } from "./runOutcome";
 import { applyRunFrame, createRunProjection, reconcileRunWithSnapshot } from "./runProjector";
 import type { RunSnapshot } from "./runContracts";
 
 describe("S1 同源 API 契约与投影", () => {
+  it("修改证据齐全时展示已修改但仍未验证，缺失证据或其他未满足要求不放行", () => {
+    const outcome = unknownRunOutcome("run");
+    outcome.requirements = [{ requirement_id: "file", kind: "file_changed", description: "修改 app.py", required: true }];
+    outcome.verification_results = [{ requirement_id: "file", status: "passed", evidence_ids: ["patch"] }];
+    outcome.evidence_ids = ["patch"];
+    outcome.unverified_items = ["用户禁止运行测试；本轮未执行测试，测试结果未验证"];
+    expect(runResultMeta("completed", outcome).label).toBe("修改已完成，仍有未验证项");
+    expect(runResultMeta("cancelled", outcome).label).toBe("已取消");
+    expect(runResultMeta("failed", outcome).label).toBe("执行失败，结果未确认");
+    for (const key of ["requirements", "verification_results", "unverified_items"] as const) {
+      expect(runResultMeta("completed", { ...outcome, [key]: undefined }).label).toBe("结果未确认");
+    }
+    for (const verification_results of [[], [{ ...outcome.verification_results[0], evidence_ids: [] }],
+      [{ ...outcome.verification_results[0], status: "failed" as const }]]) {
+      expect(runResultMeta("completed", { ...outcome, verification_results }).label).toBe("结果未确认");
+    }
+    expect(runResultMeta("completed", { ...outcome, requirements: [
+      ...outcome.requirements, { requirement_id: "manual", kind: "manual", description: "保持 API 兼容" },
+    ] }).label).toBe("结果未确认");
+  });
+
   it.each(Object.entries(samples))("%s 的快照与终态重放一致且幂等", (_name, sample) => {
     const snapshot = sample.snapshot as unknown as RunSnapshot;
     const fromEvents = createRunProjection(snapshot.id);

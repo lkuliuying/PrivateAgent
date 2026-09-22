@@ -1,18 +1,6 @@
-/**
- * 统一通知 store（第七阶段 M4 基建）。
- *
- * 设计取舍：项目一贯极简依赖（无 router/pinia），这里采用模块级响应式单例，
- * 任意组件 `import { useNotifications }` 共享同一实例，无需注册插件。
- * 提供：
- * - toast 队列（ToastHost 渲染，自动消失，error/warning 默认常驻）。
- * - 危险操作确认（promise-based，替代 window.confirm，ConfirmDialog 渲染）。
- * - 历史记录（NotificationCenter 回看；M4 接入 app_notifications 后以 DB 为准合并）。
- *
- * 通知只保存摘要，不保存敏感正文（聊天全文/文档原文/敏感记忆）。
- */
+/** 当前本机工作台的通知、确认和输入状态；仅保存本次启动中的摘要。 */
 import { computed, ref } from "vue";
 import type { NotificationLevel } from "../types";
-import { listNotifications, readAllNotifications } from "../api";
 
 export interface ToastAction {
   label: string;
@@ -162,48 +150,16 @@ function resolvePrompt(value: string | null): void {
 
 function openCenter(): void {
   centerOpen.value = true;
-  void loadPersisted();
 }
 function closeCenter(): void {
   centerOpen.value = false;
 }
 async function markAllRead(): Promise<void> {
   for (const h of history.value) h.read = true;
-  try {
-    await readAllNotifications();
-  } catch {
-    // 后端不可用时仅标记内存
-  }
+
 }
 function clearHistory(): void {
   history.value = [];
-}
-
-/** 从后端拉取持久化通知（导入/备份等异步结果），合并入历史。
- * 后端条目用负 id 区分（避免与内存正 id 冲突），按时间倒序合并。 */
-async function loadPersisted(): Promise<void> {
-  try {
-    const items = await listNotifications({ limit: 100 });
-    // 移除旧的后端条目（id < 0），保留内存条目（id > 0）
-    const mem = history.value.filter((h) => h.id > 0);
-    const backend: HistoryEntry[] = items.map((n) => ({
-      id: -n.id,
-      level: n.level,
-      kind: n.kind,
-      title: n.title,
-      message: n.message ?? undefined,
-      source_type: n.source_type ?? undefined,
-      source_id: n.source_id ?? undefined,
-      created_at: n.created_at,
-      read: n.status !== "unread",
-    }));
-    history.value = [...mem, ...backend].sort((a, b) =>
-      b.created_at.localeCompare(a.created_at)
-    );
-    if (history.value.length > 200) history.value.length = 200;
-  } catch {
-    // 后端未就绪：静默，仅显示内存历史
-  }
 }
 
 const unreadCount = computed(() => history.value.filter((h) => !h.read).length);
@@ -231,6 +187,5 @@ export function useNotifications() {
     closeCenter,
     markAllRead,
     clearHistory,
-    loadPersisted,
   };
 }

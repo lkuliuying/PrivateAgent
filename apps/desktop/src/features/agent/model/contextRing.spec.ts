@@ -80,7 +80,7 @@ describe("contextRing（v0.9.0 H0 §7：真实计量，不伪造）", () => {
       deriveContextRing(budget({ compaction_state: "compacting" })).state
     ).toBe("compacting");
     const failed = deriveContextRing(
-      budget({ compaction_state: "failed", error_reason: "摘要生成失败" })
+      budget({ compaction_state: "failed", compaction_error: "摘要生成失败", error_reason: null })
     );
     expect(failed.state).toBe("failed");
     expect(failed.reason).toContain("摘要生成失败");
@@ -88,6 +88,12 @@ describe("contextRing（v0.9.0 H0 §7：真实计量，不伪造）", () => {
 
   it("null 响应 → 不可用（读取失败），不渲染旧值", () => {
     expect(deriveContextRing(null).state).toBe("unavailable");
+  });
+
+  it("缺少或非法用量不渲染 NaN 百分比", () => {
+    expect(deriveContextRing({} as ContextBudgetResponse).percent).toBeNull();
+    expect(deriveContextRing(budget({ used_tokens: -1 })).state).toBe("unavailable");
+    expect(deriveContextRing(budget({ usage_percent: Number.NaN })).state).toBe("unavailable");
   });
 
   it("加载/不可用构造器与 aria 文案（文本替代）", () => {

@@ -1,10 +1,8 @@
 /**
  * v0.8.0 W2 · Coding run 契约（wire 字段名与后端 1:1）
  *
- * 事实源：src/personal_assistant/agents/contracts.py（AgentEventType/payload）、
- * routes_agent_runs.py（AgentRunResponse/AgentToolApprovalResponse/AgentRunEventPage、
- * SSE 帧格式）、core/run_plan.py（plan 快照 items）、
- * tests/test_v070_e5_gate.py（L1 真实事件序列）。
+ * 事实源：src/private_agent_core/contracts.py 的共享契约与
+ * src/private_agent_local/app.py、core_adapter.py 的本机 API 和事件投影。
  *
  * 红线：payload 中不携带的敏感数据（审批 arguments 原文、工具完整输出、
  * 隐藏推理）本契约一律不声明；工具结果走 executions API（W3）。
@@ -19,6 +17,7 @@ export type AgentRunStatus =
   | "interrupted"
   | "running"
   | "waiting_approval"
+  | "waiting_input"
   | "completed"
   | "failed"
   | "cancelled"
@@ -111,11 +110,31 @@ export interface RunPlanItemRecord {
   title: string;
   detail: string | null;
   status: RunPlanItemStatus;
+  requirement_ids?: string[];
+  evidence_calls?: string[];
+  supersedes?: string[];
+}
+
+export interface PlanningQuestion {
+  id: string;
+  question: string;
+  options: { label: string; description: string }[];
+}
+
+export interface PendingPlanInput {
+  input_id: string;
+  questions: PlanningQuestion[];
+  goal_version: number;
+  generation: number;
+  created_at: string;
 }
 
 export interface RunPlanState {
   version: number;
   items: RunPlanItemRecord[];
+  goal_version?: number;
+  needs_review?: boolean;
+  explanation?: string;
 }
 
 export interface RunArtifactRecord {
@@ -140,6 +159,10 @@ export interface RunStepRecord {
 
 /** GET /agent-runs/{id} 快照（重连纠偏事实源；plan/artifacts 为 durable 快照） */
 export interface RunSnapshot {
+  collaboration_mode?: "default" | "plan";
+  pending_input?: PendingPlanInput | null;
+  state_version?: number;
+  checkpoint_id?: string | null;
   completion_contract_version?: "1.0";
   completion_requirements?: Requirement[];
   verification_state?: "pending" | "started" | "passed" | "failed";
@@ -156,6 +179,9 @@ export interface RunSnapshot {
   cached_tokens: number;
   cost_usd: number | null;
   output: string | null;
+  final_output_attempt_id?: string | null;
+  output_schema?: Record<string, unknown> | null;
+  structured_output?: Record<string, unknown> | null;
   error_code: string | null;
   error_message: string | null;
   cancel_requested_at: string | null;
@@ -173,12 +199,14 @@ export interface RunSnapshot {
   model_profile_id: string | null;
   reasoning_effort: string | null;
   permission_mode: string | null;
-  plan: { version: number; items: RunPlanItemRecord[] } | null;
+  plan: RunPlanState | null;
   artifacts: RunArtifactRecord[];
 }
 
 /** POST /agent-runs 创建输入（coding 判定：project_id+workspace_id 成对） */
 export interface CodingRunCreateInput {
+  output_schema?: Record<string, unknown>;
+  collaboration_mode?: "default" | "plan";
   recovery_contract_version?: "1.0";
   execution_contract_version?: "1.0";
   completion_contract_version?: "1.0";
@@ -280,11 +308,11 @@ export const PERMISSION_MODE_META: Record<string, { label: string; hint: string 
   confirm: { label: "总是询问", hint: "写入或命令前逐次进入审批流" },
   workspace: {
     label: "替我批准",
-    hint: "项目文件编辑可自动批准；持续命令需单独确认。可信脚本以当前系统用户运行，可访问项目外文件和网络",
+    hint: "自动批准项目编辑和禁网沙箱内的普通命令；交互、持续进程或解除沙箱须单独确认",
   },
   full_access: {
     label: "完全访问",
-    hint: "限时授权内自动处理项目文件；持续命令仍需确认。脚本可访问当前用户的文件和网络，不获得管理员权限",
+    hint: "限时授权内自动处理项目操作，普通命令仍在禁网沙箱内；解除沙箱须逐次确认，不获得管理员权限",
   },
 };
 
@@ -299,6 +327,7 @@ export const RUN_STATUS_META: Record<
   interrupted: { label: "已中断，待核对", tone: "warning" },
   running: { label: "执行中", tone: "info" },
   waiting_approval: { label: "等待审批", tone: "warning" },
+  waiting_input: { label: "等待回答", tone: "info" },
   completed: { label: "已结束", tone: "neutral" },
   failed: { label: "失败", tone: "danger" },
   cancelled: { label: "已取消", tone: "neutral" },

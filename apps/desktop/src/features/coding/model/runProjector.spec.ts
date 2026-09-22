@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyRunFrame,
+  cloneRunProjection,
   createRunProjection,
   reconcileRunWithSnapshot,
 } from "./runProjector";
@@ -9,6 +10,20 @@ import type { RunSnapshot, RunStreamFrame } from "./runContracts";
 function frame(sequence: number, type: string, payload: Record<string, unknown> = {}): RunStreamFrame {
   return { sequence, type, payload };
 }
+
+it("压缩过程按检查点合并状态，重复事件幂等，不丢弃第二次压缩失败", () => {
+  const projection = createRunProjection("compact");
+  applyRunFrame(projection, frame(1, "context.compaction_started", { checkpoint_id: "one" }));
+  applyRunFrame(projection, frame(2, "context.compaction_completed", { checkpoint_id: "one" }));
+  applyRunFrame(projection, frame(2, "context.compaction_completed", { checkpoint_id: "one" }));
+  applyRunFrame(projection, frame(3, "context.compaction_started", { checkpoint_id: "two" }));
+  applyRunFrame(projection, frame(4, "context.compaction_failed", { checkpoint_id: "two", error: "压缩超时" }));
+  expect(projection.entries).toMatchObject([
+    { kind: "context-compaction", sequence: 1, state: "completed", message: null },
+    { kind: "context-compaction", sequence: 3, state: "failed", message: "压缩超时" },
+  ]);
+  expect(projection.unknownEventTypes).toEqual([]);
+});
 
 const HAPPY: RunStreamFrame[] = [
   frame(1, "run.started", { max_steps: 12, max_tool_calls: 8, max_wall_time_seconds: 120 }),
@@ -45,6 +60,79 @@ function project(frames: RunStreamFrame[]): ReturnType<typeof createRunProjectio
 }
 
 describe("runProjector", () => {
+  it("重放澄清请求和回答，旧帧及终态不会重新打开问题", () => {
+    const input = { input_id: "q", goal_version: 1, generation: 0, created_at: "",
+      questions: [{ id: "scope", question: "检查范围？", options: [] }] };
+    const value = project([frame(1, "run.started", { collaboration_mode: "plan" }),
+      frame(2, "input.requested", { pending_input: input, state_version: 9 })]);
+    expect(value).toMatchObject({ status: "waiting_input", pendingInput: input, collaborationMode: "plan", stateVersion: 9 });
+    applyRunFrame(value, frame(3, "input.resolved", { input_id: "q", state_version: 10 }));
+    applyRunFrame(value, frame(2, "input.requested", { pending_input: input }));
+    expect(value.pendingInput).toBeNull();
+    expect(value.status).toBe("running");
+    applyRunFrame(value, frame(4, "input.requested", { pending_input: input }));
+    applyRunFrame(value, frame(5, "run.cancelled"));
+    expect(value.pendingInput).toBeNull();
+  });
+  it("完整计划事件更新条目和目标状态，回放及旧版本不覆盖新计划", () => {
+    const created = frame(1, "plan.created", { plan_version: 1, goal_version: 1,
+      items: [{ item_key: "read", title: "检查代码", status: "in_progress" }] });
+    const revised = frame(2, "plan.updated", { plan_version: 2, goal_version: 1, needs_review: true,
+      explanation: "用户追加了验收条件", items: [{ item_key: "read", title: "检查代码", status: "completed", evidence_calls: ["read-1"] }] });
+    const value = project([created, revised, revised]);
+    expect(value.plan).toMatchObject({ version: 2, needs_review: true, explanation: "用户追加了验收条件",
+      items: [{ status: "completed", evidence_calls: ["read-1"] }] });
+    applyRunFrame(value, frame(3, "plan.updated", { plan_version: 1, items: [] }));
+    applyRunFrame(value, frame(4, "plan.item_changed", { plan_version: 1, item_key: "read", status: "pending" }));
+    expect(value.plan?.version).toBe(2);
+    expect(value.plan?.items[0].status).toBe("completed");
+    applyRunFrame(value, frame(5, "plan.updated", { plan_version: 3, goal_version: 2, needs_review: false,
+      explanation: "已核对追加条件", items: [{ item_key: "read", title: "检查代码", status: "completed" },
+        { item_key: "test", title: "验证", status: "in_progress" }] }));
+    expect(value.plan).toMatchObject({ version: 3, goal_version: 2, needs_review: false });
+    expect(value.plan?.items).toHaveLength(2);
+    expect(value.entries.filter(entry => entry.kind === "plan")).toHaveLength(3);
+  });
+
+  it("旧后端只有版本的计划更新仍保留既有条目", () => {
+    const value = project([frame(1, "plan.created", { plan_version: 1, items: [{ item_key: "a", title: "读取", status: "pending" }] }),
+      frame(2, "plan.updated", { plan_version: 2 })]);
+    expect(value.plan?.items[0].title).toBe("读取");
+    expect(value.plan?.version).toBe(2);
+  });
+
+  it.each([
+    ["output.validation_passed", "local_completion", "completion_limited", "unverified"],
+    ["output.validation_passed", "local_completion", "completion_verified", "passed"],
+    ["output.validation_failed", "local_completion", "completion_limited", "failed"],
+    ["output.validation_passed", "default", "completion_limited", "passed"],
+  ])("按事件和验证器识别保留未验证项：%s / %s / %s", (type, verifier, code, state) => {
+    const event = frame(1, type, { verifier, code, message: "核验结果" });
+    const value = project([event, event]);
+    expect(value.entries.filter(entry => entry.kind === "verification")).toMatchObject([{ state, message: "核验结果" }]);
+    expect(value.runOutcome.goal_outcome).toBe("unknown");
+  });
+
+  it.each([
+    [{ estimated_input_tokens: 3521 }, 3521],
+    [{ estimated_tokens: 1200 }, 1200],
+    [{ estimated_input_tokens: 0, estimated_tokens: 1200 }, 0],
+    [{ estimated_input_tokens: 3521, estimated_tokens: 1200 }, 3521],
+    [{}, null],
+    [{ estimated_input_tokens: null, estimated_tokens: 1200 }, null],
+    [{ estimated_input_tokens: -1 }, null],
+    [{ estimated_input_tokens: 1.5 }, null],
+    [{ estimated_input_tokens: "3521" }, null],
+    [{ estimated_input_tokens: NaN }, null],
+    [{ estimated_tokens: Infinity }, null],
+    [{ estimated_tokens: Number.MAX_SAFE_INTEGER + 1 }, null],
+  ])("上下文估算读取真实字段并兼容旧事件：%j", (payload, expected) => {
+    const value = project([frame(1, "context.prepared", payload)]);
+    expect(value.entries.find(entry => entry.kind === "context")).toMatchObject({ estimatedTokens: expected });
+    const replay = project([frame(1, "context.prepared", payload), frame(1, "context.prepared", payload)]);
+    expect(replay.entries).toEqual(value.entries);
+  });
+
   it("暂停、排队、继续和中断从有序事件收敛，旧帧不覆盖终态", () => {
     const value = createRunProjection("recovery");
     applyRunFrame(value, frame(1, "run.queued"));
@@ -68,6 +156,118 @@ describe("runProjector", () => {
     applyRunFrame(value, frame(2, "model.output.interrupted", { attempt_id: "a" }));
     expect(value.modelOutput?.state).toBe("interrupted");
   });
+  it("跨轮公开正文与工具交错保留，重放不重复且克隆更新不污染旧视图", () => {
+    const frames = [
+      frame(1, "model.output.delta", { attempt_id: "first", delta: "先读取" }),
+      frame(2, "model.output.delta", { attempt_id: "first", delta: "文件。" }),
+      frame(3, "model.output.finished", { attempt_id: "first", has_tool_calls: true }),
+      frame(4, "tool.completed", { tool_call_id: "read", name: "read_code_file" }),
+      frame(5, "model.output.delta", { attempt_id: "second", delta: "已确认原因。" }),
+      frame(6, "model.output.finished", { attempt_id: "second", has_tool_calls: true }),
+      frame(7, "tool.completed", { tool_call_id: "patch", name: "apply_project_patch" }),
+      frame(8, "model.output.delta", { attempt_id: "final", delta: "修复完成。" }),
+      frame(9, "model.output.finished", { attempt_id: "final", has_tool_calls: false }),
+    ];
+    const value = project(frames.slice(0, 1));
+    const next = cloneRunProjection(value);
+    for (const item of frames.slice(1)) applyRunFrame(next, item);
+    expect(value.entries).toMatchObject([{ text: "先读取", state: "streaming" }]);
+    expect(next.entries.map(entry => entry.kind)).toEqual(["model-output", "tool", "model-output", "tool", "model-output"]);
+    expect(next.entries.filter(entry => entry.kind === "model-output")).toMatchObject([
+      { text: "先读取文件。", sequence: 1, state: "finished", hasToolCalls: true },
+      { text: "已确认原因。", sequence: 5, state: "finished", hasToolCalls: true },
+      { text: "修复完成。", sequence: 8, state: "finished", hasToolCalls: false },
+    ]);
+    expect(project(frames.flatMap(item => [item, item]))).toEqual(next);
+    expect(next.output).toBeNull();
+  });
+
+  it("缺失正文不造进展，旧轮结束或迟到增量不覆盖当前轮", () => {
+    const value = project([
+      frame(1, "model.output.finished", { attempt_id: "empty" }),
+      frame(2, "model.output.delta", { attempt_id: "empty", delta: "" }),
+      frame(3, "model.output.delta", { delta: "无请求标识" }),
+      frame(4, "model.output.delta", { attempt_id: "old", delta: "未完成说明" }),
+      frame(5, "model.output.delta", { attempt_id: "current", delta: "当前说明" }),
+      frame(6, "model.output.interrupted", { attempt_id: "old" }),
+      frame(7, "model.output.delta", { attempt_id: "old", delta: "不应续写" }),
+    ]);
+    expect(value.entries).toMatchObject([
+      { attemptId: "old", text: "未完成说明", state: "interrupted" },
+      { attemptId: "current", text: "当前说明", state: "streaming" },
+    ]);
+    expect(value.modelOutput).toMatchObject({ attemptId: "current", text: "当前说明" });
+    expect(value.runOutcome.goal_outcome).toBe("unknown");
+  });
+
+  it("每轮公开正文维持已有长度上限", () => {
+    const value = project([
+      frame(1, "model.output.delta", { attempt_id: "long", delta: "前".repeat(64000) }),
+      frame(2, "model.output.delta", { attempt_id: "long", delta: "后" }),
+    ]);
+    expect(value.modelOutput?.text).toHaveLength(64000);
+    expect(value.modelOutput?.text.endsWith("后")).toBe(true);
+    expect(value.entries).toMatchObject([{ text: value.modelOutput?.text }]);
+    expect(value.modelOutput?.truncated).toBe(true);
+  });
+
+  it("同一请求的公开进展与最终候选按消息标识独立保存，结束元数据可补齐阶段", () => {
+    const value = project([
+      frame(1, "model.output.delta", { attempt_id: "a", message_id: "progress", phase: "commentary", generation: 2, delta: "先核查。" }),
+      frame(2, "model.output.delta", { attempt_id: "a", message_id: "answer", delta: "核查" }),
+      frame(3, "model.output.delta", { attempt_id: "a", message_id: "answer", delta: "完成。", phase: "unexpected" }),
+      frame(4, "model.output.finished", { attempt_id: "a", phase: "final_answer", has_tool_calls: false,
+        messages: [{ message_id: "progress", phase: "commentary" }, { message_id: "answer", phase: "final_answer" }] }),
+    ]);
+    expect(value.entries).toMatchObject([
+      { messageId: "progress", phase: "commentary", generation: 2, text: "先核查。", state: "finished", truncated: false },
+      { messageId: "answer", phase: "final_answer", text: "核查完成。", state: "finished", truncated: false },
+    ]);
+    expect(value.entries[0].key).not.toBe(value.entries[1].key);
+    expect(value.modelOutput).toMatchObject({ messageId: "answer", phase: "final_answer" });
+    expect(value.output).toBeNull();
+    expect(value.runOutcome.goal_outcome).toBe("unknown");
+  });
+
+  it("请求级阶段只补齐单条未知消息，不覆盖明确进展或猜测多消息阶段", () => {
+    const value = project([
+      frame(1, "model.output.delta", { attempt_id: "old", delta: "旧正文" }),
+      frame(2, "model.output.finished", { attempt_id: "old", phase: "final_answer" }),
+      frame(3, "model.output.delta", { attempt_id: "explicit", phase: "commentary", delta: "进展" }),
+      frame(4, "model.output.finished", { attempt_id: "explicit", phase: "final_answer" }),
+      frame(5, "model.output.delta", { attempt_id: "multiple", message_id: "one", delta: "第一条" }),
+      frame(6, "model.output.delta", { attempt_id: "multiple", message_id: "two", delta: "第二条" }),
+      frame(7, "model.output.finished", { attempt_id: "multiple", phase: "final_answer", messages: [null, { message_id: "one", phase: "invalid" }] }),
+    ]);
+    expect(value.entries).toMatchObject([
+      { messageId: null, phase: "final_answer" }, { phase: "commentary" },
+      { messageId: "one", phase: null }, { messageId: "two", phase: null },
+    ]);
+  });
+
+  it("中断关闭请求内所有消息，迟到的新消息与结束事件不恢复正文或覆盖新请求", () => {
+    const value = project([
+      frame(1, "model.output.delta", { attempt_id: "a", message_id: "one", delta: "一" }),
+      frame(2, "model.output.delta", { attempt_id: "a", message_id: "two", delta: "二" }),
+      frame(3, "model.output.delta", { attempt_id: "b", message_id: "current", delta: "当前" }),
+      frame(4, "model.output.interrupted", { attempt_id: "a" }),
+      frame(5, "model.output.delta", { attempt_id: "a", message_id: "late", delta: "不应出现" }),
+      frame(6, "model.output.finished", { attempt_id: "a", phase: "final_answer" }),
+    ]);
+    expect(value.entries).toHaveLength(3);
+    expect(value.entries).toMatchObject([{ state: "interrupted" }, { state: "interrupted" }, { state: "streaming" }]);
+    expect(value.modelOutput).toMatchObject({ attemptId: "b", text: "当前", state: "streaming" });
+  });
+
+  it("区分旧终态、原始回答与验收替换正文的来源，不推断原始回答被提交", () => {
+    const value = project([frame(1, "run.completed", { output: "旧记录" })]);
+    expect(value.finalOutputAttemptId).toBeUndefined();
+    applyRunFrame(value, frame(2, "run.completed", { output: "原始回答", final_output_attempt_id: "a" }));
+    expect(value.finalOutputAttemptId).toBe("a");
+    applyRunFrame(value, frame(3, "run.completed", { output: "验收替换", final_output_attempt_id: null }));
+    expect(value.finalOutputAttemptId).toBeNull();
+  });
+
   it("七步闭环：条目按事实构建，计划/工具/审批/终态齐全", () => {
     const projection = project(HAPPY);
     expect(projection.status).toBe("completed");
@@ -195,6 +395,7 @@ describe("runProjector", () => {
       cached_tokens: 0,
       cost_usd: null,
       output: "快照最终输出",
+      final_output_attempt_id: "final-model",
       error_code: null,
       error_message: null,
       cancel_requested_at: null,
@@ -214,6 +415,9 @@ describe("runProjector", () => {
       permission_mode: "readonly",
       plan: {
         version: 2,
+        goal_version: 2,
+        needs_review: false,
+        explanation: "已根据追加要求完成核对",
         items: [
           { item_key: "a", ordinal: 1, title: "阅读代码", detail: null, status: "completed" },
           { item_key: "b", ordinal: 2, title: "修改文件", detail: null, status: "completed" },
@@ -225,11 +429,25 @@ describe("runProjector", () => {
     reconcileRunWithSnapshot(projection, snapshot);
     expect(projection.status).toBe("completed");
     expect(projection.output).toBe("快照最终输出");
+    expect(projection).toMatchObject({ projectId: 1, workspaceId: 101, sessionId: 1, finalOutputAttemptId: "final-model" });
     expect(projection.plan?.version).toBe(2);
     expect(projection.plan?.items).toHaveLength(3);
+    expect(projection.plan).toMatchObject({ goal_version: 2, needs_review: false, explanation: "已根据追加要求完成核对" });
     expect(projection.entries.some((entry) => entry.kind === "artifact" && entry.key === "artifact:art-9")).toBe(true);
+    expect(projection.entries.find(entry => entry.key === "artifact:art-9")).toMatchObject({ relPath: "reports/final.md" });
     // 游标不前跳：缺口由 events 重放补齐
     expect(projection.lastSequence).toBe(9);
+    applyRunFrame(projection, frame(10, "plan.updated", { plan_version: 1, items: [] }));
+    expect(projection.plan?.items).toHaveLength(3);
+    applyRunFrame(projection, frame(11, "artifact.created", { artifact_id: "art-9", title: "最终报告", kind: "final_report" }));
+    expect(projection.entries.find(entry => entry.key === "artifact:art-9")).toMatchObject({ relPath: "reports/final.md" });
+    const legacy = project([frame(1, "artifact.created", { artifact_id: "art-9", kind: "final_report", title: "最终报告" })]);
+    const restored = cloneRunProjection(legacy);
+    reconcileRunWithSnapshot(restored, { ...snapshot, final_output_attempt_id: null });
+    expect(restored.entries.filter(entry => entry.kind === "artifact")).toHaveLength(1);
+    expect(restored.entries[0]).toMatchObject({ relPath: "reports/final.md" });
+    expect(legacy.entries[0]).toMatchObject({ relPath: null });
+    expect(restored.finalOutputAttemptId).toBeNull();
   });
 
   it("旧快照不回退已应用事实", () => {

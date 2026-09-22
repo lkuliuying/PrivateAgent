@@ -1,5 +1,5 @@
 import { isTauri } from "@tauri-apps/api/core";
-import { clearAccessToken } from "../auth/session";
+import { discardLegacyAccountSession } from "../auth/session";
 
 export interface ConnectionProfile {
   inference_mode: "service" | "local";
@@ -46,12 +46,12 @@ export function getConnectionProfile(): ConnectionProfile {
       const old = JSON.parse(legacy);
       profile = validateConnectionProfile({ ...profile, ...old, inference_mode: old.mode === "local" ? "local" : old.inference_mode ?? "service" });
     } catch {
-      // 模型配置损坏时暂停推理；不影响服务器登录，也不转发内容到另一服务。
+      // 模型配置损坏时暂停推理，仍允许进入设置修复。
       profile = { ...defaultConnectionProfile(), inference_mode: "local" };
     }
   }
   if (LEGACY_KEYS.some((key) => window.localStorage.getItem(key) !== null)) {
-    clearAccessToken();
+    discardLegacyAccountSession();
     LEGACY_KEYS.forEach((key) => window.localStorage.removeItem(key));
     if (!saved) saveConnectionProfile(profile);
   }
@@ -71,7 +71,7 @@ export function usesLocalInference(): boolean {
   return (isTauri() || import.meta.env.VITE_LOCAL_EXECUTOR === "true") && getConnectionProfile().inference_mode === "local";
 }
 
-/** 无效模型参数不能阻断服务器登录，设置页仍明确提示修复。 */
+/** 无效模型参数不能阻断工作台启动，设置页仍明确提示修复。 */
 export function modelConfigurationError(): string {
   const saved = window.localStorage.getItem(KEY);
   if (!saved) return "";

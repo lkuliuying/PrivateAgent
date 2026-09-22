@@ -1,9 +1,12 @@
 import { test, expect, type Page } from "@playwright/test";
+import { fulfillCodingAuth, prepareCodingFixture } from "./coding-auth-fixture";
+
+test.beforeEach(async ({ page }) => prepareCodingFixture(page));
 
 /**
  * v0.8.0 W1：CodingWorkbench（?coding=1 内部 flag）E2E
  * 覆盖：W0 冻结矩阵首页六状态、侧栏项目树、新建任务主链（POST /sessions
- * kind=coding）、旧页导航回环、<1280px 抽屉模式、ui=v1 回退与敏感字段红线。
+ * kind=coding）、设置导航回环、<1280px 抽屉模式、旧参数兼容与敏感字段红线。
  */
 
 const GREEN_HEALTH = {
@@ -112,10 +115,23 @@ interface CodingStateOverrides {
 function mockCodingApi(page: Page, overrides: CodingStateOverrides = {}) {
   let workspaceEnsured = false;
   let nextSessionId = 100;
+  let currentBranch = "main";
   return page.route("**://127.0.0.1:8000/**", async (route) => {
+    if (await fulfillCodingAuth(route)) return;
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
+
+    if (path === "/projects/1/git/branches" || path === "/projects/1/git/branches/select") {
+      if (request.method() === "POST") currentBranch = request.postDataJSON().branch_name;
+      await route.fulfill({ json: {
+        is_git: true, current_branch: currentBranch, head_sha: "ab" + "0".repeat(38), dirty: false,
+        branches: ["main", "feature/coding-workbench"].map((name) => ({
+          name, head_sha: "ab" + "0".repeat(38), current: name === currentBranch,
+        })),
+      } });
+      return;
+    }
 
     if (path === "/capabilities") {
       await route.fulfill({
@@ -247,19 +263,18 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
   test("就绪态：侧栏项目树 + 首页输入齐备，敏感路径不进 UI", async ({ page }) => {
     await openCoding(page);
     await expect(page.getByTestId("coding-home-ready")).toBeVisible();
-    await expect(page.getByTestId("coding-home-input")).toBeVisible();
+    await expect(page.getByTestId("coding-composer-input")).toBeVisible();
     await expect(page.getByTestId("coding-home-project-select")).toBeVisible();
     await expect(page.getByTestId("coding-home-workspace-select")).toBeVisible();
 
-    // 项目树按需展开，默认把空间留给最近对话。
-    await page.getByTestId("coding-toggle-projects").click();
-    await expect(page.getByTestId("coding-workspace-101")).toBeVisible();
-    await expect(page.getByTestId("coding-workspace-102")).toBeVisible();
-    await expect(page.getByTestId("coding-workspace-102")).toHaveAttribute("data-status", "dirty");
+    // 当前侧栏按项目展示对话；分支选择和未提交状态分别从选择器与详情核对。
+    await expect(page.getByTestId("coding-toggle-projects")).toHaveAttribute("aria-expanded", "true");
+    await page.getByTestId("coding-home-workspace-select").selectOption("branch:feature/coding-workbench");
+    await expect(page.getByTestId("coding-home-workspace-select")).toHaveValue("branch:feature/coding-workbench");
     await expect(page.getByTestId("coding-thread-11")).toBeVisible();
-    // 展开第二个工作区（分支）见其线程
-    await page.getByTestId("coding-workspace-102").click();
     await expect(page.getByTestId("coding-thread-12")).toBeVisible();
+    await page.getByTestId("coding-thread-12").hover();
+    await expect(page.getByTestId("coding-thread-details-12")).toContainText("有未提交更改");
 
     // 红线：root_path 原文不得出现在页面
     expect(await page.content()).not.toContain("C:\\secret");
@@ -289,8 +304,8 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
       }
     });
 
-    await page.getByTestId("coding-home-input").fill("为侧栏补充键盘导航");
-    await page.getByTestId("coding-home-submit").click();
+    await page.getByTestId("coding-composer-input").fill("为侧栏补充键盘导航");
+    await page.getByTestId("coding-composer-send").click();
 
     await expect(page.getByTestId("coding-thread-workspace")).toBeVisible();
     await expect(page.getByTestId("coding-thread-header")).toContainText("为侧栏补充键盘导航");
@@ -304,12 +319,16 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await expect(page.getByTestId("coding-thread-201")).toBeVisible();
   });
 
-  test("无项目：空态引导打开项目页", async ({ page }) => {
+  test("无项目：空态引导新建授权项目，取消后保留空态", async ({ page }) => {
     await openCoding(page, { projects: [] });
     await expect(page.getByTestId("coding-home-no-projects")).toBeVisible();
-    await page.getByRole("button", { name: "打开项目页" }).click();
-    // 首页空态让位于旧项目页，coding 侧栏仍在
-    await expect(page.getByTestId("coding-home-no-projects")).toBeHidden();
+    await page.getByTestId("home-new-project").click();
+    await expect(page.getByTestId("new-project-dialog")).toBeVisible();
+    await expect(page.getByTestId("new-project-submit")).toBeDisabled();
+    await page.getByTestId("new-project-dialog").getByRole("button", { name: "取消", exact: true }).click();
+    await expect(page.getByTestId("new-project-dialog")).toBeHidden();
+    await expect(page.getByTestId("coding-home-no-projects")).toBeVisible();
+    await expect(page.getByRole("button", { name: "打开项目页" })).toHaveCount(0);
     await expect(page.getByTestId("coding-sidebar")).toBeVisible();
   });
 
@@ -331,25 +350,47 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
   });
 
   test("sidecar 未就绪（/health 失败）：错误态与重试入口", async ({ page }) => {
-    await openCoding(page, { healthStatus: 503 });
+    await page.addInitScript(() => {
+      type LocalRequest = { id: string; request: { path: string }; onEvent: { onmessage: (event: Record<string, unknown>) => void } };
+      const surface = window as unknown as { __TAURI_INTERNALS__: { invoke: (command: string, args: LocalRequest) => Promise<unknown> } };
+      const invoke = surface.__TAURI_INTERNALS__.invoke;
+      let healthChecks = 0;
+      surface.__TAURI_INTERNALS__.invoke = async (command, args) => {
+        // 启动检查先成功，工作台随后失联；故障发生在真实本机请求边界。
+        if (command === "local_executor_request" && args.request.path === "/health" && ++healthChecks === 2) {
+          args.onEvent.onmessage({ id: args.id, status: 503, headers: { "Content-Type": "application/json" } });
+          args.onEvent.onmessage({ id: args.id, data: "{}" });
+          args.onEvent.onmessage({ id: args.id, done: true });
+          return;
+        }
+        return invoke(command, args);
+      };
+    });
+    await openCoding(page);
     await expect(page.getByTestId("coding-home-sidecar-unavailable")).toBeVisible();
     await expect(page.getByRole("button", { name: "重试连接" })).toBeVisible();
+    await page.getByRole("button", { name: "重试连接" }).click();
+    await expect(page.getByTestId("coding-home-ready")).toBeVisible();
   });
 
-  test("工作区异常（missing）：状态语义与项目页入口", async ({ page }) => {
+  test("工作区异常（missing）：状态语义与新建授权项目入口", async ({ page }) => {
     await openCoding(page, {
       workspaces: [{ ...WORKSPACE_DTOS[0], status: "missing" }],
       threads: [],
     });
     await expect(page.getByTestId("coding-home-workspace-invalid")).toBeVisible();
     await expect(page.getByText("路径缺失")).toBeVisible();
+    await page.getByTestId("coding-home-workspace-invalid").getByRole("button", { name: "新建项目", exact: true }).click();
+    await expect(page.getByTestId("new-project-dialog")).toBeVisible();
+    await expect(page.getByTestId("new-project-submit")).toBeDisabled();
   });
 
   test("旧页导航回环：设置 → 返回 coding 首页（不经独立项目页）", async ({ page }) => {
     await openCoding(page);
-    await page.getByTestId("coding-nav-settings").click();
+    await page.getByTestId("user-menu-trigger").click();
+    await page.getByRole("menuitem", { name: "设置", exact: true }).click();
     await expect(page.getByTestId("settings-module-nav")).toBeVisible();
-    await page.getByRole("button", { name: "返回工作台" }).click();
+    await page.getByRole("button", { name: "返回应用", exact: true }).click();
     await expect(page.getByTestId("coding-home-ready")).toBeVisible();
   });
 
@@ -366,7 +407,7 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
       },
     }));
     await page.goto("/?coding=1");
-    await page.getByRole("button", { name: "账号菜单：user" }).click();
+    await page.getByTestId("user-menu-trigger").click();
     await page.getByRole("menuitem", { name: "设置", exact: true }).click();
 
     await expect(page.getByTestId("settings-section-status")).toHaveCount(0);
@@ -390,7 +431,8 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await page.setViewportSize({ width: 1100, height: 760 });
     await openCoding(page, {}, "drawer-tab");
     await page.getByTestId("coding-drawer-tab").click();
-    await page.getByTestId("coding-nav-settings").click();
+    await page.getByTestId("user-menu-trigger").click();
+    await page.getByRole("menuitem", { name: "设置", exact: true }).click();
 
     await expect(page.getByTestId("settings-drawer-tab")).toBeVisible();
     await expect(page.getByTestId("settings-module-nav")).toBeHidden();
@@ -398,7 +440,7 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await expect(page.getByTestId("settings-module-nav")).toBeVisible();
     await page.getByTestId("settings-section-provider").click();
     await expect(page.getByTestId("settings-module-nav")).toBeHidden();
-    await expect(page.getByRole("heading", { name: "模型服务与隐私" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "模型设置", exact: true })).toBeVisible();
   });
 
   test("矮窗口侧栏中部滚动，底部入口不与项目内容重叠", async ({ page }) => {
@@ -434,20 +476,22 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await openCoding(page);
     await page.getByTestId("coding-toggle-collapse").click();
     const newTask = page.getByTestId("coding-new-task");
-    // v0.9.0 H1：新建任务更名为新建对话（任务由对话中的 run 表达）
-    await expect(newTask).toHaveAttribute("aria-label", "新建对话");
+    // 任务由对话中的 run 表达，控件名称与当前可访问标签一致。
+    await expect(newTask).toHaveAttribute("aria-label", "新对话");
     await expect(page.getByTestId("coding-toggle-projects")).toHaveAttribute("aria-label", "项目");
     await expect(page.getByTestId("coding-tree")).toBeHidden();
   });
 
-  test("ui=v1 回退仍可用（coding flag 不影响旧壳）", async ({ page }) => {
+  test("旧 ui=v1 参数不绕过普通用户 Coding 工作台", async ({ page }) => {
     await mockCodingApi(page);
     await page.goto("/?coding=1&ui=v1");
-    await expect(page.getByTestId("nav-utilities-toggle")).toBeVisible({ timeout: 10000 });
+    // 当前 uiFlags 按角色选择工作台，已不支持普通用户用查询参数切回旧壳。
+    await expect(page.getByTestId("coding-home-ready")).toBeVisible({ timeout: 10000 });
+    await expect(page.getByTestId("nav-utilities-toggle")).toHaveCount(0);
   });
 
   test("开发预览夹具：?coding-preview= 不依赖后端渲染六状态（W0 矩阵 L2）", async ({ page }) => {
-    // 无路由 mock：预览夹具替换数据源，后端不可达不影响状态呈现
+    // 仅模拟账号，业务 API 被阻断；预览夹具仍独立提供六种状态。
     for (const [key, state] of [
       ["no-projects", "coding-home-no-projects"],
       ["no-workspace", "coding-home-no-workspace"],

@@ -81,6 +81,8 @@ export function contextRingSourceLabel(
       return "经校验 tokenizer";
     case "runtime_count":
       return "Runtime 统一计数";
+    case "estimated":
+      return "请求上下文估算";
     case "unavailable":
       return "无可用计量来源";
     default:
@@ -93,6 +95,11 @@ export function deriveContextRing(
   body: ContextBudgetResponse | null
 ): ContextRingFacts {
   if (!body) return contextRingUnavailable("用量读取失败");
+  if (!Number.isFinite(body.used_tokens) || body.used_tokens < 0
+    || !Number.isFinite(body.max_context_tokens) || body.max_context_tokens < 0
+    || body.usage_percent !== null && !Number.isFinite(body.usage_percent)) {
+    return contextRingUnavailable("上下文计量数据不完整");
+  }
   const base = {
     usedTokens: body.used_tokens,
     limitTokens: body.max_context_tokens,
@@ -130,7 +137,7 @@ export function deriveContextRing(
       state === "full"
         ? body.error_reason ?? "上下文用量已达窗口上限"
         : state === "failed"
-          ? body.error_reason ?? "自动压缩失败，可新开会话恢复"
+          ? body.compaction_error ?? body.error_reason ?? "压缩未完成，原历史已保留；可在环境面板重试"
           : body.error_reason,
   };
 }

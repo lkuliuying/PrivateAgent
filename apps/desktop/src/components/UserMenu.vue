@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import { useRouter } from "vue-router";
-import { message } from "ant-design-vue";
 import {
   PhCaretUpDown,
   PhGearSix,
-  PhSignOut,
-  PhUserCircle,
 } from "@phosphor-icons/vue";
+import { useLocalProfile } from "../services/localProfile";
+import defaultAvatar from "../assets/companion/default-avatar.png";
 
-import { useAuthStore } from "../stores/auth";
 
 withDefaults(
   defineProps<{
@@ -23,26 +20,15 @@ const emit = defineEmits<{
   settings: [];
 }>();
 
-const auth = useAuthStore();
-const router = useRouter();
 const menuOpen = ref(false);
-const username = computed(() => auth.user?.username?.trim() || "账号");
+const { profile } = useLocalProfile();
+const username = computed(() => profile.value.nickname || "本机用户");
 
 function openSettings(): void {
   menuOpen.value = false;
   emit("settings");
 }
 
-async function logout(): Promise<void> {
-  if (auth.loading) return;
-  menuOpen.value = false;
-  try {
-    await auth.logout();
-  } catch (reason) {
-    message.warning(reason instanceof Error ? reason.message : "服务端退出失败");
-  }
-  await router.replace({ name: "login" });
-}
 </script>
 
 <template>
@@ -56,13 +42,13 @@ async function logout(): Promise<void> {
         type="button"
         class="user-menu__trigger"
         data-testid="user-menu-trigger"
-        :aria-label="`账号菜单：${username}`"
+        aria-label="本机工作区菜单"
         :aria-expanded="menuOpen"
       >
-        <PhUserCircle :size="inline ? 25 : 20" weight="fill" aria-hidden="true" />
+        <img class="user-menu__avatar" :src="profile.avatarDataUrl || defaultAvatar" alt="" />
         <span class="user-menu__identity">
           <strong>{{ username }}</strong>
-          <small v-if="inline">个人账号</small>
+          <small v-if="inline">API Key 模式 · 本机工作区</small>
         </span>
         <PhCaretUpDown
           v-if="!collapsed"
@@ -76,11 +62,11 @@ async function logout(): Promise<void> {
         <div
           class="user-menu__popover"
           role="menu"
-          aria-label="账号操作"
+          aria-label="工作区操作"
           data-testid="user-menu-popover"
         >
           <header class="user-menu__popover-head">
-            <PhUserCircle :size="24" weight="fill" aria-hidden="true" />
+            <img class="user-menu__avatar" :src="profile.avatarDataUrl || defaultAvatar" alt="" />
             <strong>{{ username }}</strong>
           </header>
           <div class="user-menu__divider" />
@@ -93,17 +79,6 @@ async function logout(): Promise<void> {
             <PhGearSix :size="17" aria-hidden="true" />
             <span>设置</span>
           </button>
-          <button
-            type="button"
-            role="menuitem"
-            class="user-menu__logout"
-            data-testid="user-menu-logout"
-            :disabled="auth.loading"
-            @click="void logout()"
-          >
-            <PhSignOut :size="17" aria-hidden="true" />
-            <span>{{ auth.loading ? "正在退出…" : "退出登录" }}</span>
-          </button>
         </div>
       </template>
     </a-dropdown>
@@ -111,6 +86,7 @@ async function logout(): Promise<void> {
 </template>
 
 <style scoped>
+.user-menu__avatar { width: 32px; height: 32px; flex-shrink: 0; object-fit: cover; border-radius: var(--radius-full); border: 1px solid var(--color-border); }
 .user-menu {
   position: fixed;
   z-index: 90;
@@ -247,10 +223,6 @@ async function logout(): Promise<void> {
 .user-menu__popover button:disabled {
   cursor: wait;
   opacity: 0.6;
-}
-
-.user-menu__popover .user-menu__logout {
-  color: var(--color-danger-fg);
 }
 
 .is-collapsed .user-menu__trigger {

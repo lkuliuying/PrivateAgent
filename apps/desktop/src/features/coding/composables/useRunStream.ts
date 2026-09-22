@@ -114,6 +114,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
   let controller: AbortController | null = null;
   let reconnectTimer: number | null = null;
   let reconnectAttempts = 0;
+  let pendingCreate: { signature: string; requestId: string } | null = null;
 
   function publish(next: RunProjection): void {
     projection.value = next;
@@ -264,6 +265,15 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
   }
 
   async function startRun(input: CodingRunCreateInput): Promise<void> {
+    // 创建尚未返回或当前运行仍活动时，不替换世代，避免丢弃首个成功响应。
+    if (phase.value === "starting" || (phase.value !== "idle" && phase.value !== "error" &&
+        projection.value && !isTerminalRunStatus(projection.value.status))) return;
+    const signature = JSON.stringify(input);
+    if (!pendingCreate || pendingCreate.signature !== signature) {
+      pendingCreate = { signature, requestId: input.client_request_id ?? crypto.randomUUID() };
+    }
+    // 响应丢失后的同输入重试关联原运行；成功后再次显式提交才生成新标识。
+    const request = { ...input, client_request_id: pendingCreate.requestId };
     const mine = ++generation;
     abortStream();
     clearReconnectTimer();
@@ -272,8 +282,9 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     connectionError.value = null;
     createErrorCode.value = null;
     try {
-      const snapshot = await source.createRun(input);
+      const snapshot = await source.createRun(request);
       if (mine !== generation) return;
+      pendingCreate = null;
       const next = createRunProjection(snapshot.id, input.message);
       reconcileRunWithSnapshot(next, snapshot);
       publish(next);
@@ -298,6 +309,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     runId: string,
     userMessage: string | null = null
   ): Promise<void> {
+    pendingCreate = null;
     const mine = ++generation;
     abortStream();
     clearReconnectTimer();
@@ -324,6 +336,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
 
   function detach(): void {
     generation += 1;
+    pendingCreate = null;
     abortStream();
     clearReconnectTimer();
     phase.value = "idle";

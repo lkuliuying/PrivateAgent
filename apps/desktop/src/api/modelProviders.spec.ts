@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { apiFetch, ensureApiBase } from "./http";
-import { discoverModelProviderModels, probeModelProviderModel, type ModelProvider } from "./modelProviders";
+import { discoverModelProviderModels, probeModelProviderModel, saveModelProvider, type ModelProvider } from "./modelProviders";
 
 vi.mock("../services/localExecutor", () => ({ usesLocalExecutor: () => true }));
 
@@ -40,26 +40,41 @@ beforeEach(() => {
 });
 
 describe("供应商模型连接检查", () => {
+  it("保存 Responses 使用现有供应商接口并还原 API 格式", async () => {
+    vi.mocked(apiFetch).mockResolvedValue(new Response(JSON.stringify({
+      id: "responses", name: "推理模型", protocol: "openai", base_url: "https://provider.example.test/v1",
+      api_format: "responses", enabled: true, is_builtin: false, api_key_configured: true,
+      models: [{ profile_id: "fixture", model_id: "fixture-model", context_tokens: 32000 }],
+    })));
+    const saved = await saveModelProvider("responses", {
+      name: "推理模型", protocol: "openai", baseUrl: "https://provider.example.test/v1", apiFormat: "responses",
+      enabled: true, models: [{ modelId: "fixture-model", contextTokens: 32000, maxOutputTokens: null, metadataSource: "unknown" }],
+    });
+    expect(saved.apiFormat).toBe("responses");
+    const [url, init] = vi.mocked(apiFetch).mock.calls[0];
+    expect(url).toBe("https://backend.example.test/model-providers/responses");
+    expect(JSON.parse(init?.body as string).api_format).toBe("responses");
+  });
+
   it.each(["ollama", "openai"] as const)("%s 回环模型通过本机执行器获取列表", async (protocol) => {
     await discoverModelProviderModels({ protocol, baseUrl: "http://127.0.0.1:9000" });
     const [url, init] = vi.mocked(apiFetch).mock.calls[0];
-    expect(url).toBe("https://backend.example.test/local-models/discover");
-    expect(JSON.parse(init?.body as string)).toEqual({ protocol, base_url: "http://127.0.0.1:9000" });
+    expect(url).toBe("https://backend.example.test/model-providers/discover/models");
+    expect(JSON.parse(init?.body as string)).toEqual({ protocol, base_url: "http://127.0.0.1:9000", provider_id: null, credential_reference: null });
   });
 
-  it("本机模型发现拒绝携带密钥，不向任何服务发送", async () => {
-    await expect(discoverModelProviderModels({ protocol: "openai", baseUrl: "http://localhost:9000/v1", apiKey: "fixture" }))
-      .rejects.toThrow("本机模型暂不支持需要密钥");
-    expect(apiFetch).not.toHaveBeenCalled();
+  it("带密钥的回环服务也统一通过本机模型接口发现", async () => {
+    await discoverModelProviderModels({ protocol: "openai", baseUrl: "http://localhost:9000/v1", apiKey: "fixture" });
+    expect(apiFetch).toHaveBeenCalledWith("https://backend.example.test/model-providers/discover/models", expect.objectContaining({ method: "POST" }));
+    expect(JSON.parse(vi.mocked(apiFetch).mock.calls[0][1]?.body as string).api_key).toBe("fixture");
   });
 
-  it("本机模型保存了密钥时，连接检查也明确拒绝", async () => {
-    await expect(probeModelProviderModel({ ...provider, baseUrl: "http://localhost:9000/v1" }, "deepseek-v4-flash"))
-      .rejects.toThrow("本机模型暂不支持需要密钥");
-    expect(apiFetch).not.toHaveBeenCalled();
+  it("已保存密钥的回环服务使用本机供应商标识检查", async () => {
+    await expect(probeModelProviderModel({ ...provider, baseUrl: "http://localhost:9000/v1" }, "deepseek-v4-flash")).resolves.toBe(true);
+    expect(JSON.parse(vi.mocked(apiFetch).mock.calls[0][1]?.body as string).provider_id).toBe(provider.id);
   });
 
-  it("只请求现有供应商发现接口，用服务器保存的密钥检查指定模型", async () => {
+  it("只请求现有供应商发现接口，用本机保存的密钥检查指定模型", async () => {
     await expect(probeModelProviderModel(provider, "deepseek-v4-flash")).resolves.toBe(true);
 
     expect(apiFetch).toHaveBeenCalledTimes(1);
@@ -79,7 +94,7 @@ describe("供应商模型连接检查", () => {
     await expect(probeModelProviderModel(provider, "deepseek-v4-flash")).resolves.toBe(false);
   });
 
-  it("凭据失败时保留服务器错误而不是报告成功", async () => {
+  it("凭据失败时保留供应商错误而不是报告成功", async () => {
     vi.mocked(apiFetch).mockResolvedValue(new Response(
       JSON.stringify({ detail: "模型服务认证失败" }), { status: 401 }
     ));

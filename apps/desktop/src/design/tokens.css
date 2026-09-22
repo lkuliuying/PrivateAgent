@@ -1,7 +1,7 @@
 /**
  * 设计令牌 · tokens.css（0.4.0 tokens v2 · 三层结构）
  *
- * 视觉方向：Calm Agent Workbench 2.0；浅色生产力桌面 + 深色品牌 rail；青蓝仅作强调色。
+ * 视觉方向：青白工作台；清晰正文、柔和表面与克制的青色强调。
  *
  * 三层结构（D0 冻结，docs/releases/v0.4.0/ui-audit-0.4.0.md §5）：
  *   1. Primitive  原始调色板与尺度（--pa-p-* / --pa-t-* / --pa-s-* / --pa-r-* / --pa-shadow-* / --pa-m-*）
@@ -24,7 +24,7 @@
   /* 冷灰（青灰调） */
   --pa-p-gray-0: #ffffff;
   --pa-p-gray-25: #f8fbfc;
-  --pa-p-gray-50: #f5f9fa;
+  --pa-p-gray-50: #f8fafc;
   --pa-p-gray-75: #f1f7f8;
   --pa-p-gray-100: #edf5f6;
   --pa-p-gray-150: #edf6f7;
@@ -34,14 +34,14 @@
   --pa-p-gray-500: #8ba0a6;
   --pa-p-gray-600: #667b82;
   --pa-p-gray-700: #4f666e;
-  --pa-p-gray-900: #172b32;
+  --pa-p-gray-900: #0f2838;
 
   /* 青蓝（品牌/强调） */
   --pa-p-teal-50: #dff7f7;
   --pa-p-teal-300: #5fe0e5;
   --pa-p-teal-500: #08aeb5;
   --pa-p-teal-600: #07959c;
-  --pa-p-teal-700: #06777e;
+  --pa-p-teal-700: #007c89;
   --pa-p-teal-750: #066a70;
   --pa-p-teal-800: #08777d;
   --pa-p-teal-950: #082832;
@@ -88,8 +88,8 @@
 
   /* 圆角 */
   --pa-r-sm: 4px;
-  --pa-r-md: 6px;
-  --pa-r-lg: 10px;
+  --pa-r-md: 8px;
+  --pa-r-lg: 8px;
   --pa-r-xl: 14px;
   --pa-r-full: 9999px;
 
@@ -113,7 +113,7 @@
    * ======================================================================== */
 
   /* 字体 */
-  --font-sans: "Segoe UI Variable", "Aptos", "PingFang SC", "Microsoft YaHei",
+  --font-sans: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
     sans-serif;
   --font-display: var(--font-sans);
   --font-mono: "SFMono-Regular", "Cascadia Code", Consolas, "Liberation Mono",
@@ -187,15 +187,19 @@
   --color-info-soft: var(--pa-p-blue-50);
   --color-info-fg: var(--pa-p-blue-800);
 
-  /* 导航 rail · 深色品牌区 */
-  --color-rail-bg: var(--pa-p-teal-950);
-  --color-rail-surface: rgba(255, 255, 255, 0.08);
-  --color-rail-active: rgba(8, 174, 181, 0.17);
-  --color-rail-border: rgba(255, 255, 255, 0.08);
-  --color-rail-fg: #dcebed;
-  --color-rail-fg-strong: #ffffff;
-  --color-rail-fg-muted: #91a9af;
-  --color-rail-accent: var(--pa-p-teal-300);
+  /* 导航与正文使用同一明亮色系，主题覆写仍通过语义令牌生效。 */
+  --color-rail-bg: var(--pa-p-gray-150);
+  --color-rail-surface: var(--color-surface);
+  --color-rail-active: var(--color-accent-soft);
+  --color-rail-border: var(--color-border);
+  --color-rail-fg: var(--color-fg-muted);
+  --color-rail-fg-strong: var(--color-fg);
+  --color-rail-fg-muted: var(--color-fg-subtle);
+  --color-rail-accent: var(--pa-p-teal-700);
+  --color-hero-fg: #0f2838;
+  --color-hero-muted: #4f666e;
+  --color-hero-bg: #f8fafc;
+  --color-hero-accent: #007c89;
 
   /* 间距（语义别名 = primitive） */
   --space-1: var(--pa-s-1);
@@ -222,8 +226,8 @@
   /* 动效等级（D0 冻结四档；频繁页面切换不超过 320ms） */
   --pa-motion-instant: var(--pa-m-100); /* 80–120：按压/颜色/轻量状态 */
   --pa-motion-fast: var(--pa-m-160); /* 120–180：hover/focus/菜单/Tooltip */
-  --pa-motion-standard: var(--pa-m-200); /* 180–240：面板/页签/折叠/列表 */
-  --pa-motion-deliberate: var(--pa-m-320); /* 240–320：大型抽屉/任务完成 */
+  --pa-motion-standard: var(--pa-m-160); /* 面板与页签保持轻快。 */
+  --pa-motion-deliberate: var(--pa-m-160); /* 抽屉不延迟可操作时间。 */
   --ease: var(--pa-m-ease);
   --ease-out: var(--pa-m-ease-out);
   /* 兼容时长别名（0.3.0 既有变量） */
@@ -232,7 +236,7 @@
   --duration-slow: var(--pa-m-240);
 
   /* 布局尺寸 */
-  --rail-w: 272px;
+  --rail-w: 240px;
   --rail-collapsed-w: 72px;
   --list-w: 0px;
   --inspector-w: 360px;
@@ -311,7 +315,8 @@
 
   /* 面板/页面 */
   --pa-page-padding: var(--space-6);
-  --pa-page-max-w: 1060px;
+  --pa-page-max-w: 1200px;
+  --pa-text-hero: clamp(28px, 3vw, 44px);
   --pa-section-gap: var(--space-6);
 
   /* ============ 全局基础 ============ */

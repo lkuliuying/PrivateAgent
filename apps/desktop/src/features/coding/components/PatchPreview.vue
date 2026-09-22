@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import DiffFeedback from "./DiffFeedback.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { fetchPatchPage, patchOperation, type PatchChange, type PatchPage } from "../api/patches";
 
 const props = defineProps<{ runId: string; patchId: string; previewSha: string; changes: PatchChange[] }>();
+const emit = defineEmits<{ feedback: [message: string] }>();
 const selected = ref("");
 const page = ref<PatchPage | null>(null);
 const offsets = ref<number[]>([]);
@@ -73,7 +75,7 @@ onBeforeUnmount(() => { sequence++; controller?.abort(); });
     <p v-if="loading" role="status">正在读取…</p>
     <p v-if="error" role="alert">{{ error }} <button class="pa-btn pa-btn--subtle" @click="load(pendingOffset, pendingHistory)">重试</button></p>
     <template v-if="page">
-      <pre tabindex="0">{{ page.content || "无文本差异，请核对上方操作类型" }}</pre>
+      <DiffFeedback :content="page.content || '无文本差异，请核对上方操作类型'" :path="change?.rel_path ?? ''" :version="previewSha" :offset="page.offset" @feedback="emit('feedback', $event)" />
       <div class="patch-preview-nav">
         <button class="pa-btn pa-btn--subtle" :disabled="loading || !offsets.length" @click="previous">上一页</button>
         <span>{{ page.offset }}–{{ page.offset + page.content.length }} / {{ page.total_chars }}</span>

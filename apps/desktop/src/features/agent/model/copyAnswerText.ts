@@ -1,5 +1,5 @@
 /**
- * v0.8.0 W6-R2 · 最终回答复制（纯函数，无 DOM 副作用）
+ * v0.8.0 W6-R2 · 最终回答复制（回收临时 DOM 并恢复焦点）
  *
  * 复制内容 = 该轮完整最终回答正文（保留换行）；不混入按钮文案、过程或
  * 隐藏 DOM（调用方只传可见最终回答文本，计划 §4.4/§6.7）。
@@ -24,9 +24,11 @@ export async function copyAnswerText(text: string): Promise<CopyResult> {
   }
 
   // 回退：临时 textarea + execCommand（不保留在 DOM 中）
+  let holder: HTMLTextAreaElement | null = null;
+  const focused = typeof document !== "undefined" ? document.activeElement : null;
   try {
     if (typeof document === "undefined") return "unavailable";
-    const holder = document.createElement("textarea");
+    holder = document.createElement("textarea");
     holder.value = value;
     holder.setAttribute("readonly", "");
     holder.setAttribute("aria-hidden", "true");
@@ -35,10 +37,14 @@ export async function copyAnswerText(text: string): Promise<CopyResult> {
     document.body.appendChild(holder);
     holder.select();
     const copied = document.execCommand("copy");
-    document.body.removeChild(holder);
     return copied ? "ok" : "failed";
   } catch {
     return "unavailable";
+  } finally {
+    holder?.remove();
+    if (typeof HTMLElement !== "undefined" && focused instanceof HTMLElement && focused.isConnected) {
+      focused.focus({ preventScroll: true });
+    }
   }
 }
 

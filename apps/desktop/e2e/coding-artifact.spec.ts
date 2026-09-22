@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { fulfillCodingAuth, prepareCodingFixture } from "./coding-auth-fixture";
+
+test.beforeEach(async ({ page }) => prepareCodingFixture(page));
 
 /**
  * v0.8.0 W3：输入器、审批影响范围与 Artifact E2E
@@ -115,11 +118,13 @@ function mockW3(page: Page, scenario: W3Scenario) {
   let approvalApproved: boolean | null = null;
   let deliveredMax = 0;
   let terminalStatus: string | null = null;
+  let terminalFacts: Record<string, unknown> = {};
   let outputAfterSeq = -1;
 
   return {
     createdBodies,
     route: page.route("**://127.0.0.1:8000/**", async (route) => {
+      if (await fulfillCodingAuth(route)) return;
       const request = route.request();
       const url = new URL(request.url());
       const path = url.pathname;
@@ -188,7 +193,7 @@ function mockW3(page: Page, scenario: W3Scenario) {
         return;
       }
       if (path === `/agent-runs/${RUN_ID}` && request.method() === "GET") {
-        await route.fulfill({ json: snapshot({ status: terminalStatus ?? "running", last_event_sequence: deliveredMax }) });
+        await route.fulfill({ json: snapshot({ ...terminalFacts, status: terminalStatus ?? "running", last_event_sequence: deliveredMax }) });
         return;
       }
       if (path === `/agent-runs/${RUN_ID}/approvals` && request.method() === "GET") {
@@ -297,6 +302,10 @@ function mockW3(page: Page, scenario: W3Scenario) {
         }
         for (const frame of frames) {
           deliveredMax = Math.max(deliveredMax, frame.sequence);
+          if (["run.completed", "run.failed", "run.cancelled", "run.timed_out", "run.limit_exceeded", "run.interrupted"].includes(frame.type)) {
+            terminalFacts = { output: frame.payload.output ?? null, error_code: frame.payload.error_code ?? null,
+              error_message: frame.payload.error ?? null };
+          }
           if (frame.type === "run.terminal") terminalStatus = String(frame.payload.status ?? "");
         }
         await route.fulfill(sse(frames));
@@ -309,7 +318,7 @@ function mockW3(page: Page, scenario: W3Scenario) {
       if (path === "/agent-model-profiles") {
         await route.fulfill({
           json: [
-            { id: "local-coder", provider: "ollama", display_name: "Qwen3 Coder 30B", is_local: true, native_tool_calls: true, supports_streaming: true, supports_structured_output: true, supports_vision: false, context_tokens: 131072, reasoning_efforts: ["low", "medium", "high"], usage_reporting: true, enabled: true, created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" },
+            { id: "local-coder", provider: "ollama", model_name: "qwen3-coder:30b", display_name: "Qwen3 Coder 30B", is_local: true, native_tool_calls: true, supports_streaming: true, supports_structured_output: true, supports_vision: false, context_tokens: 131072, reasoning_efforts: ["low", "medium", "high"], usage_reporting: true, enabled: true, created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-01T00:00:00Z" },
           ],
         });
         return;
@@ -355,7 +364,9 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await expect(page.getByTestId("diff-artifact-body")).toContainText("+  const overlay");
     // 批准后完成
     await page.getByTestId("approval-approve-ap-w3").click();
-    await expect(page.getByTestId("thread-run-status")).toHaveText(/已完成/, { timeout: 20000 });
+    // completed 载荷没有完成契约；保留未知结果，不为浏览器夹具伪造功能证明。
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/, { timeout: 20000 });
+    await expect(page.getByTestId("thread-run-status")).not.toHaveClass(/tone-success/);
   });
 
   test("命令输出与测试报告：脱敏命令/退出码/耗时 + parsed 摘要 + 按需展开输出行（矩阵 12，W6-R 增强）", async ({ page }) => {
@@ -402,10 +413,12 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     // 权限/模型/推理选择
     await page.getByTestId("composer-permission").selectOption("confirm");
     await page.getByTestId("composer-model").selectOption("local-coder");
-    await page.getByTestId("composer-effort").selectOption("high");
+    await page.getByTestId("composer-effort").click();
+    await page.getByRole("slider", { name: "模型强度", exact: true }).press("End");
+    await page.getByRole("slider", { name: "模型强度", exact: true }).press("Escape");
     await page.getByTestId("coding-composer-send").click();
 
-    expect(mock.createdBodies[0]).toMatchObject({
+    await expect.poll(() => mock.createdBodies[0]).toMatchObject({
       session_id: 11,
       project_id: 1,
       workspace_id: 101,
@@ -416,12 +429,16 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     expect(String((mock.createdBodies[0] as { message: string }).message)).toContain(
       "@src/features/coding/components/CodingSidebar.vue"
     );
-    // 执行推进到命令结果摘要（头部事实，不阻塞主区）
+    // 运行结束后展开执行过程和工具详情，保留命令摘要的可见性断言。
+    await expect(page.getByTestId("terminal-output")).toContainText("命令已执行");
+    await page.getByTestId("run-duration-toggle").click();
+    await page.getByTestId("tool-toggle").click();
     await expect(page.getByTestId("command-parsed-summary")).toBeVisible({ timeout: 15000 });
   });
 
   test("预览夹具五态：验证中/冲突/partial_unknown/补丁预览/命令输出（矩阵 13/17/19/11/12 L2）", async ({ page }) => {
     await page.route("**://127.0.0.1:8000/**", async (route) => {
+      if (await fulfillCodingAuth(route)) return;
       const path = new URL(route.request().url()).pathname;
       if (path === "/health") {
         await route.fulfill({ json: GREEN_HEALTH });
@@ -465,7 +482,7 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await page.goto("/?coding=1&coding-run-preview=verification");
     await expect(page.getByTestId("coding-thread-11")).toBeVisible({ timeout: 10000 });
     await page.getByTestId("coding-thread-11").click();
-    await expect(page.getByTestId("transcript-verification")).toContainText("进行中");
+    await expect(page.getByTestId("transcript-verification")).toContainText("正在校验输出");
 
     await page.goto("/?coding=1&coding-run-preview=conflict");
     await page.getByTestId("coding-thread-11").click();
@@ -479,6 +496,9 @@ test.describe("v0.8.0 W3 输入器、审批影响范围与 Artifact", () => {
     await page.goto("/?coding=1&coding-run-preview=patch-preview");
     await page.getByTestId("coding-thread-11").click();
     await expect(page.getByTestId("approval-card")).toBeVisible();
+    await expect(page.getByTestId("approval-card")).toContainText("需确认");
+    await expect(page.getByTestId("approval-card")).toContainText("filesystem.write");
+    await expect(page.getByTestId("approval-card")).not.toContainText("已处理授权");
     await expect(page.getByTestId("diff-artifact-toggle")).toContainText("CodingSidebar.vue");
 
     await page.goto("/?coding=1&coding-run-preview=command-output");

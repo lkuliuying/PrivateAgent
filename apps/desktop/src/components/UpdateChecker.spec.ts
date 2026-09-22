@@ -1,6 +1,6 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { cmdCheckForUpdates, cmdDownloadAndInstallUpdate, cmdRelaunchApp } from "../api";
+import { cmdCheckForUpdates, cmdDownloadAndInstallUpdate, cmdRelaunchApp, cmdGetUpdateConfiguration } from "../api";
 import UpdateChecker from "./UpdateChecker.vue";
 
 const confirm = vi.hoisted(() => vi.fn());
@@ -9,12 +9,15 @@ vi.mock("../api", () => ({
   cmdCheckForUpdates: vi.fn(),
   cmdDownloadAndInstallUpdate: vi.fn(),
   cmdRelaunchApp: vi.fn(),
+  cmdGetUpdateConfiguration: vi.fn(),
 }));
 
 const nextVersion = { version: "1.0.1", date: null, body: "修复更新" };
 
 beforeEach(() => {
   vi.resetAllMocks();
+  localStorage.clear();
+  vi.mocked(cmdGetUpdateConfiguration).mockResolvedValue({ version: "1.0.0", endpoint: "https://updates.example.test/latest.json", target: "unified-windows-x86_64" });
   vi.mocked(cmdCheckForUpdates).mockResolvedValue(nextVersion);
   vi.mocked(cmdDownloadAndInstallUpdate).mockResolvedValue(undefined);
   vi.mocked(cmdRelaunchApp).mockResolvedValue(undefined);
@@ -23,12 +26,61 @@ beforeEach(() => {
 
 async function checked() {
   const wrapper = mount(UpdateChecker);
+  await flushPromises();
   await wrapper.get(".ghost-btn").trigger("click");
   await flushPromises();
   return wrapper;
 }
 
 describe("UpdateChecker", () => {
+  it("没有预设更新源时显示服务尚未就绪，不提供地址设置或误报最新版本", async () => {
+    vi.mocked(cmdGetUpdateConfiguration).mockResolvedValue({ version: "1.0.0", endpoint: null, target: "unified-windows-x86_64" });
+    const wrapper = await checked();
+    expect(wrapper.text()).toContain("自动更新服务尚未就绪");
+    expect(wrapper.text()).not.toContain("当前已是最新版本");
+    expect(wrapper.text()).not.toContain("填写");
+    expect(wrapper.find("input").exists()).toBe(false);
+    expect(cmdCheckForUpdates).not.toHaveBeenCalled();
+    expect(wrapper.find(".primary-btn").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it.each(["更新地址配置无效", "未配置更新源，请在关于与更新中填写此客户端的更新清单地址"])("预设配置被原生层拒绝时保留失败状态：%s", async (message) => {
+    vi.mocked(cmdCheckForUpdates).mockRejectedValue(new Error(message));
+    const wrapper = await checked();
+    expect(wrapper.get('[role="alert"]').text()).toContain("自动更新服务尚未就绪");
+    expect(wrapper.get('[role="alert"]').text()).not.toContain("填写");
+    expect(wrapper.text()).not.toContain("当前已是最新版本");
+    expect(wrapper.find(".primary-btn").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("检查和安装均使用应用预设配置，忽略旧版本保存在本机的地址", async () => {
+    const legacySource = "https://legacy.example.test/latest.json";
+    localStorage.setItem("pa_update_source_unified-windows-x86_64", legacySource);
+    const wrapper = await checked();
+    expect(wrapper.text()).not.toContain("更新源设置");
+    expect(wrapper.find("input").exists()).toBe(false);
+    expect(cmdCheckForUpdates).toHaveBeenCalledWith();
+    await wrapper.get(".primary-btn").trigger("click");
+    await flushPromises();
+    expect(cmdDownloadAndInstallUpdate).toHaveBeenCalledWith("1.0.1");
+    expect(localStorage.getItem("pa_update_source_unified-windows-x86_64")).toBe(legacySource);
+    wrapper.unmount();
+  });
+
+  it("更新配置加载失败可以重试，卸载后的回执不会触发检查", async () => {
+    vi.mocked(cmdGetUpdateConfiguration).mockRejectedValueOnce(new Error("更新配置读取失败"));
+    const wrapper = mount(UpdateChecker);
+    await flushPromises();
+    expect(wrapper.text()).toContain("更新配置读取失败");
+    await wrapper.get(".ghost-btn").trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("当前版本：v1.0.0");
+    expect(cmdCheckForUpdates).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it("checks and confirms the displayed version before installing and relaunching", async () => {
     const wrapper = await checked();
     expect(wrapper.text()).toContain("下载并安装 v1.0.1");

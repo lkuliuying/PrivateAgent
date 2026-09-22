@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ModelCapabilityStatus from "./ModelCapabilityStatus.vue";
 import { computed, onMounted, ref } from "vue";
 import {
   PhArrowClockwise,
@@ -15,31 +16,24 @@ import {
 } from "@phosphor-icons/vue";
 import {
   clearModelProviderRuntimeSecret,
-  cmdClearModelProviderSecret,
-  cmdSetModelProviderSecret,
   deleteModelProvider,
   discoverModelProviderModels,
-  getSettings,
-  isDesktopRuntime,
   listModelProviders,
   probeModelProviderModel,
   saveModelProvider,
-  updateSettings,
   updateModelProviderRuntimeSecret,
   type ModelProvider,
   type ModelProviderApiFormat,
   type ModelProviderModel,
   type ModelProviderProtocol,
   type DiscoveredModel,
-  type AppSettings,
   type ModelMetadataSource,
 } from "../api";
 import { useNotifications } from "../stores/notifications";
-import { isLocalModelEndpoint } from "../api/modelProviders";
+import { getLocalModelSettings, saveLocalModelSettings, type LocalModelSettings } from "../api/modelProviders";
 
 const emit = defineEmits<{ saved: [] }>();
 const notify = useNotifications();
-const desktopRuntime = isDesktopRuntime();
 const previewMode =
   import.meta.env.DEV &&
   typeof window !== "undefined" &&
@@ -72,10 +66,7 @@ const modelToAdd = ref("");
 const editingContextModelId = ref("");
 const message = ref("");
 const messageKind = ref<"ok" | "error" | "info">("info");
-const modelParameters = ref<Pick<
-  AppSettings,
-  "llm_temperature" | "llm_context_length" | "kb_enabled_by_default"
->>({
+const modelParameters = ref<LocalModelSettings>({
   llm_temperature: 0.7,
   llm_context_length: 8192,
   kb_enabled_by_default: false,
@@ -191,7 +182,7 @@ async function load(preferredId?: string): Promise<void> {
 async function loadModelParameters(): Promise<void> {
   if (previewMode) return;
   try {
-    const settings = await getSettings();
+    const settings = await getLocalModelSettings();
     modelParameters.value = {
       llm_temperature: settings.llm_temperature,
       llm_context_length: settings.llm_context_length,
@@ -291,9 +282,6 @@ async function save(): Promise<void> {
   const baseUrl = draft.value.baseUrl.trim().replace(/\/$/, "");
   if (!name) return setMessage("请填写供应商名称", "error");
   if (!baseUrl) return setMessage("请填写 Base URL", "error");
-  if (desktopRuntime && isLocalModelEndpoint(baseUrl) && draft.value.apiKey.trim()) {
-    return setMessage("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务", "error");
-  }
   if (!draft.value.models.length) return setMessage("请至少从模型列表中选择一个模型", "error");
   if (
     draft.value.protocol === "ollama" &&
@@ -313,26 +301,13 @@ async function save(): Promise<void> {
   saving.value = true;
   message.value = "";
   try {
-    let credentialReference: string | undefined;
     const secret = draft.value.apiKey.trim();
-    if (draft.value.protocol !== "ollama" && secret) {
-      if (desktopRuntime) {
-        const status = await cmdSetModelProviderSecret(draft.value.id, secret);
-        credentialReference = status.reference;
-      } else {
-        credentialReference = `secret://os-keyring/model-provider/${draft.value.id}`;
-      }
-      if (!previewMode) {
-        await updateModelProviderRuntimeSecret(draft.value.id, secret);
-      }
-    }
     if (!previewMode) {
       await saveModelProvider(draft.value.id, {
         name,
         protocol: draft.value.protocol,
         baseUrl,
         apiFormat: draft.value.apiFormat,
-        credentialReference,
         enabled: draft.value.enabled,
         isBuiltin: draft.value.isBuiltin,
         models: draft.value.models.map((model) => ({
@@ -342,8 +317,11 @@ async function save(): Promise<void> {
           metadataSource: model.metadataSource,
         })),
       });
+      if (secret && draft.value.protocol !== "ollama") {
+        await updateModelProviderRuntimeSecret(draft.value.id, secret);
+      }
       if (draft.value.protocol === "ollama") {
-        await updateSettings({ ...modelParameters.value });
+        await saveLocalModelSettings({ ...modelParameters.value });
       }
       await load(draft.value.id);
     } else {
@@ -388,7 +366,6 @@ async function removeProvider(): Promise<void> {
   try {
     if (!previewMode) {
       await clearModelProviderRuntimeSecret(draft.value.id);
-      if (desktopRuntime) await cmdClearModelProviderSecret(draft.value.id);
       await deleteModelProvider(draft.value.id);
       await load();
     } else {
@@ -543,8 +520,8 @@ onMounted(() => {
         </button>
       </div>
 
-      <p v-if="selectedId === '__new__'" class="detail-intro">
-        配置一个模型 API 端点并从服务获取可用模型。保存后即可在对话中选择。
+      <p class="detail-intro">
+        模型请求由此电脑直接发送给供应商，配置和密钥保存在本机。首次升级或换电脑后，请重新添加供应商并保存密钥。
       </p>
 
       <div class="provider-form-grid">
@@ -562,10 +539,11 @@ onMounted(() => {
         </label>
         <label class="field">
           <span>API 格式</span>
-          <select v-model="draft.apiFormat">
-            <option value="chat_completions">Chat Completions（/chat/completions）</option>
-            <option value="anthropic_messages">Claude Messages（/messages）</option>
-            <option value="ollama_chat">Ollama Chat（/api/chat）</option>
+          <select v-model="draft.apiFormat" data-testid="provider-api-format">
+            <option v-if="draft.protocol === 'openai'" value="chat_completions">Chat Completions（/chat/completions）</option>
+            <option v-if="draft.protocol === 'openai'" value="responses">Responses（/responses，支持推理状态续接）</option>
+            <option v-if="draft.protocol === 'claude'" value="anthropic_messages">Claude Messages（/messages）</option>
+            <option v-if="draft.protocol === 'ollama'" value="ollama_chat">Ollama Chat（/api/chat）</option>
           </select>
         </label>
         <label v-if="draft.protocol !== 'ollama'" class="field">
@@ -710,6 +688,7 @@ onMounted(() => {
           >
             <PhTrash :size="17" />
           </button>
+          <ModelCapabilityStatus v-if="model.profileId && !previewMode" :key="model.profileId" :profile-id="model.profileId" />
         </div>
       </div>
 
@@ -746,7 +725,7 @@ onMounted(() => {
 .provider-manager {
   display: grid;
   min-height: 610px;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 224px minmax(0, 1fr);
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -760,7 +739,7 @@ onMounted(() => {
   gap: var(--space-2);
   padding: var(--space-4) var(--space-3);
   border-right: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 58%, var(--color-surface));
+  background: var(--color-panel);
 }
 .sidebar-section {
   display: flex;
@@ -769,7 +748,7 @@ onMounted(() => {
 }
 .sidebar-heading {
   padding: 0 var(--space-2) var(--space-1);
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--pa-text-meta);
 }
 .provider-item {
@@ -790,9 +769,10 @@ onMounted(() => {
 }
 .provider-item:hover { background: var(--color-surface-hover); }
 .provider-item.active {
-  border-color: var(--color-border-strong);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-sm);
+  border-color: var(--color-accent-soft);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-soft-fg);
+  box-shadow: inset 2px 0 var(--color-accent);
 }
 .provider-item span {
   overflow: hidden;
@@ -961,6 +941,7 @@ onMounted(() => {
   border-radius: var(--radius-md);
 }
 .model-row {
+  flex-wrap: wrap;
   display: grid;
   min-height: 50px;
   grid-template-columns: minmax(0, 1fr) auto 32px 32px 32px;
@@ -968,7 +949,8 @@ onMounted(() => {
   gap: var(--space-2);
   padding: 0 var(--space-3);
 }
-.model-row + .model-row { border-top: 1px solid var(--color-border); }
+.model-row + .model-row {
+  flex-wrap: wrap; border-top: 1px solid var(--color-border); }
 .model-id { overflow: hidden; font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
 .context-pill {
   padding: 2px var(--space-2);

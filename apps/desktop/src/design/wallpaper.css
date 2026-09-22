@@ -1,0 +1,27 @@
+/* 壁纸层独立于布局；只让现有页面底板透出，控件与弹层仍使用不透明令牌。 */
+.app-wallpaper {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-position: center;
+  background-size: cover;
+  background-repeat: no-repeat;
+}
+
+:root[data-wallpaper-theme] body,
+:root[data-wallpaper-theme] .appshell,
+:root[data-wallpaper-theme] .appshell-main,
+:root[data-wallpaper-theme] .appshell-topbar,
+:root[data-wallpaper-theme] .appshell-statusbar,
+:root[data-wallpaper-theme] .appshell-context,
+:root[data-wallpaper-theme] .coding-sidebar,
+:root[data-wallpaper-theme] .coding-home,
+:root[data-wallpaper-theme] .coding-thread,
+:root[data-wallpaper-theme] .thread-header,
+:root[data-wallpaper-theme] .run-transcript,
+:root[data-wallpaper-theme] .thread-composer,
+:root[data-wallpaper-theme] .draft-dock,
+:root[data-wallpaper-theme] .appshell-content > .content {
+  background: transparent;
+}

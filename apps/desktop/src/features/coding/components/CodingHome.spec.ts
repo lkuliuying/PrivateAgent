@@ -107,6 +107,7 @@ async function mountHome(fetchers: CodingWorkspaceFetchers) {
   const store = createCodingWorkspaceStore(fetchers);
   await store.bootstrap();
   const wrapper = mount(CodingHome, { props: { store }, attachTo: document.body });
+  await flushPromises();
   return { wrapper, store };
 }
 
@@ -118,7 +119,7 @@ async function mountPreview(key: Parameters<typeof createCodingWorkspacePreviewS
 }
 
 describe("CodingHome", () => {
-  it("就绪态：直接进入空白对话，项目与分支选择器位于输入区", async () => {
+  it("就绪态：快捷任务位于输入区上方，点击仅填入草稿并聚焦", async () => {
     const { wrapper } = await mountHome(readyFetchers());
     expect(wrapper.find('[data-testid="coding-home-empty-chat"]').exists()).toBe(true);
     expect(wrapper.find('[data-testid="coding-home-project-select"]').exists()).toBe(true);
@@ -127,6 +128,15 @@ describe("CodingHome", () => {
     expect(wrapper.text()).toContain("main");
     expect(wrapper.find('[data-testid="coding-composer-input"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain("推荐任务");
+    const starters = wrapper.get('[data-testid="coding-home-empty-chat"] .task-starters');
+    expect(starters.findAll("button").map(button => button.attributes("aria-label"))).toEqual(["读懂项目", "修复问题", "审查改动"]);
+    expect(starters.element.compareDocumentPosition(wrapper.get('.draft-dock').element) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(wrapper.find(".draft-dock .task-starters").exists()).toBe(false);
+    expect(wrapper.find(".isolation-choice").exists()).toBe(false);
+    await starters.findAll("button")[0].trigger("click");
+    expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toContain("解释核心模块");
+    expect(wrapper.emitted("thread-created")).toBeUndefined();
+    wrapper.unmount();
   });
 
   it("首次发送：提取标题创建线程，并暂存完整首轮指令等待任务页执行", async () => {
@@ -180,7 +190,7 @@ describe("CodingHome", () => {
     expect((wrapper.find('[data-testid="coding-composer-input"]').element as HTMLTextAreaElement).value).toBe("任务 A");
   });
 
-  it("无项目：空态提供新建项目与项目页两个动作（v0.9.0 H1 拆分）", async () => {
+  it("无项目：通过现有对话框新建项目，不导航到下线的项目页", async () => {
     const { wrapper } = await mountPreview("no-projects");
     expect(wrapper.text()).toContain("还没有项目");
     // 主动作：新建项目（打开选目录+授权对话框）
@@ -190,11 +200,8 @@ describe("CodingHome", () => {
     dialog.vm.$emit("close");
     await flushPromises();
     expect(wrapper.find('[data-testid="new-project-dialog"]').exists()).toBe(false);
-    // 次动作：打开项目页（旧入口保留）
-    const buttons = wrapper.findAll("button.pa-button");
-    const projectsBtn = buttons.find((btn) => btn.text().includes("打开项目页"));
-    await projectsBtn?.trigger("click");
-    expect(wrapper.emitted("navigate")?.[0]).toEqual(["projects"]);
+    expect(wrapper.text()).not.toContain("打开项目页");
+    expect(wrapper.emitted("navigate")).toBeUndefined();
   });
 
   it("无工作区：CTA 幂等补建根工作区后转入就绪", async () => {
@@ -208,7 +215,8 @@ describe("CodingHome", () => {
     await wrapper.find("button.pa-button").trigger("click");
     await flushPromises();
     expect(ensureRootWorkspace).toHaveBeenCalledWith(1);
-    expect(wrapper.text()).toContain("你想在");
+    expect(wrapper.find('[data-testid="coding-home-ready"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="coding-composer-input"]').exists()).toBe(true);
   });
 
   it("能力位关闭（feature_disabled）：呈现更新/重试语义（H1-D 拆分）", async () => {
@@ -249,11 +257,12 @@ describe("CodingHome", () => {
     expect(health).toHaveBeenCalledTimes(2);
   });
 
-  it("工作区异常（路径缺失）：呈现状态语义与项目页入口", async () => {
+  it("工作区异常（路径缺失）：呈现状态语义并允许新建授权项目", async () => {
     const { wrapper } = await mountPreview("workspace-invalid");
     expect(wrapper.text()).toContain("当前工作区状态异常");
     expect(wrapper.text()).toContain("路径缺失");
     await wrapper.find("button.pa-button").trigger("click");
-    expect(wrapper.emitted("navigate")?.[0]).toEqual(["projects"]);
+    expect(wrapper.find('[data-testid="new-project-dialog"]').exists()).toBe(true);
+    expect(wrapper.emitted("navigate")).toBeUndefined();
   });
 });

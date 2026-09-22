@@ -92,13 +92,19 @@ onBeforeUnmount(() => { generation += 1; clearTimeout(timer); controller?.abort(
 
 <template>
   <section ref="panelElement" class="execution-panel" data-testid="execution-panel" aria-label="本机会话进程">
+    <details :open="active.length > 0 || !!error || items.some(item => ['failed', 'timed_out', 'unknown'].includes(item.status))">
+    <summary>本机进程 · {{ active.length ? `${active.length} 个运行中` : `${items.length} 条记录` }}</summary>
+    <div class="execution-body">
     <div class="execution-panel__head"><strong>本机进程 · {{ active.length }} 个运行中</strong>
       <button v-if="active.length" class="pa-btn" :disabled="busy" @click="action(() => closeExecutions(sessionId))">停止本会话全部进程</button>
     </div>
     <p v-if="!items.length">暂无持续执行。可信项目程序以当前系统用户运行，可访问项目外文件和网络。</p>
     <p v-if="error" role="alert">{{ error }}</p>
     <article v-for="item in items" :key="item.execution_id" class="execution-panel__item">
-      <button class="pa-btn" @click="selected = selected === item.execution_id ? null : item.execution_id">{{ labels[item.status] }} · {{ item.argv.join(' ') }} · {{ item.cwd }}</button>
+      <button class="execution-command" :aria-expanded="selected === item.execution_id || active.includes(item)" @click="selected = selected === item.execution_id ? null : item.execution_id">
+        <span :class="{ 'execution-failed': ['failed', 'timed_out', 'unknown'].includes(item.status) }">{{ labels[item.status] }}</span>
+        <code>{{ item.argv.join(' ') }}</code><span class="execution-cwd">{{ item.cwd }}</span>
+      </button>
       <span v-if="item.retention === 'session'">保留至会话关闭或授权到期</span>
       <span v-if="item.exit_code !== null">退出码 {{ item.exit_code }}</span>
       <span v-if="item.status !== 'running' && !item.stopped">进程树停止状态未确认</span>
@@ -114,11 +120,20 @@ onBeforeUnmount(() => { generation += 1; clearTimeout(timer); controller?.abort(
         </div>
       </template>
     </article>
+    </div>
+    </details>
   </section>
 </template>
 
 <style scoped>
-.execution-panel { border-top: 1px solid var(--pa-border, #ddd); padding: 12px 16px; max-height: 360px; overflow: auto; font-size: 12px; }
+.execution-panel { border: 1px solid var(--color-border); border-radius: var(--radius-lg); max-height: 360px; overflow: auto; font-size: var(--pa-text-meta); }
+.execution-panel summary { padding: var(--space-3); cursor: pointer; color: var(--color-fg-muted); }
+.execution-body { padding: 0 var(--space-3) var(--space-3); }
+.execution-command { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2); padding: var(--space-2); border: 0; border-radius: var(--radius-md); background: var(--color-surface-muted); color: var(--color-fg); font: inherit; text-align: left; cursor: pointer; }
+.execution-command code { flex: 1; overflow-wrap: anywhere; min-width: 0; }
+.execution-cwd { color: var(--color-fg-muted); overflow-wrap: anywhere; }
+.execution-failed { color: var(--color-danger-fg); }
+.execution-command:focus-visible, .execution-panel summary:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
 .execution-panel__head, .execution-panel__stdin { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
 .execution-panel__item { padding-top: 10px; display: grid; gap: 6px; }
 .execution-panel pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }

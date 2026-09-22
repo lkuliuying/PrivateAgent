@@ -1,7 +1,17 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import CodingSidebar from "./CodingSidebar.vue";
 import { createCodingWorkspacePreviewStore } from "../dev/codingHomePreview";
+
+const actions = vi.hoisted(() => ({ pin: vi.fn(), deleteProject: vi.fn(), deleteThread: vi.fn(), prompt: vi.fn(), confirm: vi.fn(), error: vi.fn() }));
+vi.mock("../api/projects", async (original) => ({
+  ...await original<typeof import("../api/projects")>(),
+  setCodingProjectPinned: actions.pin, deleteCodingProject: actions.deleteProject,
+}));
+vi.mock("../api/threads", async (original) => ({ ...await original<typeof import("../api/threads")>(), deleteThread: actions.deleteThread }));
+vi.mock("../../../stores/notifications", () => ({ useNotifications: () => ({ prompt: actions.prompt, confirm: actions.confirm, error: actions.error, openCenter: vi.fn(), unreadCount: { value: 0 } }) }));
+vi.mock("./EditProjectDialog.vue", () => ({ default: { props: ["projectId"], emits: ["saved", "close"], template: '<button data-testid="edit-project-stub" @click="$emit(\'saved\')">保存项目 {{ projectId }}</button>' } }));
+beforeEach(() => vi.resetAllMocks());
 
 vi.mock("../../../components/UserMenu.vue", () => ({
   default: {
@@ -100,18 +110,18 @@ describe("CodingSidebar", () => {
     expect(lastEmitted(wrapper, "navigate")).toEqual(["coding"]);
   });
 
-  it("保留 Coding Agent 相关入口：自动化、插件、设置和诊断", async () => {
+  it("移除自动化并保留插件和设置入口", async () => {
     const { wrapper } = await mountSidebar();
-    await wrapper.find('[data-testid="coding-nav-tasks"]').trigger("click");
-    expect(lastEmitted(wrapper, "navigate")).toEqual(["tasks"]);
+    expect(wrapper.find('[data-testid="coding-nav-tasks"]').exists()).toBe(false);
+    expect(wrapper.text()).not.toContain("自动化");
     await wrapper.find('[data-testid="coding-nav-extensions"]').trigger("click");
     expect(lastEmitted(wrapper, "navigate")).toEqual(["extensions"]);
     await wrapper.find('[data-testid="user-menu-trigger"]').trigger("click");
     expect(lastEmitted(wrapper, "navigate")).toEqual(["extensions"]);
     await wrapper.find('[data-testid="user-menu-settings"]').trigger("click");
     expect(lastEmitted(wrapper, "navigate")).toEqual(["settings"]);
-    await wrapper.find('[data-testid="coding-nav-diagnostics"]').trigger("click");
-    expect(lastEmitted(wrapper, "navigate")).toEqual(["diagnostics"]);
+    expect(wrapper.find('[data-testid="coding-nav-diagnostics"]').exists()).toBe(false);
+    expect(wrapper.find('[aria-label="帮助与诊断"]').exists()).toBe(false);
   });
 
   it("中部独立滚动，底部用户与系统入口保持固定", async () => {
@@ -124,12 +134,24 @@ describe("CodingSidebar", () => {
     expect(wrapper.find(".sidebar-footer").exists()).toBe(true);
   });
 
-  it("折叠态隐藏文字并为图标入口保留可访问名称", async () => {
+  it("折叠态保留图标名称与展开入口，切换后能再次折叠", async () => {
     const { wrapper } = await mountSidebar({ collapsed: true });
     expect(wrapper.find('[data-testid="coding-new-task"]').attributes("aria-label")).toBe("新对话");
     expect(wrapper.find('[data-testid="coding-toggle-projects"]').attributes("aria-label")).toBe("项目");
     expect(wrapper.find('[data-testid="user-menu-trigger"]').attributes("aria-label")).toBe("账号菜单：liuying");
     expect(wrapper.find('[data-testid="coding-tree"]').exists()).toBe(false);
+    const toggle = wrapper.get('[data-testid="coding-toggle-collapse"]');
+    expect(toggle.attributes("aria-label")).toBe("展开侧栏");
+    expect(toggle.attributes("aria-expanded")).toBe("false");
+    await toggle.trigger("click");
+    expect(wrapper.emitted("toggle-collapse")).toHaveLength(1);
+    await wrapper.setProps({ collapsed: false });
+    expect(toggle.attributes("aria-label")).toBe("折叠侧栏");
+    expect(toggle.attributes("aria-expanded")).toBe("true");
+    expect(wrapper.find('[data-testid="coding-tree"]').exists()).toBe(true);
+    await toggle.trigger("click");
+    expect(wrapper.emitted("toggle-collapse")).toHaveLength(2);
+    wrapper.unmount();
   });
 
   it("空项目直接呈现引导，刷新按钮调用 store.refresh", async () => {
@@ -140,5 +162,74 @@ describe("CodingSidebar", () => {
     expect(wrapper.text()).toContain("暂无项目");
     await wrapper.find('[data-testid="coding-refresh"]').trigger("click");
     expect(refreshSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("编辑和置顶不会折叠项目，保存后刷新", async () => {
+    const { wrapper, store } = await mountSidebar();
+    const refresh = vi.spyOn(store, "refresh").mockResolvedValue();
+    await wrapper.get('[data-testid="coding-project-edit-1"]').trigger("click");
+    expect(wrapper.get('[data-testid="edit-project-stub"]').text()).toContain("1");
+    await wrapper.get('[data-testid="edit-project-stub"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get('[data-testid="coding-project-1"]').attributes("aria-expanded")).toBe("true");
+    await wrapper.get('[data-testid="coding-project-pin-1"]').trigger("click");
+    await flushPromises();
+    expect(actions.pin).toHaveBeenCalledWith(1, true);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).not.toContain("归档");
+    wrapper.unmount();
+  });
+
+  it("删除需确认，确认等待中阻止重复点击，成功后清理当前项目", async () => {
+    const { wrapper, store } = await mountSidebar();
+    vi.spyOn(store, "refresh").mockResolvedValue();
+    store.selectThread(11);
+    let confirm: (accepted: boolean) => void = () => {};
+    actions.confirm.mockImplementation(() => new Promise((resolve) => { confirm = resolve; }));
+    const button = wrapper.get('[data-testid="coding-project-delete-1"]');
+    await button.trigger("click");
+    await button.trigger("click");
+    expect(actions.confirm).toHaveBeenCalledOnce();
+    expect(actions.confirm).toHaveBeenCalledWith(expect.objectContaining({ danger: true, impact: expect.stringContaining("文件保持不变") }));
+    expect(actions.deleteProject).not.toHaveBeenCalled();
+    confirm(true);
+    await flushPromises();
+    expect(actions.deleteProject).toHaveBeenCalledWith(1);
+    expect(store.selectedThreadId.value).toBeNull();
+    expect(wrapper.find('[data-testid="coding-project-1"]').exists()).toBe(false);
+    expect(store.selectedProjectId.value).toBe(2);
+    wrapper.unmount();
+  });
+
+  it("取消删除不提交，后端拒绝时保留会话并显示错误", async () => {
+    const { wrapper, store } = await mountSidebar();
+    store.selectThread(11);
+    actions.confirm.mockResolvedValueOnce(false);
+    const button = wrapper.get('[data-testid="coding-thread-delete-11"]');
+    await button.trigger("click");
+    await flushPromises();
+    expect(actions.deleteThread).not.toHaveBeenCalled();
+    actions.confirm.mockResolvedValueOnce(true);
+    actions.deleteThread.mockRejectedValueOnce({ message: "请先停止任务" });
+    await button.trigger("click");
+    await flushPromises();
+    expect(actions.error).toHaveBeenCalledWith("操作失败", "请先停止任务");
+    expect(store.selectedThreadId.value).toBe(11);
+    expect(button.attributes("disabled")).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it("删除当前会话回到首页，保留项目和其他会话", async () => {
+    const { wrapper, store } = await mountSidebar();
+    vi.spyOn(store, "refresh").mockResolvedValue();
+    store.selectThread(11);
+    actions.confirm.mockResolvedValue(true);
+    await wrapper.get('[data-testid="coding-thread-delete-11"]').trigger("click");
+    await flushPromises();
+    expect(actions.deleteThread).toHaveBeenCalledWith(11);
+    expect(store.selectedThreadId.value).toBeNull();
+    expect(wrapper.find('[data-testid="coding-thread-11"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="coding-thread-12"]').exists()).toBe(true);
+    wrapper.unmount();
   });
 });

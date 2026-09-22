@@ -1,43 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-const auth = vi.hoisted(() => ({
-  isAdmin: false,
-  restoreSession: vi.fn(),
-}));
-
-vi.mock("../stores/auth", () => ({
-  useAuthStore: () => auth,
-}));
-vi.mock("../stores/pinia", () => ({ pinia: {} }));
-vi.mock("../services/backendStartup", () => ({
-  ensureDesktopBackendReady: vi.fn().mockResolvedValue(undefined),
-}));
-
+import { describe, expect, it, vi } from "vitest";
+vi.mock("../App.vue", () => ({ default: { template: "<div />" } }));
+vi.mock("../services/backendStartup", () => ({ ensureDesktopBackendReady: vi.fn().mockResolvedValue(undefined) }));
 import router from "./index";
-
-describe("router administrator isolation", () => {
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    auth.isAdmin = false;
-    auth.restoreSession.mockResolvedValue(false);
-    await router.replace({ name: "login", query: { reset: String(Date.now()) } });
-  });
-
-  it("redirects an administrator away from the regular workspace", async () => {
-    auth.isAdmin = true;
-    auth.restoreSession.mockResolvedValue(true);
-
-    await router.push({ name: "workspace" });
-
-    expect(router.currentRoute.value.name).toBe("admin");
-  });
-
-  it("redirects a regular user away from the administrator console", async () => {
-    auth.isAdmin = false;
-    auth.restoreSession.mockResolvedValue(true);
-
-    await router.push({ name: "admin" });
-
+import { ensureDesktopBackendReady } from "../services/backendStartup";
+describe("单一工作台入口", () => {
+  it.each(["/", "/login", "/register", "/admin"])("旧路径 %s 直接进入工作台", async (path) => {
+    await router.push(path);
     expect(router.currentRoute.value.name).toBe("workspace");
+    expect(router.hasRoute("login")).toBe(false);
+    expect(router.hasRoute("register")).toBe(false);
+    expect(router.hasRoute("admin")).toBe(false);
+  });
+  it("启动失败保留目标地址，由根组件提供重试", async () => {
+    vi.mocked(ensureDesktopBackendReady).mockRejectedValueOnce(new Error("本机连接失败"));
+    await router.push("/app?view=settings&section=mcp");
+    expect(router.currentRoute.value.fullPath).toBe("/app?view=settings&section=mcp");
   });
 });

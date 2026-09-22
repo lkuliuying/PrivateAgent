@@ -62,6 +62,13 @@ const commandText = computed(() => {
 const cwdLabel = computed(() => outputFacts.value?.cwd ?? null);
 
 const exitCode = computed(() => outputFacts.value?.returncode ?? null);
+const pythonPathWarning = computed(() => {
+  const output = props.execution.output;
+  if (!output || typeof output !== "object") return false;
+  const warnings = (output as Record<string, unknown>).runtime_warnings;
+  return Array.isArray(warnings) && warnings.slice(0, 8).some(warning => warning && typeof warning === "object"
+    && warning.code === "python_path_resolution_warning");
+});
 const executionResult = computed(() => parseExecutionResult(props.execution.execution_result, props.execution.id));
 const statusLabel = computed(() => {
   const result = executionResult.value;
@@ -165,6 +172,7 @@ function redactLine(text: string): string {
         data-testid="command-exit-code"
       >退出码 {{ exitCode }}</span>
       <span v-if="durationLabel" class="output-fact" data-testid="command-duration">耗时 {{ durationLabel }}</span>
+      <span v-if="pythonPathWarning" class="output-runtime-warning" data-testid="command-runtime-warning">Python 路径解析警告</span>
       <span
         v-if="parsed?.summary"
         class="output-summary"
@@ -191,6 +199,9 @@ function redactLine(text: string): string {
       </div>
 
       <p v-if="execution.error_message" class="output-error">{{ execution.error_message }}</p>
+      <p v-if="pythonPathWarning" class="runtime-warning-detail" data-testid="command-runtime-warning-detail">
+        Python 无法解析解释器的真实路径。Windows 沙箱的卷路径查询限制可触发此提示；原始 stderr 保留在下方。请结合退出码和测试输出判断结果。
+      </p>
 
       <template v-if="parsed">
         <div class="parsed-summary" :class="{ 'has-failures': hasFailures }" data-testid="command-parsed">
@@ -344,6 +355,15 @@ function redactLine(text: string): string {
   color: var(--color-danger-fg);
   font-size: var(--pa-text-meta);
   word-break: break-word;
+}
+.output-runtime-warning {
+  color: var(--color-warning-fg);
+}
+.runtime-warning-detail {
+  margin: 0;
+  color: var(--color-warning-fg);
+  font-size: var(--pa-text-meta);
+  overflow-wrap: anywhere;
 }
 .parsed-summary {
   display: flex;

@@ -45,4 +45,17 @@ describe("copyAnswerText（W6-R2 回答复制）", () => {
     const result = await copyAnswerText("   \n ");
     expect(result).toBe("failed");
   });
+
+  it("回退抛错后回收临时节点并恢复原焦点", async () => {
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    const button = document.createElement("button");
+    document.body.appendChild(button);
+    button.focus();
+    document.execCommand = vi.fn(() => { throw new Error("denied"); });
+    try {
+      expect(await copyAnswerText("回答正文")).toBe("unavailable");
+      expect(document.querySelector("textarea[aria-hidden]")).toBeNull();
+      expect(document.activeElement).toBe(button);
+    } finally { button.remove(); }
+  });
 });

@@ -18,7 +18,6 @@ export function toThreadSummary(dto: Session, projectId: number): CodingThreadSu
     updatedAt: dto.updated_at,
     lastRunId: dto.last_run_id ?? null,
     pinnedAt: dto.pinned_at ?? null,
-    archivedAt: dto.archived_at ?? null,
     kind: dto.kind ?? null,
   };
 }
@@ -83,7 +82,7 @@ export async function bindSessionToProject(
 }
 
 // ============================================================================
-// v0.9.0 H4：线程管理（重命名/归档/置顶/搜索/最近任务）
+// 线程管理（重命名、删除、置顶、搜索和最近任务）
 // ============================================================================
 
 /** 重命名线程标题（后端有界校验）。 */
@@ -97,15 +96,9 @@ export async function renameThread(
   );
 }
 
-/** 归档/恢复（软删除，不物理删除数据）。 */
-export async function setThreadArchived(
-  sessionId: number,
-  archived: boolean
-): Promise<Session> {
-  return codingFetchJson<Session>(
-    `/sessions/${sessionId}/${archived ? "archive" : "unarchive"}`,
-    codingJsonInit("POST", {})
-  );
+/** 删除会话及关联记录；有任务或进程占用时由后端拒绝。 */
+export async function deleteThread(sessionId: number): Promise<void> {
+  await codingFetchJson(`/sessions/${sessionId}`, { method: "DELETE" });
 }
 
 /** 置顶/取消置顶（最近任务优先呈现）。 */
@@ -119,7 +112,7 @@ export async function setThreadPinned(
   );
 }
 
-/** 最近任务：置顶优先 → 更新时间倒序（不含已归档）。 */
+/** 最近任务：置顶优先，再按更新时间倒序。 */
 export async function fetchRecentThreads(
   limit = 10
 ): Promise<CodingThreadSummary[]> {
@@ -129,7 +122,7 @@ export async function fetchRecentThreads(
   return list.map((dto) => toThreadSummary(dto, dto.project_id ?? 0));
 }
 
-/** 按标题搜索线程（不含已归档）。 */
+/** 按标题搜索线程。 */
 export async function searchThreads(
   keyword: string,
   limit = 30
@@ -146,4 +139,11 @@ export async function fetchUnboundLegacyThreads(): Promise<CodingThreadSummary[]
   return list
     .filter((dto) => (dto.kind ?? "legacy") !== "coding" && dto.project_id == null)
     .map((dto) => toThreadSummary(dto, 0));
+}
+
+export async function fetchCodingThread(sessionId: number, projectId: number): Promise<CodingThreadSummary> {
+  return toThreadSummary(await codingFetchJson<Session>(`/sessions/${sessionId}`), projectId);
+}
+export async function setThreadArchived(sessionId: number, archived: boolean): Promise<void> {
+  await codingFetchJson(`/sessions/${sessionId}/${archived ? "archive" : "unarchive"}`, codingJsonInit("POST", {}));
 }

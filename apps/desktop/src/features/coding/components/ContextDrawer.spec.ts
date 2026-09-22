@@ -37,6 +37,7 @@ function mountDrawer(props: Record<string, unknown> = {}) {
 describe("ContextDrawer", () => {
   it("Files：审批预览涉及的文件（含新建标记）", () => {
     const wrapper = mountDrawer();
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["文件", "上下文", "来源", "产物"]);
     expect(wrapper.find('[data-testid="context-pane-files"]').text()).toContain("src/sidebar.ts");
     expect(wrapper.find('[data-testid="context-pane-files"]').text()).toContain("新建");
   });

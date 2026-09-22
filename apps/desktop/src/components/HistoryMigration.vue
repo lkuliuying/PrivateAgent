@@ -22,7 +22,7 @@ async function request<T>(url: string, body?: object): Promise<T> {
   const result = await apiFetch(`${base}${url}`, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {});
   if (!result.ok) {
     const response = await result.json().catch(() => null);
-    throw new Error(typeof response?.detail === "string" ? response.detail : `历史操作失败（${result.status}），请确认账号和服务版本`);
+    throw new Error(typeof response?.detail === "string" ? response.detail : `历史操作失败（${result.status}），请确认本机连接和客户端版本`);
   }
   return result.json();
 }
@@ -54,7 +54,7 @@ async function chooseRoot(id: number): Promise<void> {
 }
 async function importHistory(): Promise<void> {
   if (!preview.value) return;
-  const confirmed = await notify.confirm({ title: "导入当前账号的历史？", impact: "所选本机目录将授权给导入的 Coding 任务。未选择目录的记录和旧 AgentTask 仅归档。不会恢复完全访问授权、审批或执行中的命令。", confirmLabel: "确认导入" });
+  const confirmed = await notify.confirm({ title: "导入本机工作区的历史？", impact: "所选本机目录将授权给导入的 Coding 任务。未选择目录的记录和旧 AgentTask 仅归档。不会恢复完全访问授权、审批或执行中的命令。", confirmLabel: "确认导入" });
   if (!confirmed) return;
   await act(async () => {
     await request("/local-history/import", { path: path.value, sha256: preview.value!.sha256, mappings: mappings.value });
@@ -73,10 +73,10 @@ async function browse(item: Imported, nextOffset = 0): Promise<void> {
     records.value = await request(`/local-history/imports/${item.id}/records?kind=${selectedKind.value}&offset=${nextOffset}&limit=20`);
   });
 }
-async function download(server = false, importId?: string): Promise<void> {
-  if (!await notify.confirm({ title: "导出当前账号的历史？", impact: "文件包含对话、代码片段和工具记录，请保存在可信位置。不会包含供应商配置或有效授权令牌。", confirmLabel: "导出历史" })) return;
+async function download(importId?: string): Promise<void> {
+  if (!await notify.confirm({ title: "导出本机工作区的历史？", impact: "文件包含对话、代码片段和工具记录，请保存在可信位置。不会包含供应商配置或有效授权令牌。", confirmLabel: "导出历史" })) return;
   await act(async () => {
-    const data = await request(importId ? `/local-history/imports/${importId}/export` : server ? "/desktop/history/export" : "/local-history/export");
+    const data = await request(importId ? `/local-history/imports/${importId}/export` : "/local-history/export");
     const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a"); link.href = url; link.download = "privateagent-history.json"; link.click();
@@ -87,11 +87,10 @@ async function download(server = false, importId?: string): Promise<void> {
 
 <template>
   <section class="history-migration" aria-label="本机历史迁移">
-    <p>SQLite 按账号保存本机记录。项目文件不包含在历史包内；跨版本迁移需重新选择本机目录。</p>
+    <p>SQLite 保存当前本机工作区的记录。项目文件不包含在历史包内；跨版本迁移需重新选择本机目录。</p>
     <div class="actions">
       <button :disabled="busy" @click="chooseFile">选择旧 SQLite / 历史 JSON</button>
-      <button :disabled="busy" @click="download(false)">导出当前工作记录</button>
-      <button :disabled="busy" @click="download(true)">导出旧完整后端历史</button>
+      <button :disabled="busy" @click="download()">导出当前工作记录</button>
     </div>
     <p v-if="error" role="alert">{{ error }}</p>
     <template v-if="preview">
@@ -109,7 +108,7 @@ async function download(server = false, importId?: string): Promise<void> {
     <article v-for="item in imports" :key="item.id">
       <p>{{ item.created_at }} · 导入 Coding 会话 {{ item.imported_counts.sessions || 0 }} · 归档旧 AgentTask {{ item.counts.agent_tasks || 0 }}</p>
       <div class="actions"><select v-model="selectedKind" aria-label="历史记录类型"><option v-for="(_, kind) in item.counts" :key="kind" :value="kind">{{ kind }}</option></select>
-        <button :disabled="busy" @click="browse(item)">只读查看</button><button :disabled="busy" @click="download(false, item.id)">导出原始归档</button><button :disabled="busy" @click="rollback(item)">核对并回滚</button></div>
+        <button :disabled="busy" @click="browse(item)">只读查看</button><button :disabled="busy" @click="download(item.id)">导出原始归档</button><button :disabled="busy" @click="rollback(item)">核对并回滚</button></div>
       <template v-if="records && selectedImport === item.id">
         <p>共 {{ records.total }} 条，本页从第 {{ offset + 1 }} 条开始；归档内容不会执行。</p>
         <pre>{{ JSON.stringify(records.items, null, 2) }}</pre>

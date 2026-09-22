@@ -1,4 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
+import { fulfillCodingAuth, prepareCodingFixture } from "./coding-auth-fixture";
+
+test.beforeEach(async ({ page }) => prepareCodingFixture(page));
 
 /**
  * v0.8.0 W2：任务页与真实计划 E2E
@@ -162,10 +165,15 @@ function mockRunApi(page: Page, scenario: RunScenario = {}) {
   let approvalApproved: boolean | null = null;
   let deliveredMax = 0;
   let terminalStatus: string | null = null;
+  let terminalFacts: Record<string, unknown> = {};
 
   function trackFrames(frames: Frame[]): void {
     for (const frame of frames) {
       deliveredMax = Math.max(deliveredMax, frame.sequence);
+      if (["run.completed", "run.failed", "run.cancelled", "run.timed_out", "run.limit_exceeded", "run.interrupted"].includes(frame.type)) {
+        terminalFacts = { output: frame.payload.output ?? null, error_code: frame.payload.error_code ?? null,
+          error_message: frame.payload.error ?? null };
+      }
       if (frame.type === "run.terminal") {
         terminalStatus = String(frame.payload.status ?? "");
       }
@@ -180,6 +188,7 @@ function mockRunApi(page: Page, scenario: RunScenario = {}) {
     createdRequests,
     approvalDecision: () => approvalApproved,
     route: page.route("**://127.0.0.1:8000/**", async (route) => {
+      if (await fulfillCodingAuth(route)) return;
       const request = route.request();
       const url = new URL(request.url());
       const path = url.pathname;
@@ -226,6 +235,7 @@ function mockRunApi(page: Page, scenario: RunScenario = {}) {
       if (path === `/agent-runs/${RUN_ID}` && request.method() === "GET") {
         await route.fulfill({
           json: snapshot({
+            ...terminalFacts,
             status: terminalStatus ?? "running",
             last_event_sequence: deliveredMax,
           }),
@@ -332,6 +342,161 @@ async function sendMessage(page: Page, text: string) {
   await page.getByTestId("coding-composer-send").click();
 }
 
+test("连续对话保持正文样式，重开任务恢复最终用时", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await mockRunApi(page).route;
+  const firstOutput = "已完成。\n\n- 文件：`hello.py`\n\n```python\nprint('hello world')\n```";
+  const messages: Array<Record<string, unknown>> = [];
+  let round = 0;
+  const finished = new Set<string>();
+  const framesFor = (id: string) => [runStarted(),
+    { sequence: 2, type: "run.completed", payload: { output: id.endsWith("1") ? firstOutput : "当前目录有 1 个文件。", tool_call_count: 0 } },
+    terminalFrame("completed", 3)];
+  await page.route("**://127.0.0.1:8000/**", async route => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const path = url.pathname;
+    if (path === "/sessions" && request.method() === "GET") {
+      return route.fulfill({ json: [{ ...THREAD_DTO, last_run_id: round ? `style-${round}` : null }] });
+    }
+    if (path === "/sessions/11/messages") return route.fulfill({ json: messages });
+    if (path === "/sessions/11/latest-agent-run") return route.fulfill({ json: { run_id: round ? `style-${round}` : null } });
+    if (path === "/agent-runs" && request.method() === "POST") {
+      round++;
+      messages.push({ id: messages.length + 1, session_id: 11, role: "user", content: request.postDataJSON().message, created_at: "2026-09-17T00:00:00Z" });
+      return route.fulfill({ status: 202, json: snapshot({ id: `style-${round}`, status: "running" }) });
+    }
+    const run = /^\/agent-runs\/(style-\d+)(.*)$/.exec(path);
+    if (!run) return route.fallback();
+    const [, id, suffix] = run;
+    const frames = framesFor(id);
+    if (suffix === "/events/stream") {
+      if (!finished.has(id)) {
+        finished.add(id);
+        messages.push({ id: messages.length + 1, session_id: 11, role: "assistant", content: frames[1].payload.output, created_at: "2026-09-17T00:00:05Z" });
+      }
+      return route.fulfill(sse(frames));
+    }
+    if (suffix === "/events") return route.fulfill({ json: { items: frames.slice(0, 2), last_sequence: 2 } });
+    if (suffix === "") return route.fulfill({ json: snapshot({ id, status: "completed", last_event_sequence: 2,
+      output: frames[1].payload.output, started_at: "2026-09-17T00:00:00Z", completed_at: "2026-09-17T00:00:05Z" }) });
+    return route.fulfill({ json: [] });
+  });
+  await openThread(page);
+  await sendMessage(page, "创建 hello.py");
+  const answer = page.getByTestId("terminal-output");
+  await expect(answer).toContainText("hello world");
+  await expect(page.getByTestId("run-duration-toggle")).toHaveAccessibleName(/^展开执行过程/);
+  await expect(page.getByTestId("run-duration")).toContainText("用时 5.0 秒");
+  const appearance = async (selector: string) => page.locator(selector).evaluate(element => {
+    const style = getComputedStyle(element);
+    const code = element.querySelector("pre")!;
+    const codeStyle = getComputedStyle(code);
+    return { width: element.getBoundingClientRect().width, fontSize: style.fontSize, lineHeight: style.lineHeight,
+      background: style.backgroundColor, padding: style.padding, border: style.borderWidth,
+      codeFont: codeStyle.fontSize, codeBackground: codeStyle.backgroundColor, codePadding: codeStyle.padding };
+  });
+  const before = await appearance('[data-testid="terminal-output"]');
+  await sendMessage(page, "当前目录下有几个文件");
+  await expect(answer).toContainText("当前目录有 1 个文件");
+  await expect(page.getByTestId("transcript-history-assistant")).toHaveCount(1);
+  expect(await appearance('[data-testid="transcript-history-assistant"] .assistant-response')).toEqual(before);
+  await page.screenshot({ path: testInfo.outputPath("conversation-stable.png"), fullPage: true });
+  await page.reload();
+  await page.getByTestId("coding-thread-11").click();
+  await expect(page.getByTestId("run-duration")).toContainText("用时 5.0 秒");
+  await expect(answer).toContainText("当前目录有 1 个文件");
+  await expect(page.getByTestId("transcript-history-assistant")).toHaveCount(1);
+  await page.setViewportSize({ width: 760, height: 900 });
+  const overflow = await page.getByTestId("transcript-history-assistant").evaluate(element => element.scrollWidth > element.clientWidth);
+  expect(overflow).toBe(false);
+});
+
+test("完成任务居中展示，环境面板和文件工作区独立展开", async ({ page }, testInfo) => {
+  await mockRunApi(page, { output: "已创建 hello.py，运行输出为 hello world!。" }).route;
+  await page.route("**://127.0.0.1:8000/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/capabilities") {
+      await route.fulfill({ json: { coding_agent_ui_enabled: true, agent_runs_api_enabled: true, project_bound_runs_enabled: true,
+        chat_execution_mode: "legacy", coding_recovery_contract_version: "1.0", coding_patchsets_enabled: true, coding_execution_sessions_enabled: true, coding_worktree_enabled: true } });
+    } else if (path.endsWith("/approvals")) {
+      await route.fulfill({ json: [] });
+    } else if (path === "/sessions/11/review") {
+      await route.fulfill({ json: { scope: "last_turn", runs: [{ id: RUN_ID, status: "completed", created_at: "2026-09-17T00:00:00Z", workspace_id: 101, outcome: null, patch_count: 1 }], workspace: null } });
+    } else if (path.endsWith("/patches")) {
+      await route.fulfill({ json: { patches: [{ patch_set_id: "patch-hello", run_id: RUN_ID, preview_sha256: "a".repeat(64), status: "applied", kind: "patch",
+        changes: [{ change_id: "file-hello", operation: "create", rel_path: "hello.py", before_kind: "missing", after_kind: "file", diff_chars: 20 }], conflicts: [], journal: [] }],
+        baseline: null, current_git: { is_git: false }, ownership_note: "当前磁盘状态可能包含外部改动。" } });
+    } else if (path.endsWith("/recovery")) {
+      await route.fulfill({ json: { run_id: RUN_ID, supported: true, status: "completed", state_version: 5, can_resume: false,
+        blockers: [], controls: [], budget: { model_requests: 5, tool_calls: 4, active_seconds: 14 }, expired_approvals: [], limitations: [] } });
+    } else if (path === "/projects/1/workspaces/101/files") {
+      await route.fulfill({ json: { entries: [{ rel_path: "hello.py", name: "hello.py", kind: "file", size_bytes: 22 }, { rel_path: "src", name: "src", kind: "directory", size_bytes: null }], next_cursor: null, total: 2 } });
+    } else if (path === "/projects/1/workspaces/101/file") {
+      await route.fulfill({ json: { rel_path: "hello.py", content: 'print("hello world!")\n', sha256: "a".repeat(64), offset: 0, next_offset: null, total_chars: 22 } });
+    } else if (path === "/projects/1/workspaces/101") {
+      await route.fulfill({ json: WORKSPACE_DTO });
+    } else if (path === "/sessions/11/executions") {
+      await route.fulfill({ json: { items: [{ execution_id: "hello-process", run_id: RUN_ID, argv: ["python", "hello.py"], cwd: ".", status: "exited",
+        retention: "run", stopped: true, exit_code: 0, error: null, dropped_bytes: 0, last_output_sequence: 1 }] } });
+    } else {
+      await route.fallback();
+    }
+  });
+  await openThread(page);
+  await sendMessage(page, "创建一个 hello.py 文件，打印 hello world! 并运行");
+  await expect(page.getByTestId("terminal-output")).toContainText("hello world!");
+  await expect(page.getByTestId("run-duration-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".transcript-scroll .execution-panel")).toHaveCount(0);
+  await page.getByTestId("thread-environment-toggle").click();
+  await page.getByRole("tab", { name: "变更", exact: true }).click();
+  await expect(page.locator(".environment-panel .patch-review > summary")).toContainText("hello.py");
+  await page.getByRole("tab", { name: "进程", exact: true }).click();
+  await expect(page.locator(".environment-panel .execution-panel")).toHaveCount(1);
+  await page.getByRole("tab", { name: "环境", exact: true }).click();
+  await expect(page.locator(".environment-overview")).toContainText("本机工作区");
+  await expect(page.locator(".worktree-panel")).toContainText("当前任务使用项目本地目录");
+  await expect(page.getByRole("button", { name: /创建并选择 worktree|清理当前 worktree/ })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("environment-panel.png") });
+  await page.getByTestId("thread-files-toggle").click();
+  await page.getByRole("button", { name: "hello.py", exact: true }).click();
+  await expect(page.locator(".file-preview pre")).toContainText('print("hello world!")');
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await page.screenshot({ path: testInfo.outputPath("file-workspace-wide.png") });
+  await page.setViewportSize({ width: 760, height: 700 });
+  await expect.poll(() => page.locator(".appshell-rail").evaluate(element => element.getBoundingClientRect().width)).toBe(0);
+  await expect(page.getByTestId("file-workspace")).toBeInViewport();
+  await page.screenshot({ path: testInfo.outputPath("file-workspace-narrow.png") });
+  await page.getByRole("button", { name: "关闭文件工作区", exact: true }).click();
+  for (const viewport of [{ width: 1920, height: 1080 }, { width: 760, height: 700 }]) {
+    await page.setViewportSize(viewport);
+    if (viewport.width < 1280) {
+      await expect.poll(() => page.locator(".appshell-rail").evaluate(element => element.getBoundingClientRect().width)).toBe(0);
+      expect(await page.getByTestId("thread-back-home").evaluate(element => {
+        const bounds = element.getBoundingClientRect();
+        return element.contains(document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2));
+      })).toBe(true);
+    }
+    const input = page.getByTestId("coding-composer-input");
+    await expect(input).toBeInViewport();
+    const bounds = await page.locator(".transcript-content").evaluate(element => {
+      const column = element.getBoundingClientRect();
+      const composer = document.querySelector('[data-testid="coding-composer"]')!.getBoundingClientRect();
+      const scroll = element.parentElement!;
+      return { width: column.width, offset: Math.abs(column.x - composer.x), scrollWidth: scroll.scrollWidth, clientWidth: scroll.clientWidth };
+    });
+    expect(bounds.width).toBeLessThanOrEqual(900);
+    expect(bounds.offset).toBeLessThan(20);
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.clientWidth);
+    await input.fill("继续检查");
+    await page.screenshot({ path: testInfo.outputPath(`task-layout-${viewport.width}.png`) });
+    await page.getByTestId("run-duration-toggle").click();
+    await expect(page.getByTestId("transcript-tool").first()).toBeVisible();
+    await expect(input).toBeInViewport();
+    await page.getByTestId("run-duration-toggle").click();
+  }
+});
+
 test("S5：追加约束回执、暂停继续和关联恢复在工作台收敛", async ({ page }) => {
   await page.addInitScript(() => window.sessionStorage.setItem("pa_access_token", "s5-browser-fixture"));
   const mock = mockRunApi(page);
@@ -384,6 +549,8 @@ test("S5：追加约束回执、暂停继续和关联恢复在工作台收敛", 
   });
   await openThread(page);
   await sendMessage(page, "修改后保留现场");
+  await page.getByTestId("thread-menu-toggle").click();
+  await page.getByRole("menuitem", { name: "恢复现场详情", exact: true }).click();
   const panel = page.getByRole("region", { name: "任务恢复与协作" });
   await expect(panel).toBeVisible();
   expect(mock.createdRequests[0].recovery_contract_version).toBe("1.0");
@@ -401,7 +568,7 @@ test("S5：追加约束回执、暂停继续和关联恢复在工作台收敛", 
   await expect(panel).toContainText("累计模型请求 3 次");
   await panel.getByText("核对变更归属", { exact: true }).click();
   await expect(panel).toContainText("已有改动 · user.txt");
-  // 长审查列表在窄窗口中也不能溢出面板，遮挡恢复按钮或输入区域。
+  // 长审查列表在环境浮层内滚动，恢复按钮可操作且浮层不越出窗口。
   for (const viewport of [{ width: 1365, height: 900 }, { width: 760, height: 700 }]) {
     await page.setViewportSize(viewport);
     const pause = panel.getByRole("button", { name: "暂停", exact: true });
@@ -410,31 +577,36 @@ test("S5：追加约束回执、暂停继续和关联恢复在工作台收敛", 
       const box = element.getBoundingClientRect();
       return element.contains(document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2));
     })).toBe(true);
-    const bounds = await panel.evaluate(element => {
+    const bounds = await page.getByTestId("thread-environment-panel").evaluate(element => {
       const box = element.getBoundingClientRect();
-      const composer = document.querySelector(".thread-composer")!.getBoundingClientRect();
-      return { bottom: box.bottom, composerTop: composer.top };
+      return { bottom: box.bottom, viewport: window.innerHeight };
     });
-    expect(bounds.bottom).toBeLessThanOrEqual(bounds.composerTop);
+    expect(bounds.bottom).toBeLessThanOrEqual(bounds.viewport);
   }
+  await page.getByRole("button", { name: "关闭环境面板" }).click();
+  await expect(page.getByTestId("coding-composer-input")).toBeInViewport();
 });
 
 test.describe("v0.8.0 W2 任务页与真实计划", () => {
-  test("闭环：发送→计划→工具→校验→完成（矩阵 7/8/9/14）", async ({ page }) => {
+  test("闭环：发送→计划→工具→校验→终态，缺完成证据不标成功（矩阵 7/8/9/14）", async ({ page }) => {
     const mock = mockRunApi(page);
     await mock.route;
     await openThread(page);
     await sendMessage(page, "修复侧栏在窄窗口下的遮挡");
 
-    await expect(page.getByTestId("thread-run-status")).toHaveText(/执行中|已完成/);
-    // 用户消息 + 计划摘要 + 工具卡 + 校验 + 终态输出
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/执行中|结果未确认/);
+    // 完成后过程默认折叠，先按真实界面展开，再核对完整执行证据。
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/);
+    await page.getByRole("button", { name: /^展开执行过程/ }).click();
     await expect(page.getByTestId("transcript-user-message")).toContainText("遮挡");
     await expect(page.getByTestId("transcript-plan-note")).toBeVisible();
     await expect(
       page.getByTestId("transcript-tool").filter({ hasText: "read_code_file" })
     ).toBeVisible();
     await expect(page.getByTestId("terminal-output")).toContainText("12 passed", { timeout: 15000 });
-    await expect(page.getByTestId("thread-run-status")).toHaveText(/已完成/);
+    // 历史载荷只有 completed；缺少 S1 完成证据时不得显示已验证成功。
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/);
+    await expect(page.getByTestId("thread-run-status")).not.toHaveClass(/tone-success/);
     // run 创建请求按 coding 契约
     expect(mock.createdRequests[0]).toMatchObject({
       session_id: 11,
@@ -448,7 +620,11 @@ test.describe("v0.8.0 W2 任务页与真实计划", () => {
     await mockRunApi(page).route;
     await openThread(page);
     await sendMessage(page, "修复侧栏遮挡");
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/);
+    await page.getByRole("button", { name: /^展开执行过程/ }).click();
     await expect(page.getByTestId("transcript-plan-note")).toBeVisible({ timeout: 15000 });
+    await page.getByTestId("thread-environment-toggle").click();
+    await page.getByRole("tab", { name: "环境", exact: true }).click();
     await page.getByTestId("thread-plan-toggle").click();
     await expect(page.getByTestId("run-plan-popover")).toBeVisible();
     await expect(page.getByTestId("plan-item-read")).toHaveAttribute("data-status", "completed");
@@ -483,7 +659,8 @@ test.describe("v0.8.0 W2 任务页与真实计划", () => {
 
     await page.getByTestId("approval-approve-ap-1").click();
     await expect(page.getByTestId("terminal-output")).toContainText("批准后完成", { timeout: 20000 });
-    await expect(page.getByTestId("thread-run-status")).toHaveText(/已完成/);
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/);
+    await expect(page.getByTestId("thread-run-status")).not.toHaveClass(/tone-success/);
   });
 
   test("等待审批→拒绝→任务取消（矩阵 18）", async ({ page }) => {
@@ -517,7 +694,8 @@ test.describe("v0.8.0 W2 任务页与真实计划", () => {
 
     // 断开后自动重连：快照（已在执行后段）→ events 缺口重放 → 续流 → 终态一致
     await expect(page.getByTestId("terminal-output")).toContainText("重连后恢复一致", { timeout: 25000 });
-    await expect(page.getByTestId("thread-run-status")).toHaveText(/已完成/);
+    await expect(page.getByTestId("thread-run-status")).toHaveText(/结果未确认/);
+    await expect(page.getByTestId("thread-run-status")).not.toHaveClass(/tone-success/);
     // 条目不重复（run-start 只出现一次）
     const runStartCount = await page.getByTestId("transcript-run-start").count();
     expect(runStartCount).toBe(1);

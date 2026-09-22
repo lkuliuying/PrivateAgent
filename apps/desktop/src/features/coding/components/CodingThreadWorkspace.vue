@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import PatchReviewPanel from "./PatchReviewPanel.vue";
+import TaskReviewPanel from "./TaskReviewPanel.vue";
+import RunEvidencePanel from "./RunEvidencePanel.vue";
+import RunResultSummary from "./RunResultSummary.vue";
 import ExecutionPanel from "./ExecutionPanel.vue";
 import RecoveryPanel from "./RecoveryPanel.vue";
+import RunControlBar from "./RunControlBar.vue";
+import RunObserverPanel from "./RunObserverPanel.vue";
+import PlanningInteractionPanel from "./PlanningInteractionPanel.vue";
 import WorktreePanel from "./WorktreePanel.vue";
+import ThreadTools from "./ThreadTools.vue";
+import FileWorkspace from "./FileWorkspace.vue";
 /**
  * CodingThreadWorkspace · v0.8.0 W3
  *
@@ -32,6 +40,7 @@ import type {
 import { isTerminalRunStatus } from "../model/runContracts";
 import type { RunProjection } from "../model/runProjector";
 import type { CodingInstructionMarker } from "../model/contracts";
+import { isAbsoluteWorkspacePath, resolveWorkspaceFileTarget, type WorkspaceFileOpenRequest, type WorkspaceFileTarget } from "../model/outputFiles";
 import {
   approveRunApproval,
   fetchRunApprovalPreview,
@@ -62,6 +71,7 @@ import CodingComposer, { type CodingComposerSendPayload } from "./CodingComposer
 const props = withDefaults(
   defineProps<{
     store?: CodingWorkspaceStore;
+    searchTarget?: { messageId: number; seq: number } | null;
   }>(),
   {
     store: () => useCodingWorkspace(),
@@ -133,8 +143,16 @@ async function resumeRun(runId: string) {
 const durableHistory = shallowRef<Message[]>([]);
 let hydrationSeq = 0;
 const planOpen = ref(false);
+const inspectorOpen = ref(false);
 const contextOpen = ref(false);
+const fileOpenRequest = shallowRef<WorkspaceFileOpenRequest | null>(null);
+const outputFileScope = shallowRef<{ projectId: number; workspaceId: number; projectName: string } | null>(null);
+const fileWorkspaceScope = computed(() => outputFileScope.value ?? (project.value && workspace.value
+  ? { projectId: project.value.id, workspaceId: workspace.value.id, projectName: project.value.name } : null));
+let fileOpenGeneration = 0;
+const threadTools = ref<InstanceType<typeof ThreadTools>>();
 const cancelling = ref(false);
+const runControls = ref<InstanceType<typeof RunControlBar>>();
 const lastPermissionMode = ref<string | null>(null);
 const approvalRecords = shallowRef<RunApprovalRecord[]>([]);
 const instructionMarkers = ref<CodingInstructionMarker[]>([]);
@@ -155,6 +173,7 @@ if (previewKey) {
         previewKey as Parameters<typeof module.createStaticProjection>[0]
       );
       previewProjection.value = fixture.projection;
+      approvalRecords.value = fixture.approvals ?? [];
       approvalPreviews.value = fixture.approvalPreviews ?? {};
       executions.value = fixture.executions ?? [];
       outputPages.value = fixture.outputPages ?? {};
@@ -166,6 +185,44 @@ if (previewKey) {
 const projection = computed(() => previewProjection.value ?? stream.projection.value);
 const phase = computed(() => (previewMode.value ? "idle" : stream.phase.value));
 const connectionError = computed(() => (previewMode.value ? null : stream.connectionError.value));
+
+watch(() => [thread.value?.id, project.value?.id, workspace.value?.id, projection.value?.runId], () => {
+  fileOpenGeneration += 1;
+  fileOpenRequest.value = null;
+  outputFileScope.value = null;
+  contextOpen.value = false;
+});
+
+async function openOutputFile(target: WorkspaceFileTarget): Promise<void> {
+  const currentThread = thread.value;
+  const currentRun = projection.value;
+  if (!currentThread || (currentRun?.sessionId != null && currentRun.sessionId !== currentThread.id)) return;
+  const projectId = currentRun?.projectId ?? currentThread.projectId;
+  const workspaceId = currentRun?.workspaceId ?? currentThread.workspaceId;
+  if (workspaceId == null) {
+    notify.error("无法预览文件", "此任务没有绑定可用工作区。");
+    return;
+  }
+  const mine = ++fileOpenGeneration;
+  try {
+    // 文件引用属于生成它的任务；目录选择变化不能把引用改指到另一工作区。
+    const root = isAbsoluteWorkspacePath(target.path)
+      ? await fetchCodingWorkspacePath(projectId, workspaceId) : null;
+    if (mine !== fileOpenGeneration || thread.value?.id !== currentThread.id) return;
+    const resolved = resolveWorkspaceFileTarget(target, root);
+    if (!resolved) {
+      notify.error("无法预览文件", "文件引用无效或位于此任务工作区之外。");
+      return;
+    }
+    outputFileScope.value = { projectId, workspaceId, projectName: project.value?.id === projectId ? project.value.name : "任务工作区" };
+    fileOpenRequest.value = { ...resolved, requestId: mine };
+    planOpen.value = false;
+    threadTools.value?.close();
+    contextOpen.value = true;
+  } catch {
+    if (mine === fileOpenGeneration) notify.error("无法预览文件", "任务工作区暂不可用，请重试。");
+  }
+}
 const composerInputHistory = computed(() => {
   const messages = durableHistory.value
     .filter((message) => message.role === "user" && message.content.trim().length > 0)
@@ -235,7 +292,7 @@ watch(
       return;
     }
     restoreSeq += 1;
-    restoreRequest.value = { message: firstTurn.message, seq: restoreSeq };
+    restoreRequest.value = { message: firstTurn.message, seq: restoreSeq, collaborationMode: firstTurn.collaborationMode };
   },
   { immediate: true }
 );
@@ -248,7 +305,11 @@ const createBlocker = computed(() => {
   return describeRunBlocker(stream.createErrorCode.value);
 });
 const lastSentPayload = ref<CodingComposerSendPayload | null>(null);
-const restoreRequest = ref<{ message: string; seq: number } | null>(null);
+const restoreRequest = ref<{ message: string; append?: boolean; seq: number; collaborationMode?: "default" | "plan" } | null>(null);
+function reviewFeedback(message: string) {
+  restoreRequest.value = { message, append: true, seq: ++restoreSeq };
+  notify.success("反馈已放入输入框", "可以补充说明后发送。");
+}
 let restoreSeq = 0;
 
 watch(
@@ -258,6 +319,7 @@ watch(
       restoreSeq += 1;
       restoreRequest.value = {
         message: lastSentPayload.value.message,
+        collaborationMode: lastSentPayload.value.collaborationMode,
         seq: restoreSeq,
       };
     }
@@ -466,6 +528,7 @@ onBeforeUnmount(() => {
   executionRequestSeq += 1;
   hydrationSeq += 1;
   workspacePathSeq += 1;
+  fileOpenGeneration += 1;
   if (outputPollTimer !== null) {
     window.clearTimeout(outputPollTimer);
     outputPollTimer = null;
@@ -495,7 +558,7 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
       message:
         "有效期 4 小时；切换项目、退出应用或手动撤销后立即失效。不获得管理员权限，也不绕过系统权限。",
       impact:
-        "项目文件工具可免逐次审批，持续命令仍需单独确认。文件工具拒绝凭据和系统目录；可信项目脚本以当前系统用户运行，可读写该用户可访问的项目外文件并联网。所有操作保留审计。",
+        "项目编辑与普通禁网命令可自动批准，命令保持系统沙箱隔离。交互或持续进程须单独确认；解除沙箱时还须逐次批准当前用户的项目外文件与网络访问。所有操作保留审计。",
       confirmLabel: "启用完全访问",
       danger: true,
     });
@@ -533,6 +596,8 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
     project_id: projectId,
     workspace_id: workspaceId,
     permission_mode: payload.permissionMode,
+    ...(props.store.capabilities.value?.coding_planning_contract_version === "1.0"
+      ? { collaboration_mode: payload.collaborationMode ?? "default" } : {}),
     model_profile_id: payload.modelProfileId ?? undefined,
     reasoning_effort: payload.reasoningEffort ?? undefined,
   });
@@ -552,6 +617,24 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
       // 事件流仍是当前 run 的事实源；消息同步失败留待下次重开恢复。
     }
   }
+}
+
+async function implementPlannedRun(runId: string): Promise<void> {
+  const current = thread.value;
+  if (!current) return;
+  const mine = hydrationSeq;
+  try {
+    const messages = await fetchThreadMessagesSafe(current.id);
+    if (mine !== hydrationSeq || thread.value?.id !== current.id) return;
+    durableHistory.value = messages;
+  } catch {
+    // 实施任务已创建，历史读取暂时失败不妨碍连接新的运行。
+  }
+  if (mine === hydrationSeq && thread.value?.id === current.id) await resumeRun(runId);
+}
+
+function revisePlan(): void {
+  restoreRequest.value = { message: "", seq: ++restoreSeq, collaborationMode: "plan" };
 }
 
 function searchFiles(query: string) {
@@ -593,6 +676,7 @@ function openPlanFromTranscript(): void {
 }
 
 function togglePlan(): void {
+  threadTools.value?.close();
   planOpen.value = !planOpen.value;
   if (planOpen.value) contextOpen.value = false;
 }
@@ -600,6 +684,7 @@ function togglePlan(): void {
 function toggleContext(): void {
   contextOpen.value = !contextOpen.value;
   if (contextOpen.value) planOpen.value = false;
+  else threadTools.value?.focusFiles();
 }
 
 function onInstructionMarkersChange(markers: CodingInstructionMarker[]): void {
@@ -646,9 +731,46 @@ function navigateToInstruction(instructionId: string): void {
         @toggle-plan="togglePlan"
         @toggle-context="toggleContext"
         @request-workspace-path="void requestWorkspacePath()"
-      />
-
-      <WorktreePanel v-if="store.capabilities.value?.coding_worktree_enabled === true && !previewMode" :store="store" />
+      >
+        <template #tools>
+          <ThreadTools ref="threadTools" :store="store" :files-open="contextOpen" :running="runActive" :panel-target="`#thread-inspector-${thread.id}`" @panel-change="inspectorOpen = $event; if ($event) contextOpen = false" @toggle-files="toggleContext" @environment-open="requestWorkspacePath">
+            <template #overview>
+              <div class="environment-overview">
+                <WorktreePanel :store="store" :active="runActive" />
+                <strong>{{ project?.name ?? '当前项目' }}</strong>
+                <span class="environment-label">本机工作区</span>
+                <code>{{ workspacePathLoading ? '正在读取工作目录…' : workspacePath ?? '工作目录暂不可用' }}</code>
+                <dl><dt>分支</dt><dd>{{ workspace?.branchName ?? '未绑定 Git 分支' }}</dd><dt>HEAD</dt><dd>{{ workspace?.headSha?.slice(0, 8) ?? '—' }}</dd></dl>
+                <button v-if="projection?.plan" class="pa-btn pa-btn--subtle" data-testid="thread-plan-toggle" :aria-expanded="planOpen" @click="togglePlan">查看执行计划 · {{ projection.plan.items.length }} 项</button>
+              </div>
+            </template>
+            <template #changes>
+              <TaskReviewPanel v-if="!previewMode && store.capabilities.value?.coding_patchsets_enabled === true" :session-id="thread.id" :revision="`${projection?.runId}:${projection?.status}`" :active="runActive" @feedback="reviewFeedback" />
+              <p v-else>当前任务暂无文件变更记录。</p>
+            </template>
+            <template #execution>
+              <ExecutionPanel v-if="!previewMode && store.capabilities.value?.coding_execution_sessions_enabled === true" :session-id="thread.id" />
+              <p v-else>当前任务暂无本机进程。</p>
+            </template>
+            <template #recovery>
+              <RecoveryPanel v-if="projection?.runId && store.capabilities.value?.coding_recovery_contract_version === '1.0' && !previewMode" :run-id="projection.runId" @resumed="resumeRun" />
+              <p v-else>任务运行后可查看与恢复现场。</p>
+            </template>
+            <template #context>
+              <ContextDrawer :session-id="thread.id" :context-enabled="store.capabilities.value?.coding_context_compaction_enabled === true" initial-tab="context" :projection="projection" :previews="approvalPreviews" :permission-mode="lastPermissionMode" />
+            </template>
+            <template #evidence>
+              <RunResultSummary v-if="projection" :projection="projection" />
+              <RunEvidencePanel v-if="projection?.runId && !previewMode" :run-id="projection.runId" :active="runActive" @feedback="reviewFeedback" />
+              <p v-else>运行后可查看浏览器证据和子任务结果。</p>
+            </template>
+            <template #observer>
+              <RunObserverPanel v-if="projection?.runId && !previewMode" :run-id="projection.runId" />
+              <p v-else>任务运行后可查看验收结论与关联事件。</p>
+            </template>
+          </ThreadTools>
+        </template>
+      </ThreadHeader>
       <div class="thread-body">
         <aside
           v-if="instructionMarkers.length > 0"
@@ -677,6 +799,7 @@ function navigateToInstruction(instructionId: string): void {
           <RunTranscript
             :projection="projection"
             :history="durableHistory"
+            :search-target="searchTarget"
             :phase="phase"
             :connection-error="connectionError"
             :approvals="approvalRecords"
@@ -693,13 +816,13 @@ function navigateToInstruction(instructionId: string): void {
             @open-plan="openPlanFromTranscript"
             @retry-stream="stream.retryConnection()"
             @load-output="loadOutput"
+            @open-file="openOutputFile"
             @instruction-markers-change="onInstructionMarkersChange"
-          />
-
-          <RecoveryPanel v-if="projection?.runId && store.capabilities.value?.coding_recovery_contract_version === '1.0' && !previewMode" :run-id="projection.runId" @resumed="resumeRun" />
-          <PatchReviewPanel v-if="projection?.runId && store.capabilities.value?.coding_patchsets_enabled === true"
-            :run-id="projection.runId" :revision="projection.status ?? ''" :active="runActive" />
-          <ExecutionPanel v-if="thread && !previewMode && store.capabilities.value?.coding_execution_sessions_enabled === true" :session-id="thread.id" />
+          >
+            <template v-if="projection?.runId && store.capabilities.value?.coding_patchsets_enabled === true && !previewMode" #result-files>
+              <PatchReviewPanel :run-id="projection.runId" :revision="projection.status" :active="runActive" presentation="result" @feedback="reviewFeedback" />
+            </template>
+          </RunTranscript>
 
           <!-- v0.9.0 H1-B（§5.6）：创建失败阻塞卡片（具体阻塞项 + 恢复入口） -->
           <div
@@ -731,12 +854,24 @@ function navigateToInstruction(instructionId: string): void {
             </div>
           </div>
 
+          <PlanningInteractionPanel
+            v-if="projection && !previewMode && store.capabilities.value?.coding_planning_contract_version === '1.0'"
+            :projection="projection"
+            @implemented="implementPlannedRun"
+            @revise="revisePlan"
+            @refresh="stream.retryConnection()"
+            @cancel="cancelRun"
+          />
+
           <div class="thread-composer">
+            <RunControlBar v-if="projection?.runId && !previewMode && store.capabilities.value?.coding_recovery_contract_version === '1.0'" ref="runControls" :run-id="projection.runId" :session-id="thread.id" @resumed="resumeRun" />
             <CodingComposer
               :store="store"
               :thread-id="thread.id"
               :busy="composerBusy"
-              :stopping="cancelling"
+              :pausing="runControls?.pausePending"
+              :paused="runControls?.paused || projection?.status === 'paused'"
+              :pause-disabled="cancelling || !runControls?.canPause"
               :running="runActive"
               :preview-mode="previewMode"
               :search-files="searchFiles"
@@ -744,27 +879,21 @@ function navigateToInstruction(instructionId: string): void {
               :before-send="guardFullAccess"
               :input-history="composerInputHistory"
               :restore-request="restoreRequest"
+              :active-collaboration-mode="projection?.collaborationMode"
               @send="send"
-              @stop="cancelRun"
+              @pause="runControls?.pause()"
             />
           </div>
         </div>
 
+        <aside v-show="inspectorOpen" :id="`thread-inspector-${thread.id}`" class="thread-inspector" aria-label="任务审阅面板" />
         <RunPlanPopover
           v-if="planOpen"
           :plan="projection?.plan ?? null"
           @close="planOpen = false"
         />
 
-        <ContextDrawer
-          v-if="contextOpen"
-          :session-id="thread?.id"
-          :context-enabled="store.capabilities.value?.coding_context_compaction_enabled === true"
-          :projection="projection"
-          :previews="approvalPreviews"
-          :permission-mode="lastPermissionMode"
-          @close="contextOpen = false"
-        />
+        <FileWorkspace v-if="contextOpen && fileWorkspaceScope" :project-id="fileWorkspaceScope.projectId" :workspace-id="fileWorkspaceScope.workspaceId" :project-name="fileWorkspaceScope.projectName" :open-request="fileOpenRequest" @close="toggleContext" />
       </div>
     </template>
   </section>
@@ -772,20 +901,31 @@ function navigateToInstruction(instructionId: string): void {
 
 <style scoped>
 .coding-thread {
+  --coding-content-width: 900px;
   display: flex;
   flex: 1;
   min-height: 0;
   flex-direction: column;
+  background: var(--color-surface);
 }
+.thread-inspector { flex-shrink: 0; min-width: 0; border-left: 1px solid var(--color-border); background: var(--color-surface); }
+@media (max-width: 900px) { .thread-inspector { position: absolute; inset: 0; z-index: 20; } }
 .thread-body {
   position: relative;
   display: flex;
   flex: 1;
   min-height: 0;
 }
+.environment-overview { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.environment-overview > strong { font-size: 16px; }
+.environment-label { color: var(--color-fg-muted); font-size: 12px; }
+.environment-overview code { padding: 10px; border-radius: 7px; background: var(--color-surface-sunken); overflow-wrap: anywhere; font-size: 12px; }
+.environment-overview dl { display: grid; grid-template-columns: 55px 1fr; gap: 10px; margin: 4px 0 14px; }
+.environment-overview dt { color: var(--color-fg-muted); }.environment-overview dd { margin: 0; }
 .thread-main {
   display: flex;
   min-width: 0;
+  min-height: 0;
   flex: 1;
   flex-direction: column;
 }
@@ -846,9 +986,13 @@ function navigateToInstruction(instructionId: string): void {
 }
 .thread-composer {
   flex-shrink: 0;
-  padding: var(--space-2) var(--space-3) var(--space-3);
+  padding: var(--space-2) var(--space-5) var(--space-4);
   border-top: 0;
-  background: var(--color-bg);
+  background: var(--color-surface);
+}
+.thread-composer :deep(.coding-composer) { width: min(var(--coding-content-width), 100%); margin-inline: auto; }
+@media (max-width: 760px) {
+  .thread-composer { padding-inline: var(--space-3); }
 }
 .create-blocker {
   display: flex;

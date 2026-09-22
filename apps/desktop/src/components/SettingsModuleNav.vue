@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, type Component } from "vue";
+import UserMenu from "./UserMenu.vue";
 import {
   PhArchive,
   PhArrowLeft,
@@ -32,6 +33,8 @@ const sectionIcons: Record<SettingsSection, Component> = {
   "current-model": PhBrain,
   provider: PhPlugs,
   mcp: PhPuzzlePiece,
+  memories: PhBrain,
+  appearance: PhPuzzlePiece,
   profile: PhUserCircle,
   backup: PhArchive,
   about: PhInfo,
@@ -156,6 +159,7 @@ function exitSettings(): void {
           没有匹配的设置
         </p>
       </div>
+      <footer class="settings-nav__footer"><UserMenu inline @settings="selectSection('current-model')" /></footer>
     </nav>
   </Teleport>
 </template>
@@ -169,7 +173,7 @@ function exitSettings(): void {
   flex-direction: column;
   overflow: hidden;
   border-right: 1px solid var(--color-border);
-  background: color-mix(in srgb, var(--color-panel) 80%, var(--color-surface-muted));
+  background: var(--color-rail-bg);
 }
 
 .settings-nav.is-drawer {
@@ -209,7 +213,7 @@ function exitSettings(): void {
   flex-shrink: 0;
   flex-direction: column;
   gap: 12px;
-  padding: 16px 10px 12px;
+  padding: 17px 12px 20px;
 }
 
 .settings-nav__topline {
@@ -258,9 +262,9 @@ function exitSettings(): void {
   align-items: center;
   gap: 7px;
   padding: 0 10px;
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--color-surface-muted) 88%, var(--color-border));
+  background: var(--color-panel);
   color: var(--color-fg-subtle);
 }
 
@@ -307,7 +311,7 @@ function exitSettings(): void {
 .settings-nav__item {
   display: flex;
   width: 100%;
-  height: 34px;
+  height: 40px;
   align-items: center;
   gap: 9px;
   padding: 0 9px;
@@ -315,7 +319,7 @@ function exitSettings(): void {
   border-radius: 9px;
   background: transparent;
   color: var(--color-fg-muted);
-  font-size: var(--text-xs);
+  font-size: var(--pa-text-body);
   text-align: left;
   cursor: pointer;
 }
@@ -326,8 +330,9 @@ function exitSettings(): void {
 }
 
 .settings-nav__item.active {
-  background: color-mix(in srgb, var(--color-fg) 8%, var(--color-surface));
-  color: var(--color-fg);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-soft-fg);
+  box-shadow: inset 2px 0 var(--color-accent);
   font-weight: var(--font-medium);
 }
 
@@ -351,4 +356,5 @@ function exitSettings(): void {
   .settings-nav__group + .settings-nav__group { margin-top: 10px; }
   .settings-nav__item { height: 31px; }
 }
+.settings-nav__footer { padding: var(--space-3); border-top: 1px solid var(--color-border); }
 </style>

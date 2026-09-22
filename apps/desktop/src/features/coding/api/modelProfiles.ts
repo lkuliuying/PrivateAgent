@@ -60,8 +60,8 @@ export function toModelProfileDetail(dto: ModelProfileDto): CodingModelProfileDe
   };
 }
 
-export async function fetchCodingModelProfiles(): Promise<CodingModelProfilesResult> {
-  const response = await codingFetch("/agent-model-profiles?enabled_only=true");
+export async function fetchCodingModelProfiles(options?: { signal?: AbortSignal }): Promise<CodingModelProfilesResult> {
+  const response = await codingFetch("/agent-model-profiles?enabled_only=true", options?.signal ? { signal: options.signal } : undefined);
   if (response.status === 409) {
     const error = await toCodingApiError(response);
     if (error.code === "coding_mode_disabled") {

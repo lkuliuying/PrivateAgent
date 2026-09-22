@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { controlRun, fetchRecovery, fetchRunReview, type ControlRecord, type ControlRequest, type RecoveryReport, type RunReview } from "../api/recovery";
+import { controlRun, fetchRecovery, fetchRunReview, type RunControlKind, type ControlRequest, type RecoveryReport, type RunReview } from "../api/recovery";
 import { isTerminalRunStatus, RUN_STATUS_META } from "../model/runContracts";
 import PatchReviewPanel from "./PatchReviewPanel.vue";
 
@@ -12,13 +12,13 @@ const message = ref("");
 const error = ref("");
 const busy = ref(false);
 const loading = ref(false);
-const pending = ref<{ kind: ControlRecord["kind"]; data: ControlRequest } | null>(null);
+const pending = ref<{ kind: RunControlKind; data: ControlRequest } | null>(null);
 let generation = 0;
 let controller: AbortController | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 const active = computed(() => state.value && state.value.supported !== false && !isTerminalRunStatus(state.value.status));
 const ancestors = computed(() => [...new Set(review.value?.task_changes.map(patch => patch.run_id).filter(id => id !== props.runId) ?? [])]);
-const controlLabels = { pause: "暂停", resume: "继续", steer: "追加约束", cancel: "取消" };
+const controlLabels = { pause: "暂停", resume: "继续", steer: "追加约束", cancel: "取消", answer: "回答澄清", implement: "按计划执行" };
 
 async function load() {
   if (loading.value) return;
@@ -47,7 +47,7 @@ async function loadReview() {
     if (mine === generation) error.value = "任务变更核对失败，请刷新重试";
   }
 }
-async function send(kind: ControlRecord["kind"], retry = false) {
+async function send(kind: RunControlKind, retry = false) {
   if (busy.value || !state.value) return;
   const mine = generation;
   const runId = props.runId;
@@ -93,6 +93,9 @@ onBeforeUnmount(() => { generation++; controller?.abort(); clearTimeout(timer); 
 
 <template>
   <section class="recovery-panel" aria-label="任务恢复与协作">
+    <details :open="!!active || !!error || !!pending || !!state?.blockers.length || (!!state && ['paused', 'interrupted', 'cancelled'].includes(state.status))">
+    <summary>任务现场 · {{ state ? RUN_STATUS_META[state.status]?.label : '读取中' }}</summary>
+    <div class="recovery-body">
     <div class="recovery-actions">
       <strong>{{ state ? RUN_STATUS_META[state.status]?.label : '正在读取任务现场…' }}</strong>
       <button class="pa-btn pa-btn--subtle" :disabled="loading || busy" @click="load">刷新现场</button>
@@ -129,11 +132,15 @@ onBeforeUnmount(() => { generation++; controller?.abort(); clearTimeout(timer); 
         </template>
       </details>
     </template>
+    </div>
+    </details>
   </section>
 </template>
 
 <style scoped>
-.recovery-panel { border-top: 1px solid var(--color-border); padding: var(--space-3); font-size: var(--pa-text-meta); min-height: 0; max-height: 45vh; overflow: auto; overflow-wrap: anywhere; }
+.recovery-panel { border: 1px solid var(--color-border); border-radius: var(--radius-lg); font-size: var(--pa-text-meta); min-height: 0; overflow-wrap: anywhere; }
+.recovery-panel summary { padding: var(--space-3); cursor: pointer; color: var(--color-fg-muted); }
+.recovery-body { padding: 0 var(--space-3) var(--space-3); max-height: 45vh; overflow: auto; }
 .recovery-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
 .recovery-steer { display: grid; gap: var(--space-2); }
 .recovery-steer textarea { resize: vertical; min-width: 0; width: 100%; }

@@ -1,26 +1,22 @@
 <script setup lang="ts">
+import McpIntegrationsPanel from "./McpIntegrationsPanel.vue";
+import { useCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
+const codingWorkspace = useCodingWorkspace();
+import WallpaperSettingsPanel from "./ExtensionRegistryPanel.vue";
 import { ref, computed, onMounted } from "vue";
-import {
-  exportBackup,
-  getSettings,
-  listModelProviders,
-  listBackups,
-  previewRestoreBackup,
-  type AppSettings,
-  type ModelProvider,
-} from "../api";
-import type { BackupExportResult, BackupRestorePreview } from "../types";
+import { PhArchiveBox, PhCpu, PhInfo, PhPlugs } from "@phosphor-icons/vue";
+import { listModelProviders, type ModelProvider } from "../api";
 import UpdateChecker from "./UpdateChecker.vue";
-import McpServersPanel from "./McpServersPanel.vue";
+import DocumentationMcpPanel from "./DocumentationMcpPanel.vue";
+import MemorySettingsPanel from "./MemorySettingsPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
 import HistoryMigration from "./HistoryMigration.vue";
-import { usesLocalExecutor } from "../services/localExecutor";
 import {
   settingsSectionMeta,
   type SettingsSection,
 } from "../models/settingsSections";
-import { useCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
+
 import { fetchCodingModelProfiles } from "../features/coding/api/modelProfiles";
 import type { CodingModelProfileSummary } from "../features/coding/model/contracts";
 
@@ -43,24 +39,14 @@ const emit = defineEmits<{
   (e: "select-section", section: SettingsSection): void;
 }>();
 const currentSectionMeta = computed(() => settingsSectionMeta(props.activeSection));
-const sectionSubtitle = computed(() =>
-  props.activeSection === "provider"
-    ? currentSectionMeta.value.description
-    : `${currentSectionMeta.value.description}。每次只显示当前模块，配置更聚焦。`
-);
+const sectionSubtitle = computed(() => currentSectionMeta.value.description);
 
 async function onModelProfilesSaved(): Promise<void> {
   await Promise.all([useCodingWorkspace().refresh(), loadCurrentModel()]);
   if (props.returnTo) emit("return");
 }
-const settings = ref<AppSettings | null>(null);
-const localRuntime = usesLocalExecutor();
 const modelProviders = ref<ModelProvider[]>([]);
 const modelProfiles = ref<CodingModelProfileSummary[]>([]);
-const backups = ref<BackupExportResult[]>([]);
-const backupPreview = ref<BackupRestorePreview | null>(null);
-const backupPath = ref("");
-const backupMsg = ref("");
 
 async function loadCurrentModel(): Promise<void> {
   try {
@@ -78,49 +64,13 @@ async function loadCurrentModel(): Promise<void> {
   }
 }
 
-async function load() {
-  try {
-    settings.value = await getSettings();
-  } catch {
-    settings.value = null;
-  }
-  await loadCurrentModel();
-  try {
-    backups.value = (await listBackups()).items;
-    if (!backupPath.value && backups.value.length) backupPath.value = backups.value[0].path;
-  } catch {
-    backups.value = [];
-  }
-}
 onMounted(() => {
-  load();
+  void loadCurrentModel();
   // H1-D：由父级模块导航定位到模型管理区，不再依赖长页面滚动。
   if (props.focusSection === "provider") {
     emit("select-section", "provider");
   }
 });
-
-async function doBackup() {
-  backupMsg.value = "";
-  try {
-    const res = await exportBackup();
-    backupMsg.value = `已创建备份：${res.path}`;
-    backupPath.value = res.path;
-    await load();
-  } catch (e) {
-    backupMsg.value = "备份失败：" + String(e);
-  }
-}
-
-async function previewBackup() {
-  if (!backupPath.value.trim()) return;
-  backupMsg.value = "";
-  try {
-    backupPreview.value = await previewRestoreBackup(backupPath.value.trim());
-  } catch (e) {
-    backupMsg.value = "恢复预览失败：" + String(e);
-  }
-}
 
 const activeModelProfile = computed(
   () =>
@@ -143,37 +93,17 @@ const activeModelProvider = computed(() => {
 
 const activeModelName = computed(() => {
   const profile = activeModelProfile.value;
-  if (profile) return profile.modelName?.trim() || profile.id;
-  if (!settings.value) return "—";
-  if (settings.value.provider_type === "openai") return settings.value.openai_model || "—";
-  if (settings.value.provider_type === "claude") return settings.value.claude_model || "—";
-  return settings.value.llm_model || "—";
+  return profile ? profile.modelName?.trim() || profile.id : "—";
 });
-
-const activeServiceName = computed(() => {
-  if (activeModelProvider.value) return activeModelProvider.value.name;
-  if (activeModelProfile.value?.providerName) return activeModelProfile.value.providerName;
-  if (!settings.value) return "—";
-  if (settings.value.provider_type === "openai") {
-    return settings.value.openai_config_name || "OpenAI 兼容 API";
-  }
-  if (settings.value.provider_type === "claude") return "Claude 原生协议";
-  return "Ollama（本地）";
-});
-
-const activeEndpoint = computed(() => {
-  if (activeModelProvider.value) return activeModelProvider.value.baseUrl || "—";
-  if (!settings.value) return "—";
-  if (settings.value.provider_type === "openai") return settings.value.openai_base_url || "—";
-  if (settings.value.provider_type === "claude") return "https://api.anthropic.com/v1";
-  return "本地模型配置";
-});
+const activeServiceName = computed(() => activeModelProvider.value?.name || activeModelProfile.value?.providerName || "—");
+const activeEndpoint = computed(() => activeModelProvider.value?.baseUrl || "—");
 </script>
 
 <template>
-  <section class="content">
+  <section class="content" :class="{ 'content--profile': activeSection === 'profile' }">
     <header class="settings-hero">
       <div>
+        <p class="settings-eyebrow">应用设置</p>
         <h1>{{ currentSectionMeta.label }}</h1>
         <p class="subtitle">{{ sectionSubtitle }}</p>
       </div>
@@ -189,11 +119,10 @@ const activeEndpoint = computed(() => {
 
     <!-- 模型信息（只读） -->
     <section v-if="activeSection === 'current-model'" class="setting-card wide">
-      <div class="card-heading"><span>02</span><div><h2>当前模型</h2><p>正在使用的推理与向量模型</p></div></div>
+      <div class="card-heading"><span><PhCpu :size="21" /></span><div><h2>当前模型</h2><p>当前选用的模型供应商与推理模型</p></div></div>
       <div class="info-grid">
         <div><span class="k">模型服务</span><span class="v">{{ activeServiceName }}</span></div>
         <div><span class="k">LLM 模型 ID</span><span class="v">{{ activeModelName }}</span></div>
-        <div><span class="k">嵌入模型</span><span class="v">{{ settings?.embed_model || "—" }}</span></div>
         <div><span class="k">请求地址</span><span class="v">{{ activeEndpoint }}</span></div>
       </div>
     </section>
@@ -205,50 +134,38 @@ const activeEndpoint = computed(() => {
 
     <!-- MCP -->
     <section v-if="activeSection === 'mcp'" class="setting-card wide">
-      <div class="card-heading"><span>04</span><div><h2>MCP 外部能力</h2><p>登记联网服务，并按信任与工具白名单授权模型使用</p></div></div>
-      <McpServersPanel />
+      <div class="card-heading"><span><PhPlugs :size="21" /></span><div><h2>MCP 外部能力</h2><p>配置项目工具、连接状态与授权范围</p></div></div>
+      <label class="settings-project-scope">所属项目
+        <select class="pa-input" aria-label="MCP 所属项目" :value="codingWorkspace.selectedProjectId.value ?? ''" @change="codingWorkspace.selectProject(Number(($event.target as HTMLSelectElement).value))">
+          <option v-if="!codingWorkspace.projects.value.length" value="" disabled>请先打开项目</option>
+          <option v-for="project in codingWorkspace.projects.value" :key="project.id" :value="project.id">{{ project.name }}</option>
+        </select>
+      </label>
+      <McpIntegrationsPanel v-if="codingWorkspace.selectedProjectId.value" :key="codingWorkspace.selectedProjectId.value" :project-id="codingWorkspace.selectedProjectId.value" />
+      <p v-else class="subtitle">请先在工作台打开项目，再管理它的 MCP 工具。</p>
+      <details><summary>公开文档服务</summary><DocumentationMcpPanel /></details>
     </section>
 
+    <section v-if="activeSection === 'memories'" class="setting-card wide">
+      <MemorySettingsPanel />
+    </section>
+
+    <section v-if="activeSection === 'appearance'" class="setting-card wide"><WallpaperSettingsPanel /></section>
+
     <!-- 个人资料：首版头像和个性资料保存在当前设备。 -->
-    <section v-if="activeSection === 'profile'" class="setting-card wide profile-card">
-      <div class="card-heading"><span>05</span><div><h2>个人资料</h2><p>设置头像，并查看当前账号的基本信息</p></div></div>
+    <section v-if="activeSection === 'profile'" class="profile-section">
       <ProfileSettingsPanel />
     </section>
 
     <!-- 备份 -->
     <section v-if="activeSection === 'backup'" class="setting-card wide">
-      <div class="card-heading"><span>06</span><div><h2>备份与恢复</h2><p>先预览，再决定是否恢复本地数据</p></div></div>
-      <HistoryMigration v-if="localRuntime" />
-      <div v-else class="form">
-      <div class="form-actions">
-        <button class="save-btn" @click="doBackup">创建备份包</button>
-      </div>
-      <div class="field">
-        <label>备份包路径</label>
-        <input v-model="backupPath" placeholder="data/backups/..." />
-      </div>
-      <div class="form-actions">
-        <button class="save-btn secondary" @click="previewBackup">恢复预览</button>
-      </div>
-      <p v-if="backupMsg" class="hint">{{ backupMsg }}</p>
-      <div v-if="backups.length" class="backup-list">
-        <button
-          v-for="b in backups.slice(0, 5)"
-          :key="b.path"
-          class="backup-row"
-          @click="backupPath = b.path"
-        >
-          <span>{{ b.path }}</span>
-          <small>{{ Math.round(b.size_bytes / 1024) }} KB</small>
-        </button>
-      </div>
-      <pre v-if="backupPreview" class="small-pre">{{ JSON.stringify(backupPreview, null, 2) }}</pre>
-      </div>
+      <div class="card-heading"><span><PhArchiveBox :size="21" /></span><div><h2>备份与恢复</h2><p>导入或导出本机会话历史，导入前可预览内容</p></div></div>
+      <HistoryMigration />
     </section>
 
     <!-- 关于 / 更新 -->
     <section v-if="activeSection === 'about'" class="setting-card wide compact-card">
-      <div class="card-heading"><span>07</span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
+      <div class="card-heading"><span><PhInfo :size="21" /></span><div><h2>关于与更新</h2><p>检查桌面端的新版本</p></div></div>
       <UpdateChecker />
     </section>
     </div>
@@ -256,12 +173,20 @@ const activeEndpoint = computed(() => {
 </template>
 
 <style scoped>
+.settings-project-scope { display: grid; gap: var(--space-2); max-width: 360px; margin-bottom: var(--space-6); color: var(--color-fg-muted); font-size: var(--pa-text-body); }
+.settings-eyebrow { margin: 0 0 var(--space-2); color: var(--color-accent-soft-fg); font-size: var(--pa-text-meta); font-weight: var(--font-medium); }
+.setting-card > details { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--color-border); }
+.setting-card > details > summary { color: var(--color-fg-muted); cursor: pointer; }
 .content {
-  padding: 80px clamp(36px, 6vw, 96px) 72px;
+  padding: var(--space-5) clamp(20px, 3vw, 48px) var(--space-10);
   overflow: auto;
   flex: 1;
-  background: var(--color-surface);
+  background: var(--color-bg);
 }
+.content--profile {
+  padding-bottom: var(--space-10);
+}
+.profile-section { min-width: 0; }
 .provider-subheading {
   margin: 0 0 var(--space-3);
   font-size: var(--pa-text-body);
@@ -281,20 +206,20 @@ const activeEndpoint = computed(() => {
 }
 .settings-hero {
   max-width: 1060px;
-  margin: 0 auto 34px;
+  margin: 0 auto var(--space-6);
   display: flex;
   align-items: flex-start;
 }
 h1 {
   margin: 0 0 8px;
-  font-size: 25px;
+  font-size: var(--pa-text-page-title);
   font-weight: var(--font-semibold);
   letter-spacing: -.035em;
 }
 .subtitle {
   margin: 0;
   color: var(--color-fg-subtle);
-  font-size: 13px;
+  font-size: var(--pa-text-body);
 }
 .settings-grid {
   max-width: 1060px;
@@ -331,9 +256,9 @@ h1 {
   cursor: pointer;
 }
 .setting-card {
-  padding: 22px 20px;
+  padding: var(--space-6);
   border: 1px solid var(--color-border);
-  border-radius: 14px;
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
   box-shadow: none;
 }
@@ -345,10 +270,16 @@ h1 {
   margin-bottom: 16px;
 }
 .card-heading > span {
-  display: none;
+  display: grid;
+  place-items: center;
+  flex: 0 0 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-soft-fg);
 }
 .card-heading h2 { margin: 0; font-size: 16px; letter-spacing: -.02em; }
-.card-heading p { margin: 3px 0 0; color: var(--color-fg-faint); font-size: 12px; }
+.card-heading p { margin: var(--space-1) 0 0; color: var(--color-fg-subtle); font-size: var(--pa-text-compact); }
 .status-row {
   display: flex;
   gap: 10px;
@@ -399,10 +330,8 @@ h1 {
   gap: 10px;
 }
 .info-grid > div {
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  padding: 14px;
+  padding: var(--space-4);
+  border-left: 2px solid var(--color-accent-soft);
 }
 .k {
   display: block;

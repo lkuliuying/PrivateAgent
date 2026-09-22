@@ -1,6 +1,6 @@
 import { reactive, readonly } from "vue";
-import { startLocalExecutor, usesLocalExecutor } from "./localExecutor";
-import { ensureApiBase } from "../api/http";
+import { bindLocalAccess, startLocalExecutor } from "./localExecutor";
+import { clearLocalSession, discardLegacyAccountSession, setLocalAccessToken } from "../auth/session";
 
 let startupPromise: Promise<void> | null = null;
 
@@ -14,11 +14,13 @@ const mutableBackendStartupState = reactive({
 export const backendStartupState = readonly(mutableBackendStartupState);
 
 async function startDesktopBackend(): Promise<void> {
-  await ensureApiBase();
-  if (usesLocalExecutor()) await startLocalExecutor();
+  discardLegacyAccountSession();
+  clearLocalSession();
+  await startLocalExecutor();
+  setLocalAccessToken(await bindLocalAccess());
 }
 
-/** 先核对服务器地址并准备本机执行器，不启动完整业务后端或创建本机账号。 */
+/** 并发入口共享启动和本机身份绑定，工作台挂载前即拥有有效凭证。 */
 export function ensureDesktopBackendReady(): Promise<void> {
   if (startupPromise) return startupPromise;
   mutableBackendStartupState.status = "starting";

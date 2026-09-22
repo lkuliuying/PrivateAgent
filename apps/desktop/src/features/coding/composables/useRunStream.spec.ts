@@ -88,6 +88,113 @@ const INPUT = {
 };
 
 describe("useRunStream", () => {
+  it("实时开始事件保留创建快照的起点，终态快照补齐最终耗时", async () => {
+    const { deps, streams } = makeDeps();
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      await controller.startRun(INPUT);
+      streams[0].callbacks.onFrame({ sequence: 1, type: "run.started", payload: {} });
+      expect(controller.projection.value?.startedAt).toBe("2026-08-22T00:00:00Z");
+      vi.mocked(deps.fetchSnapshot).mockResolvedValue(snapshot({ status: "completed", last_event_sequence: 2,
+        completed_at: "2026-08-22T00:00:05Z", output: "完成" }));
+      streams[0].callbacks.onFrame({ sequence: 2, type: "run.completed", payload: { output: "完成" } });
+      streams[0].callbacks.onFrame({ sequence: 3, type: "run.terminal", payload: { status: "completed" } });
+      await flushPromises();
+      expect(controller.projection.value?.completedAt).toBe("2026-08-22T00:00:05Z");
+    } finally { scope.stop(); }
+  });
+
+  it("重开已结束任务时，重放事件不清空快照的起止时间", async () => {
+    const { deps, streams } = makeDeps();
+    vi.mocked(deps.fetchSnapshot).mockResolvedValue(snapshot({ status: "completed", last_event_sequence: 2,
+      completed_at: "2026-08-22T00:00:05Z", output: "完成" }));
+    vi.mocked(deps.fetchEvents).mockResolvedValue({ items: [
+      { sequence: 1, type: "run.started", payload: {} },
+      { sequence: 2, type: "run.completed", payload: { output: "完成" } },
+    ] });
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      await controller.attachRun("run-1", "检查文件");
+      expect(controller.projection.value?.startedAt).toBe("2026-08-22T00:00:00Z");
+      expect(controller.projection.value?.completedAt).toBe("2026-08-22T00:00:05Z");
+      expect(controller.phase.value).toBe("terminal");
+      expect(streams).toHaveLength(0);
+    } finally { scope.stop(); }
+  });
+
+  it("创建响应未返回时重复提交不丢弃首个运行或创建第二次请求", async () => {
+    const { deps, streams } = makeDeps();
+    let resolveCreate!: (value: RunSnapshot) => void;
+    vi.mocked(deps.createRun).mockImplementation(() => new Promise((resolve) => { resolveCreate = resolve; }));
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      const first = controller.startRun(INPUT);
+      const duplicate = controller.startRun(INPUT);
+      expect(deps.createRun).toHaveBeenCalledTimes(1);
+      resolveCreate(snapshot());
+      await Promise.all([first, duplicate]);
+      expect(controller.projection.value?.runId).toBe("run-1");
+      expect(streams).toHaveLength(1);
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it("创建响应丢失后同输入重试沿用请求标识，终态后显式提交使用新标识", async () => {
+    const { deps, streams } = makeDeps();
+    vi.mocked(deps.createRun).mockRejectedValueOnce(new Error("连接中断，创建结果未知"));
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      await controller.startRun(INPUT);
+      const first = vi.mocked(deps.createRun).mock.calls[0][0];
+      expect(first.client_request_id).toMatch(/^[0-9a-f-]{36}$/i);
+      expect(controller.phase.value).toBe("error");
+      await controller.startRun({ ...INPUT });
+      expect(vi.mocked(deps.createRun).mock.calls[1][0].client_request_id).toBe(first.client_request_id);
+      streams[0].callbacks.onFrame({ sequence: 1, type: "run.completed", payload: { output: "完成" } });
+      await controller.startRun(INPUT);
+      expect(vi.mocked(deps.createRun).mock.calls[2][0].client_request_id).not.toBe(first.client_request_id);
+      expect(INPUT).not.toHaveProperty("client_request_id");
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it("活动运行期间拒绝第二次创建且保留当前投影与连接", async () => {
+    const { deps, streams } = makeDeps();
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      await controller.startRun(INPUT);
+      await controller.startRun({ ...INPUT, message: "另一条请求" });
+      expect(deps.createRun).toHaveBeenCalledTimes(1);
+      expect(streams).toHaveLength(1);
+      expect(controller.projection.value?.runId).toBe("run-1");
+      expect(controller.phase.value).toBe("streaming");
+    } finally {
+      scope.stop();
+    }
+  });
+
+  it("输入变化或离开会话后不复用未知创建请求，显式标识保持不变", async () => {
+    const { deps } = makeDeps();
+    vi.mocked(deps.createRun).mockRejectedValue(new Error("连接中断"));
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      await controller.startRun(INPUT);
+      await controller.startRun({ ...INPUT, message: "修正后的请求" });
+      const calls = vi.mocked(deps.createRun).mock.calls;
+      expect(calls[0][0].client_request_id).toBeTruthy();
+      expect(calls[1][0].client_request_id).not.toBe(calls[0][0].client_request_id);
+      controller.detach();
+      await controller.startRun({ ...INPUT, message: "修正后的请求" });
+      expect(calls[2][0].client_request_id).not.toBe(calls[1][0].client_request_id);
+      await controller.startRun({ ...INPUT, client_request_id: "caller-owned-request" });
+      expect(calls[3][0].client_request_id).toBe("caller-owned-request");
+    } finally {
+      scope.stop();
+    }
+  });
+
   it("实时缺口保留原游标并按分页补齐，不被快照终态截断", async () => {
     const { deps, streams, runTimers } = makeDeps();
     const { scope, controller } = scopedSetup(deps);
@@ -117,7 +224,7 @@ describe("useRunStream", () => {
     );
     const { scope, controller } = scopedSetup(deps);
     await controller.startRun(INPUT);
-    expect(deps.createRun).toHaveBeenCalledWith(INPUT);
+    expect(deps.createRun).toHaveBeenCalledWith({ ...INPUT, client_request_id: expect.any(String) });
     expect(streams).toHaveLength(1);
     expect(streams[0].afterSequence).toBe(0);
     streams[0].callbacks.onFrame({ sequence: 1, type: "run.started", payload: {} });

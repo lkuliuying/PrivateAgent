@@ -2,7 +2,6 @@ import { codingFetchJson, codingJsonInit } from "./codingHttp";
 import type { ManagedExecution } from "./executions";
 import type { PatchSummary } from "./patches";
 import type { AgentRunStatus } from "../model/runContracts";
-import type { ProjectWorkspace } from "../../../types";
 
 export interface ControlRequest {
   request_id: string;
@@ -10,9 +9,10 @@ export interface ControlRequest {
   checkpoint_id?: string | null;
   message?: string;
 }
+export type RunControlKind = "pause" | "resume" | "steer" | "cancel";
 export interface ControlRecord {
   request_id: string;
-  kind: "pause" | "resume" | "steer" | "cancel";
+  kind: RunControlKind | "answer" | "implement";
   status: "received" | "applied" | "interrupted";
   result_run_id: string;
   message?: string;
@@ -53,6 +53,4 @@ export interface RunReview {
 const path = (run: string) => `/agent-runs/${encodeURIComponent(run)}`;
 export const fetchRecovery = (run: string, signal?: AbortSignal): Promise<RecoveryReport> => codingFetchJson(`${path(run)}/recovery`, { signal });
 export const fetchRunReview = (run: string, signal?: AbortSignal): Promise<RunReview> => codingFetchJson(`${path(run)}/review`, { signal });
-export const controlRun = (run: string, kind: ControlRecord["kind"], data: ControlRequest): Promise<ControlRecord> => codingFetchJson(`${path(run)}/${kind}`, codingJsonInit("POST", data));
-export const createWorktree = (project: number, ref: string, requestId: string): Promise<ProjectWorkspace> => codingFetchJson(`/projects/${project}/workspaces/worktree`, codingJsonInit("POST", { ref, request_id: requestId }));
-export const cleanupWorktree = (project: number, workspace: number): Promise<ProjectWorkspace> => codingFetchJson(`/projects/${project}/workspaces/${workspace}/cleanup`, codingJsonInit("POST", {}));
+export const controlRun = (run: string, kind: RunControlKind, data: ControlRequest): Promise<ControlRecord> => codingFetchJson(`${path(run)}/${kind}`, codingJsonInit("POST", data));

@@ -366,6 +366,7 @@ export interface SummarizeResult {
 export interface Project {
   id: number;
   name: string;
+  pinned_at?: string | null;
   root_path: string;
   language: string | null;
   framework: string | null;
@@ -546,69 +547,6 @@ export interface ProjectStats {
   total: number;
   binary: number;
   by_language: Record<string, number>;
-}
-
-// ============ 第三阶段 M6：多步任务 ============
-
-export type AgentTaskStatus =
-  | "plan_draft"
-  | "plan_approved"
-  | "planned"
-  | "waiting_approval"
-  | "paused"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
-
-export type AgentStepStatus =
-  | "planned"
-  | "waiting_approval"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "skipped"
-  | "cancelled";
-
-export interface AgentTaskStep {
-  id: number;
-  task_id: number;
-  ordinal: number;
-  title: string;
-  tool_name: string | null;
-  status: AgentStepStatus;
-  tool_call_id: number | null;
-  input_json: Record<string, unknown> | null;
-  output_json: Record<string, unknown> | null;
-  error_message: string | null;
-  started_at: string | null;
-  finished_at: string | null;
-  created_at: string;
-}
-
-export interface AgentEvidence {
-  id: number;
-  task_id: number;
-  step_id: number | null;
-  kind: "tool_output" | "error" | "note" | "report";
-  title: string;
-  content_md: string;
-  meta_json: Record<string, unknown> | null;
-  created_at: string;
-}
-
-export interface AgentTask {
-  id: number;
-  session_id: number | null;
-  title: string;
-  goal: string | null;
-  status: AgentTaskStatus;
-  plan_json: Record<string, unknown> | null;
-  final_report_md: string | null;
-  created_at: string;
-  updated_at: string;
-  steps: AgentTaskStep[];
-  evidence: AgentEvidence[];
 }
 
 // ============ 第三阶段 M4：文档工作台 ============

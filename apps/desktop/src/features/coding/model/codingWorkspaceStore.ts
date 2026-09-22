@@ -1,7 +1,7 @@
 /**
  * v0.8.0 W1 · Coding 工作台 store
  *
- * 模块级响应式单例（延续 stores/health.ts 惯例，无 pinia）：
+ * 模块级响应式单例，无 pinia：
  * 侧栏/首页/任务页共享项目树、模型能力与选择状态；API 只在 store 与
  * features/coding/api 内发生，组件经 props 注入本 store（默认单例）。
  *
@@ -9,8 +9,8 @@
  * （对齐 App.vue contextSeq 范式）；切换项目只改选择，不整页重置树。
  */
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
-import { setLocalProjectContext } from "../../../services/localExecutor";
-import { getHealth, getRuntimeCapabilities } from "../../../api";
+import { checkLocalExecutorHealth, setLocalProjectContext } from "../../../services/localExecutor";
+import { getRuntimeCapabilities } from "../../../api";
 import {
   ensureCodingRootWorkspace,
   fetchCodingBranches,
@@ -60,6 +60,8 @@ export interface CodingWorkspaceStore {
   selectedThread: ComputedRef<CodingThreadSummary | null>;
   bootstrap: () => Promise<void>;
   refresh: () => Promise<void>;
+  removeDeletedProject: (projectId: number) => void;
+  removeDeletedThread: (threadId: number) => void;
   selectProject: (projectId: number) => void;
   selectWorkspace: (workspaceId: number) => void;
   selectBranch: (branchName: string) => Promise<void>;
@@ -78,10 +80,7 @@ const defaultFetchers: CodingWorkspaceFetchers = {
   workspaces: fetchCodingWorkspaces,
   threads: fetchCodingThreads,
   modelProfiles: fetchCodingModelProfiles,
-  health: async () => {
-    await getHealth();
-    return true;
-  },
+  health: checkLocalExecutorHealth,
   createThread: createCodingThread,
   ensureRootWorkspace: ensureCodingRootWorkspace,
   branches: fetchCodingBranches,
@@ -203,12 +202,22 @@ export function createCodingWorkspaceStore(
 
   /** 载入首个可用工作区作为默认选择（保持既有选择优先） */
   function applyDefaultSelection() {
+    if (selectedThreadId.value !== null && !selectedThread.value) {
+      selectedThreadId.value = null;
+    }
+    if (pendingFirstTurn.value && !Object.values(threadsByProject.value).some(
+      (threads) => threads.some((thread) => thread.id === pendingFirstTurn.value?.threadId)
+    )) pendingFirstTurn.value = null;
     if (selectedProjectId.value === null || !projectExists(selectedProjectId.value)) {
       selectedProjectId.value = projects.value[0]?.id ?? null;
       selectedWorkspaceId.value = null;
     }
     const projectId = selectedProjectId.value;
-    if (projectId === null) return;
+    if (projectId === null) {
+      selectedThreadId.value = null;
+      selectedBranchName.value = null;
+      return;
+    }
     const workspaces = workspacesByProject.value[projectId] ?? [];
     const current = workspaces.find((workspace) => workspace.id === selectedWorkspaceId.value);
     if (!current) {
@@ -246,7 +255,9 @@ export function createCodingWorkspaceStore(
         source.modelProfiles(),
       ]);
       if (mine !== loadSeq) return;
-      projects.value = projectList;
+      projects.value = [...projectList].sort((left, right) =>
+        (right.pinnedAt ?? "").localeCompare(left.pinnedAt ?? "")
+      );
       modelProfiles.value = profiles;
       // v0.9.0 H1-A：能力位不阻塞首页状态机（真实网络请求），单独尽力获取；
       // 失败/未提供时保持 null，权限高级选项不可选（不在前端扩大授权）。
@@ -325,6 +336,26 @@ export function createCodingWorkspaceStore(
 
   async function refresh(): Promise<void> {
     return load();
+  }
+
+  /** 删除成功后先清理本地状态，避免刷新失败或旧响应让记录重新出现。 */
+  function removeDeletedThread(threadId: number): void {
+    ++loadSeq;
+    threadsByProject.value = Object.fromEntries(Object.entries(threadsByProject.value).map(
+      ([id, threads]) => [id, threads.filter((thread) => thread.id !== threadId)]
+    ));
+    applyDefaultSelection();
+    loadPhase.value = "ready";
+  }
+
+  function removeDeletedProject(projectId: number): void {
+    ++loadSeq;
+    projects.value = projects.value.filter((project) => project.id !== projectId);
+    delete workspacesByProject.value[projectId];
+    delete branchesByProject.value[projectId];
+    delete threadsByProject.value[projectId];
+    applyDefaultSelection();
+    loadPhase.value = "ready";
   }
 
   function selectProject(projectId: number): void {
@@ -529,6 +560,8 @@ export function createCodingWorkspaceStore(
     selectedThread,
     bootstrap,
     refresh,
+    removeDeletedProject,
+    removeDeletedThread,
     selectProject,
     selectWorkspace,
     selectBranch,

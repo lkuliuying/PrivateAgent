@@ -1,10 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ApiConnection } from "../api/tauri";
 import { getConnectionProfile } from "./connectionProfile";
-import { getAccessToken } from "../auth/session";
+import { getWorkspaceAccessToken } from "../auth/session";
 import { requestPrivateRuntime } from "./privateTransport";
 
-type LocalConnection = ApiConnection | { transport: "stdio"; protocol: 2 };
+type LocalConnection = { port: number; token: string } | { transport: "stdio"; protocol: 2 };
 let connection: LocalConnection | null = null;
 let starting: Promise<void> | null = null;
 let identityQueue: Promise<void> = Promise.resolve();
@@ -14,9 +13,13 @@ export function usesLocalExecutor(): boolean {
   return isTauri() || import.meta.env.VITE_LOCAL_EXECUTOR === "true";
 }
 
-/** 本机项目、运行及授权接口不得回退到服务器文件系统。 */
+/** 项目执行与所有模型接口均由本机处理，失败时不回退服务器。 */
 export function isLocalProjectPath(path: string): boolean {
-  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|local-models|capabilities|chat)(\/|$)/.test(path);
+  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|local-models|local-memories|capabilities|workspace-search|chat)(\/|$)/.test(path) || isLocalModelPath(path);
+}
+
+export function isLocalModelPath(path: string): boolean {
+  return /^\/(model-providers|agent-model-profiles|model-settings|model-evaluation|providers|desktop\/model)(\/|$)/.test(path);
 }
 
 export async function startLocalExecutor(): Promise<void> {
@@ -24,7 +27,7 @@ export async function startLocalExecutor(): Promise<void> {
   if (starting) return starting;
   starting = (async () => {
     if (!isTauri()) throw new Error("本机文件执行需要安装桌面客户端，不能在浏览器中运行");
-    // 保留旧账号迁移检查，推理路由只由所选模型配置决定，旧手动开关不再生效。
+    // 迁移旧模型参数，推理路由只由所选模型配置决定。
     getConnectionProfile();
     const result = await invoke<LocalConnection>("start_local_executor", { modelConfig: { inference_mode: "auto" } });
     if ("transport" in result ? result.transport !== "stdio" || result.protocol !== 2
@@ -34,9 +37,7 @@ export async function startLocalExecutor(): Promise<void> {
     connection = result;
     for (let attempt = 0; attempt < 150; attempt += 1) {
       try {
-        const response = await localRequest("/health", { signal: AbortSignal.timeout(1000) });
-        const health = await response.json();
-        if (response.ok && health.mode === "desktop-local" && health.protocol === 1) return;
+        if (await checkLocalExecutorHealth(AbortSignal.timeout(1000))) return;
       } catch { /* 捆绑进程可能仍在解包或启动，按有界次数重试。 */ }
       await new Promise((resolve) => window.setTimeout(resolve, 200));
     }
@@ -66,6 +67,14 @@ function localRequest(path: string, init: RequestInit): Promise<Response> {
   return fetch(`http://127.0.0.1:${connection.port}${path}`, { ...init, headers, redirect: "error", cache: "no-store" });
 }
 
+/** 工作区就绪只检查本机运行时，避免受平台登录状态或服务器故障影响。 */
+export async function checkLocalExecutorHealth(signal = AbortSignal.timeout(5000)): Promise<boolean> {
+  const response = await localRequest("/health", { signal });
+  if (!response.ok) return false;
+  const health = await response.json();
+  return health?.mode === "desktop-local" && health.protocol === 1;
+}
+
 export async function fetchLocalProject(path: string, init: RequestInit): Promise<Response> {
   if (!isLocalProjectPath(new URL(path, "http://localhost").pathname)) throw new Error("无效的本机项目接口");
   // 切换项目的撤权必须先于后续创建任务、授权与工具审批请求完成。
@@ -75,7 +84,7 @@ export async function fetchLocalProject(path: string, init: RequestInit): Promis
 
 export function setLocalProjectContext(projectId: number | null): Promise<void> {
   if (!usesLocalExecutor() || !connection) return Promise.resolve();
-  const token = getAccessToken();
+  const token = getWorkspaceAccessToken();
   if (!token) return Promise.resolve();
   const operation = async () => {
     const result = await localRequest("/projects/context", { method: "POST",
@@ -87,22 +96,28 @@ export function setLocalProjectContext(projectId: number | null): Promise<void> 
   return projectContextQueue;
 }
 
-function queueIdentity(operation: () => Promise<void>): Promise<void> {
+function queueIdentity<T>(operation: () => Promise<T>): Promise<T> {
   const current = identityQueue.then(operation, operation);
-  identityQueue = current.catch(() => undefined);
+  identityQueue = current.then(() => undefined, () => undefined);
   return current;
 }
 
-export function bindLocalIdentity(token: string): Promise<void> {
-  if (!usesLocalExecutor()) return Promise.resolve();
+export function bindLocalAccess(): Promise<string> {
+  if (!usesLocalExecutor()) return Promise.reject(new Error("使用 API Key 需要桌面客户端"));
   return queueIdentity(async () => {
-    const response = await localRequest("/identity", {
-      method: "POST", headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(20000),
+    // 等待旧项目撤权结束后恢复身份；旧会话失败不应永久阻断新会话。
+    await projectContextQueue.catch(() => undefined);
+    const response = await localRequest("/identity/local", {
+      method: "POST", signal: AbortSignal.timeout(20000),
     });
-    if (!response.ok) {
-      const data = await response.json().catch(() => null);
-      throw new Error(typeof data?.detail === "string" ? data.detail : "无法绑定本机账号，请重试");
+    const data = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(typeof data?.detail === "string" ? data.detail : "无法打开本机工作区，请重试");
+    if (data?.ready !== true || typeof data.access_token !== "string"
+        || !/^local-session:[A-Za-z0-9_-]{43}$/.test(data.access_token)) {
+      throw new Error("本机使用凭证无效，请升级客户端后重试");
     }
+    projectContextQueue = Promise.resolve();
+    return data.access_token;
   });
 }
 

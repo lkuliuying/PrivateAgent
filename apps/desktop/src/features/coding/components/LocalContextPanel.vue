@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import type { ContextBudgetResponse } from "../../../api";
 import { useNotifications } from "../../../stores/notifications";
+import SessionMemoryPanel from "./SessionMemoryPanel.vue";
 import { compactSessionContext, fetchSessionBudget, fetchSessionContext, setInstructionTrust, type ContextState } from "../api/context";
 
 const props = defineProps<{ sessionId: number; revision?: number }>();
@@ -104,8 +105,13 @@ async function trust() {
         <dt>本次输入估算</dt><dd>{{ budget.estimated_input_tokens?.toLocaleString() ?? "尚未组装" }} tokens</dd>
         <dt>最近供应商实测</dt><dd>{{ budget.source === 'provider_usage' ? budget.used_tokens.toLocaleString() : "未知" }} tokens</dd>
         <dt>输入预算 / 输出预留</dt><dd>{{ budget.input_budget_tokens ?? "未知" }} / {{ budget.reserved_output_tokens }} tokens</dd>
+        <dt>自动压缩阈值</dt><dd>{{ budget.auto_compact_threshold_tokens?.toLocaleString() ?? "尚未组装" }} tokens</dd>
         <dt>压缩状态</dt><dd>{{ state.pending ? "等待安全请求边界" : budget.compaction_state === 'failed' ? "失败，原历史保留" : state.checkpoint ? "已提交检查点" : "尚未压缩" }}</dd>
+        <template v-if="state.checkpoint">
+          <dt>历史保留方式</dt><dd>{{ state.checkpoint.summary_strategy === 'model' ? "工作摘要与事实索引" : "事实索引" }} · 原文可续读</dd>
+        </template>
       </dl>
+      <p v-if="state.checkpoint?.summary_fallback_reason">本次未采用工作摘要，已保留事实索引和原始历史。</p>
       <p v-if="state.compaction_error" role="alert">{{ state.compaction_error }}</p>
       <p v-if="state.loop_budget">模型 {{ state.loop_budget.model_requests }}/{{ state.loop_budget.max_model_requests }} · 工具 {{ state.loop_budget.tool_calls }}/{{ state.loop_budget.max_tool_calls }}<br>
         有效执行 {{ state.loop_budget.active_seconds.toFixed(1) }} 秒 · 等待审批 {{ state.loop_budget.approval_wait_seconds.toFixed(1) }} 秒<br>
@@ -113,6 +119,7 @@ async function trust() {
       <button class="pa-btn pa-btn--subtle" :disabled="busy || !!state.pending" @click="compact">{{ state.pending ? "压缩已排队" : busy ? "处理中…" : "压缩历史" }}</button>
     </template>
   </section>
+  <SessionMemoryPanel :session-id="sessionId" :revision="revision" />
 </template>
 
 <style scoped>

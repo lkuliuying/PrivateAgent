@@ -14,7 +14,8 @@ export interface ContextState {
   trusted: boolean;
   sources: InstructionSource[];
   active_sources: InstructionSource[];
-  checkpoint: { id: string; state: string; completed_at: string; through_ordinal: number } | null;
+  checkpoint: { id: string; state: string; completed_at: string; through_ordinal: number;
+    summary_strategy?: "model" | "extractive" | null; summary_fallback_reason?: string | null } | null;
   pending: { id: string; state: string } | null;
   compaction_error: string | null;
   loop_budget: { model_requests: number; max_model_requests: number; tool_calls: number; max_tool_calls: number;

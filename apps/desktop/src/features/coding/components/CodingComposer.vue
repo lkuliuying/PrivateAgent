@@ -5,21 +5,21 @@
  * 多行输入器：Enter 发送/Shift+Enter 换行；`@` 项目文件发现（经注入的
  * searchFiles，API 不进组件）；`/` 命令模板；权限三模式/模型 profile/
  * 推理强度选择（v0.7.0 冻结契约）；上下文 chip；草稿按 thread 本地保存
- * （不跨项目串线）；发送/停止/等待审批禁用态。
+ * （不跨项目串线）；发送/暂停/等待审批禁用态。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import {
   PhAt,
   PhCommand,
-  PhMicrophone,
   PhPaperPlaneRight,
   PhPlus,
-  PhProhibit,
+  PhPause,
   PhShieldCheck,
-  PhWaveform,
   PhX,
 } from "@phosphor-icons/vue";
 import PaSelect from "../../../design/PaSelect.vue";
+import SkillPicker from "./SkillPicker.vue";
+import ModelStrengthPicker from "./ModelStrengthPicker.vue";
 import ContextUsageRing from "../../agent/ContextUsageRing.vue";
 import type { CodingFileHint } from "../model/runContracts";
 import { PERMISSION_MODE_META } from "../model/runContracts";
@@ -39,7 +39,9 @@ const props = withDefaults(
     store?: CodingWorkspaceStore;
     threadId?: number | null;
     busy?: boolean;
-    stopping?: boolean;
+    pausing?: boolean;
+    paused?: boolean;
+    pauseDisabled?: boolean;
     running?: boolean;
     previewMode?: boolean;
     searchFiles?: (query: string) => Promise<CodingFileHint[]>;
@@ -55,13 +57,16 @@ const props = withDefaults(
      * v0.9.0 H1-B（计划 §5.5/§5.6）：创建失败留在草稿态——父层把未成功的
      * 输入回填（不丢失输入）；引用变化即应用。
      */
-    restoreRequest?: { message: string; seq: number } | null;
+    restoreRequest?: { message: string; append?: boolean; seq: number; collaborationMode?: "default" | "plan" } | null;
+    activeCollaborationMode?: "default" | "plan";
   }>(),
   {
     store: undefined,
     threadId: null,
     busy: false,
-    stopping: false,
+    pausing: false,
+    paused: false,
+    pauseDisabled: false,
     running: false,
     previewMode: false,
     searchFiles: undefined,
@@ -73,11 +78,13 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   send: [payload: CodingComposerSendPayload];
-  stop: [];
+  pause: [];
 }>();
 
 // ============ 文本与草稿（按 thread 保存，切换任务互不串线） ============
 const text = ref("");
+const sending = ref(false);
+const skillsOpen = ref(false);
 const chips = ref<CodingFileHint[]>([]);
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const attaching = ref(false);
@@ -181,6 +188,7 @@ function onInput(event: Event): void {
   const mention = detectAtMention(target.value, caret);
   atQuery.value = mention;
   slashQuery.value = /^\/([\w-]*)$/.exec(target.value.slice(0, caret)) ? target.value.slice(1, caret) : null;
+  skillsOpen.value = false;
   if (mention !== null && props.searchFiles) {
     if (atDebounce !== null) window.clearTimeout(atDebounce);
     atDebounce = window.setTimeout(() => {
@@ -252,6 +260,8 @@ function removeChip(relPath: string): void {
 
 // ============ / 命令模板 ============
 const COMMAND_TEMPLATES: Array<{ cmd: string; label: string; prompt: string }> = [
+  { cmd: "/skill", label: "选择当前项目已启用的技能", prompt: "" },
+  { cmd: "/plan", label: "先制定实施计划", prompt: "" },
   { cmd: "/explain", label: "解释项目结构", prompt: "梳理当前项目的目录结构，并总结每个主要模块的职责与依赖关系。" },
   { cmd: "/fix-test", label: "修复失败测试", prompt: "找出当前失败的测试，定位原因并修复，最后运行相关测试验证。" },
   { cmd: "/review", label: "审查最近改动", prompt: "审查最近一次提交的改动，指出潜在风险与改进建议。" },
@@ -262,14 +272,30 @@ const slashQuery = ref<string | null>(null);
 const slashMatches = computed(() => {
   const query = slashQuery.value;
   if (query === null) return [];
-  return COMMAND_TEMPLATES.filter((item) => item.cmd.startsWith(`/${query}`));
+  return COMMAND_TEMPLATES.filter((item) => item.cmd.startsWith(`/${query}`) && (item.cmd !== "/plan" || planningSupported.value));
 });
 
-function applyCommand(prompt: string): void {
+function applyCommand(prompt: string, command?: string): void {
+  if (command === "/skill") {
+    text.value = text.value.replace(/^\/[\w-]*/, "/skill");
+    slashQuery.value = null;
+    skillsOpen.value = true;
+    return;
+  }
+  if (command === "/plan") collaborationMode.value = "plan";
   text.value = prompt;
   slashQuery.value = null;
   inputEl.value?.focus();
 }
+
+function chooseSkill(id: string): void {
+  text.value = text.value.replace(/^\/skill\b\s*/, "");
+  text.value = [`$${id}`, text.value].filter(Boolean).join(" ");
+  skillsOpen.value = false;
+  inputEl.value?.focus();
+}
+
+watch(() => [props.threadId, props.store?.selectedProjectId.value], () => { skillsOpen.value = false; });
 
 // ============ 权限/模型/推理（v0.7.0 冻结契约） ============
 // v0.9.0 H1（计划 §3.1）：产品默认权限为 confirm（不是 workspace/readonly）；
@@ -293,8 +319,16 @@ function loadPermissionMode(): string {
 }
 
 const permissionMode = ref(loadPermissionMode());
+const collaborationMode = ref<"default" | "plan">("default");
+const planningSupported = computed(() => props.store?.capabilities.value?.coding_planning_contract_version === "1.0"
+  && props.store?.capabilities.value?.coding_recovery_contract_version === "1.0");
+watch([() => props.activeCollaborationMode, planningSupported], ([mode, supported]) => {
+  if (mode && supported) collaborationMode.value = mode;
+}, { immediate: true });
+watch(planningSupported, (supported) => { if (!supported) collaborationMode.value = "default"; });
 watch(() => props.threadId, () => {
   permissionMode.value = loadPermissionMode();
+  collaborationMode.value = "default";
 });
 watch(permissionMode, () => {
   if (props.previewMode) return;
@@ -419,14 +453,12 @@ const profileOptions = computed(() => [
   {
     value: "",
     label: defaultProfile.value
-      ? `默认 · ${defaultProfile.value.modelName?.trim() || defaultProfile.value.id}`
-      : "默认模型",
+      ? defaultProfile.value.modelName?.trim() || "未配置模型"
+      : "未配置模型",
   },
   ...profiles.value.map((profile) => ({
     value: profile.id,
-    label: profile.providerName
-      ? `${profile.providerName} / ${profile.modelName?.trim() || profile.id}`
-      : profile.modelName?.trim() || profile.id,
+    label: profile.modelName?.trim() || "未配置模型",
   })),
 ]);
 
@@ -436,23 +468,7 @@ const selectedProfile = computed(
     defaultProfile.value
 );
 
-const effortOptions = computed(() => {
-  const declared = selectedProfile.value?.reasoningEfforts;
-  const efforts = declared?.length ? declared : ["low", "medium", "high", "max"];
-  const labels: Record<string, string> = {
-    none: "不启用推理",
-    minimal: "最低",
-    low: "低",
-    medium: "中",
-    high: "高",
-    xhigh: "最高",
-    max: "最高",
-  };
-  return [
-    { value: "", label: "默认强度" },
-    ...efforts.map((item) => ({ value: item, label: labels[item] ?? "自定义强度" })),
-  ];
-});
+const selectedModelLabel = computed(() => selectedProfile.value?.modelName?.trim() || "未配置模型");
 
 watch(profiles, () => {
   if (modelProfileId.value && !profiles.value.some((p) => p.id === modelProfileId.value)) {
@@ -462,14 +478,14 @@ watch(profiles, () => {
 });
 
 watch(selectedProfile, () => {
-  const values = effortOptions.value.map((item) => item.value);
+  const values = selectedProfile.value?.reasoningEfforts ?? [];
   if (reasoningEffort.value && !values.includes(reasoningEffort.value)) {
     reasoningEffort.value = "";
   }
 });
 
-// ============ 发送/停止 ============
-const disabled = computed(() => props.busy || props.previewMode || !buildMessage().trim());
+// ============ 发送/暂停 ============
+const disabled = computed(() => sending.value || props.busy || props.previewMode || props.running || !buildMessage().trim());
 
 function buildMessage(): string {
   const chipLines = chips.value.map((chip) => `@${chip.relPath}`);
@@ -478,27 +494,42 @@ function buildMessage(): string {
 
 async function send(): Promise<void> {
   if (disabled.value) return;
+  if (/^\/skill\s*$/.test(text.value)) {
+    applyCommand("", "/skill");
+    return;
+  }
+  if (planningSupported.value && /^\/plan(?:\s|$)/.test(text.value.trim())) {
+    collaborationMode.value = "plan";
+    text.value = text.value.trim().replace(/^\/plan\s*/, "");
+    if (!buildMessage().trim()) return;
+  }
   const payload: CodingComposerSendPayload = {
     message: buildMessage(),
     permissionMode: permissionMode.value,
-    // “默认”也是一个确定的 Profile。提交实际 ID，避免后端在默认项缺失或
+    ...(planningSupported.value ? { collaborationMode: collaborationMode.value } : {}),
+    // 提交实际 Profile ID，避免后端在默认项缺失或
     // 旧配置残留时退回到与界面显示不一致的 legacy 模型。
     modelProfileId: selectedProfile.value?.id ?? null,
     reasoningEffort: reasoningEffort.value || null,
   };
   // v0.9.0 H1-A：发送前守卫（full_access 二次确认/授予）。返回 false 时
   // 不发送、不清空草稿，避免丢失用户输入。
-  if (props.beforeSend) {
-    const proceed = await props.beforeSend(payload);
-    if (!proceed) return;
-    await refreshGrantState();
-  }
-  emit("send", payload);
-  resetHistoryNavigation();
-  text.value = "";
-  chips.value = [];
-  atQuery.value = null;
-  slashQuery.value = null;
+  sending.value = true;
+  try {
+    if (props.beforeSend) {
+      const proceed = await props.beforeSend(payload);
+      if (!proceed) return;
+      await refreshGrantState();
+    }
+    emit("send", payload);
+    if (buildMessage() === payload.message) {
+      resetHistoryNavigation();
+      text.value = "";
+      chips.value = [];
+      atQuery.value = null;
+      slashQuery.value = null;
+    }
+  } finally { sending.value = false; }
 }
 
 function onPrimaryAction(): void {
@@ -521,7 +552,7 @@ function applySerializedMessage(message: string, persistAsDraft: boolean): void 
       const relPath = chipMatch[1];
       const name = relPath.split(/[\\/]/).pop() ?? relPath;
       restoredChips.push({ relPath, name, language: null });
-    } else if (line.trim()) {
+    } else {
       textLines.push(line);
     }
   }
@@ -546,8 +577,13 @@ watch(
   () => props.restoreRequest,
   (request) => {
     if (!request) return;
+    if (request.collaborationMode && planningSupported.value) collaborationMode.value = request.collaborationMode;
+    if (request.collaborationMode === "plan" && !request.message) {
+      inputEl.value?.focus();
+      return;
+    }
     resetHistoryNavigation();
-    applySerializedMessage(request.message, true);
+    applySerializedMessage(request.append ? [buildMessage(), request.message].filter(Boolean).join("\n\n") : request.message, true);
   }
 );
 
@@ -621,6 +657,10 @@ function navigateInputHistory(event: KeyboardEvent): boolean {
 }
 
 function onKeydown(event: KeyboardEvent): void {
+  if (event.key === "Escape") {
+    skillsOpen.value = false;
+    slashQuery.value = null;
+  }
   if (atQuery.value !== null && atHints.value.length) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
@@ -672,9 +712,10 @@ onBeforeUnmount(() => {
       class="composer-input"
       data-testid="coding-composer-input"
       rows="2"
-      :disabled="busy || previewMode"
+      :disabled="previewMode || busy && !running"
+      maxlength="32000"
       aria-label="任务输入"
-      :placeholder="previewMode ? '预览模式' : busy ? '任务执行中…' : '随心输入'"
+      :placeholder="previewMode ? '预览模式' : paused ? '任务已暂停，可编辑草稿…' : running ? '任务执行中，可编辑草稿…' : '描述你希望完成的任务'"
       @input="onInput"
       @keydown="onKeydown"
     />
@@ -720,7 +761,7 @@ onBeforeUnmount(() => {
         role="option"
         :aria-selected="false"
         :data-testid="`composer-slash-${item.cmd.slice(1)}`"
-        @click="applyCommand(item.prompt)"
+        @click="applyCommand(item.prompt, item.cmd)"
       >
         <PhCommand :size="12" aria-hidden="true" />
         <span class="mono pop-cmd">{{ item.cmd }}</span>
@@ -728,6 +769,11 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
+    <div v-if="skillsOpen && !previewMode" class="mention-pop skill-pop" aria-label="选择技能" data-testid="composer-skill-pop" @keydown.esc.stop="skillsOpen = false; inputEl?.focus()">
+      <SkillPicker v-if="store?.selectedProjectId.value" :project-id="store.selectedProjectId.value" @choose="chooseSkill" />
+      <p v-else class="pop-hint">请先选择项目，再使用 /skill。</p>
+      <button type="button" class="pa-btn pa-btn--ghost" @click="skillsOpen = false; inputEl?.focus()">关闭</button>
+    </div>
     <div class="composer-toolbar">
       <div class="toolbar-group toolbar-left">
         <button
@@ -741,6 +787,20 @@ onBeforeUnmount(() => {
         >
           <PhPlus :size="20" aria-hidden="true" />
         </button>
+
+        <label v-if="planningSupported" class="toolbar-select">
+          <span class="visually-hidden">协作模式</span>
+          <PaSelect
+            :model-value="collaborationMode"
+            :options="[{ value: 'default', label: '执行' }, { value: 'plan', label: '规划' }]"
+            size="sm"
+            aria-label="协作模式"
+            data-testid="composer-collaboration-mode"
+            :disabled="busy || previewMode"
+            title="规划模式先调研和澄清，制定计划后再选择执行"
+            @update:model-value="collaborationMode = $event === 'plan' ? 'plan' : 'default'"
+          />
+        </label>
 
         <label class="toolbar-select permission-select">
           <span class="visually-hidden">权限</span>
@@ -771,70 +831,57 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="toolbar-group toolbar-right">
-        <label class="toolbar-select model-select">
-          <span class="visually-hidden">模型</span>
-          <PaSelect
-            :model-value="modelProfileId"
-            :options="profileOptions"
-            :disabled="!profiles.length"
-            size="sm"
-            data-testid="composer-model"
-            aria-label="模型"
-            @update:model-value="modelProfileId = String($event)"
+        <div class="composer-model-controls" aria-label="模型与上下文">
+          <ContextUsageRing
+            class="composer-context-ring"
+            :session-id="threadId"
+            :model-profile-id="selectedProfile?.id ?? null"
+            :context-tokens="selectedProfile?.contextTokens ?? null"
+            :enabled="contextBudgetEnabled"
           />
-        </label>
-        <label class="toolbar-select effort-select">
-          <span class="visually-hidden">推理强度</span>
-          <PaSelect
-            :model-value="reasoningEffort"
-            :options="effortOptions"
+          <label class="toolbar-select model-select" :title="selectedModelLabel" :class="{ 'is-disabled': !profiles.length }">
+            <span class="visually-hidden">模型</span>
+            <span class="model-selection-label" aria-hidden="true">{{ selectedModelLabel }}</span>
+            <PaSelect
+              :model-value="modelProfileId"
+              :options="profileOptions"
+              :disabled="!profiles.length"
+              size="sm"
+              data-testid="composer-model"
+              aria-label="模型"
+              @update:model-value="modelProfileId = String($event)"
+            />
+          </label>
+          <ModelStrengthPicker
+            v-model="reasoningEffort"
+            :model-label="selectedModelLabel"
+            :efforts="selectedProfile?.reasoningEfforts"
             :disabled="!selectedProfile"
-            size="sm"
-            data-testid="composer-effort"
-            aria-label="推理强度"
-            @update:model-value="reasoningEffort = String($event)"
           />
-        </label>
-        <ContextUsageRing
-          v-if="threadId !== null"
-          class="composer-context-ring"
-          :session-id="threadId"
-          :model-profile-id="selectedProfile?.id ?? null"
-          :enabled="contextBudgetEnabled"
-        />
-        <button
-          type="button"
-          class="composer-icon-btn voice-input"
-          disabled
-          title="语音输入将在后续版本开放"
-          aria-label="语音输入暂不可用"
-        >
-          <PhMicrophone :size="20" aria-hidden="true" />
-        </button>
+        </div>
         <button
           v-if="!running"
           type="button"
           class="pa-btn pa-btn--primary pa-btn--sm composer-send"
           data-testid="coding-composer-send"
-          :disabled="busy || previewMode"
+          :disabled="disabled"
           :title="buildMessage().trim() ? '发送任务' : '输入内容后发送'"
           :aria-label="buildMessage().trim() ? '发送任务' : '输入内容后发送'"
           @click="onPrimaryAction"
         >
-          <PhPaperPlaneRight v-if="buildMessage().trim()" :size="18" weight="fill" aria-hidden="true" />
-          <PhWaveform v-else :size="20" weight="bold" aria-hidden="true" />
+          <PhPaperPlaneRight :size="18" weight="fill" aria-hidden="true" />
         </button>
         <button
-          v-else
+          v-if="running && !paused"
           type="button"
           class="pa-btn pa-btn--ghost pa-btn--sm composer-stop"
-          data-testid="coding-composer-stop"
-          :disabled="stopping"
-          :title="stopping ? '正在停止任务' : '停止任务'"
-          :aria-label="stopping ? '正在停止任务' : '停止任务'"
-          @click="emit('stop')"
+          data-testid="coding-composer-pause"
+          :disabled="pausing || pauseDisabled || previewMode"
+          :title="pausing ? '正在暂停任务' : '暂停任务'"
+          :aria-label="pausing ? '正在暂停任务' : '暂停任务'"
+          @click="emit('pause')"
         >
-          <PhProhibit :size="19" weight="bold" aria-hidden="true" />
+          <PhPause :size="19" weight="fill" aria-hidden="true" />
         </button>
       </div>
       <span class="visually-hidden">Enter 发送，Shift+Enter 换行，上下键浏览历史输入</span>
@@ -843,6 +890,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.skill-pop { padding: var(--space-2); }
 .coding-composer {
   position: relative;
   display: flex;
@@ -851,15 +899,15 @@ onBeforeUnmount(() => {
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4) var(--space-2);
-  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
-  border-radius: calc(var(--radius-lg) + var(--space-2));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
   box-shadow: var(--shadow);
   transition: border-color var(--pa-motion-fast) var(--ease),
     box-shadow var(--pa-motion-fast) var(--ease);
 }
 .coding-composer:focus-within {
-  border-color: var(--color-border-strong);
+  border-color: var(--color-accent);
   box-shadow: var(--shadow), var(--pa-input-ring);
 }
 .chip-row {
@@ -917,11 +965,12 @@ onBeforeUnmount(() => {
   color: var(--color-fg-subtle);
 }
 .composer-input::placeholder {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
   font-size: var(--text-lg);
 }
 .composer-toolbar {
   display: flex;
+  flex-wrap: wrap;
   min-width: 0;
   align-items: center;
   justify-content: space-between;
@@ -936,6 +985,8 @@ onBeforeUnmount(() => {
 .toolbar-right {
   justify-content: flex-end;
   margin-left: auto;
+  max-width: 100%;
+  flex-wrap: wrap;
 }
 .composer-icon-btn {
   display: inline-flex;
@@ -992,12 +1043,13 @@ onBeforeUnmount(() => {
 .permission-select :deep(.pa-select) {
   width: 118px;
 }
-.model-select :deep(.pa-select) {
-  width: 148px;
-}
-.effort-select :deep(.pa-select) {
-  width: 94px;
-}
+.composer-model-controls { display: inline-flex; align-items: center; gap: var(--space-1); min-width: 0; max-width: 100%; }
+.model-select { position: relative; max-width: min(240px, 40vw); padding: 4px; border-radius: var(--radius-sm); color: var(--color-fg); }
+.model-select:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.model-select:hover { background: var(--color-surface-hover); }
+.model-select.is-disabled { color: var(--color-fg-faint); }
+.model-selection-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; }
+.model-select :deep(.pa-select) { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
 .composer-send,
 .composer-stop {
   display: inline-flex;
@@ -1011,13 +1063,13 @@ onBeforeUnmount(() => {
   padding: 0;
   border: 0;
   border-radius: var(--radius-full);
-  background: var(--color-fg);
-  color: var(--color-surface);
+  background: var(--pa-btn-primary-bg);
+  color: var(--pa-btn-primary-fg);
   box-shadow: none;
 }
 .composer-send:hover:not(:disabled),
 .composer-stop:hover:not(:disabled) {
-  background: var(--color-fg-muted);
+  background: var(--pa-btn-primary-bg-hover);
   color: var(--color-surface);
 }
 .composer-send:disabled,
@@ -1115,9 +1167,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 @media (max-width: 1080px) {
-  .model-select :deep(.pa-select) {
-    width: 126px;
-  }
   .permission-select :deep(.pa-select) {
     width: 104px;
   }

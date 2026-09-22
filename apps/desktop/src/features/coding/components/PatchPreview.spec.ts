@@ -18,14 +18,14 @@ describe("完整补丁分页", () => {
     expect(fetchPatchPage).not.toHaveBeenCalled();
     await wrapper.get("select").setValue("file");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("abc");
+    expect(wrapper.get(".diff-lines").text()).toBe("abc");
     await wrapper.findAll("button").find(item => item.text() === "下一页")!.trigger("click");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("def");
+    expect(wrapper.get(".diff-lines").text()).toBe("def");
     expect(wrapper.findAll("button").find(item => item.text() === "下一页")!.attributes("disabled")).toBeDefined();
     await wrapper.findAll("button").find(item => item.text() === "上一页")!.trigger("click");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("abc");
+    expect(wrapper.get(".diff-lines").text()).toBe("abc");
     wrapper.unmount();
   });
   it("切换任务会取消旧请求并忽略迟到内容", async () => {
@@ -39,7 +39,7 @@ describe("完整补丁分页", () => {
     resolve({ content: "old", offset: 0, next_offset: null, total_chars: 3, preview_sha256: "sha" });
     await flushPromises();
     expect(wrapper.text()).not.toContain("old");
-    expect(wrapper.find("pre").exists()).toBe(false);
+    expect(wrapper.find(".diff-lines").exists()).toBe(false);
     wrapper.unmount();
   });
   it("翻页失败保留当前位置，重试成功后才更新页历史", async () => {
@@ -54,15 +54,15 @@ describe("完整补丁分页", () => {
     await flushPromises();
     await button("下一页").trigger("click");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("abc");
+    expect(wrapper.get(".diff-lines").text()).toBe("abc");
     expect(button("上一页").attributes("disabled")).toBeDefined();
     await button("重试").trigger("click");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("def");
+    expect(wrapper.get(".diff-lines").text()).toBe("def");
     expect(vi.mocked(fetchPatchPage).mock.calls[2]![3]).toBe(3);
     await button("上一页").trigger("click");
     await flushPromises();
-    expect(wrapper.get("pre").text()).toBe("abc");
+    expect(wrapper.get(".diff-lines").text()).toBe("abc");
     expect(button("上一页").attributes("disabled")).toBeDefined();
     wrapper.unmount();
   });

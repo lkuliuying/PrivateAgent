@@ -2,6 +2,8 @@ export type SettingsSection =
   | "current-model"
   | "provider"
   | "mcp"
+  | "memories"
+  | "appearance"
   | "profile"
   | "backup"
   | "about";
@@ -26,10 +28,12 @@ export const SETTINGS_SECTION_GROUPS: Array<{
 ];
 
 export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
-  { key: "current-model", index: "02", label: "当前模型", description: "推理与向量模型", group: "system" },
+  { key: "current-model", index: "02", label: "当前模型", description: "当前推理模型", group: "system" },
   { key: "provider", index: "03", label: "模型设置", description: "管理模型供应商与 Ollama 本地参数", group: "system" },
   { key: "mcp", index: "04", label: "MCP 外部能力", description: "联网工具与授权", group: "capabilities" },
-  { key: "profile", index: "05", label: "个人资料", description: "头像与账号信息", group: "application" },
+  { key: "memories", index: "08", label: "记忆", description: "管理跨会话偏好、项目知识与后台生成", group: "capabilities" },
+  { key: "appearance", index: "09", label: "外观", description: "壁纸、配色与主题", group: "application" },
+  { key: "profile", index: "05", label: "个人资料", description: "本机头像与称呼", group: "application" },
   { key: "backup", index: "06", label: "备份与恢复", description: "本地数据安全", group: "application" },
   { key: "about", index: "07", label: "关于与更新", description: "版本与更新", group: "application" },
 ];

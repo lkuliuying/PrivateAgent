@@ -75,10 +75,19 @@ export function parseExecutionResult(value: unknown, executionId: string): Execu
 
 export function runResultMeta(status: AgentRunStatus, outcome?: RunOutcome | null, verifying = false): { label: string; tone: string } {
   if (["queued", "paused", "interrupted"].includes(status)) return RUN_STATUS_META[status];
-  if (["created", "running", "waiting_approval"].includes(status)) {
+  if (["created", "running", "waiting_approval", "waiting_input"].includes(status)) {
     return verifying ? { label: "验证中", tone: "info" } : RUN_STATUS_META[status];
   }
   if (["cancelled", "timed_out", "limit_exceeded"].includes(status)) return RUN_STATUS_META[status];
+  const requirements = outcome?.requirements ?? [];
+  const results = outcome?.verification_results ?? [];
+  if (status === "completed" && outcome?.goal_outcome === "unknown" && outcome.unverified_items?.length
+    && requirements.some(item => item.required !== false)
+    && requirements.every(item => item.kind === "file_changed" && results.some(result =>
+      result.requirement_id === item.requirement_id && result.status === "passed" && (result.evidence_ids?.length ?? 0) > 0))
+    && results.every(item => item.status === "passed")) {
+    return { label: "修改已完成，仍有未验证项", tone: "warning" };
+  }
   switch (outcome?.goal_outcome) {
     case "answered": return { label: "已回答 / 已生成预览", tone: "neutral" };
     case "verified": return status === "completed" ? { label: "已验证完成", tone: "success" } : { label: "结果未确认", tone: "warning" };

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import LocalContextPanel from "./LocalContextPanel.vue";
 import type { ContextState } from "../api/context";
+vi.mock("./SessionMemoryPanel.vue", () => ({ default: { template: '<div />' } }));
 
 const api = vi.hoisted(() => ({ context: vi.fn(), budget: vi.fn(), compact: vi.fn(), trust: vi.fn(), confirm: vi.fn() }));
 vi.mock("../api/context", () => ({ fetchSessionContext: api.context, fetchSessionBudget: api.budget,
@@ -22,6 +23,22 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 describe("本机上下文面板", () => {
+  it("展示压缩阈值、摘要方式与回退状态", async () => {
+    api.budget.mockResolvedValue({ estimated_input_tokens: 6000, input_budget_tokens: 7000,
+      auto_compact_threshold_tokens: 6300, reserved_output_tokens: 1024, compaction_state: "compacted" });
+    api.context.mockResolvedValue({ ...state(), checkpoint: { id: "cp", state: "completed", completed_at: "today",
+      through_ordinal: 9, summary_strategy: "model", summary_fallback_reason: null } });
+    const wrapper = mount(LocalContextPanel, { props: { sessionId: 7 } });
+    await flushPromises();
+    expect(wrapper.text()).toContain("6,300 tokens");
+    expect(wrapper.text()).toContain("工作摘要与事实索引");
+    api.context.mockResolvedValue({ ...state(), checkpoint: { id: "cp", state: "completed", completed_at: "today",
+      through_ordinal: 9, summary_strategy: "extractive", summary_fallback_reason: "summary_unavailable" } });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(wrapper.text()).toContain("本次未采用工作摘要，已保留事实索引和原始历史");
+    expect(wrapper.text()).not.toContain("工作摘要与事实索引");
+    wrapper.unmount();
+  });
   it("区分估算、供应商未知、未信任规则与执行预算", async () => {
     const wrapper = mount(LocalContextPanel, { props: { sessionId: 7 } });
     await flushPromises();

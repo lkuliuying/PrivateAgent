@@ -1,5 +1,8 @@
 import { apiFetch, ensureApiBase } from "./http";
 import { usesLocalExecutor } from "../services/localExecutor";
+import { isTauri } from "@tauri-apps/api/core";
+import { getWorkspaceAccessToken } from "../auth/session";
+import { cmdClearModelProviderSecret, cmdSetModelProviderSecret } from "./tauri";
 
 export function isLocalModelEndpoint(baseUrl: string): boolean {
   try { return ["127.0.0.1", "localhost", "[::1]"].includes(new URL(baseUrl).hostname); }
@@ -16,6 +19,7 @@ export type ModelMetadataSource =
 export type ModelProviderApiFormat =
   | "ollama_chat"
   | "chat_completions"
+  | "responses"
   | "anthropic_messages";
 
 export interface ModelProviderModel {
@@ -166,14 +170,10 @@ export async function discoverModelProviderModels(input: {
   credentialReference?: string | null;
   apiKey?: string;
 }): Promise<DiscoveredModel[]> {
-  const local = usesLocalExecutor() && (input.protocol === "ollama" || isLocalModelEndpoint(input.baseUrl));
-  if (local && (input.apiKey || input.credentialReference)) {
-    throw new Error("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务");
-  }
-  const body = await requestJson<{ models: unknown }>(local ? "/local-models/discover" : "/model-providers/discover/models", {
+  const body = await requestJson<{ models: unknown }>("/model-providers/discover/models", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(local ? { protocol: input.protocol, base_url: input.baseUrl } : {
+    body: JSON.stringify({
       provider_id: input.providerId ?? null,
       protocol: input.protocol,
       base_url: input.baseUrl,
@@ -213,19 +213,16 @@ export async function discoverModelProviderModels(input: {
   });
 }
 
-/** Check saved provider credentials and model availability without enabling Coding. */
+/** 使用本机保存的凭据检查模型列表，不触发聊天生成。 */
 export async function probeModelProviderModel(
   provider: ModelProvider,
   modelId: string
 ): Promise<boolean> {
   if (!provider.enabled) throw new Error("供应商已禁用，请先启用并保存配置");
-  if (usesLocalExecutor() && (provider.protocol === "ollama" || isLocalModelEndpoint(provider.baseUrl)) && provider.apiKeyConfigured) {
-    throw new Error("本机模型暂不支持需要密钥的接口，请使用无密钥回环服务");
-  }
   if (!provider.models.some((model) => model.modelId === modelId)) {
     throw new Error("请先保存该模型配置，再测试连接");
   }
-  // 不使用表单里的未保存密钥；让服务器按供应商 ID 解析已保存的凭据。
+  // 由本机执行器按供应商 ID 解析保存的凭据。
   const models = await discoverModelProviderModels({
     providerId: provider.id,
     protocol: provider.protocol,
@@ -241,9 +238,18 @@ export async function updateModelProviderRuntimeSecret(
   providerId: string,
   secret: string
 ): Promise<void> {
+  const token = getWorkspaceAccessToken();
+  const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token ?? ""}` };
+  if (isTauri()) {
+    const { alias } = await requestJson<{ alias: string }>(
+      `/model-providers/${encodeURIComponent(providerId)}/secret-reference`, { headers }
+    );
+    if (getWorkspaceAccessToken() !== token) throw new Error("本机会话已变化或连接已结束，请重新保存模型密钥");
+    await cmdSetModelProviderSecret(alias, secret);
+  }
   await requestJson(`/model-providers/${encodeURIComponent(providerId)}/runtime-secret`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ secret }),
   });
 }
@@ -251,7 +257,39 @@ export async function updateModelProviderRuntimeSecret(
 export async function clearModelProviderRuntimeSecret(
   providerId: string
 ): Promise<void> {
+  const token = getWorkspaceAccessToken();
+  const headers = { Authorization: `Bearer ${token ?? ""}` };
+  if (isTauri()) {
+    const { alias } = await requestJson<{ alias: string }>(
+      `/model-providers/${encodeURIComponent(providerId)}/secret-reference`, { headers }
+    );
+    if (getWorkspaceAccessToken() !== token) throw new Error("本机会话已变化或连接已结束，请重新操作");
+    await cmdClearModelProviderSecret(alias);
+  }
   await requestJson(`/model-providers/${encodeURIComponent(providerId)}/runtime-secret`, {
     method: "DELETE",
+    headers,
   });
+}
+
+export interface LocalModelSettings {
+  llm_temperature: number;
+  llm_context_length: number;
+  kb_enabled_by_default: boolean;
+}
+
+async function modelSettingsPath(): Promise<string> {
+  if (usesLocalExecutor()) return "/model-settings";
+  const base = new URL(await ensureApiBase());
+  if (import.meta.env.DEV && import.meta.env.VITE_LOCAL_FULL_BACKEND === "true"
+      && ["127.0.0.1", "localhost", "[::1]"].includes(base.hostname)) return "/settings";
+  throw new Error("模型设置需要桌面客户端，请在此电脑打开客户端");
+}
+
+export async function getLocalModelSettings(): Promise<LocalModelSettings> {
+  return requestJson(await modelSettingsPath());
+}
+
+export async function saveLocalModelSettings(settings: LocalModelSettings): Promise<LocalModelSettings> {
+  return requestJson(await modelSettingsPath(), { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) });
 }
