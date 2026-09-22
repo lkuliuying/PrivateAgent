@@ -15,7 +15,8 @@
 | 上下文预算、压缩与原文续读 | [上下文设计](context-design.md) |
 | 本机记忆与用户控制 | [记忆设计](memory-design.md) |
 | 测试目录、隔离运行与验证命令 | [测试指南](testing-guide.md) |
-| 签名政策与申请资料 | [签名政策](../CODE_SIGNING_POLICY.md) · [SignPath 申请记录](signpath-application.md) |
+| GitHub Release 更新源与正式发布验收 | [1.0.0 发布操作说明](releases/v1.0.0/github-release.md) · [签名政策](../CODE_SIGNING_POLICY.md) |
+| 历史签名方案 | [SignPath 申请记录（未启用）](signpath-application.md) |
 | 本次目录整理及删除依据 | [清理记录](solutions/2026-09-20-project-cleanup.md) |
 
 项目状态记忆保留 2026-09-19 及更早日期的事实，不代表 2026-09-20 之后的代码或部署状态。当前实现以源码和对应日期的交付记录核对；外部签名、部署及安装状态需要各自证据。

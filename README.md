@@ -80,7 +80,15 @@ scripts\build-client.cmd --preview-installer --version 1.0.0
 
 默认生成未签名便携验证目录，第二条生成未签名安装器供本机验证。版本仅为参数示例，不表示已发布。构建目录包含桌面程序、`private-agent-local.exe`、`exec-host.exe`、宿主校验摘要和源码清单；便携运行须保持这些文件同目录。
 
-`build-release.bat` 现在转发到同一本机入口。底层 `build-remote-client.cjs` 保留旧桌面标识的构建兼容选项，生成的执行器也仅使用本机 API Key。两种标识的更新目标仍隔离；正式统一客户端必须显式提供独立 `--update-url`，并满足干净工作区与签名校验要求。默认和预览构建不配置更新源，不上传、不安装、不发布。
+`build-release.bat` 现在转发到同一本机入口。底层 `build-remote-client.cjs` 保留旧桌面标识的构建兼容选项，生成的执行器也仅使用本机 API Key。两种标识的更新目标仍隔离；正式统一客户端通过 `--github-repo lkuliuying/PrivateAgent` 使用 GitHub Release 更新源，并满足干净工作区与签名校验要求。该参数与自定义 `--update-url` / `--download-base-url` 互斥。默认、普通预览和独立候选构建不配置更新源；统一预览可显式传入 `--update-url` 来测试更新检查，仍不生成签名或可发布更新清单，详见[本机更新测试包](docs/releases/v1.0.0/github-release.md#本机更新测试包)。
+
+只核对正式构建配置、不签名或生成安装包：
+
+```powershell
+scripts\build-client.cmd --release --version 1.0.0 --github-repo lkuliuying/PrivateAgent --dry-run
+```
+
+正式构建去掉 `--dry-run`，仅由维护者在已有受保护签名环境中执行。更新入口为 [GitHub Release latest.json](https://github.com/lkuliuying/PrivateAgent/releases/latest/download/latest.json)，Windows 目标固定为 `unified-windows-x86_64`；草稿资产准备、只读验签和人工发布步骤见 [1.0.0 发布操作说明](docs/releases/v1.0.0/github-release.md)。构建脚本本身不上传、不安装、不发布。
 
 发布清单从明确指定的构建目录生成：
 
@@ -88,7 +96,7 @@ scripts\build-client.cmd --preview-installer --version 1.0.0
 .venv\Scripts\python.exe scripts/generate_release_manifest.py --bundle <本次构建目录> --write
 ```
 
-清单不将产物存在当作测试或签名验收通过。SignPath 工作流改用本机打包链，发布环境需设置 `PRIVATEAGENT_UPDATE_URL`；历史服务器更新脚本已删除。源码变更不会自动更新已安装副本。
+清单不将产物存在当作测试或签名验收通过。正式流程使用 Tauri 更新单签名，不依赖 SignPath 或 `PRIVATEAGENT_UPDATE_URL`。工作流仅手动触发，在验签后向已有非预发布草稿附加资产，不自动发布或设置 Latest。源码变更不会自动更新已安装副本。
 
 ## 上下文行为与边界
 
@@ -100,6 +108,6 @@ scripts\build-client.cmd --preview-installer --version 1.0.0
 
 项目采用 [Apache License 2.0](LICENSE)。隐私说明见 [PRIVACY.md](PRIVACY.md)。
 
-Free code signing is provided by [SignPath.io](https://signpath.io/), with a certificate provided by the [SignPath Foundation](https://signpath.org/). 签名政策与人工审批要求见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。本次源码工作不代表签名、安装升级或真实模型验收已完成。
+正式更新使用 Tauri 签名校验安装包；当前流程没有 Windows Authenticode 签名，安装时可能出现系统安全提示。SignPath 申请材料仅作历史记录，不代表已获得签名服务。现行政策见 [CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md)。源码与离线检查通过不代表正式产物、安装升级或真实模型验收已完成。
 
 [文档中心](docs/README.md)保留旧设计与历史部署记录；涉及 MySQL、Alembic、Chroma 和旧服务器的历史步骤不适用于当前源码。

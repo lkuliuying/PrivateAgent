@@ -1,11 +1,11 @@
 {
-  "version": "0.1.1",
-  "notes": "私人助手 v0.1.1",
-  "pub_date": "2026-07-04T12:00:00Z",
+  "version": "1.0.0",
+  "notes": "仅供格式参考，签名为无效占位内容；禁止将此示例部署为正式更新源。",
+  "pub_date": "2026-09-22T00:00:00Z",
   "platforms": {
-    "windows-x86_64": {
-      "signature": "把 apps/desktop/src-tauri/target/release/bundle/nsis/PrivateAgent_0.1.1_x64-setup.exe.sig 的完整内容粘到这里",
-      "url": "https://github.com/OWNER/REPO/releases/download/v0.1.1/PrivateAgent_0.1.1_x64-setup.exe"
+    "unified-windows-x86_64": {
+      "signature": "NON_PRODUCTION_PLACEHOLDER_REPLACE_WITH_VERIFIED_SIG_CONTENT",
+      "url": "https://github.com/lkuliuying/PrivateAgent/releases/download/v1.0.0/PrivateAgent_1.0.0_x64-setup.exe"
     }
   }
 }

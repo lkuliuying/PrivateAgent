@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the Tauri v2 updater manifest (``latest.json``) for a release.
+"""生成 unified 桌面的 GitHub Release 静态清单，不执行签名或上传。
 
-Auto-detects the NSIS installer and its ``.sig`` from the build output, reads
-the version from ``tauri.conf.json``, and derives the GitHub repo from
-``git remote``. The installer filename is **percent-encoded** in the download
-URL: the Tauri updater's HTTP client requires an ASCII URL; the current
-``PrivateAgent_<version>_x64-setup.exe`` product name keeps the release asset
-human-readable without relying on escaped Chinese characters.
-
-Usage (project root, after ``scripts/build-release.bat``)::
-
-    uv run python scripts/generate-latest-json.py                       # dist/latest.json
-    uv run python scripts/generate-latest-json.py --notes "..." --tag v0.1.1
-    uv run python scripts/generate-latest-json.py --repo owner/repo --out latest.json
-
-Then upload ``latest.json`` + the installer + the ``.sig`` to the GitHub Release.
-Stdlib only.
+正式操作应通过 --installer 指定本次最终安装包；标签必须为 v<源码版本>。
+清单生成只检查输入契约，密码学验签另由 verify_update_release.py 执行。
 """
 from __future__ import annotations
 
@@ -28,11 +15,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from _release_utils import (
+    UNIFIED_TARGET,
     assemble_manifest,
     build_platform_entry,
     find_installer,
+    github_release_tag,
     installer_sig,
     read_version,
+    unified_installer_name,
+    validate_github_repo,
+    validate_stable_version,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -40,7 +32,7 @@ DIST = PROJECT_ROOT / "dist"
 
 
 def git_origin_repo() -> str | None:
-    """Return 'owner/repo' from the origin remote URL, or None."""
+    """只从本地远端配置提取仓库标识，不输出原始 URL。"""
     try:
         out = subprocess.run(
             ["git", "config", "--get", "remote.origin.url"],
@@ -51,27 +43,26 @@ def git_origin_repo() -> str | None:
             errors="replace",
         )
         url = out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
+    except OSError:
         return None
-    # https://github.com/owner/repo(.git)  OR  git@github.com:owner/repo(.git)
+    # 兼容 HTTPS 和 SSH 配置，返回值仍须通过仓库标识校验。
     m = re.search(r"github\.com[:/]([^/]+/[^/]+?)(?:\.git)?$", url)
     return m.group(1) if m else None
 
 
 def find_installer_and_sig(version: str) -> tuple[Path, Path]:
-    """Find the installer whose filename embeds `version` (version-match, not sort),
-    plus its .sig. Aborts loudly on no/multiple match or missing signature."""
+    """保留旧的本地发现入口，缺失或多个同版本产物时中止。"""
     installer = find_installer(version)
     sig = installer_sig(installer)
     if not sig.exists():
         raise SystemExit(
             f"[latest.json] signature not found: {sig}\n"
-            "         Build with the updater signing key (see docs/archive/legacy/signing-and-keys.md)."
+            "         See docs/releases/v1.0.0/github-release.md."
         )
     return installer, sig
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -86,40 +77,44 @@ def main() -> int:
         default=[],
         help="额外平台 KEY:INSTALLER_PATH（macOS/Linux），sig 取 installer.sig；可重复",
     )
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
-    version = read_version()
-    if args.installer:
-        installer = args.installer.resolve(strict=True)
-        if not installer.name.endswith("-setup.exe") or f"_{version}_" not in installer.name:
-            raise SystemExit("[latest.json] 安装包与当前版本不一致")
-        sig = installer_sig(installer)
-    else:
-        installer, sig = find_installer_and_sig(version)
-    signature = sig.read_text(encoding="utf-8").strip()
+    try:
+        version = validate_stable_version(read_version())
+        tag = github_release_tag(version, args.tag)
+        repo = validate_github_repo(args.repo or git_origin_repo() or "")
+    except ValueError as error:
+        ap.error(str(error))
+    try:
+        if args.installer:
+            installer = args.installer.absolute()
+            sig = installer_sig(installer)
+        else:
+            installer, sig = find_installer_and_sig(version)
+        if installer.name != unified_installer_name(version) or not installer.is_file() or installer.is_symlink():
+            raise SystemExit("[latest.json] 安装包必须为当前版本的正式 unified Windows 安装器")
+        if sig.is_symlink() or not sig.is_file():
+            raise SystemExit("[latest.json] 安装包旁必须存在普通 .sig 文件")
+        signature = sig.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        ap.error("无法读取本次安装包或 UTF-8 签名文件")
     if not signature:
         raise SystemExit(f"[latest.json] signature file is empty: {sig}")
 
-    repo = args.repo or git_origin_repo()
-    if not repo:
-        raise SystemExit(
-            "[latest.json] could not derive GitHub repo from git remote; pass --repo owner/repo"
-        )
-    tag = args.tag or f"v{version}"
-    notes = args.notes if args.notes is not None else f"私人助手 v{version}"
+    notes = args.notes if args.notes is not None else f"PrivateAgent Unified v{version}"
 
     pub_date = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     # 与统一本机桌面的 updater target 一致，不再发布旧服务端客户端更新。
     platforms = {
-        "unified-windows-x86_64": build_platform_entry(installer, sig, repo, tag),
+        UNIFIED_TARGET: build_platform_entry(installer, sig, repo, tag),
     }
     for spec in args.extra_platform:
         key, _, path = spec.partition(":")
         if not key or not path:
-            raise SystemExit(
-                f"[latest.json] --extra-platform 格式应为 KEY:INSTALLER_PATH，得到: {spec}"
-            )
+            raise SystemExit("[latest.json] --extra-platform 格式应为 KEY:INSTALLER_PATH")
+        if key in platforms or key not in {"darwin-aarch64", "darwin-x86_64", "linux-x86_64"}:
+            raise SystemExit("[latest.json] 不允许覆盖 unified 目标或使用未知的额外平台")
         extra_installer = Path(path)
         extra_sig = installer_sig(extra_installer)
         if not extra_sig.exists():
