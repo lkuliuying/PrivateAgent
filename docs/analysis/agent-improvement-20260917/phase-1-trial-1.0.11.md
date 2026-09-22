@@ -95,10 +95,10 @@ git diff --check
 
 交付目录：`F:/Program/Agent/.run/intent-trial-1.0.11/delivery/`。
 
-- [1.0.11 候选安装器](../../../.run/intent-trial-1.0.11/delivery/PrivateAgentCandidate_1.0.11_x64-setup.exe)：30,833,928 字节。
+- `PrivateAgentCandidate_1.0.11_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理）：30,833,928 字节。
 - [全新测试 ZIP](../../../.run/intent-trial-1.0.11/delivery/PrivateAgent-M1-TestKit-1.0.11.zip)：14 个项目用例、107 个文件，附 U01–U03 展示与诊断复测；100 个项目文件及采集脚本与核对过 SHA256 的旧 1.0.9 ZIP 逐字节一致。
-- [安装说明](../../../.run/intent-trial-1.0.11/delivery/README.md)、[补充复测步骤](../../../.run/intent-trial-1.0.11/delivery/UI-RETEST.md)、[反馈模板](../../../.run/intent-trial-1.0.11/delivery/RESULTS-template.md)。
-- [验证清单](../../../.run/intent-trial-1.0.11/delivery/validation.json)、[构建信息](../../../.run/intent-trial-1.0.11/delivery/build-info.json)、[来源清单](../../../.run/intent-trial-1.0.11/delivery/source-manifest.json)、[文件校验值](../../../.run/intent-trial-1.0.11/delivery/SHA256SUMS.txt)。
+- [安装说明](../../../.run/records/run/intent-trial-1.0.11/delivery/README.md)、[补充复测步骤](../../../.run/records/run/intent-trial-1.0.11/delivery/UI-RETEST.md)、[反馈模板](../../../.run/records/run/intent-trial-1.0.11/delivery/RESULTS-template.md)。
+- [验证清单](../../../.run/records/run/intent-trial-1.0.11/delivery/validation.json)、[构建信息](../../../.run/records/run/intent-trial-1.0.11/delivery/build-info.json)、[来源清单](../../../.run/records/run/intent-trial-1.0.11/delivery/source-manifest.json)、[文件校验值](../../../.run/records/run/intent-trial-1.0.11/delivery/SHA256SUMS.txt)。
 
 安装器 SHA256：`ee5ddc066b50a3f80294137f7cfd70e2767fa3e935f6594c2a8aa0d7a06085a6`。
 

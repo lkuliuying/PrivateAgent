@@ -199,7 +199,7 @@ git diff --staged --stat
 
 ### C 的首轮配置与预算草案
 
-本机非敏感模板为 [phase-c-desktop-model.example.json](../../../.run/s6-learning-current-1973ec4364a349bc876f3776796d7cff/phase-c-desktop-model.example.json)。它对应当前构建的 `desktop` 命名空间及本机绝对目录，采用现有 `schema_version=2 / direct_provider`，不含凭据。
+本机非敏感模板为 [phase-c-desktop-model.example.json](../../../.run/records/run/s6-learning-current-1973ec4364a349bc876f3776796d7cff/phase-c-desktop-model.example.json)。它对应当前构建的 `desktop` 命名空间及本机绝对目录，采用现有 `schema_version=2 / direct_provider`，不含凭据。
 
 模板已通过当前 `direct_config` 的严格结构校验，结果保留于同目录 `phase-c-config-validation.json`，文件 SHA256 为 `a2351f85133f7900869731958efd00637b2a0ccdb044f5f623ea6dece6ace5fb`。该摘要仅标识此份草案；填写真实模型后需要重新计算。
 
@@ -222,7 +222,7 @@ git diff --staged --stat
 
 ## 7. 真实云联调回执与下一轮草案
 
-2026-09-15 后续回执：用户已运行本机操作，并确认自建服务端已修复。当前已核对用户生成的四份记录，审阅结果为 [review.json](../../../.run/s6-cloud-review-3289b421501341cba4edb478759f5174/review.json)。本节更新当前 C 状态；前文“尚未调用供应商”属于准备阶段的历史结论。
+2026-09-15 后续回执：用户已运行本机操作，并确认自建服务端已修复。当前已核对用户生成的四份记录，审阅结果为 [review.json](../../../.run/records/run/s6-cloud-review-3289b421501341cba4edb478759f5174/review.json)。本节更新当前 C 状态；前文“尚未调用供应商”属于准备阶段的历史结论。
 
 ### 实际执行结果
 
@@ -251,11 +251,11 @@ git diff --staged --stat
 
 ### 下一轮可审阅配置
 
-已另存 [followup-model.json](../../../.run/s6-cloud-review-3289b421501341cba4edb478759f5174/followup-model.json)，不覆盖 `.run/coding-local-probe.json`。新配置 SHA256：`612fc3e74f85c24a39b6923eb2577a055b0ca28e15dcd4cc293b2d81976f33a8`。
+已另存 [followup-model.json](../../../.run/records/run/s6-cloud-review-3289b421501341cba4edb478759f5174/followup-model.json)，不覆盖 `.run/coding-local-probe.json`。新配置 SHA256：`612fc3e74f85c24a39b6923eb2577a055b0ca28e15dcd4cc293b2d81976f33a8`。
 
 只调整 `budget.max_attempt_tokens` 和 `budget.max_total_tokens`，从 10000 改为 50000。模型、参数、`PY01` 一次、8 次模型请求、12 次工具调用、60 秒活动时间均保持原值，美元费用继续为未知。这是按本次每轮约 3800～6100 token 留出后续执行空间的草案，不保证任务一定完成，也不消除软预算的超出可能。
 
-配套候选目录重新核对为 414 项源码匹配，来源及各二进制摘要保存在 [candidate-identity.json](../../../.run/s6-cloud-review-3289b421501341cba4edb478759f5174/candidate-identity.json)。目前只作为下一轮验证对象，没有冻结为最终候选。
+配套候选目录重新核对为 414 项源码匹配，来源及各二进制摘要保存在 [candidate-identity.json](../../../.run/records/run/s6-cloud-review-3289b421501341cba4edb478759f5174/candidate-identity.json)。目前只作为下一轮验证对象，没有冻结为最终候选。
 
 先检查草案：
 
@@ -281,7 +281,7 @@ git diff --staged --stat
 
 ### 真实调用结果与原因
 
-账本、模型配置、运行器、事件和逐次产物摘要均已核验；修改代码前，旧候选的 414 项源码绑定也核对通过。实际调用的 sidecar 为 `5e61a83108412191b49497db9195ae4ed4216d6a2386aacc554f84d773230888`。审阅结果见 [cloud-review.json](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/cloud-review.json)。
+账本、模型配置、运行器、事件和逐次产物摘要均已核验；修改代码前，旧候选的 414 项源码绑定也核对通过。实际调用的 sidecar 为 `5e61a83108412191b49497db9195ae4ed4216d6a2386aacc554f84d773230888`。审阅结果见 [cloud-review.json](../../../.run/records/run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/cloud-review.json)。
 
 - 本轮真实调用 8 次，输入 48651、输出 1880，累计 **50531 tokens**；费用未知。
 - 工具执行 12 次：3 次目录查看、8 次文件读取、1 次补丁提案拒绝。终态为 `limit_exceeded / max_tool_calls`，功能与验证均未通过，前后项目文件摘要一致。
@@ -292,7 +292,7 @@ git diff --staged --stat
 
 ### 修复后的联调产物
 
-新产物目录为 [bundle](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle)，来源见 [bundle-identity.json](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle-identity.json)。414 项来源文件中仅 `src/private_agent_local/runtime.py` 改变；sidecar 使用既有 PyInstaller 在独立目录重建。桌面壳从同目录启动 sidecar，其自身源码、构建输入及宿主来源未变，因此复用已核对摘要的桌面和宿主二进制；`build-info.json` 明确记录复用来源。
+新产物目录为 [bundle](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle)，来源见 [bundle-identity.json](../../../.run/records/run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle-identity.json)。414 项来源文件中仅 `src/private_agent_local/runtime.py` 改变；sidecar 使用既有 PyInstaller 在独立目录重建。桌面壳从同目录启动 sidecar，其自身源码、构建输入及宿主来源未变，因此复用已核对摘要的桌面和宿主二进制；`build-info.json` 明确记录复用来源。
 
 | 文件 | SHA256 |
 | --- | --- |
@@ -318,11 +318,11 @@ git diff --staged --stat
 
 在最初失败的临时项目中直接调用 `repository.search`，重现 `PermissionError / WinError 5 / errno 13`；同一测试集在普通本机权限通过，期间未修改搜索代码或测试断言，因此该失败归于当前执行沙箱的进程权限限制。两份原始测试记录均保留在 `.run/coding-agent-validation/`。
 
-打包负例执行 5 次模拟请求、600 个模拟 tokens，数组错误被拒绝、无审批、文件摘要未变；运行器退出 1 是负例的预期结果。打包正例执行 6 次模拟请求、720 个模拟 tokens，经过 2 次审批完成补丁应用及测试，`completed / verified`，功能、验证和预算判定均通过。明细见 [bundle-verification.json](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle-verification.json)。这些模拟用量不是供应商用量或 C 质量成绩。
+打包负例执行 5 次模拟请求、600 个模拟 tokens，数组错误被拒绝、无审批、文件摘要未变；运行器退出 1 是负例的预期结果。打包正例执行 6 次模拟请求、720 个模拟 tokens，经过 2 次审批完成补丁应用及测试，`completed / verified`，功能、验证和预算判定均通过。明细见 [bundle-verification.json](../../../.run/records/run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/bundle-verification.json)。这些模拟用量不是供应商用量或 C 质量成绩。
 
 ### 下一轮范围与命令
 
-原 8 次请求、12 次工具、50000 tokens 均已耗尽。另存 [retry-model.json](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/retry-model.json) 作为待接受草案：模型仍为 `deepseek-flash`，同一供应商及参数，`PY01` 一次；请求上限 **12**、工具上限 **20**、token 软上限 **100000**，活动时间保持 **60 秒**，费用仍未知。差异见 [retry-scope.json](../../../.run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/retry-scope.json)。新配置 SHA256 为 `394fd3d72bd12f672f14bc46ae924805d5550396a0e35db6d28fbe87ad8af157`。
+原 8 次请求、12 次工具、50000 tokens 均已耗尽。另存 [retry-model.json](../../../.run/records/run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/retry-model.json) 作为待接受草案：模型仍为 `deepseek-flash`，同一供应商及参数，`PY01` 一次；请求上限 **12**、工具上限 **20**、token 软上限 **100000**，活动时间保持 **60 秒**，费用仍未知。差异见 [retry-scope.json](../../../.run/records/run/s6-patch-feedback-f6b09996597d484298ee16e99614deb0/retry-scope.json)。新配置 SHA256 为 `394fd3d72bd12f672f14bc46ae924805d5550396a0e35db6d28fbe87ad8af157`。
 
 此草案为检查后的补丁应用、验证及收尾留出额度，不保证模型完成，也不保证响应结算前不超额。本轮没有新增真实云调用。用户接受上述范围后，可在本机运行：
 
@@ -345,7 +345,7 @@ API Key 仅在终端隐藏提示中输入。命令自动预检，并保存独立
 
 ### 真实运行结果
 
-运行目录为 `.run/coding-local-probe/probe-162387237229424f84d7f0aa21d91a89`，审阅摘要见 [cloud-review.json](../../../.run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/cloud-review.json)。修改运行器前，已核对账本、事件顺序、配置、运行器、产物及源码绑定。
+运行目录为 `.run/coding-local-probe/probe-162387237229424f84d7f0aa21d91a89`，审阅摘要见 [cloud-review.json](../../../.run/records/run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/cloud-review.json)。修改运行器前，已核对账本、事件顺序、配置、运行器、产物及源码绑定。
 
 - `deepseek-flash` 真实请求 12 次，累计 **87920 tokens**，工具调用 15 次；费用和不可变模型版本未知。终态为 `limit_exceeded / max_model_requests`。
 - 仅修改允许的 `src/domain.py`，外置功能判定通过，范围与隔离检查通过。原文件 SHA256 为 `59714f4e202b7fbf0e4468ad701ffa0d00d6a8a5c1fd3a6c1f8e85f1d4629438`，修改后为 `bb60ad7d9b3e2746a77bcb29285b0d6d32102693a56a01598d159e47eeed9216`。
@@ -379,11 +379,11 @@ API Key 仅在终端隐藏提示中输入。命令自动预检，并保存独立
 | `.venv/Scripts/python.exe -B .run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/final_review.py` | 通过；5 个本轮文件增量、其他基线文件、8 份旧证据、配置及 bundle 摘要核对通过，414 项产品源码仍匹配。 |
 | `git diff --check` | 通过。 |
 
-打包结果见 [bundle-verification.json](../../../.run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/bundle-verification.json)：负例使用 6 次模拟请求、720 个模拟 token，命令拒绝、无测试执行；其运行器退出 1 是预期结果。正例使用 4 次模拟请求、480 个模拟 token，命令退出 0、`completed / verified`，功能、验证、范围和预算均通过。这些用量均为替身数据，不是云端用量或 C 质量成绩。
+打包结果见 [bundle-verification.json](../../../.run/records/run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/bundle-verification.json)：负例使用 6 次模拟请求、720 个模拟 token，命令拒绝、无测试执行；其运行器退出 1 是预期结果。正例使用 4 次模拟请求、480 个模拟 token，命令退出 0、`completed / verified`，功能、验证、范围和预算均通过。这些用量均为替身数据，不是云端用量或 C 质量成绩。
 
 该打包验证脚本的首次正例也暴露了上述多余命令要求；中间一次使用更深的临时路径时，在 IPC 退出阶段报 `OSError / errno=22`，主任务未启动、没有逐次产物。换用较短的新临时路径后两项通过；该退出错误的底层原因未作独立确认，不将其解释为模型或服务器故障。全部失败目录保留。审阅脚本首次把基线排除的三个 `.env*` 示例列为新增，统一路径过滤规则后通过；没有读取这些文件的内容。
 
-最终增量及保护项见 [final-review.json](../../../.run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/final-review.json) 和同目录 `turn-diff.patch`。本次没有改动产品构建输入，因此未重建客户端；当前模拟打包验证不能证明原生桌面、最终候选性能或修复后的真实云端任务已经通过。
+最终增量及保护项见 [final-review.json](../../../.run/records/run/s6-command-contract-7931fe5f83b845eda2ad0786a695c208/final-review.json) 和同目录 `turn-diff.patch`。本次没有改动产品构建输入，因此未重建客户端；当前模拟打包验证不能证明原生桌面、最终候选性能或修复后的真实云端任务已经通过。
 
 ### 同范围复验
 

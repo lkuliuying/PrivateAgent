@@ -4,10 +4,10 @@
 
 ## 交付与使用
 
-- [Windows x64 候选安装器](../../../.run/intent-trial-1.0.12/delivery/PrivateAgentCandidate_1.0.12_x64-setup.exe)，30,838,393 字节。
+- `PrivateAgentCandidate_1.0.12_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理），30,838,393 字节。
 - [全新 T01–T14 测试集](../../../.run/intent-trial-1.0.12/delivery/PrivateAgent-M1-TestKit-1.0.12.zip)，14 个独立项目用例、107 个文件。
-- [安装说明](../../../.run/intent-trial-1.0.12/delivery/README.md)、[T02/T03 复测步骤](../../../.run/intent-trial-1.0.12/delivery/UI-RETEST.md)、[反馈模板](../../../.run/intent-trial-1.0.12/delivery/RESULTS-template.md)。
-- [验证清单](../../../.run/intent-trial-1.0.12/delivery/validation.json)、[构建信息](../../../.run/intent-trial-1.0.12/delivery/build-info.json)、[来源清单](../../../.run/intent-trial-1.0.12/delivery/source-manifest.json)、[文件校验值](../../../.run/intent-trial-1.0.12/delivery/SHA256SUMS.txt)。
+- [安装说明](../../../.run/records/run/intent-trial-1.0.12/delivery/README.md)、[T02/T03 复测步骤](../../../.run/records/run/intent-trial-1.0.12/delivery/UI-RETEST.md)、[反馈模板](../../../.run/records/run/intent-trial-1.0.12/delivery/RESULTS-template.md)。
+- [验证清单](../../../.run/records/run/intent-trial-1.0.12/delivery/validation.json)、[构建信息](../../../.run/records/run/intent-trial-1.0.12/delivery/build-info.json)、[来源清单](../../../.run/records/run/intent-trial-1.0.12/delivery/source-manifest.json)、[文件校验值](../../../.run/records/run/intent-trial-1.0.12/delivery/SHA256SUMS.txt)。
 
 退出旧候选版后安装，确认窗口标题包含 1.0.12。测试 ZIP 解压到全新目录，先复测 T02、T03，再继续 T04–T14；T01 回答质量可选补测。每次选取对应 `projects/Txx` 并新建任务，不覆盖此前结果。复制回答优先使用新增“复制 Markdown”按钮。
 

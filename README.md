@@ -47,6 +47,8 @@ flowchart LR
 
 FastAPI 用于本机请求分发及可选回环 HTTP 入口，不再承载独立旧服务器。Python wheel 只包含两个本机包；旧数据库和向量库依赖不进入新锁文件。
 
+完整目录职责、开发入口及本机产物保留规则见[目录说明](docs/repository-layout.md)。2026-09-22 整理保留最新完整候选包于 `dist/PrivateAgentCandidate-1.0.20/`，历史测试摘要与关键材料归入 `.run/records/`；正式源码、测试和视觉基线保持原位。清理明细及验证边界见[整理记录](docs/solutions/2026-09-22-project-cleanup.md)。
+
 ## 开发与验证
 
 主要交付平台是 Windows 10/11 x64。源码开发需要 Python 3.12+、uv、Node.js 20+、Rust/MSVC Build Tools；桌面运行需要 WebView2，项目自身的构建与测试工具仍由项目提供。macOS/Linux 不作为本次验证结论。

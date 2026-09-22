@@ -94,9 +94,9 @@ S1 专项 37 项、本机全套 162 项、旧服务端纯单测 56 项、桌面�
 
 可复核的本轮原始记录：
 
-- [本机全套统计](../../../.run/coding-agent-validation/all-172f15e07b754b06812ee424e9e7b0d2/pytest-result.json)及同目录 `invocation.json`。
-- [S1 专项统计](../../../.run/coding-agent-validation/completion-a21ff41d24d64f2eb11a8856b2348bdd/pytest-result.json)。
-- [旧纯单测统计](../../../.run/coding-agent-validation/legacy-3134fba56897433e8eefd77c6ae1fd70/pytest-result.json)。此套件确实导入必要业务配置/数据库类型，但使用隔离配置且不连接业务数据库；不能误写为“没有导入业务模块”。
+- [本机全套统计](../../../.run/records/run/coding-agent-validation/all-172f15e07b754b06812ee424e9e7b0d2/pytest-result.json)及同目录 `invocation.json`。
+- [S1 专项统计](../../../.run/records/run/coding-agent-validation/completion-a21ff41d24d64f2eb11a8856b2348bdd/pytest-result.json)。
+- [旧纯单测统计](../../../.run/records/run/coding-agent-validation/legacy-3134fba56897433e8eefd77c6ae1fd70/pytest-result.json)。此套件确实导入必要业务配置/数据库类型，但使用隔离配置且不连接业务数据库；不能误写为“没有导入业务模块”。
 - 同源载荷 [s1-wire-examples.json](../../../tests/coding_acceptance/s1-wire-examples.json) 来自 `.run/coding-agent-validation/completion-12815925bb264a92ac002a9d15290a79/s1-wire/*.json` 的六个实际导出，后续全套继续校验其 Schema/业务不变量并另行生成当前运行实例。
 
 `.run` 是本地保留的忽略目录，不是本次交付到仓库的生成产物；持久交付事实由本报告、契约样例和可复跑测试记录。

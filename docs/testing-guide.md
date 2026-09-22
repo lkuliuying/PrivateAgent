@@ -147,6 +147,10 @@ node node_modules/@playwright/test/cli.js test e2e/workbench-upgrade.spec.ts e2e
 
 ## 7. 静态检查与维护
 
+2026-09-22 目录整理保留全部正式测试、夹具与视觉基线。原 `.run`、`.tmp` 和 `dist` 中已归档的结果摘要及关键材料统一从[本机记录索引](../.run/records/README.md)查找；源路径映射见[目录说明](repository-layout.md#查找历史证据)。成功、失败、跳过和超时记录均保留，临时工作区和复制的工具链不再作为长期证据保存。历史命令保持原文，不把目录整理视为重新验收。
+
+隔离运行器仍为每次新执行创建独立输出目录。已有 `.venv`、前端依赖及 `apps/exec-host/target/release/exec-host.exe` 保留；清缓存后的首次构建可能较慢。本次实际验证另见[清理记录](solutions/2026-09-22-project-cleanup.md)。
+
 现有 Ruff 规则为 `E/F/I`，忽略 `E501`，以根目录 `pyproject.toml` 为准：
 
 ```powershell

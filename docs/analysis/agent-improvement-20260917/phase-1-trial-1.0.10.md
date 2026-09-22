@@ -70,11 +70,11 @@ T01 在新 sidecar 中提交用户这组 glob=""、cursor=null 参数：在 tool
 
 | 产物 | 用途 |
 |---|---|
-| [PrivateAgentCandidate_1.0.10_x64-setup.exe](../../../.run/intent-trial-1.0.10/delivery/PrivateAgentCandidate_1.0.10_x64-setup.exe) | Windows x64 候选安装器，30,834,311 字节 |
+| `PrivateAgentCandidate_1.0.10_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理） | Windows x64 候选安装器，30,834,311 字节 |
 | [PrivateAgent-M1-TestKit-1.0.10.zip](../../../.run/intent-trial-1.0.10/delivery/PrivateAgent-M1-TestKit-1.0.10.zip) | 原有 14 项测试集，106 文件，41,229 字节 |
-| [README.md](../../../.run/intent-trial-1.0.10/delivery/README.md)、[RESULTS-template.md](../../../.run/intent-trial-1.0.10/delivery/RESULTS-template.md) | 安装步骤、查看入口说明与反馈模板 |
-| [SHA256SUMS.txt](../../../.run/intent-trial-1.0.10/delivery/SHA256SUMS.txt) | 7 个交付文件的完整性校验 |
-| [build-info.json](../../../.run/intent-trial-1.0.10/delivery/build-info.json)、[source-manifest.json](../../../.run/intent-trial-1.0.10/delivery/source-manifest.json)、[validation.json](../../../.run/intent-trial-1.0.10/delivery/validation.json) | 构建来源、667 个文件摘要与实际验证 |
+| [README.md](../../../.run/records/run/intent-trial-1.0.10/delivery/README.md)、[RESULTS-template.md](../../../.run/records/run/intent-trial-1.0.10/delivery/RESULTS-template.md) | 安装步骤、查看入口说明与反馈模板 |
+| [SHA256SUMS.txt](../../../.run/records/run/intent-trial-1.0.10/delivery/SHA256SUMS.txt) | 7 个交付文件的完整性校验 |
+| [build-info.json](../../../.run/records/run/intent-trial-1.0.10/delivery/build-info.json)、[source-manifest.json](../../../.run/records/run/intent-trial-1.0.10/delivery/source-manifest.json)、[validation.json](../../../.run/records/run/intent-trial-1.0.10/delivery/validation.json) | 构建来源、667 个文件摘要与实际验证 |
 
 安装器 SHA256：974b8cd953f007003a956630ad97b1726a0847a94a1088cd8ce76c76a1dbebc3。
 

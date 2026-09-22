@@ -7,6 +7,7 @@
 | 需要了解 | 文档 |
 | --- | --- |
 | 产品、架构、开发环境与构建 | [项目 README](../README.md) |
+| 完整目录职责、产物位置与保留规则 | [项目目录说明](repository-layout.md) · [脚本入口](../scripts/README.md) · [正式测试目录](../tests/README.md) |
 | 会话约定与历史状态 | [AGENTS.md](../AGENTS.md) · [项目状态记忆](project-state.md) |
 | 当前源码范围与已知验证限制 | [本机化与上下文改进](solutions/2026-09-20-local-only-context.md) |
 | API Key、模型调用与身份空间 | [本机模型直连](direct-model-execution.md) |
@@ -17,7 +18,7 @@
 | 测试目录、隔离运行与验证命令 | [测试指南](testing-guide.md) |
 | GitHub Release 更新源与正式发布验收 | [1.0.0 发布操作说明](releases/v1.0.0/github-release.md) · [签名政策](../CODE_SIGNING_POLICY.md) |
 | 历史签名方案 | [SignPath 申请记录（未启用）](signpath-application.md) |
-| 本次目录整理及删除依据 | [清理记录](solutions/2026-09-20-project-cleanup.md) |
+| 本次目录整理及删除依据 | [2026-09-22 清理记录](solutions/2026-09-22-project-cleanup.md) · [2026-09-20 历史清理](solutions/2026-09-20-project-cleanup.md) |
 
 项目状态记忆保留 2026-09-19 及更早日期的事实，不代表 2026-09-20 之后的代码或部署状态。当前实现以源码和对应日期的交付记录核对；外部签名、部署及安装状态需要各自证据。
 
@@ -26,13 +27,13 @@
 | 目录 | 用途 |
 | --- | --- |
 | `docs/` | 当前入口、持续维护的本机说明与项目记忆 |
-| [`analysis/`](analysis/) | Coding 专项与三步改进计划，按各自日期和验收状态阅读 |
-| [`solutions/`](solutions/) | 带日期的修复、验证与整理记录 |
+| [`analysis/`](analysis/README.md) | Coding 专项与三步改进计划，按各自日期和验收状态阅读 |
+| [`solutions/`](solutions/README.md) | 带日期的修复、验证与整理记录 |
 | [`archive/legacy/`](archive/legacy/README.md) | 已退役架构、服务器操作、旧产品手册和 RAG 研究 |
 | [`archive/`](archive/README.md) | 更早的阶段计划、路线图和设计过程资料 |
 | [`releases/`](releases/README.md) | 历史版本契约、检查点、ADR 和验收记录 |
 | [`examples/`](examples/) | 可复制的配置模板；生成的真实发布清单不作为模板保存 |
-| [`assets/`](assets/README.md)、[`evidence/`](evidence/) | 被文档引用的图片和历史验收证据 |
+| [`assets/`](assets/README.md)、[`evidence/`](evidence/README.md) | 被文档引用的图片、历史验收证据和本机结果索引 |
 | [`third-party/`](third-party/) | 上游采用与归属记录 |
 
 ## 查阅历史
@@ -51,3 +52,4 @@
 3. 移动文件时同步本地链接；测试文件按现有职责分组，入口同步到隔离运行器。
 4. 不将运行日志、安装包、测试结果、个人配置或本机工具副本写入正式文档目录。
 5. `.run/`、`.tmp/` 和被 Git 忽略的外部规范副本是本机材料，不保证其他工作区存在。
+6. 已归档的本机输出在 `.run/records/` 按原始来源查找。历史命令和验收结论保留原文；仅修正文档链接和新增归档映射，不将清理当作重新验收。详见[目录说明](repository-layout.md#查找历史证据)。

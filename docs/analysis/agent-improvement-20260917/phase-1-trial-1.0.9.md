@@ -90,11 +90,11 @@ T01 使用新 sidecar、真实宿主、审批和受限执行。两次非法分�
 
 | 产物 | 用途 |
 |---|---|
-| [PrivateAgentCandidate_1.0.9_x64-setup.exe](../../../.run/intent-trial-1.0.9/delivery/PrivateAgentCandidate_1.0.9_x64-setup.exe) | Windows x64 候选安装器，30,826,077 字节 |
+| `PrivateAgentCandidate_1.0.9_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理） | Windows x64 候选安装器，30,826,077 字节 |
 | [PrivateAgent-M1-TestKit-1.0.9.zip](../../../.run/intent-trial-1.0.9/delivery/PrivateAgent-M1-TestKit-1.0.9.zip) | 14 项测试集，106 文件，41,225 字节 |
-| [README.md](../../../.run/intent-trial-1.0.9/delivery/README.md)、[RESULTS-template.md](../../../.run/intent-trial-1.0.9/delivery/RESULTS-template.md) | 安装、复测检查点及反馈模板 |
-| [SHA256SUMS.txt](../../../.run/intent-trial-1.0.9/delivery/SHA256SUMS.txt) | 7 个交付文件的完整性校验 |
-| [build-info.json](../../../.run/intent-trial-1.0.9/delivery/build-info.json)、[source-manifest.json](../../../.run/intent-trial-1.0.9/delivery/source-manifest.json)、[validation.json](../../../.run/intent-trial-1.0.9/delivery/validation.json) | 构建身份、667 个来源文件摘要、验证记录 |
+| [README.md](../../../.run/records/run/intent-trial-1.0.9/delivery/README.md)、[RESULTS-template.md](../../../.run/records/run/intent-trial-1.0.9/delivery/RESULTS-template.md) | 安装、复测检查点及反馈模板 |
+| [SHA256SUMS.txt](../../../.run/records/run/intent-trial-1.0.9/delivery/SHA256SUMS.txt) | 7 个交付文件的完整性校验 |
+| [build-info.json](../../../.run/records/run/intent-trial-1.0.9/delivery/build-info.json)、[source-manifest.json](../../../.run/records/run/intent-trial-1.0.9/delivery/source-manifest.json)、[validation.json](../../../.run/records/run/intent-trial-1.0.9/delivery/validation.json) | 构建身份、667 个来源文件摘要、验证记录 |
 
 安装器 SHA256：7f886862e78edc07466332158f9fe21a34c23351b27f69f72d10d8d8a1cba48a。
 

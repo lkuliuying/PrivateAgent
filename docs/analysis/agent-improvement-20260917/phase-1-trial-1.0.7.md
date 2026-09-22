@@ -8,11 +8,11 @@
 
 | 文件 | 用途 |
 |---|---|
-| [PrivateAgentCandidate_1.0.7_x64-setup.exe](../../../.run/intent-trial-1.0.7/delivery/PrivateAgentCandidate_1.0.7_x64-setup.exe) | 新生成的 Windows x64 NSIS 安装包，30,825,654 字节 |
+| `PrivateAgentCandidate_1.0.7_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理） | 新生成的 Windows x64 NSIS 安装包，30,825,654 字节 |
 | [PrivateAgent-M1-TestKit-1.0.7.zip](../../../.run/intent-trial-1.0.7/delivery/PrivateAgent-M1-TestKit-1.0.7.zip) | 14 个独立示例项目、逐项提示词、反馈模板和只读采集脚本，共 106 个文件 |
-| [SHA256SUMS.txt](../../../.run/intent-trial-1.0.7/delivery/SHA256SUMS.txt) | 交付文件的完整性校验 |
-| [build-info.json](../../../.run/intent-trial-1.0.7/delivery/build-info.json) | 版本、平台、dirty 状态及构建身份 |
-| [source-manifest.json](../../../.run/intent-trial-1.0.7/delivery/source-manifest.json) | 667 个产品构建输入的摘要 |
+| [SHA256SUMS.txt](../../../.run/records/run/intent-trial-1.0.7/delivery/SHA256SUMS.txt) | 交付文件的完整性校验 |
+| [build-info.json](../../../.run/records/run/intent-trial-1.0.7/delivery/build-info.json) | 版本、平台、dirty 状态及构建身份 |
+| [source-manifest.json](../../../.run/records/run/intent-trial-1.0.7/delivery/source-manifest.json) | 667 个产品构建输入的摘要 |
 
 安装器 SHA256：b0336e0e2ddee5963959cf01f0075aaa0b1c434ba1822df60b63bb553dd86c58
 

@@ -74,11 +74,11 @@ T01 使用新 sidecar 和真实 exec-host，启用持续执行契约、受限执
 
 | 产物 | 用途 |
 |---|---|
-| [PrivateAgentCandidate_1.0.8_x64-setup.exe](../../../.run/intent-trial-1.0.8/delivery/PrivateAgentCandidate_1.0.8_x64-setup.exe) | Windows x64 候选安装器，30,828,726 字节 |
+| `PrivateAgentCandidate_1.0.8_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理） | Windows x64 候选安装器，30,828,726 字节 |
 | [PrivateAgent-M1-TestKit-1.0.8.zip](../../../.run/intent-trial-1.0.8/delivery/PrivateAgent-M1-TestKit-1.0.8.zip) | 14 个独立项目和反馈材料，106 个条目，41,062 字节 |
-| [README.md](../../../.run/intent-trial-1.0.8/delivery/README.md) | 安装和复测入口 |
-| [SHA256SUMS.txt](../../../.run/intent-trial-1.0.8/delivery/SHA256SUMS.txt) | 7 个交付文件的校验值 |
-| [build-info.json](../../../.run/intent-trial-1.0.8/delivery/build-info.json)、[source-manifest.json](../../../.run/intent-trial-1.0.8/delivery/source-manifest.json)、[validation.json](../../../.run/intent-trial-1.0.8/delivery/validation.json) | 构建身份、667 个来源摘要和验证汇总 |
+| [README.md](../../../.run/records/run/intent-trial-1.0.8/delivery/README.md) | 安装和复测入口 |
+| [SHA256SUMS.txt](../../../.run/records/run/intent-trial-1.0.8/delivery/SHA256SUMS.txt) | 7 个交付文件的校验值 |
+| [build-info.json](../../../.run/records/run/intent-trial-1.0.8/delivery/build-info.json)、[source-manifest.json](../../../.run/records/run/intent-trial-1.0.8/delivery/source-manifest.json)、[validation.json](../../../.run/records/run/intent-trial-1.0.8/delivery/validation.json) | 构建身份、667 个来源摘要和验证汇总 |
 
 安装器 SHA256：4a71309a2f0899bd1d0dd62322c1259b87c27db85c79f6220dd203b1c37a5144
 

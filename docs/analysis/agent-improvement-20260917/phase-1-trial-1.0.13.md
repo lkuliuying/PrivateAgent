@@ -6,7 +6,7 @@
 
 接手已读取根 `AGENTS.md`、[历史项目状态](../../project-state.md)、[阶段索引](./README.md)、[反馈台账](./phase-1-trial-feedback.md)及 [1.0.12 交付记录](./phase-1-trial-1.0.12.md)，核对 Git 状态、历史、暂存区和相关源码差异。分支 `dev/1.0.0`，HEAD `1dde393e29f3dbacd3647d11834b39824ac8323f`，保留大量既有未提交改动；未提交、推送、回退或清理工作区。
 
-本次构建目录：[`.run/unified-client-wFqY4i`](../../../.run/unified-client-wFqY4i/)。`build-info.json` 记录 `dirty=true`；不能将 HEAD 单独视为交付源码。对比 1.0.12 的来源清单，668 个构建输入中只有以下 8 个文件发生变化，均对应已经验证的两轮展示改动：
+本次构建目录：[`.run/unified-client-wFqY4i`](../../../.run/records/run/unified-client-wFqY4i)。`build-info.json` 记录 `dirty=true`；不能将 HEAD 单独视为交付源码。对比 1.0.12 的来源清单，668 个构建输入中只有以下 8 个文件发生变化，均对应已经验证的两轮展示改动：
 
 - `src/private_agent_local/core_adapter.py`：非流式有效公开正文补发既有事件，流式正文不重复。
 - `src/private_agent_local/runtime.py`：请求提示要求工具前简述公开进展，不增加独立模型调用。
@@ -40,11 +40,11 @@
 
 首轮失败已只读核对该次隔离 SQLite：`python --version` 38.45 秒退出 0，修复前 pytest 44.50 秒退出 1，修复后 pytest 41.78 秒退出 0、`4 passed in 0.02s`。夹具累计 64 次工具调用中有 50 次 `read_execution`，最终文本请求前运行已因 `max_model_requests` 进入 `limit_exceeded`。原检查函数漏识别此终态，继续等待才报超时；不是 240 秒一直卡在同一个命令。保留首轮脚本、失败报告及合成执行证据，仅将新的检查夹具改为现有 `read_execution(wait_ms=10000)` 长轮询并补齐终态/失败证据记录。产品源码、安装包、请求预算、240 秒时限和原业务断言不变；复跑使用全新目录，不覆盖首轮。
 
-第二轮 [verification.json](../../../.run/intent-trial-1.0.13/intent-package-check-02/verification.json) 记录八场景全部通过：T01 最终 `verified`，T02/T06/T07 为 `unknown`，T03/T13/T14 为 `answered`，T08 为 `blocked`，各自符合定义。47 次模拟模型请求包含 9 条非空公开正文，对应 9 个正文事件；按轮次核对唯一性、顺序、结束标记和空正文不补造，T03 同时覆盖公开进展与最终正文。T02 的模拟候选文字刻意声称测试通过，最终验收仍明确未测试、没有 `output_validation_failed`；模型正文不替代验收。首轮 [失败诊断](../../../.run/intent-trial-1.0.13/intent-package-check/failure-diagnosis.json) 与 `passed=false` 报告保留。
+第二轮 [verification.json](../../../.run/records/run/intent-trial-1.0.13/intent-package-check-02/verification.json) 记录八场景全部通过：T01 最终 `verified`，T02/T06/T07 为 `unknown`，T03/T13/T14 为 `answered`，T08 为 `blocked`，各自符合定义。47 次模拟模型请求包含 9 条非空公开正文，对应 9 个正文事件；按轮次核对唯一性、顺序、结束标记和空正文不补造，T03 同时覆盖公开进展与最终正文。T02 的模拟候选文字刻意声称测试通过，最终验收仍明确未测试、没有 `output_validation_failed`；模型正文不替代验收。首轮 [失败诊断](../../../.run/records/run/intent-trial-1.0.13/intent-package-check/failure-diagnosis.json) 与 `passed=false` 报告保留。
 
 新交付脚本的 Python 语法检查通过；`.\.venv\Scripts\python.exe -B -m ruff check --select E9,F63,F7,F82 .run/intent-trial-1.0.13/prepare-delivery.py .run/intent-trial-1.0.13/audit.py` 通过。随包夹具的语法及 Ruff 检查通过，AST 比较确认修正轮询前的 73 条断言均保留。
 
-前两轮已实际执行的源码回归为：后端 streaming 40、local 88、context 35，共 163 项；前端 8 个文件、151 项；Ruff、类型检查/前端构建及隔离浏览器检查通过。本轮没有重复运行这些源码套件；具体命令和首轮失败处理保留在[反馈台账](./phase-1-trial-feedback.md#本轮源码改进与验证)和[精简展示记录](./phase-1-trial-feedback.md#2026-09-19补充按用户标记精简展示)。浏览器证据保留在 [`.run/progress-minimal-20260919/visual-results.json`](../../../.run/progress-minimal-20260919/visual-results.json)，覆盖宽窄窗口、缩放、折叠、审批、失败/未知、复制入口及重开；这是合成数据下真实组件的验证，不是安装副本人工验收。
+前两轮已实际执行的源码回归为：后端 streaming 40、local 88、context 35，共 163 项；前端 8 个文件、151 项；Ruff、类型检查/前端构建及隔离浏览器检查通过。本轮没有重复运行这些源码套件；具体命令和首轮失败处理保留在[反馈台账](./phase-1-trial-feedback.md#本轮源码改进与验证)和[精简展示记录](./phase-1-trial-feedback.md#2026-09-19补充按用户标记精简展示)。浏览器证据保留在 [`.run/progress-minimal-20260919/visual-results.json`](../../../.run/records/run/progress-minimal-20260919/visual-results.json)，覆盖宽窄窗口、缩放、折叠、审批、失败/未知、复制入口及重开；这是合成数据下真实组件的验证，不是安装副本人工验收。
 
 构建保留与 1.0.12 相同的三类非致命提示：PyInstaller `Hidden import "importlib_resources.trees" not found!`、前端 chunk 大于 500 kB、Rust 10 条未使用代码警告。未为消除提示扩大修改范围；本轮随包验证与构建结果分别记录，不据此承诺全部未覆盖功能均可用。安装器 Authenticode 状态为 `NotSigned`，没有生成自动更新清单。
 
@@ -54,12 +54,12 @@
 
 | 文件 | 用途或核验值 |
 |---|---|
-| [PrivateAgentCandidate_1.0.13_x64-setup.exe](../../../.run/intent-trial-1.0.13/delivery/PrivateAgentCandidate_1.0.13_x64-setup.exe) | Windows x64 未签名候选安装器，30,836,650 字节 |
+| `PrivateAgentCandidate_1.0.13_x64-setup.exe`（历史安装包，已按[2026-09-22 保留策略](../../solutions/2026-09-22-project-cleanup.md)清理） | Windows x64 未签名候选安装器，30,836,650 字节 |
 | [PrivateAgent-M1-TestKit-1.0.13.zip](../../../.run/intent-trial-1.0.13/delivery/PrivateAgent-M1-TestKit-1.0.13.zip) | 14 个用例、107 个文件，全部人工结果初始未覆盖 |
-| [UI-RETEST.md](../../../.run/intent-trial-1.0.13/delivery/UI-RETEST.md) | T02 起的新版界面与取证步骤 |
-| [RESULTS-template.md](../../../.run/intent-trial-1.0.13/delivery/RESULTS-template.md) | 人工反馈表 |
-| [validation.json](../../../.run/intent-trial-1.0.13/delivery/validation.json) | 自动检查范围、首轮失败记录引用及人工验收边界 |
-| [SHA256SUMS.txt](../../../.run/intent-trial-1.0.13/delivery/SHA256SUMS.txt) | 全部交付文件 SHA256；同目录附说明、构建信息和来源清单 |
+| [UI-RETEST.md](../../../.run/records/run/intent-trial-1.0.13/delivery/UI-RETEST.md) | T02 起的新版界面与取证步骤 |
+| [RESULTS-template.md](../../../.run/records/run/intent-trial-1.0.13/delivery/RESULTS-template.md) | 人工反馈表 |
+| [validation.json](../../../.run/records/run/intent-trial-1.0.13/delivery/validation.json) | 自动检查范围、首轮失败记录引用及人工验收边界 |
+| [SHA256SUMS.txt](../../../.run/records/run/intent-trial-1.0.13/delivery/SHA256SUMS.txt) | 全部交付文件 SHA256；同目录附说明、构建信息和来源清单 |
 
 - 安装器 SHA256：`4915432a2ffb11ab10a29d78505b197656515a3e2d293fd096b731727b2dccfb`。
 - 测试 ZIP SHA256：`3327a36198aa4310b88e39cd9f5b15552a685287bf67aa39eab85f4a57b5ac27`。

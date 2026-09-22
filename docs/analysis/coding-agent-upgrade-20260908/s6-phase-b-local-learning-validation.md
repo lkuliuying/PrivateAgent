@@ -115,9 +115,9 @@ control 的 3 个启动记录与 3 个结束记录完整保留，contaminated_st
 | 产物 | SHA256 |
 | --- | --- |
 | [题集清单](../../../tests/coding_acceptance/external_public/catalog.json) | 533c6bc8973e22a4b4da2d9bb10176c8c800a6ba8223f6239a6b6d713fc201a3 |
-| [qualification.json](../../../.run/coding-dataset-validation/dataset-47690660f1b44c67b2baf46edf08a024/qualification.json) | c41675b370b70143e5a7659ac029bda4b3854a1c258d8e4b626a38141853beb3 |
-| [预检 manifest.json](../../../.run/coding-acceptance/preflight-22a4d7a672064f2d907b56b171cf1072/manifest.json) | 5c97933034708c1a5d66bd43494643db43148cdb591d42ad3d9716b73de6659d |
-| [control manifest.json](../../../.run/coding-acceptance/control-7fe675434ca84d809d257def3ceb2c1a/manifest.json) | 6ab04704d8b2adcbcfbff22ad782d910a809b45ac4e5e4b7299a011cc9a3f9ce |
+| [qualification.json](../../../.run/records/run/coding-dataset-validation/dataset-47690660f1b44c67b2baf46edf08a024/qualification.json) | c41675b370b70143e5a7659ac029bda4b3854a1c258d8e4b626a38141853beb3 |
+| [预检 manifest.json](../../../.run/records/run/coding-acceptance/preflight-22a4d7a672064f2d907b56b171cf1072/manifest.json) | 5c97933034708c1a5d66bd43494643db43148cdb591d42ad3d9716b73de6659d |
+| [control manifest.json](../../../.run/records/run/coding-acceptance/control-7fe675434ca84d809d257def3ceb2c1a/manifest.json) | 6ab04704d8b2adcbcfbff22ad782d910a809b45ac4e5e4b7299a011cc9a3f9ce |
 
 本轮只改动说明文档和契约入口，没有修改工具源码、样例或产品代码，因此未重跑全量 S6 acceptance、matrix、打包或完整产品回归。两项 CLI --help、文档命令语法、链接、题集分类对照和 Git 差异检查均通过；所有成绩仅限上述本轮直接运行。
 
@@ -172,7 +172,7 @@ qualify 使用当前判定器对全部 30 题运行 initial/reference/wrong/prot
 .venv/Scripts/python.exe -B .run/s6-learning-current-1973ec4364a349bc876f3776796d7cff/audit_learning.py
 ```
 
-[学习验收审计结果](../../../.run/s6-learning-current-1973ec4364a349bc876f3776796d7cff/learning-audit.json)核对了当前题集、判定材料、判定器、运行器与产品输入。30 条 Agent 记录均已启动并有对应结束记录，`system_behavior_passed=true`、`failure_class=null`、`runner_errors=[]`。实际启动的随包执行器摘要一致，命令执行模式均为 `restricted`，网络策略为 `none`，命令证据关联同一 `exec-host.exe`，隔离测试数据库版本均为 schema 7。磁盘文件、启动进程身份与加载组件内存身份仍分别记录，后者保持 unknown。
+[学习验收审计结果](../../../.run/records/run/s6-learning-current-1973ec4364a349bc876f3776796d7cff/learning-audit.json)核对了当前题集、判定材料、判定器、运行器与产品输入。30 条 Agent 记录均已启动并有对应结束记录，`system_behavior_passed=true`、`failure_class=null`、`runner_errors=[]`。实际启动的随包执行器摘要一致，命令执行模式均为 `restricted`，网络策略为 `none`，命令证据关联同一 `exec-host.exe`，隔离测试数据库版本均为 schema 7。磁盘文件、启动进程身份与加载组件内存身份仍分别记录，后者保持 unknown。
 
 **本次 B 的个人学习验收通过。** 题集四种控制、完整 Agent 流程及证据核对已完成，独立题集和回执无需用户继续准备。本轮没有真实模型调用，`real_model_quality_verified=false`；也未启动原生桌面、开展供应商质量评测或冻结最终候选。
 

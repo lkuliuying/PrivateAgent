@@ -27,4 +27,4 @@
 - [PrivateAgent QA 对比](./design-qa-comparison-privateagent.png)
 - [Agent Workspace 参考对比](./design-reference-comparison-1536x1024.png)
 
-对应验收说明已归入本机 [`design-qa.md`](../../../.tmp/archived-artifacts-20260920/design/root/design-qa.md)，同批截图与其他过程报告见[本机归档索引](../../../.tmp/archived-artifacts-20260920/README.md)。这些本机材料仍由 Git 忽略，不保证在其他工作区存在；本目录已入库的历史证据保持原位。
+对应验收说明已归入本机 [`design-qa.md`](../../../.run/records/tmp/archived-artifacts-20260920/design/root/design-qa.md)，同批截图与其他过程报告见[本机归档索引](../../../.run/records/tmp/archived-artifacts-20260920/README.md)。2026-09-22 整理将这些原 `.tmp` 材料归入 `.run/records/`，文件继续由 Git 忽略，不保证在其他工作区存在；本目录已入库的历史证据保持原位。
