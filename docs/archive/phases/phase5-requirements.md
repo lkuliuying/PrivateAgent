@@ -454,7 +454,7 @@ PA_EMBED_MODEL=bge-m3
 
 ## 10. 验收清单
 
-第五阶段完成时必须满足（开发与文档已完成；标 ⏳ 的项需真实发布环境执行，见 `docs/release-checklist.md`）：
+第五阶段完成时必须满足（开发与文档已完成；标 ⏳ 的项需真实发布环境执行，见 `docs/archive/legacy/release-checklist.md`）：
 
 - [x] Windows NSIS 安装包可在干净机器安装和启动。（安装包可构建并已验证产物；干净机安装 smoke 待按 release-checklist 执行 ⏳）
 - [x] 首启配置向导可完成 MySQL/Ollama/模型检测和 `.env` 写入。
@@ -462,11 +462,11 @@ PA_EMBED_MODEL=bge-m3
 - [x] 发布脚本能生成安装包、updater artifact 和发布清单。
 - [ ] updater 发布源部署完成，应用内检查更新可从旧版本升级到新版本。 ⏳（`generate-latest-json.py` + 上传流程已就绪，待部署 GitHub Release 并跑通升级 smoke）
 - [x] updater 签名验证通过，签名不匹配时更新被拒绝。（已校验公钥/私钥/签名一致；签名不匹配由 Tauri updater 内置校验拒绝，`UpdateChecker.vue` 分类提示）
-- [x] Windows 代码签名方案已接入，或形成明确证书采购/配置计划并在发布说明中标注未签名风险。（方案见 `docs/signing-and-keys.md` §2；当前未签名，发布说明保留 SmartScreen 提示）
-- [x] 发布前 QA checklist 可执行且记录结果。（`docs/release-checklist.md`）
+- [x] Windows 代码签名方案已接入，或形成明确证书采购/配置计划并在发布说明中标注未签名风险。（方案见 `docs/archive/legacy/signing-and-keys.md` §2；当前未签名，发布说明保留 SmartScreen 提示）
+- [x] 发布前 QA checklist 可执行且记录结果。（`docs/archive/legacy/release-checklist.md`）
 - [ ] 升级后用户配置、数据库、知识库、记忆和备份不丢失。 ⏳（用户数据目录保留策略已明确；待升级 smoke 实测）
 - [x] onefile/onedir 体积与启动时间评估完成。（`docs/archive/phases/phase5-plan.md` M5 基线表）
-- [x] macOS/Linux 跨平台计划明确，不阻塞 Windows 正式发布。（`docs/cross-platform.md`）
+- [x] macOS/Linux 跨平台计划明确，不阻塞 Windows 正式发布。（`docs/archive/legacy/cross-platform.md`）
 - [x] README 和 usage-guide 与真实发布流程一致。
 
 ---

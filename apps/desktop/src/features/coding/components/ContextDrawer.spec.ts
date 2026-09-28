@@ -37,6 +37,7 @@ function mountDrawer(props: Record<string, unknown> = {}) {
 describe("ContextDrawer", () => {
   it("Files：审批预览涉及的文件（含新建标记）", () => {
     const wrapper = mountDrawer();
+    expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual(["文件", "上下文", "来源", "产物"]);
     expect(wrapper.find('[data-testid="context-pane-files"]').text()).toContain("src/sidebar.ts");
     expect(wrapper.find('[data-testid="context-pane-files"]').text()).toContain("新建");
   });
@@ -45,7 +46,7 @@ describe("ContextDrawer", () => {
     const wrapper = mountDrawer();
     await wrapper.find('[data-testid="context-tab-context"]').trigger("click");
     const pane = wrapper.find('[data-testid="context-pane-context"]');
-    expect(pane.text()).toContain("已完成");
+    expect(pane.text()).toContain("结果未确认");
     // v0.9.0 §5.3：confirm 档呈现词汇为「总是询问」
     expect(pane.text()).toContain("总是询问");
     expect(pane.text()).toContain("1,000");

@@ -5,7 +5,7 @@
  * - 到期/撤销/应用退出自动失效（后端语义），前端每次执行前重新查询；
  * - 与「替我批准」（workspace）互相独立，不是别名。
  */
-import { codingFetch, codingFetchJson, codingJsonInit } from "./codingHttp";
+import { codingFetchJson, codingJsonInit } from "./codingHttp";
 
 export interface FullAccessGrantState {
   active: boolean;
@@ -59,11 +59,10 @@ export async function createFullAccessGrant(
 
 /** 即时撤销（幂等）。 */
 export async function revokeFullAccessGrant(grantId: string): Promise<boolean> {
-  const response = await codingFetch(
+  const body = await codingFetchJson<{ revoked?: boolean }>(
     `/full-access-grants/${grantId}`,
     { method: "DELETE" }
   );
-  if (!response.ok) return false;
-  const body = (await response.json()) as { revoked?: boolean };
-  return body.revoked === true;
+  // 已经撤销也视为幂等成功；网络和接口失败必须保留授权状态并向用户报告。
+  return body.revoked === true || body.revoked === false;
 }

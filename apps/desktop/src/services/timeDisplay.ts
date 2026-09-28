@@ -34,6 +34,13 @@ const dateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour12: false,
 });
 
+const adminDateTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  timeZone: PRODUCT_TIMEZONE,
+  dateStyle: "medium",
+  timeStyle: "medium",
+  hour12: false,
+});
+
 const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   timeZone: PRODUCT_TIMEZONE,
   year: "numeric",
@@ -58,6 +65,21 @@ export function formatDateTime(
 ): string {
   const date = parse(input);
   return date ? dateTimeFormatter.format(date).replace(/\//g, "-") : "—";
+}
+
+/** 管理员时间保留秒；旧管理 API 的无时区时间按服务端 UTC 约定解析。 */
+export function formatAdminDateTime(
+  input: string | Date | null | undefined
+): string {
+  let value = typeof input === "string" ? input.trim() : input;
+  if (
+    typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?$/.test(value)
+  ) {
+    value = `${value.replace(" ", "T")}Z`;
+  }
+  const date = parse(value);
+  return date ? adminDateTimeFormatter.format(date) : "--";
 }
 
 /** `YYYY/MM/DD`（上海时区）。 */

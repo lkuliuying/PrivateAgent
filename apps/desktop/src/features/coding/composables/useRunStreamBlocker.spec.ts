@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 import { effectScope } from "vue";
 import { useRunStream, type RunStreamDeps } from "./useRunStream";
 import type { RunSnapshot, RunStreamFrame } from "../model/runContracts";
+import { describeRunBlocker } from "../model/runBlocking";
 
 function makeDeps(createRun: RunStreamDeps["createRun"]) {
   const deps: RunStreamDeps = {
@@ -78,5 +79,28 @@ describe("useRunStream · 创建失败关闭（H1-B §5.6）", () => {
     expect(controller.createErrorCode.value).toBeNull();
     expect(controller.phase.value).toBe("idle");
     scope.stop();
+  });
+
+  it("创建响应丢失时提示结果未知并要求原输入显式重试，不宣称后端拒绝", async () => {
+    const deps = makeDeps(vi.fn(async () => {
+      throw new Error("本机管道响应超时");
+    }));
+    const scope = effectScope();
+    const controller = scope.run(() => useRunStream(deps))!;
+    try {
+      await controller.startRun(INPUT);
+      const blocker = describeRunBlocker(controller.createErrorCode.value);
+      expect(controller.phase.value).toBe("error");
+      expect(controller.projection.value).toBeNull();
+      expect(controller.connectionError.value).toBe("本机管道响应超时");
+      expect(blocker.title).toBe("执行创建结果未知");
+      expect(blocker.hint).toContain("原输入");
+      expect(blocker.hint).not.toContain("后端拒绝");
+      expect(blocker.recovery).toBe("retry");
+      expect(deps.createRun).toHaveBeenCalledTimes(1);
+      expect(deps.openStream).not.toHaveBeenCalled();
+    } finally {
+      scope.stop();
+    }
   });
 });

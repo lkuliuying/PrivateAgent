@@ -80,8 +80,8 @@
 - [x] 新增 `docs/archive/phases/phase6-requirements.md`。
 - [x] 新增 `docs/archive/phases/phase6-plan.md`。
 - [x] 更新 README 第六阶段引用。
-- [x] 更新 `docs/requirements.md` 后续阶段表。
-- [x] 更新 `docs/usage-guide.md` 路线图。
+- [x] 更新 `docs/archive/legacy/requirements.md` 后续阶段表。
+- [x] 更新 `docs/archive/legacy/usage-guide.md` 路线图。
 - [x] 明确第五阶段剩余真实发布 smoke 不属于第六阶段核心产品能力。
 
 验收：
@@ -288,7 +288,7 @@
 
 任务：
 
-- [x] 更新 `docs/usage-guide.md` 第六阶段说明。
+- [x] 更新 `docs/archive/legacy/usage-guide.md` 第六阶段说明。
 - [x] 更新 README 阶段状态。
 - [x] 补充 API 表。
 - [x] 补充数据模型说明。
@@ -433,9 +433,9 @@ alembic/versions/0009_phase6_proactive_hub.py
 - `README.md`
   - 第六阶段状态。
   - 今日中枢入口说明。
-- `docs/usage-guide.md`
+- `docs/archive/legacy/usage-guide.md`
   - 今日页、收件箱、提醒、目标、简报、隐私审计使用说明。
-- `docs/requirements.md`
+- `docs/archive/legacy/requirements.md`
   - 阶段路线表补充第六阶段。
 - `docs/archive/phases/phase6-requirements.md`
   - 勾选验收清单。

@@ -1,12 +1,10 @@
 import { flushPromises, mount } from "@vue/test-utils";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  cmdSetModelProviderSecret,
   discoverModelProviderModels,
-  getSettings,
   listModelProviders,
+  probeModelProviderModel,
   saveModelProvider,
-  updateSettings,
   updateModelProviderRuntimeSecret,
 } from "../api";
 import {
@@ -14,43 +12,42 @@ import {
   probeCodingModelProfile,
 } from "../features/coding/api/modelProfiles";
 import SettingsView from "./SettingsView.vue";
+import McpIntegrationsPanel from "./McpIntegrationsPanel.vue";
+import { getLocalModelSettings, saveLocalModelSettings } from "../api/modelProviders";
 
-const refreshHealth = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("../api/modelProviders", () => ({
+  getLocalModelSettings: vi.fn().mockResolvedValue({ llm_temperature: 0.7, llm_context_length: 8192, kb_enabled_by_default: false }),
+  saveLocalModelSettings: vi.fn(),
+}));
+
 const refreshCoding = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const codingScope = vi.hoisted(() => ({
+  projects: { value: [] as { id: number; name: string }[] },
+  selectedProjectId: { value: null as number | null },
+  selectProject: vi.fn(),
+}));
 
 vi.mock("../api", () => ({
   clearModelProviderRuntimeSecret: vi.fn(),
   cmdClearModelProviderSecret: vi.fn(),
-  cmdSetModelProviderSecret: vi.fn(),
   deleteModelProvider: vi.fn(),
   discoverModelProviderModels: vi.fn(),
   exportBackup: vi.fn(),
-  getSettings: vi.fn().mockRejectedValue(new Error("not needed")),
   isDesktopRuntime: () => true,
-  listBackups: vi.fn().mockResolvedValue({ items: [] }),
   listModelProviders: vi.fn(),
+  probeModelProviderModel: vi.fn(),
   previewRestoreBackup: vi.fn(),
   saveModelProvider: vi.fn(),
   updateModelProviderRuntimeSecret: vi.fn(),
-  updateSettings: vi.fn(),
 }));
 
 vi.mock("../features/coding/model/codingWorkspaceStore", () => ({
-  useCodingWorkspace: () => ({ refresh: refreshCoding }),
+  useCodingWorkspace: () => ({ refresh: refreshCoding, ...codingScope }),
 }));
 
 vi.mock("../features/coding/api/modelProfiles", () => ({
   fetchCodingModelProfiles: vi.fn(),
   probeCodingModelProfile: vi.fn(),
-}));
-
-vi.mock("../stores/health", () => ({
-  useHealth: () => ({
-    health: { value: null },
-    refreshing: { value: false },
-    error: { value: null },
-    refresh: refreshHealth,
-  }),
 }));
 
 vi.mock("../stores/notifications", () => ({
@@ -79,7 +76,10 @@ const sampleProvider = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getSettings).mockRejectedValue(new Error("not needed"));
+  window.localStorage.clear();
+  codingScope.projects.value = [];
+  codingScope.selectedProjectId.value = null;
+  vi.mocked(probeModelProviderModel).mockResolvedValue(true);
   vi.mocked(listModelProviders).mockResolvedValue([sampleProvider]);
   vi.mocked(fetchCodingModelProfiles).mockResolvedValue({
     status: "ok",
@@ -109,15 +109,73 @@ beforeEach(() => {
     { modelId: "glm-5", contextTokens: 131072, maxOutputTokens: null, metadataSource: "provider_api" },
     { modelId: "glm-4.7", contextTokens: null, maxOutputTokens: null, metadataSource: "unknown" },
   ]);
-  vi.mocked(cmdSetModelProviderSecret).mockResolvedValue({
-    reference: "secret://os-keyring/model-provider/glm-prod",
-    configured: true,
-  });
+
   vi.mocked(saveModelProvider).mockResolvedValue(sampleProvider);
   vi.mocked(updateModelProviderRuntimeSecret).mockResolvedValue(undefined);
 });
 
 describe("SettingsView 统一模型设置", () => {
+  it("MCP 设置绑定当前项目，切换使用已有工作区选择入口", async () => {
+    codingScope.projects.value = [{ id: 1, name: "项目甲" }, { id: 2, name: "项目乙" }];
+    codingScope.selectedProjectId.value = 1;
+    const wrapper = mount(SettingsView, {
+      props: { activeSection: "mcp" },
+      global: { stubs: { McpIntegrationsPanel: true, DocumentationMcpPanel: true } },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(McpIntegrationsPanel).props("projectId")).toBe(1);
+    await wrapper.get('[aria-label="MCP 所属项目"]').setValue("2");
+    expect(codingScope.selectProject).toHaveBeenCalledWith(2);
+    wrapper.unmount();
+  });
+
+  it("没有项目时显示引导，不请求项目 MCP 配置", async () => {
+    const wrapper = mount(SettingsView, {
+      props: { activeSection: "mcp" },
+      global: { stubs: { McpIntegrationsPanel: true, DocumentationMcpPanel: true } },
+    });
+    await flushPromises();
+    expect(wrapper.findComponent(McpIntegrationsPanel).exists()).toBe(false);
+    expect(wrapper.text()).toContain("请先在工作台打开项目");
+    expect(codingScope.selectProject).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("OpenAI 供应商可以选择 Responses 并保留保存结果", async () => {
+    const configured = { ...sampleProvider, apiFormat: "responses" as const };
+    vi.mocked(saveModelProvider).mockResolvedValue(configured);
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    const format = wrapper.get('[data-testid="provider-api-format"]');
+    expect(format.element).toHaveProperty("value", "chat_completions");
+    await format.setValue("responses");
+    vi.mocked(listModelProviders).mockResolvedValue([configured]);
+    await wrapper.get(".detail-actions .primary-button").trigger("click");
+    await flushPromises();
+    expect(saveModelProvider).toHaveBeenCalledWith(sampleProvider.id, expect.objectContaining({
+      protocol: "openai", apiFormat: "responses",
+    }));
+    expect(wrapper.get('[data-testid="provider-api-format"]').element).toHaveProperty("value", "responses");
+    wrapper.unmount();
+  });
+
+  it("旧本机模式仍可管理供应商，当前模型与模型设置均无手动执行模块", async () => {
+    window.localStorage.setItem("privateagent.local-model.v1", JSON.stringify({
+      inference_mode: "local", model_protocol: "ollama", model_endpoint: "http://127.0.0.1:11434",
+      model_name: "old-model", context_tokens: 8192,
+    }));
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    expect(wrapper.find('[data-testid="model-provider-manager"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("模型执行设置");
+    await wrapper.setProps({ activeSection: "current-model" });
+    await flushPromises();
+    expect(wrapper.text()).toContain("glm-5");
+    expect(wrapper.text()).not.toContain("模型执行设置");
+    wrapper.unmount();
+    window.localStorage.clear();
+  });
+
   it("显示供应商双栏管理并移除项目模型区", async () => {
     const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
     await flushPromises();
@@ -141,12 +199,11 @@ describe("SettingsView 统一模型设置", () => {
         apiKeyConfigured: false,
       },
     ]);
-    const { getSettings } = await import("../api");
-    vi.mocked(getSettings).mockResolvedValue({
+    vi.mocked(getLocalModelSettings).mockResolvedValue({
       llm_temperature: 0.3,
       llm_context_length: 4096,
       kb_enabled_by_default: true,
-    } as Awaited<ReturnType<typeof getSettings>>);
+    });
     const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
     await flushPromises();
 
@@ -155,7 +212,7 @@ describe("SettingsView 统一模型设置", () => {
     await wrapper.get('[data-testid="ollama-temperature"]').setValue("0.5");
     await wrapper.get(".detail-actions .primary-button").trigger("click");
     await flushPromises();
-    expect(updateSettings).toHaveBeenCalledWith({
+    expect(saveLocalModelSettings).toHaveBeenCalledWith({
       llm_temperature: 0.5,
       llm_context_length: 4096,
       kb_enabled_by_default: true,
@@ -238,13 +295,7 @@ describe("SettingsView 统一模型设置", () => {
   });
 
   it("供应商列表暂时失败时仍显示已加载的当前模型", async () => {
-    vi.mocked(getSettings).mockResolvedValue({
-      provider_type: "openai",
-      openai_config_name: "OpenAI 兼容 API",
-      openai_model: "fallback-model",
-      openai_base_url: "https://api.example.com/v1",
-      embed_model: "bge-m3",
-    } as Awaited<ReturnType<typeof getSettings>>);
+
     vi.mocked(listModelProviders).mockRejectedValue(new Error("temporary failure"));
 
     const wrapper = mount(SettingsView, { props: { activeSection: "current-model" } });
@@ -252,14 +303,13 @@ describe("SettingsView 统一模型设置", () => {
 
     expect(wrapper.text()).toContain("glm-5");
     expect(wrapper.text()).toContain("智谱 GLM");
-    expect(wrapper.text()).toContain("https://api.example.com/v1");
-    expect(wrapper.text()).toContain("bge-m3");
+    expect(wrapper.text()).not.toContain("fallback-model");
     wrapper.unmount();
   });
 
   it("模型连接测试期间显示旋转圆环并阻止重复点击", async () => {
-    let resolveProbe!: (value: Awaited<ReturnType<typeof probeCodingModelProfile>>) => void;
-    vi.mocked(probeCodingModelProfile).mockImplementationOnce(
+    let resolveProbe!: (value: boolean) => void;
+    vi.mocked(probeModelProviderModel).mockImplementationOnce(
       () => new Promise((resolve) => { resolveProbe = resolve; })
     );
     const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
@@ -271,17 +321,80 @@ describe("SettingsView 统一模型设置", () => {
     expect(wrapper.find('[data-testid="model-test-spinner"]').exists()).toBe(true);
     expect(button.attributes("aria-busy")).toBe("true");
     expect(button.attributes("disabled")).toBeDefined();
+    await button.trigger("click");
+    expect(probeModelProviderModel).toHaveBeenCalledTimes(1);
 
-    resolveProbe({
-      status: "ok",
-      providerReachable: true,
-      modelExists: true,
-      nativeToolCalls: true,
-      detail: "",
-    });
+    resolveProbe(true);
     await flushPromises();
     expect(wrapper.find('[data-testid="model-test-spinner"]').exists()).toBe(false);
     expect(wrapper.text()).toContain("模型连接测试成功");
+    expect(wrapper.text()).toContain("未测试聊天生成");
     wrapper.unmount();
+  });
+
+  it("Coding 关闭时仍用已保存的供应商测试，不使用未保存的地址或密钥", async () => {
+    vi.mocked(probeCodingModelProfile).mockRejectedValue(
+      new Error("Model profiles are disabled")
+    );
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    await wrapper.get('input[type="url"]').setValue("https://unsaved.example.test");
+    await wrapper.get('input[type="password"]').setValue("unsaved-test-value");
+
+    await wrapper.get('button[aria-label="测试模型"]').trigger("click");
+    await flushPromises();
+
+    expect(probeModelProviderModel).toHaveBeenCalledWith(sampleProvider, "glm-5");
+    expect(probeCodingModelProfile).not.toHaveBeenCalled();
+    expect(wrapper.text()).toContain("模型连接测试成功");
+    expect(updateModelProviderRuntimeSecret).not.toHaveBeenCalled();
+    expect(saveModelProvider).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("列表中缺少所选模型时不显示连接测试成功", async () => {
+    vi.mocked(probeModelProviderModel).mockResolvedValue(false);
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    await wrapper.get('button[aria-label="测试模型"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("可用列表中未找到该模型");
+    expect(wrapper.text()).not.toContain("模型连接测试成功");
+    wrapper.unmount();
+  });
+
+  it("测试请求失败后显示错误并允许重试", async () => {
+    vi.mocked(probeModelProviderModel).mockRejectedValueOnce(new Error("无法连接模型服务"));
+    const wrapper = mount(SettingsView, { props: { activeSection: "provider" } });
+    await flushPromises();
+    const button = wrapper.get('button[aria-label="测试模型"]');
+    await button.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("无法连接模型服务");
+    expect(button.attributes("disabled")).toBeUndefined();
+    await button.trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("模型连接测试成功");
+    wrapper.unmount();
+  });
+
+  it.each([false, true])("普通设置不显示或轮询服务器状态（远程模式：%s）", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const wrapper = mount(SettingsView);
+    try {
+      await flushPromises();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(wrapper.find(".status-card").exists()).toBe(false);
+      expect(wrapper.text()).not.toContain("运行状态");
+      expect(wrapper.text()).not.toContain("MySQL");
+      expect(wrapper.text()).not.toContain("ChromaDB");
+      expect(wrapper.text()).not.toContain("本地后端 API");
+      expect(wrapper.find("h1").text()).toBe("当前模型");
+    } finally {
+      wrapper.unmount();
+      vi.useRealTimers();
+    }
   });
 });

@@ -1,47 +1,27 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { PhCamera, PhTrash, PhUserCircle } from "@phosphor-icons/vue";
+import { onBeforeUnmount, ref } from "vue";
+import { PhCamera, PhTrash } from "@phosphor-icons/vue";
+import { useLocalProfile } from "../services/localProfile";
+import defaultAvatar from "../assets/companion/default-avatar.png";
+import profileCover from "../assets/companion/profile-cover.png";
 
-import { useAuthStore } from "../stores/auth";
+const { profile, readError, save } = useLocalProfile();
 
-interface LocalProfile {
-  avatarDataUrl: string;
-  nickname: string;
-  bio: string;
-}
-
-const auth = useAuthStore();
 const fileInput = ref<HTMLInputElement | null>(null);
-const avatarDataUrl = ref("");
-const nickname = ref("");
-const bio = ref("");
+const avatarDataUrl = ref(profile.value.avatarDataUrl);
+const nickname = ref(profile.value.nickname);
+const bio = ref(profile.value.bio);
 const feedback = ref("");
 const feedbackTone = ref<"success" | "error">("success");
 
-const storageKey = computed(() => `pa.local-profile.${auth.user?.id ?? "guest"}`);
-const username = computed(() => auth.user?.username?.trim() || "未登录");
-const initial = computed(() => (nickname.value.trim() || username.value).slice(0, 1).toUpperCase());
-const roleLabel = computed(() => auth.user?.role === "admin" ? "管理员" : "普通用户");
-const statusLabel = computed(() => auth.user?.status === "disabled" ? "已停用" : "正常");
-
-function readLocalProfile(): void {
-  feedback.value = "";
-  avatarDataUrl.value = "";
-  nickname.value = auth.user?.display_name?.trim() || auth.user?.username?.trim() || "";
-  bio.value = "";
-  try {
-    const raw = window.localStorage.getItem(storageKey.value);
-    if (!raw) return;
-    const saved = JSON.parse(raw) as Partial<LocalProfile>;
-    avatarDataUrl.value = typeof saved.avatarDataUrl === "string" ? saved.avatarDataUrl : "";
-    nickname.value = typeof saved.nickname === "string" ? saved.nickname : nickname.value;
-    bio.value = typeof saved.bio === "string" ? saved.bio : "";
-  } catch {
-    // 本机旧数据不可解析时回到账号默认信息，不阻断设置页。
-  }
+const username = "本机用户";
+let avatarReader: FileReader | null = null;
+function cancelAvatarRead(): void {
+  const reader = avatarReader;
+  avatarReader = null;
+  if (reader?.readyState === FileReader.LOADING) reader.abort();
 }
-
-watch(() => auth.user?.id ?? null, readLocalProfile, { immediate: true });
+onBeforeUnmount(cancelAvatarRead);
 
 function chooseAvatar(): void {
   fileInput.value?.click();
@@ -52,7 +32,7 @@ function onAvatarSelected(event: Event): void {
   const file = input.files?.[0];
   input.value = "";
   if (!file) return;
-  if (!file.type.startsWith("image/")) {
+  if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
     feedbackTone.value = "error";
     feedback.value = "请选择 PNG、JPG 或 WebP 图片。";
     return;
@@ -62,12 +42,18 @@ function onAvatarSelected(event: Event): void {
     feedback.value = "头像图片不能超过 1 MB。";
     return;
   }
+  cancelAvatarRead();
   const reader = new FileReader();
+  avatarReader = reader;
   reader.onload = () => {
+    if (avatarReader !== reader) return;
+    avatarReader = null;
     avatarDataUrl.value = typeof reader.result === "string" ? reader.result : "";
     feedback.value = "";
   };
   reader.onerror = () => {
+    if (avatarReader !== reader) return;
+    avatarReader = null;
     feedbackTone.value = "error";
     feedback.value = "头像读取失败，请重新选择。";
   };
@@ -75,18 +61,18 @@ function onAvatarSelected(event: Event): void {
 }
 
 function removeAvatar(): void {
+  cancelAvatarRead();
   avatarDataUrl.value = "";
   feedback.value = "";
 }
 
 function saveProfile(): void {
   try {
-    const value: LocalProfile = {
+    save({
       avatarDataUrl: avatarDataUrl.value,
       nickname: nickname.value.trim(),
       bio: bio.value.trim(),
-    };
-    window.localStorage.setItem(storageKey.value, JSON.stringify(value));
+    });
     feedbackTone.value = "success";
     feedback.value = "个人资料已保存在当前设备。";
   } catch {
@@ -98,141 +84,107 @@ function saveProfile(): void {
 
 <template>
   <div class="profile-panel" data-testid="profile-settings-panel">
-    <section class="avatar-section" aria-labelledby="profile-avatar-title">
-      <div class="avatar-preview">
-        <img v-if="avatarDataUrl" :src="avatarDataUrl" alt="当前头像" />
-        <span v-else-if="initial" aria-hidden="true">{{ initial }}</span>
-        <PhUserCircle v-else :size="54" weight="fill" aria-hidden="true" />
+    <header class="profile-header">
+      <img class="profile-cover" :src="profileCover" alt="" />
+      <div class="profile-avatar">
+        <img :src="avatarDataUrl || defaultAvatar" alt="当前头像" />
       </div>
-      <div class="avatar-copy">
-        <h3 id="profile-avatar-title">个人头像</h3>
-        <p>支持 PNG、JPG、WebP，图片不超过 1 MB。</p>
-        <div class="avatar-actions">
-          <button type="button" class="profile-button" data-testid="profile-avatar-upload" @click="chooseAvatar">
-            <PhCamera :size="16" aria-hidden="true" />
-            上传头像
-          </button>
-          <button v-if="avatarDataUrl" type="button" class="profile-button secondary" @click="removeAvatar">
-            <PhTrash :size="15" aria-hidden="true" />
-            移除
-          </button>
+      <h1 class="profile-name">{{ nickname.trim() || username }}</h1>
+      <p class="profile-mode">API Key 模式 · 本机工作区</p>
+      <div class="profile-avatar-actions">
+        <button
+          type="button"
+          class="pa-btn pa-btn--ghost profile-avatar-button"
+          data-testid="profile-avatar-upload"
+          aria-describedby="profile-avatar-hint"
+          @click="chooseAvatar"
+        >
+          <PhCamera :size="16" aria-hidden="true" />
+          上传头像
+        </button>
+        <button v-if="avatarDataUrl" type="button" class="pa-btn pa-btn--subtle profile-avatar-button" @click="removeAvatar">
+          <PhTrash :size="15" aria-hidden="true" />
+          移除
+        </button>
+      </div>
+      <p id="profile-avatar-hint" class="profile-avatar-hint">支持 PNG、JPG、WebP，图片不超过 1 MB。</p>
+      <input
+        ref="fileInput"
+        class="profile-file-input"
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        data-testid="profile-avatar-input"
+        tabindex="-1"
+        aria-label="选择头像图片"
+        @change="onAvatarSelected"
+      />
+    </header>
+
+    <section class="profile-details" aria-labelledby="profile-details-title">
+      <h2 id="profile-details-title">基本信息</h2>
+      <p v-if="readError" class="profile-feedback profile-feedback--error" role="alert">{{ readError }}</p>
+      <div class="profile-fields">
+        <label class="profile-field">
+          <span>称呼</span>
+          <input v-model="nickname" class="pa-input" maxlength="50" autocomplete="nickname" />
+        </label>
+        <label class="profile-field">
+          <span id="profile-bio-label">个人简介</span>
+          <textarea v-model="bio" class="pa-input" maxlength="240" rows="3" aria-labelledby="profile-bio-label" aria-describedby="profile-bio-count" placeholder="简单介绍一下自己（可选）" />
+          <small id="profile-bio-count" class="profile-counter">{{ bio.length }} / 240</small>
+        </label>
+      </div>
+
+      <footer class="profile-footer">
+        <div class="profile-save-status">
+          <p>个人资料仅保存在当前设备，暂不跨设备同步。</p>
+          <span v-if="feedback" :class="['profile-feedback', `profile-feedback--${feedbackTone}`]" role="status">{{ feedback }}</span>
         </div>
-        <input
-          ref="fileInput"
-          class="file-input"
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          data-testid="profile-avatar-input"
-          @change="onAvatarSelected"
-        />
-      </div>
+        <button type="button" class="pa-btn pa-btn--primary profile-save" data-testid="profile-save" @click="saveProfile">保存资料</button>
+      </footer>
     </section>
-
-    <div class="profile-fields">
-      <label>
-        <span>称呼</span>
-        <input v-model="nickname" maxlength="50" autocomplete="nickname" />
-      </label>
-      <label class="profile-fields__wide">
-        <span>个人简介</span>
-        <textarea v-model="bio" maxlength="240" rows="3" placeholder="简单介绍一下自己（可选）" />
-      </label>
-    </div>
-
-    <dl class="account-facts">
-      <div><dt>用户名</dt><dd>{{ username }}</dd></div>
-      <div><dt>邮箱</dt><dd>{{ auth.user?.email || "—" }}</dd></div>
-      <div><dt>账号角色</dt><dd>{{ roleLabel }}</dd></div>
-      <div><dt>账号状态</dt><dd>{{ statusLabel }}</dd></div>
-    </dl>
-
-    <footer class="profile-footer">
-      <p>首版个人资料仅保存在当前设备，暂不跨设备同步。</p>
-      <div class="profile-footer__action">
-        <span v-if="feedback" :class="`feedback ${feedbackTone}`" role="status">{{ feedback }}</span>
-        <button type="button" class="profile-button" data-testid="profile-save" @click="saveProfile">保存资料</button>
-      </div>
-    </footer>
   </div>
 </template>
 
 <style scoped>
-.profile-panel { display: grid; gap: 22px; }
-.avatar-section {
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid var(--color-border);
-}
-.avatar-preview {
-  display: grid;
-  width: 82px;
-  height: 82px;
-  flex: 0 0 auto;
-  place-items: center;
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-full);
-  background: var(--color-surface-sunken);
-  color: var(--color-accent);
-  font-size: 28px;
-  font-weight: var(--font-semibold);
-}
-.avatar-preview img { width: 100%; height: 100%; object-fit: cover; }
-.avatar-copy { min-width: 0; }
-.avatar-copy h3 { margin: 0; font-size: var(--text-base); }
-.avatar-copy p { margin: 4px 0 10px; color: var(--color-fg-subtle); font-size: var(--text-xs); }
-.avatar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.file-input { position: absolute; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
-.profile-button {
-  display: inline-flex;
-  height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  padding: 0 13px;
-  border: 1px solid var(--color-accent);
-  border-radius: 9px;
-  background: var(--color-accent);
-  color: white;
-  font: inherit;
-  font-size: var(--text-xs);
-  cursor: pointer;
-}
-.profile-button.secondary { border-color: var(--color-border); background: var(--color-surface); color: var(--color-fg-muted); }
-.profile-button:hover { filter: brightness(.97); }
-.profile-button:focus-visible,
-.profile-fields input:focus-visible,
-.profile-fields textarea:focus-visible { outline: var(--focus-ring); outline-offset: 2px; }
-.profile-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
-.profile-fields label { display: grid; gap: 6px; color: var(--color-fg-muted); font-size: var(--text-xs); }
-.profile-fields input,
-.profile-fields textarea {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 9px 11px;
-  border: 1px solid var(--color-border-strong);
-  border-radius: 9px;
-  background: var(--color-surface);
-  color: var(--color-fg);
-  font: inherit;
-}
-.profile-fields textarea { resize: vertical; }
-.account-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 0; }
-.account-facts > div { padding: 12px 14px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-sunken); }
-.account-facts dt { color: var(--color-fg-subtle); font-size: var(--pa-text-meta); }
-.account-facts dd { overflow: hidden; margin: 4px 0 0; color: var(--color-fg); font-size: var(--text-sm); text-overflow: ellipsis; white-space: nowrap; }
-.profile-footer { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding-top: 16px; border-top: 1px solid var(--color-border); }
-.profile-footer > p { margin: 0; color: var(--color-fg-faint); font-size: var(--pa-text-meta); }
-.profile-footer__action { display: flex; align-items: center; gap: 10px; }
-.feedback { font-size: var(--pa-text-meta); }
-.feedback.success { color: var(--color-success-fg); }
-.feedback.error { color: var(--color-danger-fg); }
-@media (max-width: 640px) {
-  .avatar-section,
+.profile-panel { width: 100%; min-width: 0; margin: 0 auto; }
+.profile-header { position: relative; display: grid; grid-template-columns: 100px minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-5); padding: 0 var(--space-6) var(--space-5); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.profile-cover { grid-column: 1 / -1; width: calc(100% + 48px); height: 160px; margin: 0 -24px; object-fit: cover; object-position: center 85%; }
+.profile-avatar { position: relative; grid-column: 1; grid-row: 2 / 5; width: 100px; height: 100px; margin-top: -36px; overflow: hidden; border: 4px solid var(--color-surface); border-radius: var(--radius-full); background: var(--color-surface); }
+.profile-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.profile-name { grid-column: 2; margin: var(--space-4) 0 var(--space-1); font-size: var(--pa-text-page-title); font-weight: var(--font-semibold); overflow-wrap: anywhere; }
+.profile-mode { grid-column: 2; margin: 0; color: var(--color-fg-subtle); font-size: var(--pa-text-compact); }
+.profile-avatar-actions { grid-column: 3; grid-row: 2 / 4; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); padding-top: var(--space-3); }
+.profile-avatar-button { height: 34px; }
+.profile-avatar-hint { grid-column: 2 / -1; margin: var(--space-2) 0 0; color: var(--color-fg-subtle); font-size: var(--pa-text-meta); }
+.profile-file-input { display: none; }
+.profile-details { margin-top: var(--space-5); padding: var(--space-6); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); }
+.profile-details h2 { margin: 0 0 var(--space-5); font-size: var(--pa-text-section); font-weight: var(--font-semibold); }
+.profile-fields { display: grid; gap: var(--space-5); }
+.profile-field { display: grid; grid-template-columns: 130px minmax(0, 1fr); align-items: start; gap: var(--space-3); }
+.profile-field > span { padding-top: var(--space-2); color: var(--color-fg-muted); font-size: var(--pa-text-body); }
+.profile-field .pa-input { width: 100%; min-width: 0; }
+.profile-field textarea { min-height: 114px; resize: vertical; }
+.profile-counter { grid-column: 2; text-align: right; color: var(--color-fg-subtle); font-size: var(--pa-text-meta); }
+.profile-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); margin-top: var(--space-5); padding-top: var(--space-5); border-top: 1px solid var(--color-border); }
+.profile-save-status { min-width: 0; }
+.profile-save-status p { margin: 0; color: var(--color-fg-subtle); font-size: var(--pa-text-meta); }
+.profile-feedback { display: block; margin-top: var(--space-2); font-size: var(--pa-text-compact); }
+.profile-feedback--success { color: var(--color-success-fg); }
+.profile-feedback--error { color: var(--color-danger-fg); }
+.profile-save { flex-shrink: 0; padding-inline: var(--space-5); }
+@media (max-width: 760px) {
+  .profile-header { grid-template-columns: 76px minmax(0, 1fr); gap: var(--space-2) var(--space-4); padding-bottom: var(--space-4); }
+  .profile-cover { height: 128px; }
+  .profile-avatar { width: 76px; height: 76px; }
+  .profile-name { margin-top: var(--space-2); }
+  .profile-avatar-actions { grid-column: 2; grid-row: auto; padding-top: 0; }
+  .profile-avatar-hint { grid-column: 1 / -1; }
+  .profile-details { padding: var(--space-4); }
+  .profile-field { grid-template-columns: minmax(0, 1fr); gap: var(--space-2); }
+  .profile-field > span { padding: 0; }
+  .profile-counter { grid-column: 1; }
   .profile-footer { align-items: flex-start; flex-direction: column; }
-  .account-facts { grid-template-columns: 1fr; }
-  .profile-footer__action { width: 100%; justify-content: space-between; }
+  .profile-save { align-self: flex-end; }
 }
 </style>

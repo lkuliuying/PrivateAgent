@@ -124,8 +124,17 @@ const UNKNOWN_BLOCKER: RunBlockerFacts = {
   recoveryLabel: "重试",
 };
 
+const UNCONFIRMED_CREATE: RunBlockerFacts = {
+  title: "执行创建结果未知",
+  hint: "暂未确认是否已创建执行。请保留原输入并点击“重试”；不要另建任务重复提交。",
+  recovery: "retry",
+  recoveryLabel: "重试",
+};
+
 /** 按后端 error_code 派生阻塞项事实；未知码收敛为通用阻塞（不猜测）。 */
 export function describeRunBlocker(code: string | null): RunBlockerFacts {
+  // 没有结构化拒绝事实时，响应超时可能发生在创建成功之后。
+  if (!code) return UNCONFIRMED_CREATE;
   if (code && code in BLOCKERS) return BLOCKERS[code];
   return UNKNOWN_BLOCKER;
 }

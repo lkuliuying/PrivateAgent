@@ -17,6 +17,9 @@ venv/
 .env
 .env.local
 .env.container
+.env.*
+!.env.example
+!.env.*.example
 smtp.env
 .secrets/
 
@@ -76,3 +79,12 @@ apps/spawn-test/target/
 
 # Canvas 报告会话状态（仅 .canvas.tsx 本体入库）
 *.canvas.status.json
+
+# 本机设计验收过程产物；正式文档素材和 e2e 快照仍然入库
+/design-qa.md
+/design-qa-*.png
+/design-qa-*.jpg
+/apps/desktop/design-qa.md
+/apps/desktop/design-implementation-*.png
+/apps/desktop/phase2-workspace-*.png
+/v100-codex-tool-engine-completion-report.canvas.tsx

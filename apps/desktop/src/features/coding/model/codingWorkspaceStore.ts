@@ -1,24 +1,28 @@
 /**
  * v0.8.0 W1 · Coding 工作台 store
  *
- * 模块级响应式单例（延续 stores/health.ts 惯例，无 pinia）：
+ * 模块级响应式单例，无 pinia：
  * 侧栏/首页/任务页共享项目树、模型能力与选择状态；API 只在 store 与
  * features/coding/api 内发生，组件经 props 注入本 store（默认单例）。
  *
  * 竞态防护：bootstrap/refresh 使用序号令牌，迟到响应不回写状态
  * （对齐 App.vue contextSeq 范式）；切换项目只改选择，不整页重置树。
  */
-import { computed, ref, type ComputedRef, type Ref } from "vue";
-import { getHealth, getRuntimeCapabilities } from "../../../api";
+import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
+import { checkLocalExecutorHealth, setLocalProjectContext } from "../../../services/localExecutor";
+import { getRuntimeCapabilities } from "../../../api";
 import {
   ensureCodingRootWorkspace,
+  fetchCodingBranches,
   fetchCodingProjects,
   fetchCodingWorkspaces,
+  switchCodingBranch,
 } from "../api/projects";
 import { createCodingThread, fetchCodingThreads } from "../api/threads";
 import { fetchCodingModelProfiles } from "../api/modelProfiles";
 import type {
   CodingApiError,
+  CodingBranchState,
   CodingHomeState,
   CodingFirstTurnPayload,
   CodingModelProfilesResult,
@@ -36,6 +40,7 @@ export type CodingLoadPhase = "idle" | "loading" | "ready" | "error";
 export interface CodingWorkspaceStore {
   projects: Ref<CodingProjectSummary[]>;
   workspacesByProject: Ref<Record<number, CodingWorkspaceSummary[]>>;
+  branchesByProject: Ref<Record<number, CodingBranchState>>;
   threadsByProject: Ref<Record<number, CodingThreadSummary[]>>;
   modelProfiles: Ref<CodingModelProfilesResult | null>;
   /** v0.9.0 H1-A：/capabilities 能力位（权限选项可用性事实源） */
@@ -45,6 +50,7 @@ export interface CodingWorkspaceStore {
   sidecarOk: Ref<boolean | null>;
   selectedProjectId: Ref<number | null>;
   selectedWorkspaceId: Ref<number | null>;
+  selectedBranchName: Ref<string | null>;
   selectedThreadId: Ref<number | null>;
   pendingFirstTurn: Ref<CodingPendingFirstTurn | null>;
   tree: ComputedRef<CodingProjectNode[]>;
@@ -54,8 +60,11 @@ export interface CodingWorkspaceStore {
   selectedThread: ComputedRef<CodingThreadSummary | null>;
   bootstrap: () => Promise<void>;
   refresh: () => Promise<void>;
+  removeDeletedProject: (projectId: number) => void;
+  removeDeletedThread: (threadId: number) => void;
   selectProject: (projectId: number) => void;
   selectWorkspace: (workspaceId: number) => void;
+  selectBranch: (branchName: string) => Promise<void>;
   selectThread: (threadId: number) => void;
   recordThreadRun: (threadId: number, runId: string, updatedAt?: string) => void;
   startNewTask: () => void;
@@ -71,12 +80,11 @@ const defaultFetchers: CodingWorkspaceFetchers = {
   workspaces: fetchCodingWorkspaces,
   threads: fetchCodingThreads,
   modelProfiles: fetchCodingModelProfiles,
-  health: async () => {
-    await getHealth();
-    return true;
-  },
+  health: checkLocalExecutorHealth,
   createThread: createCodingThread,
   ensureRootWorkspace: ensureCodingRootWorkspace,
+  branches: fetchCodingBranches,
+  switchBranch: switchCodingBranch,
   // v0.9.0 H1-A：能力位获取失败按「未提供」处理（不在前端扩大授权）
   capabilities: async () => {
     try {
@@ -98,9 +106,13 @@ export function createCodingWorkspaceStore(
   fetchers: Partial<CodingWorkspaceFetchers> = {}
 ): CodingWorkspaceStore {
   const source: CodingWorkspaceFetchers = { ...defaultFetchers, ...fetchers };
+  const customSource = Object.keys(fetchers).length > 0;
+  if (customSource && !("branches" in fetchers)) source.branches = undefined;
+  if (customSource && !("switchBranch" in fetchers)) source.switchBranch = undefined;
 
   const projects = ref<CodingProjectSummary[]>([]);
   const workspacesByProject = ref<Record<number, CodingWorkspaceSummary[]>>({});
+  const branchesByProject = ref<Record<number, CodingBranchState>>({});
   const threadsByProject = ref<Record<number, CodingThreadSummary[]>>({});
   const modelProfiles = ref<CodingModelProfilesResult | null>(null);
   const capabilities = ref<Record<string, unknown> | null>(null);
@@ -110,8 +122,18 @@ export function createCodingWorkspaceStore(
 
   const selectedProjectId = ref<number | null>(null);
   const selectedWorkspaceId = ref<number | null>(null);
+  const selectedBranchName = ref<string | null>(null);
   const selectedThreadId = ref<number | null>(null);
   const pendingFirstTurn = ref<CodingPendingFirstTurn | null>(null);
+
+  function syncProjectContext(projectId: number | null): void {
+    void setLocalProjectContext(projectId).then(() => {
+      if (loadError.value?.code === "project_context_failed") loadError.value = null;
+    }).catch(() => {
+      loadError.value = { status: 0, code: "project_context_failed", message: "项目切换撤权失败，请重新选择项目或退出客户端；新操作已阻止" };
+    });
+  }
+  watch(selectedProjectId, syncProjectContext, { flush: "sync" });
 
   // bootstrap/refresh 序号令牌：迟到响应放弃回写
   let loadSeq = 0;
@@ -180,18 +202,29 @@ export function createCodingWorkspaceStore(
 
   /** 载入首个可用工作区作为默认选择（保持既有选择优先） */
   function applyDefaultSelection() {
+    if (selectedThreadId.value !== null && !selectedThread.value) {
+      selectedThreadId.value = null;
+    }
+    if (pendingFirstTurn.value && !Object.values(threadsByProject.value).some(
+      (threads) => threads.some((thread) => thread.id === pendingFirstTurn.value?.threadId)
+    )) pendingFirstTurn.value = null;
     if (selectedProjectId.value === null || !projectExists(selectedProjectId.value)) {
       selectedProjectId.value = projects.value[0]?.id ?? null;
       selectedWorkspaceId.value = null;
     }
     const projectId = selectedProjectId.value;
-    if (projectId === null) return;
+    if (projectId === null) {
+      selectedThreadId.value = null;
+      selectedBranchName.value = null;
+      return;
+    }
     const workspaces = workspacesByProject.value[projectId] ?? [];
     const current = workspaces.find((workspace) => workspace.id === selectedWorkspaceId.value);
     if (!current) {
       const preferred = workspaces.find(isWorkspaceUsable) ?? workspaces[0];
       selectedWorkspaceId.value = preferred?.id ?? null;
     }
+    selectedBranchName.value = branchesByProject.value[projectId]?.currentBranch ?? current?.branchName ?? null;
   }
 
   function projectExists(projectId: number): boolean {
@@ -222,7 +255,9 @@ export function createCodingWorkspaceStore(
         source.modelProfiles(),
       ]);
       if (mine !== loadSeq) return;
-      projects.value = projectList;
+      projects.value = [...projectList].sort((left, right) =>
+        (right.pinnedAt ?? "").localeCompare(left.pinnedAt ?? "")
+      );
       modelProfiles.value = profiles;
       // v0.9.0 H1-A：能力位不阻塞首页状态机（真实网络请求），单独尽力获取；
       // 失败/未提供时保持 null，权限高级选项不可选（不在前端扩大授权）。
@@ -235,6 +270,26 @@ export function createCodingWorkspaceStore(
       const workspaceMap: Record<number, CodingWorkspaceSummary[]> = {};
       for (const [projectId, list] of workspaceEntries) workspaceMap[projectId] = list;
       workspacesByProject.value = workspaceMap;
+
+      if (source.branches) {
+        const branchEntries = await Promise.all(
+          projectList.map(async (project) => {
+            try {
+              return [project.id, await source.branches!(project.id)] as const;
+            } catch {
+              return [project.id, null] as const;
+            }
+          })
+        );
+        if (mine !== loadSeq) return;
+        const branchMap: Record<number, CodingBranchState> = {};
+        for (const [projectId, state] of branchEntries) {
+          if (state) branchMap[projectId] = state;
+        }
+        branchesByProject.value = branchMap;
+      } else {
+        branchesByProject.value = {};
+      }
 
       const threadEntries = await Promise.all(
         projectList.map(async (project) => [project.id, await source.threads(project.id)] as const)
@@ -283,12 +338,34 @@ export function createCodingWorkspaceStore(
     return load();
   }
 
+  /** 删除成功后先清理本地状态，避免刷新失败或旧响应让记录重新出现。 */
+  function removeDeletedThread(threadId: number): void {
+    ++loadSeq;
+    threadsByProject.value = Object.fromEntries(Object.entries(threadsByProject.value).map(
+      ([id, threads]) => [id, threads.filter((thread) => thread.id !== threadId)]
+    ));
+    applyDefaultSelection();
+    loadPhase.value = "ready";
+  }
+
+  function removeDeletedProject(projectId: number): void {
+    ++loadSeq;
+    projects.value = projects.value.filter((project) => project.id !== projectId);
+    delete workspacesByProject.value[projectId];
+    delete branchesByProject.value[projectId];
+    delete threadsByProject.value[projectId];
+    applyDefaultSelection();
+    loadPhase.value = "ready";
+  }
+
   function selectProject(projectId: number): void {
     if (!projectExists(projectId)) return;
+    if (selectedProjectId.value === projectId) syncProjectContext(projectId);
     selectedProjectId.value = projectId;
     const workspaces = workspacesByProject.value[projectId] ?? [];
     const preferred = workspaces.find(isWorkspaceUsable) ?? workspaces[0];
     selectedWorkspaceId.value = preferred?.id ?? null;
+    selectedBranchName.value = branchesByProject.value[projectId]?.currentBranch ?? preferred?.branchName ?? null;
     selectedThreadId.value = null;
   }
 
@@ -300,6 +377,36 @@ export function createCodingWorkspaceStore(
     );
     if (!workspace) return;
     selectedWorkspaceId.value = workspaceId;
+    selectedBranchName.value = branchesByProject.value[projectId]?.currentBranch ?? workspace.branchName;
+    selectedThreadId.value = null;
+  }
+
+  async function selectBranch(branchName: string): Promise<void> {
+    const projectId = selectedProjectId.value;
+    if (projectId === null || !source.switchBranch) {
+      throw { status: 409, code: "git_branch_unavailable", message: "当前 Runtime 不支持本地分支切换" } satisfies CodingApiError;
+    }
+    const state = await source.switchBranch(projectId, branchName);
+    branchesByProject.value = { ...branchesByProject.value, [projectId]: state };
+    const workspaces = workspacesByProject.value[projectId] ?? [];
+    const rootWorkspace = workspaces.find((workspace) => workspace.kind === "root");
+    if (rootWorkspace) {
+      workspacesByProject.value = {
+        ...workspacesByProject.value,
+        [projectId]: workspaces.map((workspace) =>
+          workspace.id === rootWorkspace.id
+            ? {
+                ...workspace,
+                branchName: state.currentBranch,
+                headSha: state.headSha,
+                status: state.dirty ? "dirty" : "active",
+              }
+            : workspace
+        ),
+      };
+      selectedWorkspaceId.value = rootWorkspace.id;
+    }
+    selectedBranchName.value = state.currentBranch;
     selectedThreadId.value = null;
   }
 
@@ -309,6 +416,11 @@ export function createCodingWorkspaceStore(
       if (thread) {
         selectedProjectId.value = thread.projectId ?? Number(projectId);
         selectedWorkspaceId.value = thread.workspaceId;
+        const resolvedProjectId = thread.projectId ?? Number(projectId);
+        const selected = (workspacesByProject.value[resolvedProjectId] ?? []).find(
+          (workspace) => workspace.id === thread.workspaceId
+        );
+        selectedBranchName.value = branchesByProject.value[resolvedProjectId]?.currentBranch ?? selected?.branchName ?? null;
         selectedThreadId.value = threadId;
         return;
       }
@@ -415,11 +527,21 @@ export function createCodingWorkspaceStore(
     if (selectedProjectId.value === projectId) {
       selectedWorkspaceId.value = workspace.id;
     }
+    if (source.branches) {
+      try {
+        const state = await source.branches(projectId);
+        branchesByProject.value = { ...branchesByProject.value, [projectId]: state };
+        if (selectedProjectId.value === projectId) selectedBranchName.value = state.currentBranch;
+      } catch {
+        // 旧 Runtime 无分支接口时仍保留根工作区，不阻断项目使用。
+      }
+    }
   }
 
   return {
     projects,
     workspacesByProject,
+    branchesByProject,
     threadsByProject,
     modelProfiles,
     capabilities,
@@ -428,6 +550,7 @@ export function createCodingWorkspaceStore(
     sidecarOk,
     selectedProjectId,
     selectedWorkspaceId,
+    selectedBranchName,
     selectedThreadId,
     pendingFirstTurn,
     tree,
@@ -437,8 +560,11 @@ export function createCodingWorkspaceStore(
     selectedThread,
     bootstrap,
     refresh,
+    removeDeletedProject,
+    removeDeletedThread,
     selectProject,
     selectWorkspace,
+    selectBranch,
     selectThread,
     recordThreadRun,
     startNewTask,
@@ -449,7 +575,12 @@ export function createCodingWorkspaceStore(
   };
 }
 
-const codingWorkspaceStore = createCodingWorkspaceStore();
+let codingWorkspaceStore = createCodingWorkspaceStore();
+
+/** A new account must never inherit project IDs, first-turn drafts or late responses. */
+export function resetCodingWorkspace(): void {
+  codingWorkspaceStore = createCodingWorkspaceStore();
+}
 
 export function useCodingWorkspace(): CodingWorkspaceStore {
   return codingWorkspaceStore;

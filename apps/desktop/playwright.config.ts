@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // 第八阶段 M1：Playwright E2E（浏览器模式，路由拦截模拟后端）。
-// webServer 自动启动 Vite dev server（1420）。Tauri 桌面窗口级 E2E 见 docs/usage-guide。
+// webServer 自动启动 Vite dev server（1420）。Tauri 原生验收边界见 docs/testing-guide.md。
 const baseURL = process.env.PA_E2E_BASE_URL ?? "http://127.0.0.1:1420";
 const externalServer = process.env.PA_E2E_EXTERNAL_SERVER === "1";
 

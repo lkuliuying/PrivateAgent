@@ -25,6 +25,9 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 mod sandbox;
 
+#[cfg(all(windows, feature = "readiness-probe"))]
+mod readiness_probe;
+
 const PROTOCOL_VERSION: &str = "1.0";
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const POLL_INTERVAL_MS: u64 = 50;
@@ -135,16 +138,15 @@ struct ExecutionState {
     stdin: Arc<Mutex<Option<StdinSink>>>,
     session_nonce: Option<String>,
     output_tail: Arc<Mutex<OutputTail>>,
-    /// PTY 模式：持有伪控制台句柄直至执行移除（drop 即释放）。
-    /// 仅作生命周期守卫，不被读取。
+    /// PTY 模式：进程退出后先关闭控制台，再排空其最后一帧。
     #[cfg(windows)]
-    #[allow(dead_code)]
     pty: Arc<Mutex<Option<sandbox::PseudoConsole>>>,
 }
 
 struct Host {
     writer: Mutex<BufWriter<std::io::Stdout>>,
     executions: Mutex<HashMap<String, ExecutionState>>,
+    notification_sequences: Mutex<HashMap<String, u64>>,
 }
 
 fn host() -> &'static Host {
@@ -152,6 +154,7 @@ fn host() -> &'static Host {
     HOST.get_or_init(|| Host {
         writer: Mutex::new(BufWriter::new(std::io::stdout())),
         executions: Mutex::new(HashMap::new()),
+        notification_sequences: Mutex::new(HashMap::new()),
     })
 }
 
@@ -177,30 +180,55 @@ impl Host {
             "trace_id": null}}));
     }
 
-    fn notify(&self, event: Value) {
+    fn notify(&self, mut event: Value) {
+        // 序号分配与发送共用锁，避免 stdout/stderr 两线程把事件倒序写入管道。
+        let mut sequences = self.notification_sequences.lock().unwrap();
+        let id = event.get("execution_id").and_then(Value::as_str).unwrap_or("").to_string();
+        let sequence = sequences.entry(id.clone()).or_insert(0);
+        event["sequence"] = json!(*sequence);
+        *sequence += 1;
         self.send(&event);
+        if matches!(event.get("notification").and_then(Value::as_str), Some("execution/exited" | "execution/failed")) {
+            sequences.remove(&id);
+        }
     }
 
     fn health(&self) -> Value {
         let active = self.executions.lock().unwrap().len() as u64;
+        let mut modes = vec!["argv"];
+        #[cfg(windows)]
+        if sandbox::pty_environment_ready() { modes.push("pty"); }
         json!({
             "protocol_version": PROTOCOL_VERSION,
-            // Job Object 级联终止 + Low MIC 写拦截已落地；
-            // 网络强制边界（ADR-004 S4）未闭环前仍如实上报 false。
-            "sandbox_available": false,
-            "modes": ["argv", "pty"],
+            // 每次受限执行仍须准备独立 SID、目录授权并成功启动，不能静默降级。
+            "sandbox_available": cfg!(windows),
+            "sandbox_profile_protocol": if cfg!(windows) { 1 } else { 0 },
+            "modes": modes,
+            "session_protocol": 1,
+            "file_read_isolation": cfg!(windows),
+            "file_write_isolation": cfg!(windows),
+            "network_isolation": cfg!(windows),
+            "process_tree_termination": cfg!(windows),
             "active_sessions": active
         })
     }
 }
 
 fn main() {
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    if let Err(error) = readiness_probe::initialize("host") {
+        eprintln!("{error}");
+        std::process::exit(78);
+    }
     // 启动期自分配 Job：此后所有子进程经继承自动入 Job；
     // KILL_ON_JOB_CLOSE 在进程退出时兜底清理孤儿孙进程。
-    // 自分配被拒（沙箱链嵌套限制）→ 降级 taskkill /T 树级联。
+    // 无法建立进程树生命周期边界时拒绝启动，不依赖正常退出后的 PID 猜测清理。
     #[cfg(windows)]
     {
-        let _ = sandbox::host_job();
+        if sandbox::host_job().is_none() {
+            eprintln!("无法建立执行宿主 Job，命令执行已关闭");
+            std::process::exit(78);
+        }
     }
     let host = host();
     let stdin = std::io::stdin();
@@ -252,6 +280,9 @@ fn handle_start(request_id: u64, message: &Value) {
         return fail("bad_params", "缺少 execution_id");
     };
     let execution_id = execution_id_value.to_string();
+    if host.executions.lock().unwrap().contains_key(&execution_id) {
+        return fail("duplicate_execution", "执行 ID 已存在，不允许重复启动");
+    }
     let mode = params.get("mode").and_then(Value::as_str).unwrap_or("argv");
     if mode != "argv" && mode != "pty" {
         return fail("unsupported_mode", "仅支持 argv/pty 模式");
@@ -306,7 +337,7 @@ fn handle_start(request_id: u64, message: &Value) {
             .get("timeout_ms")
             .and_then(Value::as_u64)
             .unwrap_or(120_000)
-            .min(600_000);
+            .min(86_400_000);
         // 红线（§22.3）：环境变量 allowlist + explicit diff——不继承 host 环境。
         let mut env_pairs: Vec<(String, String)> = Vec::new();
         if let Some(env_diff) = params.get("env_diff").and_then(Value::as_object) {
@@ -321,71 +352,25 @@ fn handle_start(request_id: u64, message: &Value) {
         }
         env_pairs.sort();
 
-        let appcontainer =
-            params.get("appcontainer").and_then(Value::as_bool).unwrap_or(false);
-        let network_policy = params
-            .get("network_policy")
-            .and_then(Value::as_str)
-            .unwrap_or("none");
+        let network_policy = params.get("network_policy").and_then(Value::as_str).unwrap_or("none");
+        if !matches!(network_policy, "none" | "approved") {
+            return fail("unsupported_network_policy", "当前只支持 none 或明确批准的 approved 网络策略");
+        }
+        let appcontainer = params.get("appcontainer").and_then(Value::as_bool).unwrap_or(false) || network_policy == "none";
         if appcontainer && network_policy != "none" {
-            // N3 失败关闭：capability 授予未实现，非 none 一律拒绝。
-            return fail(
-                "unsupported_network_policy",
-                "AppContainer 仅支持 network_policy=none（能力授予尚未开放）",
-            );
+            return fail("unsupported_network_policy", "AppContainer 仅支持 network_policy=none");
         }
         if mode == "pty" && appcontainer {
-            // 失败关闭：AC + ConPTY 组合未经验证，不降级不猜测（§11.5）。
-            return fail(
-                "unsupported_mode",
-                "appcontainer 不支持 pty 模式",
-            );
+            return fail("unsupported_mode", "受限执行只支持 argv 模式");
         }
-
-        #[cfg(windows)]
-        sandbox::ac_trace_public(&format!(
-            "handle_start appcontainer={appcontainer} integrity={:?}",
-            params.get("integrity_level").and_then(Value::as_str),
-        ));
-        // 运行时根：调用方声明（解释器/依赖目录）+ exe 目录自动推导。
-        let mut roots: Vec<String> = Vec::new();
-        if let Some(paths) = params.get("ac_grant_paths").and_then(Value::as_array) {
-            for path in paths.iter().take(16) {
-                if let Some(path) = path.as_str() {
-                    if !path.is_empty() && path.len() <= 2048 {
-                        roots.push(path.to_string());
-                    }
-                }
-            }
+        let profile = params.get("appcontainer_profile").and_then(Value::as_str).unwrap_or("");
+        if appcontainer && !(profile.starts_with("pa.execution.") && profile.len() == 45
+            && profile[13..].bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())) {
+            return fail("sandbox_policy_unavailable", "受限执行缺少独立沙箱授权身份，命令未执行");
         }
-        let exe_dir = std::path::Path::new(&program[0])
-            .parent()
-            .map(|p| p.to_string_lossy().to_string());
-        if let Some(dir) = exe_dir {
-            roots.push(dir);
+        if params.get("ac_grant_paths").and_then(Value::as_array).is_some_and(|paths| !paths.is_empty()) {
+            return fail("sandbox_policy_unavailable", "宿主不再接受直接修改目录 ACL 的旧接口，请升级本机运行时");
         }
-        roots.sort();
-        roots.dedup();
-
-        #[cfg(windows)]
-        sandbox::ac_trace_public(&format!("ac roots={roots:?}"));
-        if appcontainer {
-            // host 级稳定 profile + 常驻 RX 基线；失败 → 失败关闭。
-            if let Err(err) = sandbox::ensure_ac_runtime("pa.exec.host.default", &roots)
-            {
-                return fail(
-                    "sandbox_policy_unavailable",
-                    &format!("appcontainer 准备失败：{err}"),
-                );
-            }
-        }
-        #[cfg(windows)]
-        sandbox::ac_trace_public("spawn begin");
-        // 顺序修正（N1b 实证）：本机内核/EDR 对"进程持有 KILL_ON_JOB_CLOSE
-        // Job 句柄期间调用 CreateProcess"返回 ACCESS_DENIED——Job 改为
-        // 进程创建成功后立即创建并分配。std 路径存在微秒级窗口（子进程尚未
-        // 入 Job 即可能派生孙进程）；受限/AC 路径以挂起态创建后分配再恢复，
-        // 零窗口。任一沙箱原语失败 → 失败关闭，绝不降级（§11.5）。
         let spawn_result = if mode == "pty" {
             // 失败关闭：ConPTY 附着环境不可用（实证探针）→ 结构化拒绝，
             // 绝不交付无法回显的伪会话（与 §11.5 沙箱失败关闭同语义）。
@@ -399,7 +384,7 @@ fn handle_start(request_id: u64, message: &Value) {
             let pty_env_block = sandbox::build_environment_block(&env_pairs);
             sandbox::spawn_pty(&program, cwd, &pty_env_block,
                 integrity == sandbox::IntegrityLevel::Low, want_stdin)
-                .map(|pty_spawned| {
+                .map(|mut pty_spawned| {
                     let slot = ChildSlot::Restricted(sandbox::RestrictedChild::from_parts(
                         pty_spawned.process_handle,
                         pty_spawned.main_thread_handle,
@@ -411,28 +396,15 @@ fn handle_start(request_id: u64, message: &Value) {
                         stdin: if want_stdin {
                             Some(StdinSink::Raw(pty_spawned.input_write))
                         } else {
+                            pty_spawned.console.keep_input(pty_spawned.input_write);
                             None
                         },
                         pty_console: Some(pty_spawned.console),
                     }
                 })
         } else if appcontainer {
-            match sandbox::ensure_ac_runtime("pa.exec.host.default", &roots) {
-                Ok(runtime) => {
-                    // AC 语义下忽略请求 cwd（不授权工作区），使用 profile AC 目录。
-                    let ac_cwd = runtime.working_dir().to_string_lossy().to_string();
-                    spawn_appcontainer(
-                        &program,
-                        &ac_cwd,
-                        &env_pairs,
-                        &runtime.guard,
-                        want_stdin,
-                    )
-                }
-                Err(err) => Err(std::io::Error::other(format!(
-                    "sandbox_policy_unavailable: {err}"
-                ))),
-            }
+            sandbox::AppContainerGuard::existing(profile)
+                .and_then(|guard| spawn_appcontainer(&program, cwd, &env_pairs, &guard, want_stdin))
         } else if integrity == sandbox::IntegrityLevel::Low {
             spawn_restricted(&program, cwd, &env_pairs, want_stdin)
         } else {
@@ -474,6 +446,7 @@ fn handle_start(request_id: u64, message: &Value) {
         let cancel_requested = Arc::clone(&state.cancel_requested);
         let child_slot = Arc::clone(&state.child);
         let output_tail = Arc::clone(&state.output_tail);
+        let pty = Arc::clone(&state.pty);
         host.executions
             .lock()
             .unwrap()
@@ -486,14 +459,15 @@ fn handle_start(request_id: u64, message: &Value) {
         }));
         host.respond(request_id, json!({ "accepted": true }));
 
+        let mut readers = Vec::new();
         for (stream, reader) in spawned.drain_streams() {
-            spawn_stream_reader(
+            readers.push(spawn_stream_reader(
                 execution_id.clone(),
                 stream,
                 reader,
                 Arc::clone(&sequence),
                 Arc::clone(&output_tail),
-            );
+            ));
         }
         spawn_waiter(
             execution_id,
@@ -501,6 +475,8 @@ fn handle_start(request_id: u64, message: &Value) {
             cancel_requested,
             sequence,
             Instant::now() + Duration::from_millis(timeout_ms),
+            readers,
+            pty,
         );
     }
 }
@@ -534,7 +510,22 @@ fn spawn_std(
     want_stdin: bool,
 ) -> std::io::Result<Spawned> {
     let mut command = std::process::Command::new(&program[0]);
-    command.args(&program[1..]).current_dir(cwd);
+    command.current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let is_cmd = std::path::Path::new(&program[0]).file_name()
+            .map(|name| name.to_string_lossy().eq_ignore_ascii_case("cmd.exe")).unwrap_or(false);
+        if is_cmd && program.len() == 5 && program[1..4] == ["/d", "/s", "/c"] {
+            // 这里只接收策略层完成参数验证后的批处理调用，避免二次套用 C argv 转义。
+            command.args(&program[1..4]).raw_arg(format!("\"{}\"", program[4]));
+        } else {
+            command.args(&program[1..]);
+        }
+        command.creation_flags(0x08000000);
+    }
+    #[cfg(not(windows))]
+    command.args(&program[1..]);
     // 环境变量显式集合（allowlist），不继承 host 环境。
     command.env_clear();
     for (key, value) in env_pairs {
@@ -573,7 +564,6 @@ fn spawn_appcontainer(
     let env_block = sandbox::build_environment_block(env_pairs);
     // 挂起态创建：调用方建 Job 分配后再 resume（零窗口受控）。
     let spawned = sandbox::spawn_appcontainer(program, cwd, &env_block, ac, want_stdin)?;
-    spawned.resume();
     let slot = ChildSlot::Restricted(sandbox::RestrictedChild::from_parts(
         spawned.process_handle,
         spawned.main_thread_handle,
@@ -617,21 +607,33 @@ fn spawn_stream_reader(
     mut pipe: Box<dyn Read + Send>,
     sequence: Arc<AtomicU64>,
     output_tail: Arc<Mutex<OutputTail>>,
-) {
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut pending: Vec<u8> = Vec::with_capacity(DELTA_LIMIT);
         let mut chunk = [0u8; READ_CHUNK_SIZE];
+        #[cfg(all(windows, feature = "readiness-probe"))]
+        let mut receipt = readiness_probe::Receipt::new(&execution_id, stream);
         loop {
             match pipe.read(&mut chunk) {
                 Ok(0) => break,
                 Ok(n) => {
+                    #[cfg(all(windows, feature = "readiness-probe"))]
+                    if let Some(receipt) = receipt.as_mut() {
+                        let received = readiness_probe::qpc();
+                        receipt.observe(&chunk[..n], received);
+                    }
                     pending.extend_from_slice(&chunk[..n]);
                     // 续读窗口每次读取即入环（不等分帧边界，§11.4 实时性）。
                     output_tail.lock().unwrap().push(&chunk[..n]);
-                    while pending.len() >= DELTA_LIMIT {
-                        let rest = pending.split_off(DELTA_LIMIT);
-                        emit_delta(&execution_id, stream, &pending, &sequence);
-                        pending = rest;
+                    // 每次读取立即发送完整 UTF-8 前缀；只保留尚未收齐的码点。
+                    let ready = match std::str::from_utf8(&pending) {
+                        Ok(_) => pending.len(),
+                        Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                        Err(_) => pending.len(),
+                    };
+                    if ready > 0 {
+                        emit_delta(&execution_id, stream, &pending[..ready], &sequence);
+                        pending.drain(..ready);
                     }
                 }
                 Err(_) => break,
@@ -640,7 +642,9 @@ fn spawn_stream_reader(
         if !pending.is_empty() {
             emit_delta(&execution_id, stream, &pending, &sequence);
         }
-    });
+        #[cfg(all(windows, feature = "readiness-probe"))]
+        if let Some(receipt) = receipt { receipt.finish(); }
+    })
 }
 
 fn emit_delta(execution_id: &str, stream: &str, data: &[u8], sequence: &AtomicU64) {
@@ -662,6 +666,8 @@ fn spawn_waiter(
     cancel_requested: Arc<AtomicBool>,
     sequence: Arc<AtomicU64>,
     deadline: Instant,
+    readers: Vec<std::thread::JoinHandle<()>>,
+    #[cfg(windows)] pty: Arc<Mutex<Option<sandbox::PseudoConsole>>>,
 ) {
     std::thread::spawn(move || {
         let mut timed_out = false;
@@ -674,6 +680,8 @@ fn spawn_waiter(
                         if !timed_out && Instant::now() >= deadline {
                             timed_out = true;
                             cancel_requested.store(true, Ordering::SeqCst);
+                            #[cfg(windows)]
+                            let _ = sandbox::taskkill_tree(guard.pid());
                             guard.kill();
                         }
                         None
@@ -683,13 +691,33 @@ fn spawn_waiter(
             };
             match outcome {
                 Some(Ok(exit_code)) => {
+                    #[cfg(windows)]
+                    {
+                        // 不持有宿主执行表锁关闭控制台，输出线程仍可发送最后一帧。
+                        let console = pty.lock().unwrap().take();
+                        drop(console);
+                    }
+                    // 先排空输出再公布退出；后代持续持有管道时失败关闭，避免丢失末尾结果。
+                    let drain_deadline = Instant::now() + Duration::from_secs(1);
+                    while readers.iter().any(|reader| !reader.is_finished()) && Instant::now() < drain_deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    if readers.iter().any(|reader| !reader.is_finished()) {
+                        host().notify(json!({
+                            "notification": "execution/failed", "execution_id": execution_id,
+                            "sequence": sequence.fetch_add(1, Ordering::SeqCst),
+                            "error": {"code": "output_incomplete", "message": "进程退出但输出管道未关闭，请检查后台子进程",
+                                      "retryable": false, "details": null, "trace_id": null}
+                        }));
+                        host().executions.lock().unwrap().remove(&execution_id);
+                        break;
+                    }
                     let was_cancelled = cancel_requested.load(Ordering::SeqCst);
                     if was_cancelled {
                         host().notify(json!({
                             "notification": "execution/cancelled",
                             "execution_id": execution_id,
                             "sequence": sequence.fetch_add(1, Ordering::SeqCst),
-                            "processes_remaining": 0,
                         }));
                     }
                     host().notify(json!({
@@ -698,7 +726,6 @@ fn spawn_waiter(
                         "sequence": sequence.fetch_add(1, Ordering::SeqCst),
                         "exit_code": exit_code,
                         "cancelled_by_timeout": timed_out,
-                        "processes_remaining": 0,
                     }));
                     // 移除 → ExecutionState.job Drop → KILL_ON_JOB_CLOSE 兜底。
                     host().executions.lock().unwrap().remove(&execution_id);

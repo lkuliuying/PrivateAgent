@@ -109,8 +109,8 @@
 - [ ] 新增 `docs/archive/phases/phase8-requirements.md`。
 - [ ] 新增 `docs/archive/phases/phase8-plan.md`。
 - [ ] 更新 README 阶段引用。
-- [ ] 更新 `docs/requirements.md` 阶段表。
-- [ ] 更新 `docs/usage-guide.md` 后续路线图。
+- [ ] 更新 `docs/archive/legacy/requirements.md` 阶段表。
+- [ ] 更新 `docs/archive/legacy/usage-guide.md` 后续路线图。
 - [ ] 明确第八阶段不做云同步、不做手机端、不一次性接入所有外部生态。
 
 验收：
@@ -246,7 +246,7 @@
   - 不阻塞个人构建。
   - release manifest 标记 unsigned。
   - release notes 自动保留 SmartScreen 说明。
-- [ ] 更新 `docs/signing-and-keys.md` 与 `docs/release-checklist.md`。
+- [ ] 更新 `docs/archive/legacy/signing-and-keys.md` 与 `docs/archive/legacy/release-checklist.md`。
 
 验收：
 
@@ -277,7 +277,7 @@
   - `/health`。
   - 聊天。
   - 文档导入。
-- [ ] 更新 `docs/cross-platform.md`。
+- [ ] 更新 `docs/archive/legacy/cross-platform.md`。
 
 验收：
 
@@ -437,11 +437,11 @@
   - 未完成边界。
 - [ ] 更新：
   - `README.md`。
-  - `docs/requirements.md`。
-  - `docs/usage-guide.md`。
-  - `docs/release-checklist.md`。
-  - `docs/cross-platform.md`。
-  - `docs/signing-and-keys.md`。
+  - `docs/archive/legacy/requirements.md`。
+  - `docs/archive/legacy/usage-guide.md`。
+  - `docs/archive/legacy/release-checklist.md`。
+  - `docs/archive/legacy/cross-platform.md`。
+  - `docs/archive/legacy/signing-and-keys.md`。
 - [ ] 标记历史文档：
   - phase4 sidecar research。
   - phase5 installer/updater historical redirect。
@@ -614,19 +614,19 @@ alembic/versions/0011_phase8_release_quality_extensions.py
 - `README.md`
   - 第八阶段状态。
   - 相关文档链接。
-- `docs/requirements.md`
+- `docs/archive/legacy/requirements.md`
   - 后续阶段表补充第八阶段。
   - 当前完成态更新。
-- `docs/usage-guide.md`
+- `docs/archive/legacy/usage-guide.md`
   - 测试、发布、升级、扩展注册和本地集成说明。
-- `docs/release-checklist.md`
+- `docs/archive/legacy/release-checklist.md`
   - full release-check。
   - 升级 smoke。
   - 代码签名。
   - 跨平台 smoke。
-- `docs/cross-platform.md`
+- `docs/archive/legacy/cross-platform.md`
   - 实测平台状态。
-- `docs/signing-and-keys.md`
+- `docs/archive/legacy/signing-and-keys.md`
   - 代码签名执行结果或 unsigned 策略。
 - `docs/archive/phases/phase8-requirements.md`
   - 勾选验收清单。

@@ -453,7 +453,7 @@ apps/desktop/src/components/
 - `README.md`
   - 当前进度增加第四阶段。
   - 增加记忆、复习、patch set、Provider、备份说明。
-- `docs/usage-guide.md`
+- `docs/archive/legacy/usage-guide.md`
   - 增加记忆页。
   - 增加今日复习。
   - 增加文档集合。

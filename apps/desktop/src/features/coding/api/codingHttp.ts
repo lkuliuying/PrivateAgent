@@ -14,7 +14,7 @@ export async function toCodingApiError(response: Response): Promise<CodingApiErr
   let message = `请求失败（HTTP ${response.status}）`;
   try {
     const body: unknown = await response.json();
-    if (body && typeof body === "object" && "error_code" in body) {
+    if (body && typeof body === "object") {
       const parsed = body as { error_code?: unknown; detail?: unknown };
       if (typeof parsed.error_code === "string") code = parsed.error_code;
       if (typeof parsed.detail === "string" && parsed.detail) message = parsed.detail;

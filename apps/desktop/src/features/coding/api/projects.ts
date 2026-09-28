@@ -5,14 +5,20 @@
  * 从结构上剔除 root_path 等敏感字段（红线，contracts.ts 头注）。
  */
 import type { Project, ProjectWorkspace } from "../../../types";
-import type { CodingProjectSummary, CodingWorkspaceSummary } from "../model/contracts";
+import type {
+  CodingBranchState,
+  CodingProjectSummary,
+  CodingWorkspaceSummary,
+} from "../model/contracts";
 import type { CodingFileHint } from "../model/runContracts";
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
+import { usesLocalExecutor } from "../../../services/localExecutor";
 
 export function toProjectSummary(dto: Project): CodingProjectSummary {
   return {
     id: dto.id,
     name: dto.name,
+    pinnedAt: dto.pinned_at ?? null,
     status: dto.status,
     updatedAt: dto.updated_at,
   };
@@ -36,11 +42,77 @@ export async function fetchCodingProjects(): Promise<CodingProjectSummary[]> {
   return list.filter((dto) => dto.status === "active").map(toProjectSummary);
 }
 
+/** 目录仅供编辑弹窗临时展示，不进入项目树和通知历史。 */
+export async function fetchCodingProjectDetails(projectId: number): Promise<Project> {
+  return codingFetchJson<Project>(`/projects/${projectId}`);
+}
+
+export async function updateCodingProject(projectId: number, input: {
+  name: string; root_path?: string; authorize_scope?: boolean;
+}): Promise<CodingProjectSummary> {
+  return toProjectSummary(await codingFetchJson<Project>(
+    `/projects/${projectId}`, codingJsonInit("PATCH", input)
+  ));
+}
+
+export async function setCodingProjectPinned(projectId: number, pinned: boolean): Promise<CodingProjectSummary> {
+  return toProjectSummary(await codingFetchJson<Project>(
+    `/projects/${projectId}/${pinned ? "pin" : "unpin"}`, codingJsonInit("POST", {})
+  ));
+}
+
+/** 删除项目及其会话记录，项目文件由本机执行器保留。 */
+export async function deleteCodingProject(projectId: number): Promise<void> {
+  await codingFetchJson(`/projects/${projectId}`, { method: "DELETE" });
+}
+
 export async function fetchCodingWorkspaces(projectId: number): Promise<CodingWorkspaceSummary[]> {
   const list = await codingFetchJson<ProjectWorkspace[]>(`/projects/${projectId}/workspaces`);
   return list
     .filter((dto) => dto.status !== "archived")
     .map((dto) => toWorkspaceSummary(dto, projectId));
+}
+
+interface CodingBranchStateDto {
+  is_git: boolean;
+  current_branch: string | null;
+  head_sha: string | null;
+  dirty: boolean;
+  branches: Array<{ name: string; head_sha: string | null; current: boolean }>;
+}
+
+function toBranchState(dto: CodingBranchStateDto): CodingBranchState {
+  return {
+    isGit: dto.is_git,
+    currentBranch: dto.current_branch,
+    headSha: dto.head_sha,
+    dirty: dto.dirty,
+    branches: dto.branches.map((branch) => ({
+      name: branch.name,
+      headSha: branch.head_sha,
+      current: branch.current,
+    })),
+  };
+}
+
+/** 只读取所选项目根目录中的本地分支。 */
+export async function fetchCodingBranches(projectId: number): Promise<CodingBranchState> {
+  const dto = await codingFetchJson<CodingBranchStateDto>(
+    `/projects/${projectId}/git/branches`
+  );
+  return toBranchState(dto);
+}
+
+/** 用户从分支下拉框显式选择后切换本地分支。 */
+export async function switchCodingBranch(
+  projectId: number,
+  branchName: string
+): Promise<CodingBranchState> {
+  const dto = await codingFetchJson<CodingBranchStateDto>(
+    `/projects/${projectId}/git/branches/select`,
+    codingJsonInit("POST", { branch_name: branchName })
+  );
+  return toBranchState(dto);
 }
 
 /**
@@ -173,11 +245,21 @@ export async function authorizeProjectScope(projectId: number): Promise<void> {
  */
 export async function createCodingProject(
   name: string,
-  rootPath: string
+  rootPath: string,
+  trustInstructions?: boolean
 ): Promise<CodingProjectSummary> {
   const dto = await codingFetchJson<Project>(
     "/projects",
-    codingJsonInit("POST", { name, root_path: rootPath })
+    codingJsonInit("POST", { name, root_path: rootPath, ...(usesLocalExecutor() && trustInstructions !== undefined ? { trust_instructions: trustInstructions } : {}) })
   );
   return toProjectSummary(dto);
 }
+
+export async function createIsolatedWorkspace(projectId: number, ref: string, requestId: string): Promise<CodingWorkspaceSummary> {
+  return toWorkspaceSummary(await codingFetchJson<ProjectWorkspace>(`/projects/${projectId}/workspaces/worktree`, codingJsonInit("POST", { ref, request_id: requestId })), projectId);
+}
+export interface HandoffRecord { request_id: string; session_id: number; created_at: string; state: string; error?: string; files: { rel_path: string; state: string }[] }
+export const fetchHandoffs = (projectId: number, signal?: AbortSignal) => codingFetchJson<{ items: HandoffRecord[] }>(`/projects/${projectId}/handoffs`, { signal });
+export interface HandoffPreview { version: string; source_workspace_id: number; target_workspace_id: number; changes: { rel_path: string; operation: string; diff: string }[]; conflicts: { rel_path: string; reason: string }[] }
+export const previewHandoff = (projectId: number, workspaceId: number) => codingFetchJson<HandoffPreview>(`/projects/${projectId}/workspaces/${workspaceId}/handoff-preview`, codingJsonInit("POST", {}));
+export const applyHandoff = (projectId: number, workspaceId: number, sessionId: number, version: string, requestId: string) => codingFetchJson<{ state: string; error?: string; files: { rel_path: string; state: string }[] }>(`/projects/${projectId}/workspaces/${workspaceId}/handoff`, codingJsonInit("POST", { session_id: sessionId, version, request_id: requestId }));

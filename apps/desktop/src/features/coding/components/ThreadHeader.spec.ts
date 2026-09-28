@@ -45,7 +45,7 @@ describe("ThreadHeader", () => {
   it.each([
     ["running", "执行中"],
     ["waiting_approval", "等待审批"],
-    ["completed", "已完成"],
+    ["completed", "结果未确认"],
     ["failed", "失败"],
     ["limit_exceeded", "达到上限"],
   ] as const)("run 状态 %s 徽标为 %s", (status, label) => {

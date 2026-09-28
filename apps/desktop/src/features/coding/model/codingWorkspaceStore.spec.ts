@@ -81,6 +81,13 @@ function baseFetchers(
     health: async () => true,
     createThread: async (input) => thread(99, input.projectId, input.workspaceId, input.title),
     ensureRootWorkspace: async (projectId) => workspace(projectId * 100 + 1, projectId),
+    branches: async () => ({
+      isGit: false,
+      currentBranch: null,
+      headSha: null,
+      dirty: false,
+      branches: [],
+    }),
     ...overrides,
   };
 }
@@ -152,6 +159,42 @@ describe("codingWorkspaceStore", () => {
     store.startNewTask();
     expect(store.selectedThreadId.value).toBeNull();
     expect(store.selectedWorkspaceId.value).toBe(102);
+  });
+
+  it("读取本地分支并在切换成功后同步根工作区", async () => {
+    const switchBranch = vi.fn(async (_projectId: number, branchName: string) => ({
+      isGit: true,
+      currentBranch: branchName,
+      headSha: branchName === "main" ? "main-sha" : "dev-sha",
+      dirty: false,
+      branches: [
+        { name: "dev", headSha: "dev-sha", current: branchName === "dev" },
+        { name: "main", headSha: "main-sha", current: branchName === "main" },
+      ],
+    }));
+    const store = createCodingWorkspaceStore(baseFetchers({
+      branches: async () => ({
+        isGit: true,
+        currentBranch: "dev",
+        headSha: "dev-sha",
+        dirty: false,
+        branches: [
+          { name: "dev", headSha: "dev-sha", current: true },
+          { name: "main", headSha: "main-sha", current: false },
+        ],
+      }),
+      switchBranch,
+    }));
+    await store.bootstrap();
+    expect(store.selectedBranchName.value).toBe("dev");
+    await store.selectBranch("main");
+    expect(switchBranch).toHaveBeenCalledWith(1, "main");
+    expect(store.selectedBranchName.value).toBe("main");
+    expect(store.workspacesByProject.value[1][0]).toMatchObject({
+      branchName: "main",
+      headSha: "main-sha",
+      status: "active",
+    });
   });
 
   it("recordThreadRun 立即记录最近 run，切走再返回可直接恢复", async () => {
@@ -278,5 +321,69 @@ describe("codingWorkspaceStore", () => {
     const serialized = JSON.stringify(store.tree.value);
     expect(serialized).not.toContain("root_path");
     expect(serialized).not.toContain("C:");
+  });
+
+  it("项目置顶优先，刷新保留所选项目，取消置顶恢复来源顺序", async () => {
+    const list: CodingProjectSummary[] = [project(1), { ...project(2), pinnedAt: "2026-09-19T00:00:00Z" }];
+    const store = createCodingWorkspaceStore(baseFetchers({ projects: async () => list }));
+    await store.bootstrap();
+    expect(store.tree.value.map((node) => node.project.id)).toEqual([2, 1]);
+    store.selectProject(1);
+    await store.refresh();
+    expect(store.selectedProjectId.value).toBe(1);
+    list[1].pinnedAt = null;
+    await store.refresh();
+    expect(store.projects.value.map((item) => item.id)).toEqual([1, 2]);
+  });
+
+  it("删除当前对话立即清理选择和首轮输入，保留同项目其他对话", async () => {
+    const store = createCodingWorkspaceStore(baseFetchers());
+    await store.bootstrap();
+    store.selectThread(11);
+    store.pendingFirstTurn.value = { threadId: 11 } as NonNullable<typeof store.pendingFirstTurn.value>;
+    store.removeDeletedThread(11);
+    expect(store.selectedThreadId.value).toBeNull();
+    expect(store.pendingFirstTurn.value).toBeNull();
+    expect(store.selectedProjectId.value).toBe(1);
+    expect(store.threadsByProject.value[1].map((item) => item.id)).toEqual([12, 13]);
+  });
+
+  it("删除其他项目保留当前会话，删除最后一个项目清理全部选择", async () => {
+    const store = createCodingWorkspaceStore(baseFetchers());
+    await store.bootstrap();
+    store.selectThread(11);
+    store.removeDeletedProject(2);
+    expect(store.selectedThreadId.value).toBe(11);
+    store.selectedBranchName.value = "main";
+    store.removeDeletedProject(1);
+    expect(store.projects.value).toEqual([]);
+    expect(store.workspacesByProject.value).toEqual({});
+    expect(store.threadsByProject.value).toEqual({});
+    expect(store.selectedProjectId.value).toBeNull();
+    expect(store.selectedWorkspaceId.value).toBeNull();
+    expect(store.selectedBranchName.value).toBeNull();
+    expect(store.selectedThreadId.value).toBeNull();
+  });
+
+  it("刷新发现会话已删除时清理选择，删除后迟到的刷新不能复活记录", async () => {
+    let list = [thread(11, 1, 101)];
+    const store = createCodingWorkspaceStore(baseFetchers({ threads: async () => list }));
+    await store.bootstrap();
+    store.selectThread(11);
+    list = [];
+    await store.refresh();
+    expect(store.selectedThreadId.value).toBeNull();
+    let resolve: (value: CodingProjectSummary[]) => void = () => {};
+    const projects = vi.fn(async () => [project(1)]);
+    const raced = createCodingWorkspaceStore(baseFetchers({ projects }));
+    await raced.bootstrap();
+    projects.mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const refresh = raced.refresh();
+    await flushPromises();
+    raced.removeDeletedProject(1);
+    resolve([project(1)]);
+    await refresh;
+    expect(raced.projects.value).toEqual([]);
+    expect(raced.loadPhase.value).toBe("ready");
   });
 });

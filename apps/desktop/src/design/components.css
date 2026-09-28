@@ -125,7 +125,17 @@
   width: 100%;
 }
 .pa-input::placeholder {
-  color: var(--color-fg-faint);
+  color: var(--color-fg-subtle);
+}
+textarea.pa-input {
+  height: auto;
+  min-height: 96px;
+  padding-block: var(--space-3);
+  line-height: var(--leading-normal);
+  resize: vertical;
+}
+input[type="checkbox"] {
+  accent-color: var(--color-accent);
 }
 .pa-input:focus {
   outline: none;

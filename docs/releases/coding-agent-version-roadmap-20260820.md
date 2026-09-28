@@ -8,7 +8,7 @@
 > 制定日期：2026-08-20
 > 规划基线：`0.5.0-rc.4`（`9250da6`，数据库 schema `0026`）
 > 正式实施基线：`v0.5.0-rc.4` 冻结工程基线，可直接进入 `v0.6.0`
-> 总体方案：[Coding Agent 重构计划](../coding-agent-refactor-plan.md)
+> 总体方案：[Coding Agent 重构计划](../archive/legacy/coding-agent-refactor-plan.md)
 > 观察策略：[观察期顺延决策](./observation-policy-20260820.md)
 
 ## 1. 路线结论

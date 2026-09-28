@@ -16,6 +16,7 @@ import {
   PhX,
 } from "@phosphor-icons/vue";
 import type { RunPlanItemStatus, RunPlanState } from "../model/runContracts";
+import { PLAN_ITEM_META } from "../model/runContracts";
 
 defineProps<{
   plan: RunPlanState | null;
@@ -55,31 +56,39 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
       后端尚未建立计划；计划生成后会实时更新。
     </div>
 
-    <ol v-else class="plan-list">
-      <li
-        v-for="item in plan.items"
-        :key="item.item_key"
-        class="plan-item"
-        :class="{ current: item.status === 'in_progress' }"
-        :data-testid="`plan-item-${item.item_key}`"
-        :data-status="item.status"
-      >
-        <span class="item-icon" :class="`tone-${ITEM_ICON_TONE[item.status]}`">
-          <PhCheckCircle v-if="item.status === 'completed'" :size="14" weight="fill" aria-hidden="true" />
-          <PhCircleNotch v-else-if="item.status === 'in_progress'" :size="14" class="spin" aria-hidden="true" />
-          <PhWarning v-else-if="item.status === 'blocked' || item.status === 'failed'" :size="14" aria-hidden="true" />
-          <PhProhibit v-else-if="item.status === 'cancelled'" :size="14" aria-hidden="true" />
-          <PhCircle v-else :size="14" aria-hidden="true" />
-        </span>
-        <div class="item-copy">
-          <p class="item-title">
-            <span class="item-ordinal">{{ item.ordinal }}</span>
-            {{ item.title }}
-          </p>
-          <p v-if="item.detail" class="item-detail">{{ item.detail }}</p>
-        </div>
-      </li>
-    </ol>
+    <template v-else>
+      <p v-if="plan.needs_review" class="plan-notice" role="status">目标已变化，计划待核对。</p>
+      <p v-if="plan.explanation" class="plan-explanation">{{ plan.explanation }}</p>
+      <ol class="plan-list">
+        <li
+          v-for="item in plan.items"
+          :key="item.item_key"
+          class="plan-item"
+          :class="{ current: item.status === 'in_progress' }"
+          :data-testid="`plan-item-${item.item_key}`"
+          :data-status="item.status"
+          :aria-label="`${item.title}：${PLAN_ITEM_META[item.status]?.label ?? item.status}`"
+        >
+          <span class="item-icon" :class="`tone-${ITEM_ICON_TONE[item.status]}`">
+            <PhCheckCircle v-if="item.status === 'completed'" :size="14" weight="fill" aria-hidden="true" />
+            <PhCircleNotch v-else-if="item.status === 'in_progress'" :size="14" class="spin" aria-hidden="true" />
+            <PhWarning v-else-if="item.status === 'blocked' || item.status === 'failed'" :size="14" aria-hidden="true" />
+            <PhProhibit v-else-if="item.status === 'cancelled'" :size="14" aria-hidden="true" />
+            <PhCircle v-else :size="14" aria-hidden="true" />
+          </span>
+          <div class="item-copy">
+            <p class="item-title">
+              <span class="item-ordinal">{{ item.ordinal }}</span>
+              {{ item.title }}
+            </p>
+            <p v-if="item.detail" class="item-detail">{{ item.detail }}</p>
+            <p v-if="item.supersedes?.length" class="item-detail">补救步骤：{{ item.supersedes.map(key => plan?.items.find(previous => previous.item_key === key)?.title ?? key).join('、') }}</p>
+            <p v-if="item.evidence_calls?.length" class="item-detail">关联 {{ item.evidence_calls.length }} 次工具调用</p>
+          </div>
+        </li>
+      </ol>
+      <p class="plan-explanation">步骤进度不代表验证通过，结果以任务验收为准。</p>
+    </template>
   </aside>
 </template>
 
@@ -133,6 +142,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+.plan-notice, .plan-explanation {
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-fg-muted);
+  font-size: var(--pa-text-meta);
+  line-height: var(--leading-normal);
+  overflow-wrap: anywhere;
+}
+.plan-notice {
+  color: var(--color-warning);
 }
 .plan-item {
   display: flex;

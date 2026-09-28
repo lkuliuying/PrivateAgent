@@ -3,32 +3,23 @@ import { ref, computed, nextTick, onMounted, onBeforeUnmount, watch, shallowRef 
 import { useRoute } from "vue-router";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppShell from "./components/AppShell.vue";
-import TaskWorkspace from "./components/TaskWorkspace.vue";
 import SettingsView from "./components/SettingsView.vue";
 import SettingsModuleNav from "./components/SettingsModuleNav.vue";
-import DiagnosticsView from "./components/DiagnosticsView.vue";
-import ExtensionRegistryPanel from "./components/ExtensionRegistryPanel.vue";
-import ConfigWizard from "./components/ConfigWizard.vue";
+import ExtensionRegistryPanel from "./components/CapabilityRegistryPanel.vue";
+import { ensureDesktopBackendReady } from "./services/backendStartup";
 import ToastHost from "./components/ToastHost.vue";
 import ConfirmDialog from "./components/ConfirmDialog.vue";
 import NotificationCenter from "./components/NotificationCenter.vue";
 import CommandPalette from "./components/CommandPalette.vue";
-import GlobalSearch from "./components/GlobalSearch.vue";
+import { fetchCodingThread, setThreadArchived } from "./features/coding/api/threads";
+import type { WorkspaceSearchHit } from "./features/coding/api/workspaceSearch";
+import { useNotifications } from "./stores/notifications";
 import {
-  setApiBase,
-  setApiBaseDefault,
-  cmdStartSidecar,
-  getApiConnection,
-  cmdConfigExists,
-  cmdRelaunchApp,
   isDesktopRuntime,
-  getApiInfo,
-  hasConfiguredRemoteApi,
 } from "./api";
 import type { View } from "./types";
 import type { SettingsSection } from "./models/settingsSections";
 import { viewLabel } from "./models/viewRegistry";
-import { useAuthStore } from "./stores/auth";
 import { mountPageAnimations } from "./animations/page";
 import type { AnimationHandle } from "./animations/utils";
 import { isCodingWorkspaceEnabled } from "./config/uiFlags";
@@ -48,10 +39,9 @@ import UiLab from "./dev/UiLab.vue";
 const uiLabEnabled =
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).get("ui-lab") === "1";
-const authStore = useAuthStore();
 const route = useRoute();
-// 普通用户端固定使用 Coding 工作台；管理员由路由隔离到独立后台。
-const codingEnabled = computed(() => isCodingWorkspaceEnabled(authStore.isAdmin));
+// 客户端统一使用本机 Coding 工作台。
+const codingEnabled = computed(() => isCodingWorkspaceEnabled());
 const codingStore = useCodingWorkspace();
 // ?coding-preview=<key>：首页六状态开发预览（动态 import，生产构建不进入）
 const codingPreviewKey = import.meta.env.DEV
@@ -81,14 +71,28 @@ const codingThreadKey = computed(
 );
 // 命令面板开关（Ctrl/Cmd+K）
 const commandPaletteOpen = ref(false);
-// 全局搜索开关（命令面板的「全局搜索」命令触发）
-const searchOpen = ref(false);
+const searchTarget = ref<{ messageId: number; seq: number } | null>(null);
+let searchOpening = false;
+async function openSearchResult(hit: WorkspaceSearchHit) {
+  if (searchOpening) return;
+  searchOpening = true;
+  try {
+    const store = codingActiveStoreRef.value;
+    if (hit.session_id !== null) {
+      if (hit.archived) await setThreadArchived(hit.session_id, false);
+      const thread = await fetchCodingThread(hit.session_id, hit.project_id);
+      store.threadsByProject.value = { ...store.threadsByProject.value, [hit.project_id]: [...(store.threadsByProject.value[hit.project_id] ?? []).filter(t => t.id !== thread.id), thread] };
+      store.selectThread(thread.id);
+    } else { store.selectProject(hit.project_id); store.startNewTask(); }
+    searchTarget.value = hit.message_id ? { messageId: hit.message_id, seq: Date.now() } : null;
+    onNavigate("coding"); commandPaletteOpen.value = false;
+  } catch (cause) { useNotifications().error("无法打开搜索结果", (cause as { message?: string }).message || "请重试"); }
+  finally { searchOpening = false; }
+}
 
-// bootState：checking（检测中）/ wizard（配置向导）/ starting（启动后端中）
-//   / done（就绪）/ dev（开发模式手动后端）/ error（失败）
-type BootState = "checking" | "wizard" | "starting" | "done" | "dev" | "error";
+// 工作台准备本机执行器；本机模式不需要服务器账号会话。
+type BootState = "checking" | "starting" | "done" | "error";
 const bootState = ref<BootState>("checking");
-const wizardMode = ref<"first" | "reconfigure">("first");
 const bootError = ref("");
 // 加载态延迟：长于 500ms 才展示，避免快速启动闪屏
 const bootLoadingVisible = ref(false);
@@ -105,13 +109,11 @@ function clearBootLoading() {
   bootLoadingVisible.value = false;
 }
 
-// 普通用户工作区只保留图二中的 Coding、自动化、插件及其设置/诊断入口。
+// 旧版本导航记录中的已移除模块会回到 Coding 首页。
 const CODING_ALLOWED_VIEWS = new Set<View>([
   "coding",
-  "tasks",
   "extensions",
   "settings",
-  "diagnostics",
 ]);
 
 // 导航历史：旧版本持久化的模块在渲染和初始化时统一归一到 Coding 首页。
@@ -141,7 +143,10 @@ function onResize() {
 onMounted(() => {
   window.addEventListener("resize", onResize);
   boot();
-  if (route.query.view === "settings") onNavigate("settings");
+  if (route.query.view === "settings") {
+    onNavigate("settings");
+    if (route.query.section === "provider") settingsSection.value = "provider";
+  }
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
@@ -161,7 +166,7 @@ useShortcuts({
 watch(
   bootState,
   async (state) => {
-    if (state !== "done" && state !== "dev") {
+    if (state !== "done") {
       pageAnimations?.destroy();
       pageAnimations = null;
       return;
@@ -177,140 +182,26 @@ watch(
 // ============ 启动引导 ============
 
 async function boot() {
-  // 远程部署：客户端直接连接配置的 HTTPS API，不再启动本地 sidecar。
-  if (hasConfiguredRemoteApi()) {
-    setApiBaseDefault();
-    bootState.value = "done";
-    await initializeConnectedWorkspace();
-    return;
-  }
-  // 浏览器开发：直接用默认端口。
-  if (!isDesktopRuntime()) {
-    setApiBaseDefault();
+  bootState.value = "starting";
+  bootError.value = "";
+  showBootLoadingAfterDelay();
+  try {
+    await ensureDesktopBackendReady();
     bootState.value = "done";
     if (modelSettingsPreviewMode) {
       history.navigate({ view: "settings" });
       settingsSection.value = "provider";
-      return;
-    }
-    if (codingPreviewKey) {
+    } else if (codingPreviewKey) {
       history.navigate({ view: "coding" });
-      return;
-    }
-    await initializeConnectedWorkspace();
-    return;
-  }
-
-  bootState.value = "checking";
-  showBootLoadingAfterDelay();
-  const existingConnection = await getApiConnection().catch(() => null);
-  if (existingConnection) {
-    setApiBase(existingConnection.port, existingConnection.token);
-    bootState.value = "starting";
-    if (await pollApiReady(5)) {
-      clearBootLoading();
-      bootState.value = "done";
-      await initializeConnectedWorkspace();
-      return;
-    }
-  }
-  let res;
-  try {
-    res = await cmdStartSidecar();
-  } catch {
-    clearBootLoading();
-    bootError.value = "无法与桌面壳通信";
-    bootState.value = "error";
-    return;
-  }
-
-  // dev 模式：sidecar 返回 dev_mode，回退手动后端 127.0.0.1:8000。
-  if (res.dev_mode) {
-    setApiBaseDefault();
-    bootState.value = "dev";
-    clearBootLoading();
-    await initializeConnectedWorkspace();
-    return;
-  }
-
-  // 打包模式：sidecar 已 spawn。
-  if (res.ok && res.port && res.token) {
-    bootState.value = "starting";
-    setApiBase(res.port, res.token);
-    const ready = await pollApiReady(90);
-    clearBootLoading();
-    if (ready) {
-      bootState.value = "done";
-      await initializeConnectedWorkspace();
     } else {
-      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
-      bootState.value = "error";
-    }
-    return;
-  }
-
-  // ok:false —— 通常尚未配置连接；也可能是 spawn 失败。
-  const exists = await cmdConfigExists().catch(() => false);
-  clearBootLoading();
-  if (!exists) {
-    wizardMode.value = "first";
-    bootState.value = "wizard";
-  } else {
-    bootError.value = res.error || "后端启动失败";
-    bootState.value = "error";
-  }
-}
-
-/** 轮询轻量 API 根路径直到后端 HTTP 服务可用。 */
-async function pollApiReady(seconds: number): Promise<boolean> {
-  for (let i = 0; i < seconds * 5; i++) {
-    try {
-      await getApiInfo();
-      return true;
-    } catch {
-      // HTTP 服务尚未绑定
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  return false;
-}
-
-/** 向导完成（配置已写入）后：首次运行→启动 sidecar；重新配置→重启应用。 */
-async function onWizardDone() {
-  if (wizardMode.value === "reconfigure") {
-    try {
-      await cmdRelaunchApp();
-    } catch {
-      bootError.value = "重启失败，请手动重启应用";
-      bootState.value = "error";
-    }
-    return;
-  }
-  bootState.value = "starting";
-  showBootLoadingAfterDelay();
-  const res = await cmdStartSidecar().catch(() => null);
-  if (res && res.ok && res.port && res.token) {
-    setApiBase(res.port, res.token);
-    const ready = await pollApiReady(90);
-    clearBootLoading();
-    if (ready) {
-      bootState.value = "done";
       await initializeConnectedWorkspace();
-    } else {
-      bootError.value = "后端 API 启动超时，请检查本地后端进程或重试。";
-      bootState.value = "error";
     }
-  } else {
-    clearBootLoading();
-    bootError.value = res?.error || "后端启动失败";
+  } catch (reason) {
+    bootError.value = reason instanceof Error ? reason.message : "客户端连接准备失败";
     bootState.value = "error";
+  } finally {
+    clearBootLoading();
   }
-}
-
-/** 从设置页触发重新配置。 */
-function reconfigure() {
-  wizardMode.value = "reconfigure";
-  bootState.value = "wizard";
 }
 
 async function retryBoot() {
@@ -330,12 +221,12 @@ async function quitApp() {
 
 // ============ 导航 ============
 
-const settingsSection = ref<SettingsSection>("status");
+const settingsSection = ref<SettingsSection>("current-model");
 
 function onNavigate(v: View) {
   const target = CODING_ALLOWED_VIEWS.has(v) ? v : "coding";
   if (target === "settings" && view.value !== "settings" && settingsFocus.value === null) {
-    settingsSection.value = "status";
+    settingsSection.value = "current-model";
   }
   history.navigate({ view: target });
 }
@@ -391,15 +282,6 @@ function onPaletteNavigate(v: View) {
   commandPaletteOpen.value = false;
   onNavigate(v);
 }
-function onPaletteOpenSearch() {
-  commandPaletteOpen.value = false;
-  searchOpen.value = true;
-}
-function onSearchNavigate(v: View) {
-  searchOpen.value = false;
-  onNavigate(v);
-}
-
 // ============ 会话 / 对话 ============
 
 async function initializeConnectedWorkspace() {
@@ -416,35 +298,22 @@ async function initializeConnectedWorkspace() {
   <UiLab v-if="uiLabEnabled" />
 
   <!-- 启动引导覆盖层 -->
-  <div v-else-if="bootState !== 'done' && bootState !== 'dev'" class="boot">
+  <div v-else-if="bootState !== 'done'" class="boot">
     <div
       v-if="(bootState === 'checking' || bootState === 'starting') && bootLoadingVisible"
       class="boot-card"
     >
       <div class="spinner" />
-      <p>{{ bootState === "checking" ? "正在检测环境…" : "正在启动本地后端…" }}</p>
+      <p>正在准备工作区…</p>
       <p class="hint">首次启动可能需要数秒</p>
     </div>
-
-    <ConfigWizard
-      v-else-if="bootState === 'wizard'"
-      :mode="wizardMode"
-      @done="onWizardDone"
-    />
 
     <div v-else-if="bootState === 'error'" class="boot-card">
       <p class="boot-err">⚠ 启动失败</p>
       <p class="hint">{{ bootError }}</p>
-      <p class="hint">本地数据未受影响；你可以重试启动，或重新配置连接。</p>
+      <p class="hint">本机数据未受影响；可以重试或联系管理员。</p>
       <div class="boot-actions">
         <button class="pa-btn pa-btn--primary" @click="retryBoot">重试</button>
-        <button
-          v-if="isDesktopRuntime()"
-          class="pa-btn pa-btn--ghost"
-          @click="reconfigure"
-        >
-          重新配置连接
-        </button>
         <button
           v-if="isDesktopRuntime()"
           class="pa-btn pa-btn--ghost"
@@ -462,13 +331,15 @@ async function initializeConnectedWorkspace() {
     data-animation-root
     :view="workspaceView"
     :title="pageTitle"
-    :show-dev-tag="bootState === 'dev' || !!codingPreviewStore"
-    :rail-collapsed="railCollapsed"
+    :workspace-header="workspaceView === 'coding' ? '工作台' : pageTitle"
+    :show-dev-tag="!!codingPreviewStore"
+    :rail-collapsed="workspaceView !== 'settings' && railCollapsed"
     :rail-hidden="viewportWidth < CODING_RAIL_DRAWER_MAX"
     :can-go-back="history.state().canGoBack"
     :can-go-forward="history.state().canGoForward"
     @go-back="onGoBack"
     @go-forward="onGoForward"
+    @open-profile="onNavigate('settings'); settingsSection = 'profile'"
   >
     <template #rail>
       <SettingsModuleNav
@@ -500,6 +371,7 @@ async function initializeConnectedWorkspace() {
     <CodingThreadWorkspace
       v-else-if="workspaceView === 'coding'"
       :key="codingThreadKey"
+      :search-target="searchTarget"
       :store="codingActiveStoreRef"
       @navigate="onNavigate"
       @configure-provider="openModelSettings('coding')"
@@ -509,13 +381,10 @@ async function initializeConnectedWorkspace() {
       :active-section="settingsSection"
       :focus-section="settingsFocus?.section ?? null"
       :return-to="settingsFocus?.returnTo ?? null"
-      @reconfigure="reconfigure"
       @return="onSettingsReturn"
       @select-section="settingsSection = $event"
     />
-    <DiagnosticsView v-else-if="workspaceView === 'diagnostics'" />
     <ExtensionRegistryPanel v-else-if="workspaceView === 'extensions'" />
-    <TaskWorkspace v-else-if="workspaceView === 'tasks'" />
 
   </AppShell>
 
@@ -525,15 +394,10 @@ async function initializeConnectedWorkspace() {
   <NotificationCenter />
   <CommandPalette
     v-if="commandPaletteOpen"
-    coding-only
+    :projects="codingActiveStoreRef.projects.value"
+    @open-result="openSearchResult"
     @navigate="onPaletteNavigate"
-    @open-search="onPaletteOpenSearch"
     @close="commandPaletteOpen = false"
-  />
-  <GlobalSearch
-    v-if="searchOpen"
-    @navigate="onSearchNavigate"
-    @close="searchOpen = false"
   />
 </template>
 

@@ -5,6 +5,9 @@
  * 页面层级统一：面包屑 → 标题 → 状态/操作 → 主体（docs/v0.4.0 计划 §4.3）。
  */
 import type { Component } from "vue";
+import { useResizablePanel } from "../composables/useResizablePanel";
+const railSize = useResizablePanel("pa_sidebar_width", 240, 240, 420);
+import WorkspaceHeader from "./WorkspaceHeader.vue";
 import {
   PhCheckCircle,
   PhCircle,
@@ -22,6 +25,7 @@ const props = withDefaults(
   defineProps<{
     view: View;
     title: string;
+    workspaceHeader?: string;
     taskState?: AgentTaskState;
     showDevTag?: boolean;
     contextOpen?: boolean;
@@ -48,6 +52,7 @@ const emit = defineEmits<{
   "toggle-context": [];
   "go-back": [];
   "go-forward": [];
+  "open-profile": [];
 }>();
 
 const STATE_ICONS: Record<AgentTaskState, Component> = {
@@ -65,6 +70,7 @@ const meta = () => viewMeta(props.view);
 <template>
   <div
     class="appshell"
+    :style="{ '--rail-w': `${railSize.width.value}px` }"
     :class="{ 'is-rail-collapsed': railCollapsed, 'is-rail-hidden': railHidden }"
   >
     <div class="appshell-body">
@@ -72,8 +78,10 @@ const meta = () => viewMeta(props.view);
         <slot name="rail" />
       </aside>
 
+      <div v-if="!railCollapsed && !railHidden" class="rail-resizer" role="separator" tabindex="0" aria-label="调整侧栏宽度" aria-orientation="vertical" :aria-valuenow="railSize.width.value" :aria-valuemin="240" :aria-valuemax="420" @pointerdown="railSize.start" @keydown="railSize.keyboard" />
       <main class="appshell-main">
-        <header v-if="meta().showTopbar !== false" class="appshell-topbar">
+        <WorkspaceHeader v-if="workspaceHeader" :title="workspaceHeader" @profile="emit('open-profile')" />
+        <header v-else-if="meta().showTopbar !== false" class="appshell-topbar">
           <div class="topbar-nav">
             <PaIconButton
               label="返回上一视图"
@@ -147,6 +155,8 @@ const meta = () => viewMeta(props.view);
   flex-direction: column;
   background: var(--color-bg);
 }
+.rail-resizer { flex: 0 0 5px; cursor: col-resize; touch-action: none; background: var(--color-border); opacity: .35; }
+.rail-resizer:hover, .rail-resizer:focus-visible { opacity: 1; background: var(--color-accent); outline: 2px solid var(--color-accent); }
 .appshell-body {
   display: flex;
   flex: 1;
@@ -187,6 +197,9 @@ const meta = () => viewMeta(props.view);
 .topbar-nav {
   display: flex;
   align-items: center;
+}
+.is-rail-hidden .appshell-topbar {
+  padding-left: 64px;
 }
 .topbar-copy {
   min-width: 0;

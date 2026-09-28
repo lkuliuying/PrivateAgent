@@ -1,319 +1,83 @@
 #!/usr/bin/env python3
-"""Generate a release manifest for a built Windows release.
-
-Run after ``scripts/release-check-full.bat`` **and** a successful ``tauri build``
-(always run the full release check first; the manifest's checklist is derived from
-``dist/release-check-<version>.json`` and must not be hand-marked).
-Records the version (read from ``tauri.conf.json``), git commit/branch/remote,
-SHA-256 of the sidecar, NSIS installer, and updater ``.sig``, plus the release
-check summary and a checklist generated from the real step results.
-
-Usage (project root)::
-
-    uv run python scripts/generate_release_manifest.py            # print to stdout
-    uv run python scripts/generate_release_manifest.py --write    # write dist/release-manifest-<ver>.md
-    uv run python scripts/generate_release_manifest.py --out PATH
-
-Stdlib only; no third-party imports.
-"""
+"""从明确指定的本机桌面构建目录生成产物清单，不推断测试、签名或安装验收通过。"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from _release_utils import find_installer as find_installer_for_version
-from _release_utils import installer_sig, read_version
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-SIDECAR = (
-    PROJECT_ROOT
-    / "apps"
-    / "desktop"
-    / "src-tauri"
-    / "binaries"
-    / "personal-assistant-server-x86_64-pc-windows-msvc.exe"
-)
-DIST = PROJECT_ROOT / "dist"
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def sha256(path: Path) -> str | None:
-    if not path.exists():
-        return None
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def git(args: list[str]) -> str:
-    try:
-        out = subprocess.run(
-            ["git", *args],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-        return out.stdout.strip() if out.returncode == 0 else ""
-    except Exception:
-        return ""
-
-
-def find_installer(version: str) -> tuple[Path | None, Path | None]:
-    """Locate the NSIS setup exe matching `version` (version-match, not sort) and its
-    .sig. Returns (None, None) if no matching build exists yet (graceful for partial
-    / pre-build runs)."""
-    try:
-        installer = find_installer_for_version(version)
-    except SystemExit:
-        return None, None
-    sig = installer_sig(installer)
-    return installer, (sig if sig.exists() else None)
-
-
-def human_size(n: int | None) -> str:
-    if n is None:
-        return "n/a"
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
-def rel(p: Path) -> str:
-    try:
-        return str(p.relative_to(PROJECT_ROOT)).replace("\\", "/")
-    except ValueError:
-        return str(p)
-
-
-def render_release_check(version: str, data: dict | None) -> list[str]:
-    """发布检查事实摘要。release-check-<version>.json 是机器事实源，manifest 只引用其摘要。"""
-    if not data:
-        return [
-            "",
-            "## Release check (phase8): 未生成",
-            "",
-            f"- 缺少 dist/release-check-{version}.json，先运行 scripts/release-check-full.bat。",
-            "",
-        ]
-    summary = data.get("summary") or {}
-    commit = data.get("commit") or {}
-    return [
-        "",
-        f"## Release check (phase8): {summary.get('passed', '?')} passed / "
-        f"{summary.get('failed', '?')} failed / {summary.get('skipped', '?')} skipped",
-        "",
-        f"- ok: {data.get('ok')}",
-        f"- generated_at: {data.get('generated_at')}",
-        f"- commit: {commit.get('short')} ({commit.get('describe')})",
-        f"- worktree_dirty: {commit.get('dirty')}",
-        f"- database_schema: {data.get('database_schema')}",
-        f"- pytest_summary: {data.get('pytest_summary')}",
-        f"- signing: installer_built={data.get('signing', {}).get('installer_built')}, "
-        f"code_signed={data.get('signing', {}).get('code_signed')}, "
-        f"evidence={data.get('signing', {}).get('evidence')}",
-        "- 机器事实源：dist/release-check-<version>.json；本清单由该报告步骤结果生成，"
-        "不人工勾选。",
-        "",
-    ]
-
-
-def checklist_items(data: dict | None, qa_evidence: dict | None = None) -> list[str]:
-    """由 release-check 报告的真实步骤结果生成 checklist，状态缺失时如实标为未完成。
-
-    ``qa_evidence``（--qa-evidence <json>）为机器 QA 记录：手工验收项
-    （/health、干净安装、升级 smoke、签名状态）由真实证据勾选，不人工勾选。
-    """
-    if not data:
-        return [
-            "- [ ] `scripts/release-check-full.bat` 全量发布检查（未运行）",
-            "- [ ] `/health` all green",
-            "- [ ] clean-install smoke (docs/release-checklist.md)",
-            "- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）",
-            "- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)",
-        ]
-    steps = data.get("steps") or []
-    marks = {"passed": "[x]", "failed": "[ ]", "skipped": "[~]"}
-    items = [f"- {marks.get(str(s.get('status')), '[ ]')} {s.get('name')} ({s.get('status')})"
-             for s in steps]
-    if not items:
-        items.append("- [ ] release-check 报告没有步骤记录")
-    qa = qa_evidence or {}
-    health_ok = bool(qa.get("health_all_green"))
-    clean_ok = bool(qa.get("clean_install_smoke", {}).get("passed"))
-    upgrade_ok = bool(qa.get("upgrade_smoke", {}).get("passed"))
-    signed_ok = bool(qa.get("code_signed_consistent"))
-    items.append(
-        "- [x] `/health` all green"
-        + (f"（{qa['health_all_green']['evidence']}）" if isinstance(qa.get("health_all_green"), dict) else "")
-        if health_ok
-        else "- [ ] `/health` all green"
-    )
-    if clean_ok:
-        ev = qa.get("clean_install_smoke", {})
-        items.append(
-            "- [x] clean-install smoke"
-            + (f"（{ev.get('evidence', '')}）" if ev.get("evidence") else "")
-        )
-    else:
-        items.append("- [ ] clean-install smoke (docs/release-checklist.md)")
-    if signed_ok:
-        items.append("- [x] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
-    else:
-        items.append("- [ ] code_signed 状态与预期一致（无证书应为 no + SmartScreen 说明已生成）")
-    if upgrade_ok:
-        ev = qa.get("upgrade_smoke", {})
-        items.append(
-            "- [x] upgrade smoke vN → vN+1"
-            + (f"（{ev.get('evidence', '')}）" if ev.get("evidence") else "")
-        )
-    else:
-        items.append("- [ ] upgrade smoke vN → vN+1 (docs/release-checklist.md)")
-    return items
-
-
-def build_manifest(qa_evidence: dict | None = None) -> str:
-    version = read_version()
-    commit = git(["rev-parse", "HEAD"])
-    branch = git(["rev-parse", "--abbrev-ref", "HEAD"])
-    remote = git(["config", "--get", "remote.origin.url"])
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    # 代码签名状态（由 sign_installer.py 写入 dist/codesign-status-<version>.json）
-    code_signed = False
-    cert_subject: str | None = None
-    codesign_status_path = DIST / f"codesign-status-{version}.json"
-    if codesign_status_path.exists():
-        try:
-            cs = json.loads(codesign_status_path.read_text(encoding="utf-8"))
-            code_signed = bool(cs.get("code_signed"))
-            cert_subject = cs.get("cert_subject")
-        except Exception:  # noqa: BLE001
-            pass
-
-    # 发布检查摘要（机器事实源：dist/release-check-<version>.json，由 run_release_checks.py 写入；
-    # manifest 只引用其摘要和步骤结果，不自行声明完成状态）
-    release_check_data: dict | None = None
-    release_check_path = DIST / f"release-check-{version}.json"
-    if release_check_path.exists():
-        try:
-            release_check_data = json.loads(release_check_path.read_text(encoding="utf-8"))
-        except Exception:  # noqa: BLE001
-            release_check_data = None
-
-    sidecar_hash = sha256(SIDECAR)
-    installer, sig = find_installer(version)
-    installer_hash = sha256(installer) if installer else None
-    sig_hash = sha256(sig) if sig else None
-
-    sidecar_size = SIDECAR.stat().st_size if SIDECAR.exists() else None
-    installer_size = installer.stat().st_size if installer and installer.exists() else None
-
-    lines: list[str] = [
-        f"# Release Manifest — v{version}",
-        "",
-        f"- generated_at: {now}",
-        f"- version: {version}",
-        f"- git_commit: {commit or '(unknown)'}",
-        f"- branch: {branch or '(detached)'}",
-        f"- remote: {remote or '(none)'}",
-        f"- code_signed: {'yes' if code_signed else 'no'}",
-        "",
-        "## Artifacts",
-        "",
-        "### Sidecar",
-        f"- path: `{rel(SIDECAR)}`" if SIDECAR.exists() else "- sidecar: (not found — run scripts/build-sidecar.bat)",
-        f"- size: {human_size(sidecar_size)}",
-        f"- sha256: `{sidecar_hash or '(missing)'}`",
-        "",
-        "### NSIS installer",
-    ]
-    if installer:
-        lines += [
-            f"- path: `{rel(installer)}`",
-            f"- size: {human_size(installer_size)}",
-            f"- sha256: `{installer_hash or '(missing)'}`",
-        ]
-    else:
-        lines.append("- (not found — run scripts/build-release.bat first)")
-    lines += ["", "### Updater signature (.sig)"]
-    if sig:
-        lines += [
-            f"- path: `{rel(sig)}`",
-            f"- sha256: `{sig_hash or '(missing)'}`",
-        ]
-    else:
-        lines.append("- (no .sig — build with the updater signing key to generate; see docs/signing-and-keys.md)")
-    lines += [
-        "",
-        "### Code signing (Authenticode)",
-        f"- code_signed: {'yes' if code_signed else 'no'}",
-        f"- cert_subject: {cert_subject or '(unsigned)'}",
-        "- 无证书时安装包未签名，SmartScreen 会拦截首次运行；详见 dist/unsigned-note-<version>.md。",
-        "",
-        "## Updater manifest (latest.json)",
-        "",
-        "- Generate with `scripts/generate-latest-json.py` and upload alongside the installer to the GitHub Release.",
-        "- Endpoint: see `plugins.updater.endpoints` in `apps/desktop/src-tauri/tauri.conf.json`.",
-        "",
-    ]
-    lines += render_release_check(version, release_check_data)
-    lines += [
-        "## Validation checklist",
-        "",
-    ]
-    lines += checklist_items(release_check_data, qa_evidence)
-    lines += [
-        "## Rollback",
-        "",
-        "- Revert the GitHub Release asset, or repoint `latest.json` to the previous stable version.",
-        "- See the rollback section of `docs/release-checklist.md`.",
-        "",
-    ]
-    return "\n".join(lines)
+def build_manifest(bundle: Path, installer: Path | None = None) -> tuple[str, str]:
+    bundle = bundle.resolve(strict=True)
+    info = json.loads((bundle / "build-info.json").read_text(encoding="utf-8"))
+    if info.get("accessMode") != "api-key" or info.get("sidecar") != "desktop-local" or info.get("transport") != "stdio-v2":
+        raise ValueError("仅接受 API Key 本机执行器的构建目录")
+    version = info.get("version")
+    if not isinstance(version, str) or not version or any(char not in "0123456789." for char in version):
+        raise ValueError("构建版本无效")
+    source = json.loads((bundle / "source-manifest.json").read_text(encoding="utf-8"))
+    digest = hashlib.sha256(json.dumps(source["sources"], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    if digest != source.get("sourceSha256") or digest != info.get("sourceSha256"):
+        raise ValueError("源码清单与构建记录不一致")
+    client = "PrivateAgent-windows-x64.exe" if info.get("unified") else "PrivateAgent-remote-windows-x64.exe"
+    artifacts = [bundle / name for name in (client, "private-agent-local.exe", "exec-host.exe", "exec-host.sha256", "source-manifest.json", "build-info.json")]
+    if any(not path.is_file() or path.is_symlink() for path in artifacts):
+        raise ValueError("本机桌面构建产物缺失或为符号链接")
+    if sha256(bundle / client) != info.get("sha256"):
+        raise ValueError("桌面程序与构建记录不一致")
+    host_hash = sha256(bundle / "exec-host.exe")
+    if host_hash != info.get("executionHostSha256") or host_hash != (bundle / "exec-host.sha256").read_text(encoding="utf-8").strip():
+        raise ValueError("执行宿主完整性记录不一致")
+    if installer is not None:
+        installer = installer.resolve(strict=True)
+        if not installer.name.endswith("-setup.exe") or f"_{version}_" not in installer.name:
+            raise ValueError("安装包名称与构建版本不一致")
+        artifacts.append(installer)
+        signature = installer.with_name(installer.name + ".sig")
+        if signature.is_file():
+            artifacts.append(signature)
+    lines = [f"# 本机桌面构建清单 {version}", "",
+        f"- 生成时间：{datetime.now(timezone.utc).isoformat()}", f"- 构建提交：{info.get('commit', '未知')}",
+        f"- 未提交改动：{info.get('dirty', '未知')}", f"- 构建模式：{info.get('mode', '未知')}",
+        "- 运行方式：API Key 直连供应商，stdio-v2 本机执行器", f"- 源码摘要：`{digest}`", "",
+        "## 产物", "", "| 文件 | 字节 | SHA-256 |", "| --- | ---: | --- |"]
+    lines.extend(f"| {path.name} | {path.stat().st_size} | `{sha256(path)}` |" for path in artifacts)
+    lines += ["", "## 验证边界", "",
+        "本清单核对文件存在性、客户端和执行宿主摘要、源码清单一致性。",
+        "文件存在和签名文件存在不等于签名验证通过；本清单不声明单元测试、干净安装、升级或真实模型验收通过。",
+        "签名、安装和测试结果应另附对应本次产物的实际验证记录。", ""]
+    return version, "\n".join(lines)
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--write", action="store_true", help="write to dist/release-manifest-<version>.md")
-    ap.add_argument("--out", help="explicit output path (implies --write)")
-    ap.add_argument(
-        "--qa-evidence",
-        type=Path,
-        default=None,
-        help="机器 QA 记录 JSON（/health、干净安装、升级 smoke、签名一致性），"
-        "提供时手工验收项按证据勾选",
-    )
-    args = ap.parse_args()
-
-    qa_evidence: dict | None = None
-    if args.qa_evidence is not None:
-        qa_evidence = json.loads(args.qa_evidence.read_text(encoding="utf-8"))
-    manifest = build_manifest(qa_evidence)
-    if args.out:
-        out = Path(args.out)
-    elif args.write:
-        DIST.mkdir(parents=True, exist_ok=True)
-        out = DIST / f"release-manifest-{read_version()}.md"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bundle", type=Path, required=True, help="包含 build-info.json 的本次构建目录")
+    parser.add_argument("--installer", type=Path, help="需要附入清单的同版本安装包")
+    parser.add_argument("--write", action="store_true", help="写入 dist/release-manifest-<version>.md")
+    parser.add_argument("--out", type=Path, help="明确的输出文件")
+    args = parser.parse_args()
+    try:
+        version, text = build_manifest(args.bundle, args.installer)
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        parser.error(f"构建清单验证失败：{error}")
+    output = args.out or (ROOT / "dist" / f"release-manifest-{version}.md" if args.write else None)
+    if output is None:
+        print(text)
     else:
-        print(manifest)
-        return 0
-
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(manifest, encoding="utf-8")
-    print(f"[manifest] written: {out}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(text, encoding="utf-8")
+        print(f"[manifest] written: {output}")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

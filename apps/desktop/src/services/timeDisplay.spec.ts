@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   PRODUCT_TIMEZONE,
   calendarDayKey,
+  formatAdminDateTime,
   formatDate,
   formatDateTime,
   formatRelative,
@@ -53,4 +54,34 @@ describe("timeDisplay（v0.9.0 H0 §5：UTC 事实 + Asia/Shanghai 显示）", (
     // 旧数据兼容：后端已统一带 Z；此处只保证不抛异常
     expect(() => formatDateTime("2026-08-23T10:00:00")).not.toThrow();
   });
+});
+
+describe("管理员时间兼容旧管理 API", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each(["UTC", "Asia/Shanghai", "America/Los_Angeles"])(
+    "客户端时区为 %s 时，UTC、旧无时区和显式偏移表示同一上海时间",
+    (timezone) => {
+      vi.stubEnv("TZ", timezone);
+      for (const input of [
+        "2026-08-30T16:08:04.123Z",
+        "2026-08-30T16:08:04",
+        "2026-08-30 16:08:04.123456",
+        "2026-08-31T00:08:04+08:00",
+        "2026-08-30T09:08:04-07:00",
+        new Date("2026-08-30T16:08:04Z"),
+      ]) {
+        expect(formatAdminDateTime(input)).toBe("2026年8月31日 00:08:04");
+      }
+    }
+  );
+
+  it.each([null, undefined, "", "  ", "not-a-date", new Date(NaN)])(
+    "空值或非法时间 %s 返回占位而不影响页面渲染",
+    (input) => {
+      expect(formatAdminDateTime(input)).toBe("--");
+    }
+  );
 });

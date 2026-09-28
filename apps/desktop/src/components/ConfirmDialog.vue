@@ -133,7 +133,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 .confirm-scrim {
   position: fixed;
   inset: 0;
-  z-index: var(--z-overlay);
+  z-index: calc(var(--z-overlay) + 2);
   background: var(--color-scrim);
   display: flex;
   align-items: center;

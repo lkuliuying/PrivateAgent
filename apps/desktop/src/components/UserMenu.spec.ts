@@ -1,71 +1,19 @@
-import { flushPromises, mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mount } from "@vue/test-utils";
+import { describe, expect, it } from "vitest";
 import UserMenu from "./UserMenu.vue";
-
-const replace = vi.hoisted(() => vi.fn());
-const logout = vi.hoisted(() => vi.fn());
-const auth = vi.hoisted(() => ({
-  user: { username: "liuying", role: "user" },
-  loading: false,
-  logout,
-}));
-
-vi.mock("vue-router", () => ({
-  useRouter: () => ({ replace }),
-}));
-vi.mock("ant-design-vue", () => ({
-  message: { warning: vi.fn() },
-}));
-vi.mock("../stores/auth", () => ({
-  useAuthStore: () => auth,
-}));
-
-const DropdownStub = {
-  template: '<div><slot /><slot name="overlay" /></div>',
-};
-
-describe("UserMenu", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    auth.loading = false;
-    logout.mockResolvedValue(undefined);
+const options = { props: { inline: true }, global: { stubs: { "a-dropdown": { template: '<div><slot /><slot name="overlay" /></div>' } } } };
+describe("本机工作区菜单", () => {
+  it("只显示 API Key 模式和设置，没有平台账号操作", () => {
+    const wrapper = mount(UserMenu, options);
+    expect(wrapper.text()).toContain("API Key 模式");
+    expect(wrapper.text()).not.toMatch(/登录|注册|账号/);
+    expect(wrapper.findAll('[role="menuitem"]')).toHaveLength(1);
+    wrapper.unmount();
   });
-
-  it("显示当前用户名，菜单暂时只提供设置和退出登录", () => {
-    const wrapper = mount(UserMenu, {
-      props: { inline: true },
-      global: { stubs: { "a-dropdown": DropdownStub } },
-    });
-
-    expect(wrapper.text()).toContain("liuying");
-    expect(wrapper.text()).toContain("设置");
-    expect(wrapper.text()).toContain("退出登录");
-    expect(wrapper.text()).not.toContain("管理员端");
-    expect(wrapper.findAll('[role="menuitem"]')).toHaveLength(2);
-  });
-
-  it("点击账号入口不直接进入设置，选择设置后才触发导航", async () => {
-    const wrapper = mount(UserMenu, {
-      props: { inline: true },
-      global: { stubs: { "a-dropdown": DropdownStub } },
-    });
-
-    await wrapper.get('[data-testid="user-menu-trigger"]').trigger("click");
-    expect(wrapper.emitted("settings")).toBeUndefined();
-
+  it("设置入口保持可用", async () => {
+    const wrapper = mount(UserMenu, options);
     await wrapper.get('[data-testid="user-menu-settings"]').trigger("click");
     expect(wrapper.emitted("settings")).toHaveLength(1);
-  });
-
-  it("退出登录调用服务并返回登录页", async () => {
-    const wrapper = mount(UserMenu, {
-      global: { stubs: { "a-dropdown": DropdownStub } },
-    });
-
-    await wrapper.get('[data-testid="user-menu-logout"]').trigger("click");
-    await flushPromises();
-
-    expect(logout).toHaveBeenCalledTimes(1);
-    expect(replace).toHaveBeenCalledWith({ name: "login" });
+    wrapper.unmount();
   });
 });

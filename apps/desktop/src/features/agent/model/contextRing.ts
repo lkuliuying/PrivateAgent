@@ -24,8 +24,9 @@ export interface ContextRingFacts {
   usedTokens: number;
   limitTokens: number;
   reservedTokens: number;
-  /** 会话内按输入 token 加权的 Provider 缓存命中率。 */
+  /** 缓存命中率与统计范围由后端一起声明。 */
   cacheHitPercent: number | null;
+  cacheHitScope?: "latest_request" | "session";
   /** 不可用/失败原因（公开文案，不含敏感内容） */
   reason: string | null;
   compactionState: ContextBudgetResponse["compaction_state"];
@@ -80,6 +81,8 @@ export function contextRingSourceLabel(
       return "经校验 tokenizer";
     case "runtime_count":
       return "Runtime 统一计数";
+    case "estimated":
+      return "请求上下文估算";
     case "unavailable":
       return "无可用计量来源";
     default:
@@ -92,10 +95,16 @@ export function deriveContextRing(
   body: ContextBudgetResponse | null
 ): ContextRingFacts {
   if (!body) return contextRingUnavailable("用量读取失败");
+  if (!Number.isFinite(body.used_tokens) || body.used_tokens < 0
+    || !Number.isFinite(body.max_context_tokens) || body.max_context_tokens < 0
+    || body.usage_percent !== null && !Number.isFinite(body.usage_percent)) {
+    return contextRingUnavailable("上下文计量数据不完整");
+  }
   const base = {
     usedTokens: body.used_tokens,
     limitTokens: body.max_context_tokens,
     reservedTokens: body.reserved_output_tokens,
+    cacheHitScope: body.cache_hit_scope ?? "session",
     cacheHitPercent:
       body.cache_hit_percent === null
         ? null
@@ -128,7 +137,7 @@ export function deriveContextRing(
       state === "full"
         ? body.error_reason ?? "上下文用量已达窗口上限"
         : state === "failed"
-          ? body.error_reason ?? "自动压缩失败，可新开会话恢复"
+          ? body.compaction_error ?? body.error_reason ?? "压缩未完成，原历史已保留；可在环境面板重试"
           : body.error_reason,
   };
 }
@@ -158,6 +167,6 @@ export function contextRingAriaLabel(facts: ContextRingFacts): string {
     case "near":
       return `上下文用量 ${facts.percent}%，接近压缩阈值`;
     default:
-      return `上下文用量 ${facts.percent}%`;
+      return `${facts.source === "estimated" ? "上下文估算" : "上下文用量"} ${facts.percent}%`;
   }
 }

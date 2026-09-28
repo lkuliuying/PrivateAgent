@@ -1,34 +1,55 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   cmdCheckForUpdates,
   cmdDownloadAndInstallUpdate,
   cmdRelaunchApp,
+  cmdGetUpdateConfiguration,
   type UpdateInfo,
+  type UpdateConfiguration,
 } from "../api";
+import { useNotifications } from "../stores/notifications";
 
+const { confirm } = useNotifications();
 const checking = ref(false);
+const confirming = ref(false);
 const installing = ref(false);
+const loading = ref(true);
+const configuration = ref<UpdateConfiguration | null>(null);
+const busy = computed(() => loading.value || checking.value || confirming.value || installing.value);
 const update = ref<UpdateInfo | null>(null);
 const upToDate = ref(false);
 const error = ref("");
 const errorDetail = ref("");
 const note = ref("");
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; });
 
-type ErrorKind = "network" | "manifest" | "signature" | "unknown";
+async function loadConfiguration(): Promise<void> {
+  loading.value = true;
+  error.value = "";
+  try {
+    const result = await cmdGetUpdateConfiguration();
+    if (disposed) return;
+    configuration.value = result;
+  } catch (cause) {
+    if (!disposed) error.value = cause instanceof Error ? cause.message : String(cause);
+  } finally {
+    if (!disposed) loading.value = false;
+  }
+}
+onMounted(loadConfiguration);
 
-/** Classify an updater error string into a user-facing category with a next step.
- *  Tauri plugin errors are strings: network/manifest failures surface at check(),
- *  signature failures surface at download_and_install(). Keyword ordering matters:
- *  signature is checked first (so base64/minisign decode errors like "invalid symbol"
- *  are not swallowed by the manifest bucket's "invalid"), and binary-download HTTP
- *  failures ("download request failed with status: 404") are matched as network
- *  before the manifest bucket's "404". */
+type ErrorKind = "network" | "manifest" | "signature" | "configuration" | "unknown";
+
+/** 优先识别签名和下载错误，避免被通用的清单错误分支掩盖。 */
 function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; detail: string } {
   const raw = e instanceof Error ? e.message : String(e);
   const s = raw.toLowerCase();
   let kind: ErrorKind = "unknown";
-  if (
+  if (s.includes("endpoints") || s.includes("更新地址") || s.includes("未配置更新源")) {
+    kind = "configuration";
+  } else if (
     s.includes("signature") ||
     s.includes("signing") ||
     s.includes("verify") ||
@@ -60,6 +81,7 @@ function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; de
     kind = "network";
   } else if (
     s.includes("manifest") ||
+    s.includes("更新清单") ||
     s.includes("json") ||
     s.includes("parse") ||
     s.includes("deserialize") ||
@@ -71,15 +93,17 @@ function classifyUpdateError(e: unknown): { kind: ErrorKind; message: string; de
     kind = "manifest";
   }
   const messages: Record<ErrorKind, string> = {
-    network: "无法连接更新服务器。请检查网络后重试（自动更新需访问 GitHub Release）。",
+    configuration: "自动更新服务尚未就绪，请等待发布方提供更新。",
+    network: "无法连接更新服务器或下载安装包。请检查网络后重试。",
     manifest: "更新清单 (latest.json) 无效或未找到。可能是发布源尚未部署或版本号配置错误。",
     signature: "更新签名验证失败。安装包可能被篡改或签名密钥不匹配，已拒绝更新。",
     unknown: "操作失败，请稍后重试或手动下载新版本。",
   };
-  return { kind, message: messages[kind], detail: raw };
+  return { kind, message: messages[kind], detail: kind === "configuration" ? "" : raw };
 }
 
 async function check() {
+  if (busy.value || disposed || !configuration.value) return;
   checking.value = true;
   update.value = null;
   upToDate.value = false;
@@ -87,13 +111,16 @@ async function check() {
   errorDetail.value = "";
   note.value = "";
   try {
+    if (!configuration.value.endpoint?.trim()) throw new Error("未配置更新源");
     const res = await cmdCheckForUpdates();
+    if (disposed) return;
     if (res) {
       update.value = res;
     } else {
       upToDate.value = true;
     }
   } catch (e) {
+    if (disposed) return;
     const c = classifyUpdateError(e);
     error.value = c.message;
     errorDetail.value = c.detail;
@@ -103,25 +130,37 @@ async function check() {
 }
 
 async function install() {
+  if (busy.value || disposed || !update.value) return;
+  const version = update.value.version;
+  confirming.value = true;
+  try {
+    const accepted = await confirm({
+      title: `安装 PrivateAgent v${version}？`,
+      message: "下载并验证签名后，客户端将退出并安装新版。请先保存输入并结束正在进行的任务。",
+      impact: "安装完成后重新打开应用，项目文件与本机记录会保留。",
+      confirmLabel: "下载并安装",
+      cancelLabel: "稍后更新",
+    });
+    if (!accepted || disposed) return;
+  } finally {
+    confirming.value = false;
+  }
   installing.value = true;
   note.value = "";
   error.value = "";
   errorDetail.value = "";
   try {
-    // 1) download + install (signature is verified here; sidecar is killed first by Rust).
+    // 原生层核对同一更新源、版本与签名，再停止执行器并安装。
     try {
-      await cmdDownloadAndInstallUpdate();
+      await cmdDownloadAndInstallUpdate(version);
     } catch (e) {
       const c = classifyUpdateError(e);
-      // Manifest was already validated during check(); an install-time failure is a
-      // download/signature/unknown problem, so only signature/network get their own
-      // wording -- never the manifest-invalid message.
+      // 安装阶段失败不能显示成功提示；保留重试入口。
       error.value = c.kind === "signature" || c.kind === "network" ? c.message : "安装失败，请稍后重试或手动下载新版本。";
       errorDetail.value = c.detail;
       return;
     }
-    // 2) install succeeded -- relaunch. A relaunch failure must clear the success note
-    // so we never render a green "下载安装完成" next to a red error.
+    // 重启失败时撤销成功提示，避免同时呈现相互矛盾的状态。
     note.value = "下载安装完成，正在重启…";
     try {
       await cmdRelaunchApp();
@@ -138,25 +177,27 @@ async function install() {
 
 <template>
   <div class="update-box">
+    <p v-if="loading" role="status" class="msg">正在读取更新配置…</p>
+    <p v-if="configuration" class="msg">当前版本：v{{ configuration.version }}</p>
     <div class="row">
-      <button class="ghost-btn" @click="check" :disabled="checking">
+      <button v-if="!loading && !configuration" class="ghost-btn" @click="loadConfiguration">重新读取更新配置</button>
+      <button v-else class="ghost-btn" @click="check" :disabled="busy || !configuration">
         {{ checking ? "检查中…" : "检查更新" }}
       </button>
       <button
         v-if="update"
         class="primary-btn"
         @click="install"
-        :disabled="installing"
+        :disabled="busy"
       >
-        {{ installing ? "安装中…" : `下载并安装 v${update.version}` }}
+        {{ installing ? "下载、验证并安装中…" : `下载并安装 v${update.version}` }}
       </button>
     </div>
 
     <p v-if="upToDate" class="msg ok">✓ 当前已是最新版本。</p>
-    <p v-if="error" class="msg err">
+    <p v-if="error" class="msg err" role="alert">
       ⚠ {{ error }}
       <span v-if="errorDetail" class="hint">（{{ errorDetail }}）</span>
-      <span class="hint">详见 docs/archive/phases/phase5-plan.md 与 docs/signing-and-keys.md</span>
     </p>
     <p v-if="note" class="msg ok">{{ note }}</p>
 
@@ -176,8 +217,10 @@ async function install() {
 }
 .row {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
+.msg { overflow-wrap: anywhere; }
 .ghost-btn {
   background: var(--color-surface);
   color: var(--color-fg);

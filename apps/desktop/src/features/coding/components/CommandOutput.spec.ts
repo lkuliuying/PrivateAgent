@@ -36,6 +36,32 @@ function execution(overrides: Partial<RunExecutionRecord> = {}): RunExecutionRec
 }
 
 describe("CommandOutput", () => {
+  it.each([0, 1])("Python 路径诊断保留原始 stderr 和退出结果：%s", async (exitCode) => {
+    const stderr = "Failed to find real location of C:\\Python\\python.exe";
+    const wrapper = mount(CommandOutput, { props: {
+      execution: execution({ status: exitCode ? "failed" : "completed", output: {
+        args: ["python", "-m", "pytest", "-q"], returncode: exitCode,
+        runtime_warnings: [{ code: "python_path_resolution_warning", message: "<script>不可信说明</script>" }],
+      } }),
+      page: { lines: [{ seq: 1, kind: "stderr", text: stderr }, { seq: 2, kind: "stderr", text: "other warning" }], last_seq: 2, finished: true },
+    } });
+    expect(wrapper.get('[data-testid="command-runtime-warning"]').text()).toBe("Python 路径解析警告");
+    expect(wrapper.get('[data-testid="command-exit-code"]').text()).toContain(`退出码 ${exitCode}`);
+    expect(wrapper.get('[data-testid="command-exit-code"]').classes().includes("bad")).toBe(Boolean(exitCode));
+    await wrapper.get('[data-testid="command-output-toggle"]').trigger("click");
+    expect(wrapper.get('[data-testid="command-output-body"]').text()).toContain(stderr);
+    expect(wrapper.get('[data-testid="command-output-body"]').text()).toContain("other warning");
+    expect(wrapper.get('[data-testid="command-runtime-warning-detail"]').text()).toContain("Windows 沙箱");
+    expect(wrapper.text()).not.toContain("不可信说明");
+  });
+
+  it.each([undefined, null, "bad", [null, "bad", {}], [{ code: "unknown_warning" }]])("旧记录和未知诊断不被猜作 Python 路径警告：%j", (warnings) => {
+    const wrapper = mount(CommandOutput, { props: {
+      execution: execution({ output: { runtime_warnings: warnings } }), page: null,
+    } });
+    expect(wrapper.find('[data-testid="command-runtime-warning"]').exists()).toBe(false);
+  });
+
   it("紧凑头呈现 parsed 摘要；展开后显示通过/失败/跳过统计", async () => {
     const wrapper = mount(CommandOutput, {
       props: { execution: execution(), page: null },

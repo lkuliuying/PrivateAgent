@@ -14,6 +14,7 @@
 export interface CodingProjectSummary {
   id: number;
   name: string;
+  pinnedAt?: string | null;
   status: "active" | "archived";
   updatedAt: string;
 }
@@ -30,6 +31,21 @@ export interface CodingWorkspaceSummary {
   lastUsedAt: string | null;
 }
 
+/** 所选项目根目录中的本地 Git 分支；不包含远端分支或工作区外路径。 */
+export interface CodingBranchSummary {
+  name: string;
+  headSha: string | null;
+  current: boolean;
+}
+
+export interface CodingBranchState {
+  isGit: boolean;
+  currentBranch: string | null;
+  headSha: string | null;
+  dirty: boolean;
+  branches: CodingBranchSummary[];
+}
+
 /** 任务线程摘要（GET /sessions?project_id=&kind=coding） */
 export interface CodingThreadSummary {
   id: number;
@@ -38,9 +54,8 @@ export interface CodingThreadSummary {
   workspaceId: number | null;
   updatedAt: string;
   lastRunId: string | null;
-  /** v0.9.0 H4：置顶/归档事实（可选，旧构造不受影响） */
+  /** 置顶事实（可选，兼容旧记录）。 */
   pinnedAt?: string | null;
-  archivedAt?: string | null;
   /** legacy/unbound 会话（更多工作区次级入口） */
   kind?: string | null;
 }
@@ -188,6 +203,7 @@ export interface CodingThreadCreateInput {
 
 /** 新对话首轮输入：先在草稿态选择上下文，首次发送时再创建会话并执行。 */
 export interface CodingFirstTurnPayload {
+  collaborationMode?: "default" | "plan";
   message: string;
   permissionMode: string;
   modelProfileId: string | null;
@@ -208,6 +224,9 @@ export interface CodingWorkspaceFetchers {
   health: () => Promise<boolean>;
   createThread: (input: CodingThreadCreateInput) => Promise<CodingThreadSummary>;
   ensureRootWorkspace: (projectId: number) => Promise<CodingWorkspaceSummary>;
+  /** 本机根目录分支；旧 Runtime 不提供时保持可选并回落工作区展示。 */
+  branches?: (projectId: number) => Promise<CodingBranchState>;
+  switchBranch?: (projectId: number, branchName: string) => Promise<CodingBranchState>;
   /** v0.9.0 H1-A：/capabilities 能力位（权限选项可用性；失败按未提供处理） */
   capabilities?: () => Promise<Record<string, unknown> | null>;
 }

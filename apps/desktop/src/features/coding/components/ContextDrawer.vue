@@ -9,15 +9,19 @@
 import { computed, ref } from "vue";
 import { PhSidebarSimple, PhX } from "@phosphor-icons/vue";
 import type { RunApprovalPreviewRecord } from "../model/runContracts";
-import { RUN_STATUS_META } from "../model/runContracts";
+import { runResultMeta } from "../model/runOutcome";
 import type { RunProjection } from "../model/runProjector";
 import { PERMISSION_MODE_META } from "../model/runContracts";
+import LocalContextPanel from "./LocalContextPanel.vue";
 
 const props = withDefaults(
   defineProps<{
     projection: RunProjection | null;
     previews: Record<string, RunApprovalPreviewRecord | null>;
     permissionMode?: string | null;
+    sessionId?: number | null;
+    contextEnabled?: boolean;
+    initialTab?: "files" | "context" | "sources" | "artifacts";
   }>(),
   {
     permissionMode: null,
@@ -30,12 +34,12 @@ const emit = defineEmits<{
 
 type TabKey = "files" | "context" | "sources" | "artifacts";
 const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: "files", label: "Files" },
-  { key: "context", label: "Context" },
-  { key: "sources", label: "Sources" },
-  { key: "artifacts", label: "Artifacts" },
+  { key: "files", label: "文件" },
+  { key: "context", label: "上下文" },
+  { key: "sources", label: "来源" },
+  { key: "artifacts", label: "产物" },
 ];
-const activeTab = ref<TabKey>("files");
+const activeTab = ref<TabKey>(props.initialTab ?? "files");
 
 const changedFiles = computed(() => {
   const files: Array<{ relPath: string; creates: boolean | null }> = [];
@@ -55,7 +59,7 @@ const artifacts = computed(() =>
 
 const statusMeta = computed(() => {
   const status = props.projection?.status;
-  return status ? RUN_STATUS_META[status] : null;
+  return status ? runResultMeta(status, props.projection?.runOutcome, props.projection?.verifying) : null;
 });
 
 const usage = computed(() => props.projection?.usage);
@@ -107,6 +111,7 @@ const usage = computed(() => props.projection?.usage);
           <div class="meta-row"><dt>输出 tokens</dt><dd>{{ (usage?.outputTokens ?? 0).toLocaleString() }}</dd></div>
           <div class="meta-row"><dt>计划版本</dt><dd>{{ projection?.plan ? `v${projection.plan.version} · ${projection.plan.items.length} 项` : "无" }}</dd></div>
         </dl>
+        <LocalContextPanel v-if="contextEnabled && sessionId" :session-id="sessionId" />
       </div>
 
       <!-- Sources -->

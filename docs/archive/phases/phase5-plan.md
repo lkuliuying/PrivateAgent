@@ -93,7 +93,7 @@
 - `apps/desktop/src/components/UpdateChecker.vue`
   - 检查更新、展示新版本、下载安装。
 
-- `docs/examples/updater-latest.json` 与 `.example`
+- `docs/examples/updater-latest.json.example`（保留模板；旧 0.1.1 生成清单已清理）
   - 已有 Tauri updater manifest 样例和当前版本清单。
 
 ### 3.2 主要缺口
@@ -242,7 +242,7 @@
   - 旧版本数据库 schema。
   - 新版本启动后 Alembic upgrade。
   - 失败回退策略。
-- [x] 把 QA checklist 放入 `docs/archive/phases/phase5-plan.md` 或单独 `docs/release-checklist.md`。
+- [x] 把 QA checklist 放入 `docs/archive/phases/phase5-plan.md` 或单独 `docs/archive/legacy/release-checklist.md`。
 
 验收：
 
@@ -300,13 +300,13 @@
 
 实测 sidecar 独立启动时，alembic 迁移报 `'cryptography' package is required for sha256_password or caching_sha2_password auth methods`。原因：MySQL 8 默认 `caching_sha2_password` 认证需要 `cryptography`，而 aiomysql 在 `try/except` 内动态 import，PyInstaller 静态分析看不到，未打入 sidecar。**后果**：打包模式连 MySQL 8 会认证失败（状态页 MySQL 红；Phase 4 的 "/health 200" 掩盖了此问题，因 /health 即使 MySQL 红也返回 200）。
 
-**修复**：已在 `personal_assistant.spec` 与 `personal_assistant_onedir.spec` 的 `hiddenimports` 显式加入 `"cryptography"`。2026-07-08 已重新运行 `scripts/build-sidecar.bat` 与 `scripts/build-release.bat`，并直接启动打包 sidecar 访问 `/health`，确认 API / Ollama / MySQL / ChromaDB 全绿。后续每次发布仍需按 `docs/release-checklist.md` §5.2 / §9 复测。
+**修复**：已在 `personal_assistant.spec` 与 `personal_assistant_onedir.spec` 的 `hiddenimports` 显式加入 `"cryptography"`。2026-07-08 已重新运行 `scripts/build-sidecar.bat` 与 `scripts/build-release.bat`，并直接启动打包 sidecar 访问 `/health`，确认 API / Ollama / MySQL / ChromaDB 全绿。后续每次发布仍需按 `docs/archive/legacy/release-checklist.md` §5.2 / §9 复测。
 
 验收：
 
 - ✅ 有体积和启动时间基线表（上）。
 - ⏳ onedir/裁剪优化方案需构建后补测；当前结论是**暂不切换 onefile 默认**，收益不明显且风险高。
-- ✅ onefile 基线通过 `pytest`/`npm build`/`cargo check`（见阶段总验收）；打包 smoke 待发布前按 `docs/release-checklist.md` 执行。
+- ✅ onefile 基线通过 `pytest`/`npm build`/`cargo check`（见阶段总验收）；打包 smoke 待发布前按 `docs/archive/legacy/release-checklist.md` 执行。
 
 ### M6 · 跨平台打包预研
 
@@ -465,7 +465,7 @@ rollback_plan:
   - 第五阶段状态。
   - 安装包构建与发布流程。
   - 自动更新说明。
-- `docs/usage-guide.md`
+- `docs/archive/legacy/usage-guide.md`
   - 最终用户安装、配置、更新、卸载。
   - 开发者发布流程。
   - 故障排查。
@@ -474,7 +474,7 @@ rollback_plan:
 - `docs/archive/phases/phase5-plan.md`
   - 勾选里程碑任务。
 - 可选新增：
-  - `docs/release-checklist.md`
+  - `docs/archive/legacy/release-checklist.md`
   - `docs/release-manifest.example.md`
 
 ---

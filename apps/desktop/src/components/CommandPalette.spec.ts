@@ -1,27 +1,15 @@
 import { mount } from "@vue/test-utils";
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { nextTick } from "vue";
 import CommandPalette from "./CommandPalette.vue";
+import { searchWorkspace } from "../features/coding/api/workspaceSearch";
+vi.mock("../features/coding/api/workspaceSearch", () => ({ searchWorkspace: vi.fn() }));
+beforeEach(() => vi.mocked(searchWorkspace).mockResolvedValue({ items: [], next_cursor: null, examined: 0 }));
 
-// 第八阶段 M1：CommandPalette 组件测试（渲染 / 过滤 / 键盘 / 动作）。
-vi.mock("../api", () => ({
-  createInbox: vi.fn(),
-  createReminder: vi.fn(),
-  createTodayBriefing: vi.fn(),
-  createSession: vi.fn(),
-}));
-vi.mock("../stores/notifications", () => ({
-  useNotifications: () => ({
-    success: vi.fn(),
-    error: vi.fn(),
-    info: vi.fn(),
-    warning: vi.fn(),
-    prompt: vi.fn().mockResolvedValue(null),
-  }),
-}));
-
-async function mountPalette(props: { codingOnly?: boolean } = {}) {
-  const w = mount(CommandPalette, { props });
+async function mountPalette() {
+  const w = mount(CommandPalette);
+  await nextTick();
+  [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === "导航命令")!.click();
   await nextTick();
   return w;
 }
@@ -29,22 +17,23 @@ async function mountPalette(props: { codingOnly?: boolean } = {}) {
 describe("CommandPalette", () => {
   it("渲染命令列表", async () => {
     const w = await mountPalette();
-    expect(document.body.textContent).toContain("全局搜索");
-    expect(document.body.textContent).toContain("新建提醒");
+    expect(document.body.textContent).not.toContain("全局搜索");
+    expect(document.body.textContent).not.toContain("新建提醒");
     expect(document.body.textContent).toContain("打开设置");
-    expect(document.querySelectorAll(".cp-item").length).toBeGreaterThan(5);
+    expect(document.body.textContent).not.toContain("打开诊断");
+    expect(document.querySelectorAll(".cp-item").length).toBe(3);
     w.unmount();
   });
 
   it("按查询过滤命令", async () => {
     const w = await mountPalette();
     const input = document.querySelector(".cp-input") as HTMLInputElement;
-    input.value = "收件箱项";
+    input.value = "设置";
     input.dispatchEvent(new Event("input"));
     await nextTick();
     const items = document.querySelectorAll(".cp-item");
     expect(items.length).toBe(1);
-    expect(document.body.textContent).toContain("新建收件箱项");
+    expect(document.body.textContent).toContain("打开设置");
     w.unmount();
   });
 
@@ -61,25 +50,26 @@ describe("CommandPalette", () => {
   it("Escape 发出 close 事件", async () => {
     const w = await mountPalette();
     const input = document.querySelector(".cp-input") as HTMLInputElement;
-    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     await nextTick();
     expect(w.emitted("close")).toBeTruthy();
     w.unmount();
   });
 
-  it("点击「全局搜索」发出 open-search", async () => {
+  it("点击设置发出本机导航事件", async () => {
     const w = await mountPalette();
     const items = Array.from(document.querySelectorAll<HTMLElement>(".cp-item"));
-    const searchItem = items.find((item) => item.textContent?.includes("全局搜索"));
+    const searchItem = items.find((item) => item.textContent?.includes("打开设置"));
     expect(searchItem).toBeTruthy();
     searchItem!.click();
     await nextTick();
-    expect(w.emitted("open-search")).toBeTruthy();
+    expect(w.emitted("navigate")).toEqual([["settings"]]);
     w.unmount();
   });
 
-  it("Coding 模式只显示 Coding Agent 相关目的地", async () => {
-    const w = await mountPalette({ codingOnly: true });
+  it("只显示 Coding Agent 相关目的地", async () => {
+    const w = await mountPalette();
+    expect(document.body.textContent).not.toContain("打开诊断");
     expect(document.body.textContent).toContain("打开Coding");
     expect(document.body.textContent).toContain("打开设置");
     expect(document.body.textContent).not.toContain("打开提醒");

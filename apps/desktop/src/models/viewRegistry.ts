@@ -172,7 +172,7 @@ export const VIEW_REGISTRY: Record<View, ViewMeta> = {
   },
   extensions: {
     key: "extensions",
-    label: "扩展",
+    label: "插件",
     icon: PhPuzzlePiece,
     group: "connect",
     keywords: ["extension", "扩展", "mcp", "server"],

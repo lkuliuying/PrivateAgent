@@ -612,7 +612,7 @@ CREATE TABLE provider_call_audits (
 - [x] 敏感记忆不会进入远程 Provider 上下文。
 - [x] 数据体检能展示最近备份、失败导入、孤立数据和归档建议。
 - [x] `pytest -q`、`npm run build`、`cargo check` 通过。
-- [x] `docs/usage-guide.md` 更新第六阶段使用说明。
+- [x] `docs/archive/legacy/usage-guide.md` 更新第六阶段使用说明。
 
 验收证据（2026-07-08）：
 - `uv run pytest -q`：146 passed。

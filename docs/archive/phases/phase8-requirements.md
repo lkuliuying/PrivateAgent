@@ -21,8 +21,8 @@
 1. **桌面端到端证据仍薄**：前端 `package.json` 只有 `dev/build/preview/tauri`，没有 Vitest、Playwright 或 Tauri 桌面 smoke；第七阶段主要由后端/API smoke 和 `npm run build` 保证。
 2. **发布前校验不够产品化**：`scripts/release-check.bat` 只跑 pytest、npm build、cargo check、alembic current，尚未串联第七阶段 smoke、桌面启动、安装包构建、updater 清单校验和诊断包导出。
 3. **真实升级链路未跑通**：发布清单仍要求部署 GitHub Release 并执行 vN -> vN+1 升级 smoke；目前工具就绪，但真实 Release 资产、升级、回滚和数据保留还缺实测记录。
-4. **Windows 代码签名未接入**：`docs/signing-and-keys.md` 已写清 Authenticode 方案和签名顺序，但当前安装包仍未代码签名，SmartScreen 仍会拦截。
-5. **macOS/Linux 仍停留在预研**：`docs/cross-platform.md` 明确 macOS/Linux 未实际构建或 smoke；`tauri.conf.json` 当前 bundle targets 只有 `nsis`，`generate-latest-json.py` 也只面向 Windows 单平台清单。
+4. **Windows 代码签名未接入**：`docs/archive/legacy/signing-and-keys.md` 已写清 Authenticode 方案和签名顺序，但当前安装包仍未代码签名，SmartScreen 仍会拦截。
+5. **macOS/Linux 仍停留在预研**：`docs/archive/legacy/cross-platform.md` 明确 macOS/Linux 未实际构建或 smoke；`tauri.conf.json` 当前 bundle targets 只有 `nsis`，`generate-latest-json.py` 也只面向 Windows 单平台清单。
 6. **性能和规模边界缺少持续量化**：第七阶段已有列表上限和部分分页，但 Today、全局搜索、诊断、完整性体检、Chroma/MySQL 一致性检查、大文档导入和长会话加载还缺固定性能基线与退化报警。
 7. **扩展注册仍偏文档化**：第七阶段定义了 command、capture source、provider、notification target、diagnostic check、maintenance check 等扩展边界，但内置模块仍分散在各服务和路由里，缺少统一注册表、能力声明和冲突检测。
 8. **外部生态接入还没有安全样板**：日历、邮件、浏览器剪藏、文件夹监听等真实日常输入源尚未接入；如果直接做完整同步会扩大隐私和稳定性风险，需要先做本地文件/导入型、只读、可撤销的集成样板。
@@ -83,7 +83,7 @@
 
 10. **文档导航与版本矩阵**
    - 建立阶段索引和版本矩阵，说明当前版本、schema head、阶段完成度、发布状态和未完成边界。
-   - README、`docs/requirements.md`、`docs/usage-guide.md`、`docs/release-checklist.md` 与阶段文档保持一致。
+   - README、`docs/archive/legacy/requirements.md`、`docs/archive/legacy/usage-guide.md`、`docs/archive/legacy/release-checklist.md` 与阶段文档保持一致。
 
 ---
 
@@ -287,7 +287,7 @@
 
 - 至少一个非 Windows 平台完成 sidecar 构建、Tauri 构建和 smoke。
 - 未完成平台保持“未实测”标记。
-- `docs/cross-platform.md` 更新为实测状态表。
+- `docs/archive/legacy/cross-platform.md` 更新为实测状态表。
 
 ### 5.6 性能基线与规模护栏
 
@@ -561,7 +561,7 @@
 - [x] 扩展注册表覆盖 command、diagnostic、maintenance 至少三类。
 - [x] 至少一个本地集成样板完成隐私预览、导入、来源追踪和撤销。
 - [x] 备份 manifest 校验和恢复预览 + 完整性体检路径通过。
-- [x] README、`docs/requirements.md`、`docs/usage-guide.md`、`docs/release-checklist.md` 更新第八阶段状态。
+- [x] README、`docs/archive/legacy/requirements.md`、`docs/archive/legacy/usage-guide.md`、`docs/archive/legacy/release-checklist.md` 更新第八阶段状态。
 - [x] `uv run pytest -q`、`npm run build`、`cargo check`、`uv run alembic current`、`git diff --check` 通过。
 
 > 14/14：2026-08-05 在真实 Windows 环境完成 `0.1.2 -> 0.2.0` 升级 smoke（安装包就地升级、数据保留校验、回滚演练、updater 清单正文篡改——rejected——与签名字节篡改——rejected），详见 `docs/archive/planning/remaining-work-plan.md` §6 与 `scripts/upgrade_smoke.py` run #26。

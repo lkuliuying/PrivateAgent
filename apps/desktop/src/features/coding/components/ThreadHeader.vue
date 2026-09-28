@@ -20,7 +20,8 @@ import {
   PhWarningCircle,
 } from "@phosphor-icons/vue";
 import type { AgentRunStatus } from "../model/runContracts";
-import { RUN_STATUS_META } from "../model/runContracts";
+import type { RunOutcome } from "../model/generated/codingContracts";
+import { runResultMeta } from "../model/runOutcome";
 
 const props = withDefaults(
   defineProps<{
@@ -33,6 +34,8 @@ const props = withDefaults(
     headSha?: string | null;
     gitDirty?: boolean | null;
     runStatus?: AgentRunStatus | null;
+    runOutcome?: RunOutcome | null;
+    verifying?: boolean;
     planAvailable?: boolean;
     planOpen?: boolean;
     contextOpen?: boolean;
@@ -66,8 +69,12 @@ const emit = defineEmits<{
 
 const STATUS_ICONS: Record<AgentRunStatus, Component> = {
   created: PhClockClockwise,
+  queued: PhClockClockwise,
+  paused: PhProhibit,
+  interrupted: PhWarning,
   running: PhCircleNotch,
   waiting_approval: PhWarning,
+  waiting_input: PhClockClockwise,
   completed: PhCheckCircle,
   failed: PhWarningCircle,
   cancelled: PhProhibit,
@@ -80,7 +87,7 @@ const shortHead = computed(() => {
   return sha ? sha.slice(0, 8) : "";
 });
 
-const statusMeta = computed(() => (props.runStatus ? RUN_STATUS_META[props.runStatus] : null));
+const statusMeta = computed(() => (props.runStatus ? runResultMeta(props.runStatus, props.runOutcome, props.verifying) : null));
 const titleTooltip = computed(() =>
   props.workspacePath ? `工作目录：${props.workspacePath}` : props.title
 );
@@ -149,6 +156,7 @@ const titleTooltip = computed(() =>
         />
         {{ statusMeta.label }}
       </span>
+      <slot name="tools">
       <button
         v-if="planAvailable"
         class="plan-toggle"
@@ -171,6 +179,7 @@ const titleTooltip = computed(() =>
       >
         <PhSidebarSimple :size="15" />
       </button>
+      </slot>
       <button
         v-if="cancellable"
         class="cancel-btn"
@@ -190,7 +199,9 @@ const titleTooltip = computed(() =>
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-5);
+  min-height: 70px;
+  flex-shrink: 0;
+  padding: var(--space-3) var(--space-6);
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
 }
@@ -263,7 +274,7 @@ const titleTooltip = computed(() =>
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-1);
-  margin: 2px 0 0;
+  margin: 6px 0 0;
   color: var(--color-fg-muted);
   font-size: var(--pa-text-meta);
 }
@@ -291,8 +302,8 @@ const titleTooltip = computed(() =>
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
+  width: 34px;
+  height: 34px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   background: transparent;
@@ -338,7 +349,7 @@ const titleTooltip = computed(() =>
 .plan-toggle,
 .cancel-btn {
   display: inline-flex;
-  height: 28px;
+  height: 32px;
   align-items: center;
   gap: var(--space-1);
   padding: 0 var(--space-2);
@@ -370,6 +381,11 @@ const titleTooltip = computed(() =>
 }
 .spin {
   animation: header-spin 0.9s linear infinite;
+}
+@media (max-width: 600px) {
+  .thread-header { padding-inline: var(--space-3); gap: var(--space-2); flex-wrap: wrap; }
+  .header-copy { flex-basis: 55%; }
+  .header-trailing { gap: var(--space-1); margin-left: auto; }
 }
 @keyframes header-spin {
   to { transform: rotate(360deg); }
