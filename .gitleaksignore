@@ -1,0 +1,4 @@
+# 仅豁免已核实的两个历史误报：模拟 PEM 文本被最小长度规则跨行匹配。
+# 指纹绑定提交、文件、规则和行号，不豁免其他提交或整个测试目录。
+43fb37340f4cb5513f6dc96fecdc05c4bbc6a798:tests/unit/test_secret_filter.py:private-key:17
+599f97fad1324f000cc1488e44515c4da85d29e4:tests/unit/test_admin_logs.py:private-key:45

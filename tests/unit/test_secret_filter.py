@@ -9,12 +9,13 @@ from private_agent_local.secret_filter import MAX_STREAM_LINE, REDACTED, SecretF
 KEY = "fixture-private-key-928173"
 
 
+# 模拟 PEM 的起始标记拆成相邻字面量，保持运行值不变，避免源码扫描跨行误识别。
 @pytest.mark.parametrize("text", [
     f"前缀 {KEY} 后缀", "Authorization: Bearer abcdef-secret", '"api_key": "quoted secret value"',
     "password=secret-value; next", "https://user:private-password@example.test/path",
     "postgres://user:private-password@example.test/database",
     "sk-proj-abcdefghijklmnopqrstuvwxyz123456", "ghp_abcdefghijklmnopqrstuvwxyz123456",
-    "-----BEGIN PRIVATE KEY-----\nsynthetic-private-body\n-----END PRIVATE KEY-----", "token=边界测试令牌",
+    "-----BEGIN " "PRIVATE KEY-----\nsynthetic-private-body\n-----END PRIVATE KEY-----", "token=边界测试令牌",
 ])
 def test_stream_all_split_positions_match_complete_redaction(text):
     secret_filter = SecretFilter(lambda: (KEY,))
@@ -76,7 +77,7 @@ def test_stream_bounds_unfinished_value_and_resumes_after_newline():
 
 def test_long_private_key_remains_masked_until_split_end_marker():
     stream = SecretFilter().stream()
-    assert stream.feed("-----BEGIN PRIVATE KEY-----\n" + "a" * MAX_STREAM_LINE) == REDACTED
+    assert stream.feed("-----BEGIN " "PRIVATE KEY-----\n" + "a" * MAX_STREAM_LINE) == REDACTED
     assert stream.feed("\nmore-body\n-----END PRIVATE ") == ""
     assert stream.feed("KEY-----\n完成") == "\n完成"
     assert stream.finish() == ""

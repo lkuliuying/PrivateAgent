@@ -4,9 +4,9 @@ PrivateAgent 是使用自备 API Key 的本机 AI 编程工作台。桌面界面
 
 项目文件留在用户选择的本机目录；项目元数据、会话、执行记录和记忆保存在本机 SQLite，供应商密钥由系统凭据库管理。模型请求从电脑直接发送给所选供应商，无需 PrivateAgent 平台账号。
 
-> 本文按 2026-09-22 的源码整理。自 2026-09-20 起，项目仅保留 API Key 本机桌面链；旧 `personal_assistant` 服务端、MySQL/Alembic、RAG/个人中枢业务及服务器部署入口已移除。源码能力、测试结果、安装包与正式发布状态需分别核对，详见[本机化说明](docs/solutions/2026-09-20-local-only-context.md)。
+> 本文按当前本机桌面源码整理，仓库维护说明更新于 2026-09-28。自 2026-09-20 起，项目仅保留 API Key 本机桌面链；旧 `personal_assistant` 服务端、MySQL/Alembic、RAG/个人中枢业务及服务器部署入口已移除。源码能力、测试结果、安装包与正式发布状态需分别核对，详见[本机化说明](docs/solutions/2026-09-20-local-only-context.md)。
 
-[快速开始](#快速开始) · [开发环境](#开发环境) · [测试与验证](#测试与验证) · [构建与更新](#构建与更新) · [文档导航](#文档导航)
+[快速开始](#快速开始) · [开发环境](#开发环境) · [仓库维护与凭据安全](#仓库维护与凭据安全) · [测试与验证](#测试与验证) · [构建与更新](#构建与更新) · [文档导航](#文档导航)
 
 ## 快速开始
 
@@ -86,6 +86,51 @@ npm run dev --prefix apps/desktop
 ```
 
 Vite 浏览器预览不提供本机执行与凭据能力。桌面联调和 Windows 辅助入口见[桌面端说明](apps/desktop/README.md)及[脚本索引](scripts/README.md)；完整客户端使用下方统一构建入口。
+
+## 仓库维护与凭据安全
+
+### 分支与历史
+
+| 引用 | 用途 |
+| --- | --- |
+| `main` | 默认分支，作为已验证源码的稳定入口；不等于已发布或安装的版本 |
+| `dev/1.0.0` | 日常开发与集成；验证后将完成的变更同步到 `main` |
+| `archive/2026-09-28/<原分支名>` | 旧分支的归档标签，用于追溯独立提交，不作为日常开发分支 |
+
+本地与远端工作分支保留 `main` 和 `dev/1.0.0`。归档标签保存 `agent/desktop-architecture-motion-refactor`、`codex/release-1.0.0`、`codex/repository-maintenance-20260831`、`drill/0.5.0-rc.5` 的原始提交；归档不表示这些变更已经合并。既有版本标签和 Release 保留。
+
+首次克隆默认进入 `main`，开发时切换到开发分支：
+
+```powershell
+git clone https://github.com/lkuliuying/PrivateAgent.git
+Set-Location PrivateAgent
+git switch dev/1.0.0
+```
+
+清理分支前先核对远端、独立提交、PR 和 worktree 占用；未合并提交应先保存到归档标签并确认远端可达。不要用 `reset --hard`、`clean` 或强制推送处理同步差异。
+
+### 凭据检查
+
+禁止提交真实 API Key、密码、访问令牌、签名私钥、用户数据库及运行日志。供应商密钥通过客户端设置进入系统凭据库；本机环境文件、`.secrets/`、`.tauri/` 和私钥文件由 `.gitignore` 排除。忽略规则不能移除已经进入 Git 历史的内容。
+
+[Secret scan 工作流](.github/workflows/secret-scan.yml) 在两个保留分支的 push、面向它们的 PR 及手动触发时检查完整 Git 历史。扫描使用 Gitleaks `8.30.1`，下载前固定版本、运行前校验 SHA-256，只有仓库读取权限；未豁免的命中和执行失败均使检查失败，日志不显示凭据原文。该工作流不构建或发布应用。
+
+本地使用同一版本。将[官方 Windows x64 工具包](https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip)下载并解压到被忽略的 `.tools/gitleaks-8.30.1/`，先核对压缩包 SHA-256 为 `d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332afc4e`。在仓库根目录执行：
+
+```powershell
+# 提交前检查暂存区；暂存区为空时不代表工作区已检查。
+& .\.tools\gitleaks-8.30.1\gitleaks.exe git . --pre-commit --staged --config .gitleaks.toml --redact=100 --ignore-gitleaks-allow --no-banner
+
+# 获取最新分支、标签后检查完整引用历史和本地 reflog。
+git fetch --prune --tags origin
+& .\.tools\gitleaks-8.30.1\gitleaks.exe git . --log-opts="--all --reflog --full-history" --config .gitleaks.toml --redact=100 --ignore-gitleaks-allow --no-banner
+```
+
+退出码 `0` 表示本次范围内未发现未豁免问题；非零结果必须核查。默认检测规则保留，[项目规则](.gitleaks.toml)仅按文件和精确合成值豁免已核实的测试数据；[历史指纹](.gitleaksignore)仅处理两个模拟 PEM 测试的历史误报，不豁免整个目录或提交，也不依赖源码中的 `gitleaks:allow` 注释。
+
+发现真实凭据时，先撤销或轮换，再移除源码中的值并复验。删除分支、增加 `.gitignore` 或一次通过的扫描都不能证明既有泄露已经消除。历史重写需要单独确认并协调其他克隆；必要时处理 GitHub 缓存和 PR 引用，参见[官方处置说明](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/removing-sensitive-data-from-a-repository)。不要将原始凭据写入报告、Issue 或提交说明。
+
+文本扫描不能完整覆盖图片、PDF、发布附件、外部副本或所有未知凭据格式；安全结论应注明实际范围。仓库已启用 GitHub Secret scanning 和 Push protection，CI 是补充检查。
 
 ## 测试与验证
 

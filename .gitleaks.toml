@@ -1,0 +1,42 @@
+title = "PrivateAgent 凭据检查"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "浏览器替身中的计划项标识，不是认证凭据"
+condition = "AND"
+paths = ['''^apps/desktop/e2e/observer\.spec\.ts$''']
+regexTarget = "secret"
+regexes = ['''^plan-123456abcdef$''']
+
+[[rules.allowlists]]
+description = "仅用于 SecretFilter 测试的固定合成值"
+condition = "AND"
+paths = ['''^tests/unit/test_secret_filter\.py$''']
+regexTarget = "secret"
+regexes = ['''^fixture-private-key-928173$''']
+
+[[rules.allowlists]]
+description = "无网络 RuntimeClient 替身中的固定令牌"
+condition = "AND"
+paths = ['''^tests/coding_acceptance/test_s6_acceptance\.py$''']
+regexTarget = "secret"
+regexes = ['''^s6-isolated-placeholder$''']
+
+[[rules.allowlists]]
+description = "历史 HTTP 测试中的幂等键，不是认证凭据"
+condition = "AND"
+paths = ['''^tests/test_http_workflow\.py$''']
+regexTarget = "secret"
+regexes = ['''^idem-12345678$''']
+
+[[rules.allowlists]]
+description = "历史配置脱敏测试中的固定合成值"
+condition = "AND"
+paths = ['''^tests/test_settings\.py$''']
+regexTarget = "secret"
+regexes = ['''^sk-secret-12345$''']
