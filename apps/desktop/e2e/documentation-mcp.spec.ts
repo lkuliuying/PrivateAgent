@@ -31,6 +31,7 @@ test("本机文档 MCP 的发现、启用与窄窗口设置", async ({ page }, t
           if (path === "/capabilities") body = { coding_agent_ui_enabled: true, project_bound_runs_enabled: true };
           else if (path === "/projects") body = [{ id: 7, name: "文档工具验收项目", status: "active", updated_at: new Date().toISOString() }];
           else if (path.endsWith("/integrations")) body = { items: [] };
+          else if (path === "/mcp-services") body = { items: [], pending_changes: [], credential_cleanup_pending: [] };
           else if (path === "/model-settings") body = { llm_temperature: 0.2, llm_context_length: 8192, kb_enabled_by_default: false };
           else if (path === "/projects/7/documentation-sources") {
             if (args.request.method === "POST") {
@@ -54,8 +55,7 @@ test("本机文档 MCP 的发现、启用与窄窗口设置", async ({ page }, t
       },
     };
   });
-  await page.goto("/#/app?view=settings&section=provider");
-  await expect(page.getByTestId("model-provider-manager")).toBeVisible();
+  await page.goto("/#/app?view=settings");
   await page.getByRole("button", { name: "MCP 外部能力", exact: true }).click();
   await page.getByText("公开文档服务", { exact: true }).click();
   await expect(page.getByRole("button", { name: "添加文档服务" })).toBeEnabled();

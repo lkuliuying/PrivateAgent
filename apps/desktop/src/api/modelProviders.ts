@@ -24,6 +24,7 @@ export type ModelProviderApiFormat =
 
 export interface ModelProviderModel {
   profileId: string;
+  supportsVision?: boolean;
   modelId: string;
   contextTokens: number | null;
   maxOutputTokens: number | null;
@@ -31,6 +32,7 @@ export interface ModelProviderModel {
 }
 
 export interface DiscoveredModel {
+  supportsVision?: boolean;
   modelId: string;
   contextTokens: number | null;
   maxOutputTokens: number | null;
@@ -71,6 +73,7 @@ interface ModelProviderDto {
   api_key_configured: boolean;
   models: Array<{
     profile_id: string;
+    supports_vision?: boolean;
     model_id: string;
     context_tokens: number | null;
     max_output_tokens?: number | null;
@@ -90,6 +93,7 @@ function fromDto(dto: ModelProviderDto): ModelProvider {
     apiKeyConfigured: dto.api_key_configured,
     models: dto.models.map((model) => ({
       profileId: model.profile_id,
+      supportsVision: model.supports_vision ?? false,
       modelId: model.model_id,
       contextTokens: model.context_tokens,
       maxOutputTokens: model.max_output_tokens ?? null,
@@ -98,7 +102,7 @@ function fromDto(dto: ModelProviderDto): ModelProvider {
   };
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const base = await ensureApiBase();
   const response = await apiFetch(`${base}${path}`, init);
   if (!response.ok) {
@@ -122,16 +126,8 @@ export async function listModelProviders(): Promise<ModelProvider[]> {
   return list.map(fromDto);
 }
 
-export async function saveModelProvider(
-  providerId: string,
-  input: ModelProviderSaveInput
-): Promise<ModelProvider> {
-  const dto = await requestJson<ModelProviderDto>(
-    `/model-providers/${encodeURIComponent(providerId)}`,
-    {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+export function modelProviderPayload(input: ModelProviderSaveInput) {
+  return {
         name: input.name,
         protocol: input.protocol,
         base_url: input.baseUrl,
@@ -141,11 +137,24 @@ export async function saveModelProvider(
         is_builtin: input.isBuiltin ?? false,
         models: input.models.map((model) => ({
           model_id: model.modelId,
+          supports_vision: model.supportsVision,
           context_tokens: model.contextTokens,
           max_output_tokens: model.maxOutputTokens,
           metadata_source: model.metadataSource,
         })),
-      }),
+      };
+}
+
+export async function saveModelProvider(
+  providerId: string,
+  input: ModelProviderSaveInput
+): Promise<ModelProvider> {
+  const dto = await requestJson<ModelProviderDto>(
+    `/model-providers/${encodeURIComponent(providerId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(modelProviderPayload(input)),
     }
   );
   return fromDto(dto);
@@ -247,11 +256,14 @@ export async function updateModelProviderRuntimeSecret(
     if (getWorkspaceAccessToken() !== token) throw new Error("本机会话已变化或连接已结束，请重新保存模型密钥");
     await cmdSetModelProviderSecret(alias, secret);
   }
-  await requestJson(`/model-providers/${encodeURIComponent(providerId)}/runtime-secret`, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({ secret }),
-  });
+  try {
+    await requestJson(`/model-providers/${encodeURIComponent(providerId)}/runtime-secret`, {
+      method: "PUT", headers, body: JSON.stringify({ secret }),
+    });
+  } catch (error) {
+    if (isTauri()) throw new Error("API Key 已持久化到系统凭据库，但本机执行器尚未确认更新。输入已保留；重启应用可加载已保存密钥，也可点击保存重试。");
+    throw error;
+  }
 }
 
 export async function clearModelProviderRuntimeSecret(

@@ -13,13 +13,22 @@ export async function prepareCodingFixture(page: Page): Promise<void> {
     const surface = window as unknown as { isTauri: boolean; __TAURI_INTERNALS__: Record<string, unknown> };
     surface.isTauri = true;
     let callbackId = 0;
+    let credentialDraft: string | null = null;
     surface.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
       transformCallback: () => ++callbackId, unregisterCallback: () => undefined,
       invoke: async (command: string, args: {
+        payload?: string;
         id: string; request: { path: string; method: string; headers: Record<string, string>; body: string };
         onEvent: { onmessage: (frame: unknown) => void };
       }) => {
+        if (command === "read_model_provider_draft") return credentialDraft;
+        if (command === "write_model_provider_draft") {
+          if (typeof args.payload !== "string") throw new Error("测试密钥草稿格式无效");
+          credentialDraft = args.payload;
+          return;
+        }
+        if (command === "clear_model_provider_draft") { credentialDraft = null; return; }
         if (command === "start_local_executor") return { transport: "stdio", protocol: 2 };
         if (command.startsWith("plugin:event|")) return 1;
         if (command === "local_executor_cancel") return;

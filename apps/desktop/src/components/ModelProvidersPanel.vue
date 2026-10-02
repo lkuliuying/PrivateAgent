@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import ModelCapabilityStatus from "./ModelCapabilityStatus.vue";
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { allowDiscardingChanges, registerDraftGuard } from "../services/unsavedChanges";
 import {
   PhArrowClockwise,
   PhCheck,
@@ -32,6 +33,12 @@ import {
 import { useNotifications } from "../stores/notifications";
 import { getLocalModelSettings, saveLocalModelSettings, type LocalModelSettings } from "../api/modelProviders";
 
+import ModelSaveRecovery from "./ModelSaveRecovery.vue";
+import { useCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
+import { saveModelProviderRecoverably } from "../api/modelSaves";
+import { secureDraftAvailable, readModelProviderDraft, writeModelProviderDraft, clearModelProviderDraft } from "../api/modelProviderDraft";
+
+const props = defineProps<{ focusProfileId?: string | null }>();
 const emit = defineEmits<{ saved: [] }>();
 const notify = useNotifications();
 const previewMode =
@@ -55,7 +62,7 @@ interface ProviderDraft {
 const providers = ref<ModelProvider[]>([]);
 const selectedId = ref(previewMode ? "opencodego" : "");
 const draft = ref<ProviderDraft>(blankDraft());
-const loading = ref(false);
+const loading = ref(true);
 const saving = ref(false);
 const discovering = ref(false);
 const testingProfileId = ref("");
@@ -63,6 +70,108 @@ const showApiKey = ref(false);
 const editingName = ref(false);
 const catalog = ref<DiscoveredModel[]>([]);
 const modelToAdd = ref("");
+const manualModelId = ref("");
+const baseline = ref("");
+const recoveryFailed = ref(false);
+let hasKeyDraft = false;
+const modelSaveRecovery = ref<InstanceType<typeof ModelSaveRecovery> | null>(null);
+async function onRecoveredSave(): Promise<void> {
+  await modelWorkspace.refresh();
+  if (!dirty.value) await load(draft.value.id, true);
+  setMessage("未完成的配置已保存并应用；当前输入已保留，模型能力尚未验证。", "ok");
+}
+async function onDiscardedSave(id: string): Promise<void> {
+  if (pendingSaveOperation?.id !== id) return;
+  pendingSaveOperation = null;
+  try {
+    if (secureDraftAvailable()) await writeModelProviderDraft(JSON.stringify({ version: 2, draft: draft.value,
+      manualModelId: manualModelId.value, parameters: draft.value.protocol === "ollama" ? modelParameters.value : null }));
+  } catch {
+    recoveryStatus.value = "保存操作已放弃，但恢复草稿更新失败。当前输入仍保留，请修改配置后重试保存。";
+  }
+}
+const modelWorkspace = useCodingWorkspace();
+const recoverableSave = computed(() => modelWorkspace.capabilities?.value?.coding_model_save_recovery_enabled === true);
+let pendingSaveOperation: { id: string; state: string } | null = null;
+function draftState(): string { return JSON.stringify({ draft: draft.value, manualModelId: manualModelId.value, parameters: draft.value.protocol === "ollama" ? modelParameters.value : null }); }
+function markSaved(): void { baseline.value = draftState(); }
+const dirty = computed(() => recoveryFailed.value || (Boolean(baseline.value) && baseline.value !== draftState()));
+const unregisterGuard = registerDraftGuard({
+  dirty: () => saving.value || dirty.value,
+  save: () => save(false),
+  discard: async () => {
+    if (secureDraftAvailable() && !previewMode) await clearModelProviderDraft();
+    hasKeyDraft = false;
+    recoveryFailed.value = false;
+    recoveryStatus.value = "";
+    if (!baseline.value) return;
+    const previous = JSON.parse(baseline.value);
+    draft.value = previous.draft;
+    manualModelId.value = previous.manualModelId ?? "";
+    if (previous.parameters) modelParameters.value = previous.parameters;
+  },
+});
+onBeforeUnmount(unregisterGuard);
+async function requestSelect(id: string): Promise<void> {
+  if (saving.value || loading.value || id === selectedId.value) return;
+  if (await allowDiscardingChanges()) selectProvider(id);
+}
+async function requestAdd(): Promise<void> {
+  if (!saving.value && !loading.value && await allowDiscardingChanges()) startAdd();
+}
+const recoveryReady = ref(false);
+const recoveryStatus = ref("");
+let draftWriteGeneration = 0;
+watch(draftState, () => {
+  if (!recoveryReady.value || saving.value || previewMode || !secureDraftAvailable()) return;
+  if (!dirty.value && !hasKeyDraft) return;
+  const generation = ++draftWriteGeneration;
+  const pending = dirty.value;
+  const containsKey = Boolean(draft.value.apiKey);
+  recoveryStatus.value = pending ? "正在加密保存配置草稿…" : "";
+  const operation = pending
+    ? writeModelProviderDraft(JSON.stringify({ version: 2, draft: draft.value, manualModelId: manualModelId.value,
+        parameters: draft.value.protocol === "ollama" ? modelParameters.value : null, operation: pendingSaveOperation }))
+    : clearModelProviderDraft();
+  void operation.then(() => {
+    if (generation === draftWriteGeneration) {
+      hasKeyDraft = pending;
+      recoveryStatus.value = pending ? (containsKey ? "密钥草稿已加密保存，可在强制退出后恢复；点击保存后才用于模型请求。" : "配置草稿已加密保存，可在强制退出后恢复；点击保存后才生效。") : "";
+    }
+  }).catch(() => {
+    if (generation === draftWriteGeneration) recoveryStatus.value = (containsKey ? "密钥草稿" : "配置草稿") + "未能加密保存，当前输入仍在；强制退出可能丢失本次修改，请重试。";
+  });
+});
+async function restoreSecretDraft(): Promise<void> {
+  if (previewMode || !secureDraftAvailable()) return;
+  try {
+    const raw = await readModelProviderDraft();
+    if (!raw) return;
+    const value = JSON.parse(raw);
+    const saved = value?.draft;
+    if (![1, 2].includes(value?.version) || !saved || typeof saved.apiKey !== "string" || saved.apiKey.length > 16384 ||
+        typeof saved.id !== "string" || typeof saved.name !== "string" || typeof saved.baseUrl !== "string" ||
+        !["openai", "claude", "ollama"].includes(saved.protocol) || !Array.isArray(saved.models) || saved.models.length > 256 ||
+        (value.manualModelId !== undefined && typeof value.manualModelId !== "string")) throw new Error("invalid draft");
+    const configured = providers.value.find((provider) => provider.id === saved.id);
+    if (configured) selectProvider(configured.id);
+    else startAdd();
+    selectedId.value = configured ? configured.id : "__new__";
+    draft.value = saved;
+    hasKeyDraft = true;
+    manualModelId.value = value.manualModelId ?? "";
+    if (value.parameters && saved.protocol === "ollama") {
+      if (!Number.isFinite(value.parameters.llm_temperature) || !Number.isInteger(value.parameters.llm_context_length)
+          || typeof value.parameters.kb_enabled_by_default !== "boolean") throw new Error("invalid parameters");
+      modelParameters.value = value.parameters;
+    }
+    if (value.operation && /^[a-f0-9]{32}$/.test(value.operation.id) && typeof value.operation.state === "string") pendingSaveOperation = value.operation;
+    recoveryStatus.value = saved.apiKey ? "已恢复上次未保存的加密密钥草稿。请核对供应商地址并点击保存；尚未发起模型请求。" : "已恢复上次未保存的模型配置。请核对模型、地址和参数并点击保存；尚未应用配置。";
+  } catch {
+    recoveryFailed.value = true;
+    recoveryStatus.value = "加密密钥草稿恢复失败，原快照仍保留；请重新输入密钥后保存，或放弃更改。";
+  }
+}
 const editingContextModelId = ref("");
 const message = ref("");
 const messageKind = ref<"ok" | "error" | "info">("info");
@@ -162,18 +271,27 @@ function previewProviders(): ModelProvider[] {
   ];
 }
 
-async function load(preferredId?: string): Promise<void> {
+async function load(preferredId?: string, propagate = false): Promise<void> {
   loading.value = true;
   try {
     providers.value = previewMode ? previewProviders() : await listModelProviders();
     const selected =
+      (!preferredId && props.focusProfileId ? providers.value.find((item) => item.models.some((model) => model.profileId === props.focusProfileId)) : null) ??
       providers.value.find((item) => item.id === preferredId) ??
       providers.value.find((item) => item.id === selectedId.value) ??
       providers.value[0];
     if (selected) selectProvider(selected.id);
     else startAdd();
+    const focused = selected?.models.find((model) => model.profileId === props.focusProfileId);
+    if (focused && !preferredId) {
+      editingContextModelId.value = focused.modelId;
+      loading.value = false;
+      await nextTick();
+      document.querySelector<HTMLInputElement>(".context-editor")?.focus();
+    }
   } catch (error) {
     setMessage(errorText(error), "error");
+    if (propagate) throw error;
   } finally {
     loading.value = false;
   }
@@ -203,6 +321,8 @@ function selectProvider(providerId: string): void {
   editingName.value = false;
   editingContextModelId.value = "";
   message.value = "";
+  manualModelId.value = "";
+  markSaved();
 }
 
 function startAdd(): void {
@@ -212,10 +332,18 @@ function startAdd(): void {
   modelToAdd.value = "";
   editingName.value = true;
   message.value = "";
+  manualModelId.value = "";
+  markSaved();
 }
 
-function onProtocolChanged(): void {
-  const next = blankDraft(draft.value.protocol);
+async function onProtocolChanged(event: Event): Promise<void> {
+  const target = event.target as HTMLSelectElement;
+  const protocol = target.value as ModelProviderProtocol;
+  target.value = draft.value.protocol;
+  if (protocol === draft.value.protocol || saving.value) return;
+  if ((draft.value.models.length || draft.value.apiKey) && !await notify.confirm({ title: "切换模型协议？", impact: "这会重置地址、模型列表和未保存密钥；其他修改仍需保存。", confirmLabel: "切换协议" })) return;
+  draft.value.protocol = protocol;
+  const next = blankDraft(protocol);
   draft.value.baseUrl = next.baseUrl;
   draft.value.apiFormat = next.apiFormat;
   draft.value.isBuiltin = next.isBuiltin;
@@ -242,6 +370,16 @@ function addSelectedModel(): void {
   modelToAdd.value = "";
 }
 
+function addManualModel(): void {
+  const modelId = manualModelId.value.trim();
+  if (!modelId || modelId.length > 200) return setMessage("模型 ID 必须为 1～200 个字符", "error");
+  if (draft.value.models.some((model) => model.modelId === modelId)) return setMessage("该模型已在列表中", "error");
+  if (draft.value.models.length >= 256) return setMessage("每个供应商最多配置 256 个模型", "error");
+  draft.value.models.push({ profileId: "", modelId, contextTokens: null, maxOutputTokens: null, metadataSource: "unknown" });
+  manualModelId.value = "";
+  setMessage("模型已加入待保存配置。请填写服务实际支持的上下文容量；生成与工具能力尚未验证。", "info");
+}
+
 function removeModel(modelId: string): void {
   draft.value.models = draft.value.models.filter((item) => item.modelId !== modelId);
 }
@@ -253,57 +391,63 @@ async function discoverModels(): Promise<void> {
   }
   discovering.value = true;
   message.value = "";
+  const target = draft.value;
+  const request = { providerId: selectedId.value === "__new__" ? null : target.id,
+    protocol: target.protocol, baseUrl: target.baseUrl.trim(), apiKey: target.apiKey.trim() || undefined };
   try {
-    catalog.value = previewMode
+    const models: DiscoveredModel[] = previewMode
       ? [
           { modelId: "deepseek-v4-flash", contextTokens: 1_000_000, maxOutputTokens: 384_000, metadataSource: "official_catalog" },
           { modelId: "ox-alpha-free", contextTokens: null, maxOutputTokens: null, metadataSource: "unknown" },
           { modelId: "glm-5", contextTokens: 131_072, maxOutputTokens: null, metadataSource: "provider_api" },
           { modelId: "qwen-max", contextTokens: null, maxOutputTokens: null, metadataSource: "unknown" },
         ]
-      : await discoverModelProviderModels({
-          providerId: selectedId.value === "__new__" ? null : draft.value.id,
-          protocol: draft.value.protocol,
-          baseUrl: draft.value.baseUrl.trim(),
-          apiKey: draft.value.apiKey.trim() || undefined,
-        });
+      : await discoverModelProviderModels(request);
+    if (target !== draft.value || request.protocol !== target.protocol || request.baseUrl !== target.baseUrl.trim() || request.apiKey !== (target.apiKey.trim() || undefined)) return;
+    catalog.value = models;
     const selected = new Set(draft.value.models.map((model) => model.modelId));
     modelToAdd.value = catalog.value.find((model) => !selected.has(model.modelId))?.modelId ?? "";
     setMessage(`已获取 ${catalog.value.length} 个模型，请从列表中选择`, "ok");
   } catch (error) {
-    setMessage(errorText(error), "error");
+    if (target === draft.value) setMessage(errorText(error), "error");
   } finally {
     discovering.value = false;
   }
 }
 
-async function save(): Promise<void> {
+async function save(notifyParent = true): Promise<boolean> {
+  if (saving.value || loading.value) return false;
+  const invalid = (text: string): false => { setMessage(text, "error"); return false; };
   const name = draft.value.name.trim();
   const baseUrl = draft.value.baseUrl.trim().replace(/\/$/, "");
-  if (!name) return setMessage("请填写供应商名称", "error");
-  if (!baseUrl) return setMessage("请填写 Base URL", "error");
-  if (!draft.value.models.length) return setMessage("请至少从模型列表中选择一个模型", "error");
+  if (!name) return invalid("请填写供应商名称");
+  if (!baseUrl) return invalid("请填写 Base URL");
+  if (manualModelId.value.trim()) return invalid("模型 ID 尚未加入配置，请先点击手动添加或清空该输入；其余修改已保留。");
+  if (!draft.value.models.length) return invalid("请至少添加一个模型");
   if (
     draft.value.protocol === "ollama" &&
     (!Number.isFinite(modelParameters.value.llm_temperature) ||
       modelParameters.value.llm_temperature < 0 ||
       modelParameters.value.llm_temperature > 1)
   ) {
-    return setMessage("温度必须在 0 到 1 之间", "error");
+    return invalid("温度必须在 0 到 1 之间");
   }
   if (
     draft.value.protocol === "ollama" &&
     (!Number.isInteger(modelParameters.value.llm_context_length) ||
       modelParameters.value.llm_context_length < 512)
   ) {
-    return setMessage("上下文长度必须是大于等于 512 的整数", "error");
+    return invalid("上下文长度必须是大于等于 512 的整数");
   }
   saving.value = true;
   message.value = "";
+  let completed = "";
   try {
     const secret = draft.value.apiKey.trim();
     if (!previewMode) {
-      await saveModelProvider(draft.value.id, {
+      // 隐藏的兼容字段以保存时读取的值为准，读取失败时不能用默认值覆盖。
+      const retainedKnowledgeBase = draft.value.protocol === "ollama" ? (await getLocalModelSettings()).kb_enabled_by_default : null;
+      const configuration = {
         name,
         protocol: draft.value.protocol,
         baseUrl,
@@ -312,18 +456,41 @@ async function save(): Promise<void> {
         isBuiltin: draft.value.isBuiltin,
         models: draft.value.models.map((model) => ({
           modelId: model.modelId,
+          supportsVision: model.supportsVision ?? false,
           contextTokens: model.contextTokens,
           maxOutputTokens: model.maxOutputTokens,
           metadataSource: model.metadataSource,
         })),
-      });
-      if (secret && draft.value.protocol !== "ollama") {
+      };
+      if (recoverableSave.value) {
+        const state = draftState();
+        if (!pendingSaveOperation || pendingSaveOperation.state !== state) pendingSaveOperation = { id: crypto.randomUUID().replace(/-/g, ""), state };
+        if (secureDraftAvailable()) await writeModelProviderDraft(JSON.stringify({ version: 2, draft: draft.value,
+          manualModelId: manualModelId.value, parameters: draft.value.protocol === "ollama" ? modelParameters.value : null,
+          operation: pendingSaveOperation }));
+        await saveModelProviderRecoverably(draft.value.id, configuration, draft.value.protocol === "ollama" ? "" : secret,
+          pendingSaveOperation.id, draft.value.protocol === "ollama" ? { ...modelParameters.value, kb_enabled_by_default: retainedKnowledgeBase! } : null);
+        completed = "供应商配置与所需凭据已保存并应用";
+      } else {
+        await saveModelProvider(draft.value.id, configuration);
+        completed = "供应商配置已保存";
+      }
+      if (!recoverableSave.value && secret && draft.value.protocol !== "ollama") {
         await updateModelProviderRuntimeSecret(draft.value.id, secret);
+        completed += "，密钥已保存";
       }
-      if (draft.value.protocol === "ollama") {
-        await saveLocalModelSettings({ ...modelParameters.value });
+      if (!recoverableSave.value && draft.value.protocol === "ollama") {
+        await saveLocalModelSettings({ ...modelParameters.value, kb_enabled_by_default: retainedKnowledgeBase! });
+        completed += "，模型参数已保存";
       }
-      await load(draft.value.id);
+      if (secureDraftAvailable() && (hasKeyDraft || recoveryFailed.value || secret)) {
+        await clearModelProviderDraft();
+        hasKeyDraft = false;
+        recoveryFailed.value = false;
+      }
+      pendingSaveOperation = null;
+      await modelSaveRecovery.value?.refresh();
+      await load(draft.value.id, true);
     } else {
       const provider: ModelProvider = {
         id: draft.value.id,
@@ -343,13 +510,21 @@ async function save(): Promise<void> {
       selectProvider(provider.id);
     }
     draft.value.apiKey = "";
-    setMessage("模型配置已保存，可立即在对话中选择", "ok");
+    draftWriteGeneration += 1;
+    recoveryStatus.value = "";
+    markSaved();
+    setMessage(draft.value.models.some((model) => model.contextTokens === null)
+      ? "配置已保存；部分模型缺少上下文容量，请补齐后开始任务。生成与工具能力尚未验证。"
+      : "模型配置已保存；这不代表生成或工具能力已经验证。", "ok");
     window.dispatchEvent(new CustomEvent("pa:model-providers-changed"));
-    emit("saved");
+    if (notifyParent) emit("saved");
+    return true;
   } catch (error) {
-    setMessage(errorText(error), "error");
+    setMessage((completed ? completed + "；后续步骤未完成。输入已保留。 " : "配置尚未保存，输入已保留。 ") + errorText(error), "error");
+    return false;
   } finally {
     saving.value = false;
+    await modelSaveRecovery.value?.refresh();
   }
 }
 
@@ -399,8 +574,8 @@ async function testModel(profileId: string): Promise<void> {
     setMessage(
       available
         ? "模型连接测试成功：模型在可用列表中（未测试聊天生成）"
-        : "供应商可连接，但可用列表中未找到该模型",
-      available ? "ok" : "error"
+        : "无法通过列表确认该模型；可保留手动配置，生成与工具能力尚未验证",
+      available ? "ok" : "info"
     );
   } catch (error) {
     setMessage(errorText(error), "error");
@@ -450,12 +625,19 @@ function setContextOverride(model: ModelProviderModel, event: Event): void {
   model.metadataSource = "user_override";
 }
 
-onMounted(() => {
-  void Promise.all([load(), loadModelParameters()]);
+onMounted(async () => {
+  await loadModelParameters();
+  await load();
+  loading.value = true;
+  await restoreSecretDraft();
+  await nextTick();
+  recoveryReady.value = true;
+  loading.value = false;
 });
 </script>
 
 <template>
+  <ModelSaveRecovery v-if="recoverableSave && !previewMode" ref="modelSaveRecovery" :disabled="saving" @applied="onRecoveredSave" @discarded="onDiscardedSave" />
   <section class="provider-manager" data-testid="model-provider-manager">
     <aside class="provider-sidebar" aria-label="模型供应商">
       <div class="sidebar-section">
@@ -466,20 +648,20 @@ onMounted(() => {
           type="button"
           class="provider-item"
           :class="{ active: selectedId === provider.id }"
-          @click="selectProvider(provider.id)"
+          @click="requestSelect(provider.id)"
         >
           <PhCube :size="18" aria-hidden="true" />
           <span>{{ provider.name }}</span>
           <i class="status-dot" :class="{ off: !provider.enabled }" aria-hidden="true" />
         </button>
       </div>
-      <button type="button" class="provider-item add-provider" @click="startAdd">
+      <button type="button" class="provider-item add-provider" @click="requestAdd">
         <PhPlus :size="19" aria-hidden="true" />
         <span>添加供应商</span>
       </button>
     </aside>
 
-    <div class="provider-detail" :aria-busy="loading || saving">
+    <fieldset class="provider-detail" :disabled="loading || saving" :aria-busy="loading || saving">
       <div class="detail-header">
         <div class="provider-title-row">
           <input
@@ -527,7 +709,7 @@ onMounted(() => {
       <div class="provider-form-grid">
         <label v-if="selectedId === '__new__'" class="field">
           <span>服务类型</span>
-          <select v-model="draft.protocol" @change="onProtocolChanged">
+          <select :value="draft.protocol" @change="onProtocolChanged">
             <option value="openai">OpenAI 兼容 API</option>
             <option value="claude">Claude Messages API</option>
             <option value="ollama">Ollama（本地）</option>
@@ -567,6 +749,8 @@ onMounted(() => {
               <PhEye v-else :size="18" />
             </button>
           </div>
+          <span v-if="draft.apiKeyConfigured">已保存的 API Key 存在系统凭据库中，重启后继续使用。</span>
+          <span v-if="recoveryStatus" role="status" data-testid="secret-recovery-status">{{ recoveryStatus }}</span>
         </label>
       </div>
 
@@ -602,17 +786,13 @@ onMounted(() => {
               data-testid="ollama-context-length"
             />
           </label>
-          <label class="parameter-check">
-            <input v-model="modelParameters.kb_enabled_by_default" type="checkbox" />
-            <span>默认启用知识库</span>
-          </label>
         </div>
       </section>
 
       <div class="models-heading-row">
         <div>
           <h3>模型列表</h3>
-          <p>模型 ID 从服务接口获取，不需要手动输入。</p>
+          <p>从服务获取模型，或手动填写服务提供的准确模型 ID。</p>
         </div>
         <button
           type="button"
@@ -628,7 +808,7 @@ onMounted(() => {
       <div class="model-list">
         <div v-if="!draft.models.length" class="empty-models">
           <PhInfo :size="18" aria-hidden="true" />
-          <span>当前尚未选择模型；请先获取模型列表。</span>
+          <span>当前尚未选择模型；请获取模型列表或手动添加。</span>
         </div>
         <div v-for="model in draft.models" :key="model.modelId" class="model-row">
           <span class="model-id">{{ model.modelId }}</span>
@@ -659,14 +839,15 @@ onMounted(() => {
             title="修正上下文窗口"
             aria-label="修正上下文窗口"
             @mousedown.prevent="editingContextModelId = model.modelId"
+            @click="editingContextModelId = model.modelId"
           >
             <PhPencilSimple :size="17" />
           </button>
           <button
             type="button"
             class="icon-button"
-            :title="testingProfileId === model.profileId ? '正在测试模型' : '测试模型'"
-            aria-label="测试模型"
+            :title="testingProfileId === model.profileId ? '正在检查模型列表' : '检查模型列表'"
+            aria-label="检查模型列表"
             :aria-busy="testingProfileId === model.profileId"
             :disabled="!model.profileId || Boolean(testingProfileId)"
             @click="void testModel(model.profileId)"
@@ -688,6 +869,7 @@ onMounted(() => {
           >
             <PhTrash :size="17" />
           </button>
+          <label class="vision-option" title="根据模型服务文档确认后勾选；不根据模型名称推测，也不代表已实测。"><input v-model="model.supportsVision" type="checkbox" :aria-label="model.modelId + ' 支持视觉输入'" />支持视觉输入</label>
           <ModelCapabilityStatus v-if="model.profileId && !previewMode" :key="model.profileId" :profile-id="model.profileId" />
         </div>
       </div>
@@ -704,6 +886,11 @@ onMounted(() => {
         </button>
       </div>
 
+      <div class="add-model-row manual-model-row">
+        <input v-model="manualModelId" aria-label="模型 ID" placeholder="手动填写模型 ID" maxlength="200" @keydown.enter.prevent="addManualModel" />
+        <button type="button" class="secondary-button" :disabled="!manualModelId.trim()" @click="addManualModel">手动添加</button>
+      </div>
+      <p v-if="draft.models.some(model => model.contextTokens === null)" class="detail-intro">上下文容量未知：可以保存配置，发送任务前需填写服务实际支持的容量。</p>
       <div v-if="message" class="message" :class="messageKind" role="status">
         <PhCheck v-if="messageKind === 'ok'" :size="16" />
         <PhWarningCircle v-else-if="messageKind === 'error'" :size="16" />
@@ -717,11 +904,12 @@ onMounted(() => {
           {{ saving ? "保存中…" : selectedId === "__new__" ? "添加供应商" : "保存配置" }}
         </button>
       </div>
-    </div>
+    </fieldset>
   </section>
 </template>
 
 <style scoped>
+.manual-model-row input { flex: 1; min-width: 0; min-height: 34px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-fg); }
 .provider-manager {
   display: grid;
   min-height: 610px;
@@ -788,6 +976,8 @@ onMounted(() => {
 }
 .status-dot.off { background: var(--color-fg-disabled); }
 .provider-detail {
+  margin: 0;
+  border: 0;
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -934,6 +1124,7 @@ onMounted(() => {
 .models-heading-row { justify-content: space-between; gap: var(--space-3); margin-top: var(--space-5); }
 .models-heading-row h3 { margin: 0; }
 .models-heading-row p { margin: 2px 0 0; color: var(--color-fg-subtle); font-size: var(--pa-text-meta); }
+.vision-option { grid-column: 1 / -1; display: flex; align-items: center; min-height: 32px; gap: 8px; font-size: 12px; }
 .model-list {
   overflow: hidden;
   margin-top: var(--space-2);

@@ -1,11 +1,25 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
+import { useNotifications } from "../stores/notifications";
 import { createSkill, enableSkill, listSkills, readSkill, type LocalSkill } from "../features/coding/api/skills";
 const props = defineProps<{ projectId: number }>();
 const items = ref<LocalSkill[]>([]), loading = ref(false), busy = ref(false), error = ref("");
 const preview = ref(""), previewSkill = ref<LocalSkill | null>(null);
-const creating = ref(false), name = ref(""), scope = ref("project");
-const content = ref('---\nname: project-review\ndescription: 审查项目改动并核对验证证据\nrequires: ["git"]\n---\n\n先阅读项目规则，再检查差异；按影响报告可复现的问题，附文件和行号。\n');
+const creating = ref(false), name = ref("project-guide"), scope = ref("project");
+const templates = [
+  { id: "guide", label: "项目说明", name: "project-guide", description: "梳理项目结构与使用方式", body: "先阅读项目说明和目录，梳理主要模块、启动方式与数据流。区分源码事实与待确认事项，附文件依据；本模板只分析，不修改文件。" },
+  { id: "review", label: "代码审查", name: "project-review", description: "检查改动的正确性与风险", body: "阅读项目规则与当前差异，追踪调用链和异常路径。按影响程度报告可复现的问题，附文件和行号；没有证据的问题标为待确认，先不修改代码。" },
+  { id: "tests", label: "测试建议", name: "test-advice", description: "为当前改动制定验证方案", body: "阅读现有测试与运行说明，列出受影响的行为、边界场景和可执行验证命令。先给出测试建议，不自动运行外部服务、付费模型或破坏性测试。" },
+];
+const templateId = ref("guide");
+function templateText(item: typeof templates[number]): string { return "---\nname: " + item.name + "\ndescription: " + item.description + "\n---\n\n" + item.body + "\n"; }
+const content = ref(templateText(templates[0]));
+let previousTemplate = content.value;
+async function applyTemplate() {
+  const selected = templates.find(item => item.id === templateId.value)!;
+  if (content.value !== previousTemplate && !await useNotifications().confirm({ title: "替换当前模板草稿？", message: "已编辑的技能正文将被所选模板替换；已有技能文件不会改变。", confirmLabel: "填入模板" })) return;
+  name.value = selected.name; content.value = templateText(selected); previousTemplate = content.value;
+}
 let controller: AbortController | undefined;
 let generation = 0;
 async function load() {
@@ -28,7 +42,8 @@ async function toggle(skill: LocalSkill) {
 }
 async function save() {
   if (busy.value) return; busy.value = true;
-  try { await createSkill(props.projectId, { name: name.value, scope: scope.value, content: content.value }); creating.value = false; await load(); }
+  const mine = generation;
+  try { await createSkill(props.projectId, { name: name.value, scope: scope.value, content: content.value }); if (mine === generation) { creating.value = false; await load(); } }
   catch (cause) { error.value = (cause as { message?: string }).message || "保存失败，请检查名称是否已存在"; }
   finally { busy.value = false; }
 }
@@ -39,7 +54,7 @@ onBeforeUnmount(() => { generation++; controller?.abort(); });
   <section class="skills-panel" aria-label="Skills 技能">
     <div class="skills-heading"><div><h2>Skills 技能</h2><p>项目技能来自 .agents/skills；用户技能保存在本机资料目录，可在不同项目中启用。正文按需读取，权限沿用当前任务。</p></div><button class="pa-btn pa-btn--subtle" :disabled="loading" @click="load">重新扫描</button><button class="pa-btn pa-btn--primary" @click="creating = !creating">新建技能</button></div>
     <p v-if="error" role="alert">{{ error }}</p><p v-if="loading" role="status">正在扫描…</p>
-    <form v-if="creating" class="skill-form" @submit.prevent="save"><label>目录名称<input v-model="name" class="pa-input" required pattern="[a-zA-Z0-9_-]{1,64}" placeholder="project-review" /></label><label>作用域<select v-model="scope" class="pa-input"><option value="project">当前项目</option><option value="user">当前用户</option></select></label><label>SKILL.md<textarea v-model="content" class="pa-input" rows="12" maxlength="64000" /></label><button class="pa-btn pa-btn--primary" :disabled="busy">保存后检查</button></form>
+    <form v-if="creating" class="skill-form" @submit.prevent="save"><label>可编辑模板<select v-model="templateId" class="pa-input" data-testid="skill-template" :disabled="busy"><option v-for="item in templates" :key="item.id" :value="item.id">{{ item.label }}</option></select><button type="button" class="pa-btn pa-btn--subtle" :disabled="busy" @click="applyTemplate">填入模板</button></label><p>模板可自由编辑。保存仅创建文件，检查内容后再单独启用。</p><label>目录名称<input v-model="name" class="pa-input" required pattern="[a-zA-Z0-9_-]{1,64}" placeholder="project-review" /></label><label>作用域<select v-model="scope" class="pa-input"><option value="project">当前项目</option><option value="user">当前用户</option></select></label><label>SKILL.md<textarea v-model="content" class="pa-input" rows="12" maxlength="64000" /></label><button class="pa-btn pa-btn--primary" :disabled="busy">保存后检查</button></form>
     <p v-if="!loading && !items.length">暂无技能。创建一个 SKILL.md，或把已有技能目录放入项目的 .agents/skills 后重新扫描。</p>
     <article v-for="skill in items" :key="skill.id" class="skill-row"><div><strong>{{ skill.name }}</strong><small>{{ skill.scope === 'user' ? '用户' : '项目' }} · {{ skill.enabled ? '已启用' : '未启用或内容已变化' }}</small><p>{{ skill.description }}</p><p v-if="skill.error" role="alert">{{ skill.error }}</p><p v-if="skill.missing_dependencies.length">缺少命令：{{ skill.missing_dependencies.join('、') }}</p></div><button class="pa-btn pa-btn--subtle" :disabled="!skill.version" @click="inspect(skill)">检查内容</button><button v-if="skill.enabled" class="pa-btn pa-btn--ghost" :disabled="busy" @click="toggle(skill)">停用</button></article>
     <section v-if="previewSkill" class="skill-preview"><div class="skills-heading"><strong>{{ previewSkill.name }}</strong><button class="pa-btn pa-btn--ghost" @click="previewSkill = null">关闭</button></div><pre>{{ preview }}</pre><button class="pa-btn pa-btn--primary" :disabled="busy || !!previewSkill.missing_dependencies.length" @click="toggle(previewSkill)">{{ previewSkill.enabled ? '停用' : '允许当前项目按需使用' }}</button></section>

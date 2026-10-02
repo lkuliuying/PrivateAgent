@@ -43,6 +43,7 @@ import { redactCommandArgs, redactSecretText } from "../model/redaction";
 import DiffArtifact from "./DiffArtifact.vue";
 import CommandOutput from "./CommandOutput.vue";
 import MarkdownContent from "./MarkdownContent.vue";
+import TaskAttachmentList from "./TaskAttachmentList.vue";
 import { executionText } from "../api/executions";
 import { parseWorkspaceFileTarget, type WorkspaceFileTarget } from "../model/outputFiles";
 
@@ -174,6 +175,7 @@ function historyInstructionId(messageId: number): string {
   return `message:${messageId}`;
 }
 
+const currentUserRecord = computed(() => [...props.history].reverse().find(message => message.role === "user" && message.content === props.projection?.userMessage));
 const currentInstructionId = computed(() => {
   const current = props.projection;
   return current?.userMessage ? `run:${current.runId}` : null;
@@ -404,13 +406,7 @@ function formatDuration(startIso: string | null, endIso: string | null): string 
 
 function formatDurationMs(ms: number): string | null {
   if (!Number.isFinite(ms) || ms < 0) return null;
-  if (ms < 1000) return `${Math.round(ms)} 毫秒`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)} 秒`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟 ${Math.round(seconds % 60)} 秒`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours} 小时 ${minutes % 60} 分钟`;
+  return `${Math.round(ms / 1000)} 秒`;
 }
 
 function toolActionLabel(name: string): string {
@@ -588,6 +584,19 @@ const latestPatchEntry = computed<Extract<TranscriptEntry, { kind: "patch-set" }
 const resultArtifactEntries = computed(() =>
   entries.value.filter((entry): entry is Extract<TranscriptEntry, { kind: "artifact" }> => entry.kind === "artifact")
 );
+async function focusApproval(): Promise<void> {
+  const pending = pendingApprovals.value[0];
+  if (!pending) return;
+  const index = displayEntries.value.findIndex(entry => entry.kind === "approval" && entry.approvalId === pending.id);
+  if (index >= 0) visibleCount.value = Math.max(visibleCount.value, displayEntries.value.length - index);
+  processOpen.value = true;
+  anchoredBottom.value = false;
+  await nextTick();
+  const target = [...(scrollEl.value?.querySelectorAll<HTMLButtonElement>('[data-testid^="approval-approve-"]') ?? [])].find(button => button.dataset.testid === "approval-approve-" + pending.id);
+  target?.scrollIntoView?.({ block: "center" });
+  target?.focus({ preventScroll: true });
+}
+defineExpose({ focusApproval });
 </script>
 
 <template>
@@ -622,7 +631,7 @@ const resultArtifactEntries = computed(() =>
             </div>
             <div class="history-copy" :class="{ 'assistant-response': message.role === 'assistant' }">
               <MarkdownContent v-if="message.role === 'assistant'" :content="message.content" copy-control="icon" @open-file="emit('open-file', $event)" />
-              <template v-else>{{ message.content }}</template>
+              <template v-else>{{ message.content }}<TaskAttachmentList v-if="message.attachments?.length" :items="message.attachments" :session-id="message.session_id" /></template>
             </div>
           </div>
         </section>
@@ -638,7 +647,7 @@ const resultArtifactEntries = computed(() =>
           :data-instruction-id="currentInstructionId ?? undefined"
         >
           <div class="user-avatar"><PhUser :size="14" weight="fill" aria-hidden="true" /></div>
-          <div class="user-copy">{{ projection.userMessage }}</div>
+          <div class="user-copy">{{ projection.userMessage }}<TaskAttachmentList v-if="currentUserRecord?.attachments?.length" :items="currentUserRecord.attachments" :session-id="currentUserRecord.session_id" /></div>
         </div>
         <button
           type="button"
@@ -708,7 +717,7 @@ const resultArtifactEntries = computed(() =>
               模型第 {{ entry.ordinal }} 轮
               <template v-if="entry.state === 'completed'">
                 <template v-if="entry.usageComplete === false"> · 用量未知</template>
-                <template v-else> · {{ entry.outputTokens.toLocaleString() }} 输出 tokens</template><template v-if="entry.latencyMs !== null"> · {{ Math.round(entry.latencyMs) }}ms</template>
+                <template v-else> · {{ entry.outputTokens.toLocaleString() }} 输出 tokens</template><template v-if="entry.latencyMs !== null"> · {{ formatDurationMs(entry.latencyMs) }}</template>
               </template>
               <template v-else> · 生成中</template>
             </span>

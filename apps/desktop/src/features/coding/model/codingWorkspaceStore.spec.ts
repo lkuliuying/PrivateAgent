@@ -121,6 +121,23 @@ describe("codingWorkspaceStore", () => {
     expect(store.homeState.value).toBe(expected);
   });
 
+  it("首页创建期间切换项目，材料只转移到原会话且不在新项目自动发送", async () => {
+    let finish!: (value: CodingThreadSummary) => void;
+    const store = createCodingWorkspaceStore(baseFetchers({ createThread: () => new Promise(resolve => { finish = resolve; }) }));
+    await store.bootstrap();
+    const payload = { message: "原项目材料", text: "原项目材料", attachments: [], draftId: "a".repeat(32), clientRequestId: "once", permissionMode: "confirm" as const, modelProfileId: null, reasoningEffort: null };
+    const creating = store.createThreadFromFirstTurn(payload);
+    store.selectProject(2);
+    finish(thread(99, 1, 101));
+    await creating;
+    expect(store.selectedProjectId.value).toBe(2);
+    expect(store.selectedThreadId.value).toBeNull();
+    expect(store.pendingFirstTurn.value).toBeNull();
+    const key = "pa_coding_draft_v2_1_101_99";
+    expect(JSON.parse(localStorage.getItem(key)!).text).toBe("原项目材料");
+    localStorage.removeItem(key);
+  });
+
   it("bootstrap 失败收敛为 load-error 并保留错误码", async () => {
     const store = createCodingWorkspaceStore(
       baseFetchers({

@@ -34,6 +34,10 @@ export async function createCodingRun(input: CodingRunCreateInput): Promise<RunS
   return codingFetchJson<RunSnapshot>("/agent-runs", codingJsonInit("POST", body));
 }
 
+export async function fetchRunByRequest(requestId: string): Promise<RunSnapshot & { submitted_message: string; attachment_ids: string[] }> {
+  return codingFetchJson(`/agent-runs/by-request/${encodeURIComponent(requestId)}`);
+}
+
 export async function fetchRunSnapshot(runId: string): Promise<RunSnapshot> {
   return codingFetchJson<RunSnapshot>(`/agent-runs/${encodeURIComponent(runId)}`);
 }

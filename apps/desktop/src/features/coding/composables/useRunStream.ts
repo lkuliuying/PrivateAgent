@@ -12,6 +12,7 @@ import {
   cancelCodingRun,
   createCodingRun,
   fetchRunEvents,
+  fetchRunByRequest,
   fetchRunSnapshot,
   streamRunEvents,
 } from "../api/runs";
@@ -32,6 +33,7 @@ import { isTerminalRunStatus } from "../model/runContracts";
 
 export interface RunStreamDeps {
   createRun: (input: CodingRunCreateInput) => Promise<RunSnapshot>;
+  findRequest: (requestId: string) => Promise<(RunSnapshot & { submitted_message: string; attachment_ids: string[] }) | null>;
   fetchSnapshot: (runId: string) => Promise<RunSnapshot>;
   fetchEvents: (runId: string, afterSequence: number) => Promise<{ items: RunStreamFrame[] }>;
   openStream: (
@@ -57,7 +59,7 @@ export interface RunStreamController {
    * coding_errors 契约）；供阻塞项诊断与恢复入口派生，未知为 null。
    */
   createErrorCode: Ref<string | null>;
-  startRun: (input: CodingRunCreateInput) => Promise<void>;
+  startRun: (input: CodingRunCreateInput) => Promise<boolean>;
   attachRun: (runId: string, userMessage?: string | null) => Promise<void>;
   cancelActive: () => Promise<void>;
   retryConnection: () => Promise<void>;
@@ -93,6 +95,7 @@ function eventItemToFrame(item: {
 export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamController {
   const source: RunStreamDeps = {
     createRun: createCodingRun,
+    findRequest: deps.createRun ? async () => null : fetchRunByRequest,
     fetchSnapshot: fetchRunSnapshot,
     fetchEvents: (runId, after) =>
       fetchRunEvents(runId, after).then((page) => ({
@@ -264,10 +267,10 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     });
   }
 
-  async function startRun(input: CodingRunCreateInput): Promise<void> {
+  async function startRun(input: CodingRunCreateInput): Promise<boolean> {
     // 创建尚未返回或当前运行仍活动时，不替换世代，避免丢弃首个成功响应。
     if (phase.value === "starting" || (phase.value !== "idle" && phase.value !== "error" &&
-        projection.value && !isTerminalRunStatus(projection.value.status))) return;
+        projection.value && !isTerminalRunStatus(projection.value.status))) return false;
     const signature = JSON.stringify(input);
     if (!pendingCreate || pendingCreate.signature !== signature) {
       pendingCreate = { signature, requestId: input.client_request_id ?? crypto.randomUUID() };
@@ -282,15 +285,29 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
     connectionError.value = null;
     createErrorCode.value = null;
     try {
-      const snapshot = await source.createRun(request);
-      if (mine !== generation) return;
+      let snapshot: RunSnapshot;
+      try { snapshot = await source.createRun(request); }
+      catch (cause) {
+        // 只读核对丢失的响应，不自动重放创建操作。
+        const confirmed = await source.findRequest(request.client_request_id).catch(() => null);
+        if (!confirmed || confirmed.session_id !== input.session_id
+          || confirmed.submitted_message !== input.message
+          || JSON.stringify(confirmed.attachment_ids) !== JSON.stringify(input.attachment_ids ?? [])) throw cause;
+        snapshot = confirmed;
+      }
+      if (mine !== generation) return false;
       pendingCreate = null;
       const next = createRunProjection(snapshot.id, input.message);
       reconcileRunWithSnapshot(next, snapshot);
       publish(next);
-      openStream(snapshot.id, mine);
+      if (isTerminalRunStatus(snapshot.status)) phase.value = "terminal";
+      else {
+        try { openStream(snapshot.id, mine); }
+        catch { scheduleReconnect(snapshot.id, mine, "任务已创建，正在恢复进度连接"); }
+      }
+      return true;
     } catch (error) {
-      if (mine !== generation) return;
+      if (mine !== generation) return false;
       phase.value = "error";
       // 创建失败是失败关闭状态（无 run、不产生假完成记录）：结构化错误码交给
       // 阻塞项诊断派生恢复入口，而不是显示「[object Object]」或静默吞掉。
@@ -303,6 +320,7 @@ export function useRunStream(deps: Partial<RunStreamDeps> = {}): RunStreamContro
           error instanceof Error ? error.message : String(error);
       }
     }
+    return false;
   }
 
   async function attachRun(

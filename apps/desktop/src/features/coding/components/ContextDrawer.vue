@@ -30,6 +30,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   close: [];
+  "open-source": [source: { projectId: number; sessionId: number; messageId: number | null }];
 }>();
 
 type TabKey = "files" | "context" | "sources" | "artifacts";
@@ -111,7 +112,7 @@ const usage = computed(() => props.projection?.usage);
           <div class="meta-row"><dt>输出 tokens</dt><dd>{{ (usage?.outputTokens ?? 0).toLocaleString() }}</dd></div>
           <div class="meta-row"><dt>计划版本</dt><dd>{{ projection?.plan ? `v${projection.plan.version} · ${projection.plan.items.length} 项` : "无" }}</dd></div>
         </dl>
-        <LocalContextPanel v-if="contextEnabled && sessionId" :session-id="sessionId" />
+        <LocalContextPanel v-if="contextEnabled && sessionId" :session-id="sessionId" :revision="projection?.lastSequence" @open-source="emit('open-source', $event)" />
       </div>
 
       <!-- Sources -->

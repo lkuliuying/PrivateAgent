@@ -53,6 +53,13 @@ describe("本机供应商凭据保存", () => {
     expect(apiFetch).toHaveBeenCalledTimes(1);
   });
 
+  it("系统凭据已保存但执行器失败时，准确报告部分成功", async () => {
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ alias }), { status: 200 }));
+    vi.mocked(apiFetch).mockResolvedValueOnce(new Response(JSON.stringify({ detail: "unavailable" }), { status: 503 }));
+    await expect(updateModelProviderRuntimeSecret("provider", "fixture-provider-secret")).rejects.toThrow("已持久化到系统凭据库");
+    expect(cmdSetModelProviderSecret).toHaveBeenCalledTimes(1);
+  });
+
   it("删除同时清理系统凭据和本机执行器", async () => {
     await clearModelProviderRuntimeSecret("provider");
     expect(cmdClearModelProviderSecret).toHaveBeenCalledWith(alias);

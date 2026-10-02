@@ -122,6 +122,7 @@ async function fixture(page: Page, running = false, modelName = "deepseek-flash"
       if (method === "PUT") { skills[0].enabled = body.enabled; return route.fulfill({ json: { updated: true } }); }
       return route.fulfill({ json: { content: skillText } });
     }
+    if (path === "/mcp-services") return route.fulfill({ json: { items: [], pending_changes: [], credential_cleanup_pending: [] } });
     if (path.endsWith("/integrations") || path.endsWith("/handoffs") || path.endsWith("/agents") || path.endsWith("/browser-evidence")) return route.fulfill({ json: { items: [] } });
     return route.fulfill({ status: 404, json: { error_code: "test_unhandled", detail: "隔离场景未定义此接口" } });
   });

@@ -68,6 +68,7 @@ export interface CodingInstructionMarker {
 
 /** 模型 profile 摘要（GET /agent-model-profiles，无任何 secret 字段） */
 export interface CodingModelProfileSummary {
+  supportsVision?: boolean;
   id: string;
   provider: "ollama" | "openai" | "claude";
   providerId?: string | null;
@@ -196,6 +197,7 @@ export type CodingHomeState =
   | "ready";
 
 export interface CodingThreadCreateInput {
+  clientRequestId?: string;
   projectId: number;
   workspaceId: number;
   title: string;
@@ -203,6 +205,13 @@ export interface CodingThreadCreateInput {
 
 /** 新对话首轮输入：先在草稿态选择上下文，首次发送时再创建会话并执行。 */
 export interface CodingFirstTurnPayload {
+  text?: string;
+  projectFiles?: import("./runContracts").CodingFileHint[];
+  attachments?: import("../../../types").TaskAttachment[];
+  draftId?: string;
+  draftStorageKey?: string;
+  clientRequestId?: string;
+  requestSignature?: string;
   collaborationMode?: "default" | "plan";
   message: string;
   permissionMode: string;

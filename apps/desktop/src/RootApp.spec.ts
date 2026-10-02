@@ -5,10 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RootApp from "./RootApp.vue";
 import { resetCodingWorkspace } from "./features/coding/model/codingWorkspaceStore";
 enableAutoUnmount(afterEach);
+import { registerDraftGuard, resolveUnsavedChanges } from "./services/unsavedChanges";
 import { saveWindowCloseBehavior } from "./services/windowClose";
 
 const desktopMocks = vi.hoisted(() => ({
-  closeHandler: null as (() => void | Promise<void>) | null,
+  closeHandler: null as ((forceExit?: boolean) => void | Promise<void>) | null,
   hide: vi.fn(async () => undefined),
   exit: vi.fn(async () => undefined),
   unlisten: vi.fn(),
@@ -23,7 +24,7 @@ vi.mock("./api/tauri", () => ({
   cmdHideMainWindow: desktopMocks.hide,
   cmdExitApp: desktopMocks.exit,
   listenForMainWindowClose: vi.fn(
-    async (handler: () => void | Promise<void>) => {
+    async (handler: (forceExit?: boolean) => void | Promise<void>) => {
       desktopMocks.closeHandler = handler;
       return desktopMocks.unlisten;
     }
@@ -58,6 +59,23 @@ async function mountRoot() {
 }
 
 describe("RootApp window close lifecycle", () => {
+  it("托盘退出走草稿守卫，取消后不退出，隐藏到托盘不丢弃输入", async () => {
+    const remove = registerDraftGuard({ dirty: () => true, save: async () => true, discard: vi.fn() });
+    saveWindowCloseBehavior("background");
+    const wrapper = await mountRoot();
+    await desktopMocks.closeHandler?.(true);
+    await flushPromises();
+    expect(wrapper.text()).toContain("模型配置尚未保存");
+    expect(desktopMocks.exit).not.toHaveBeenCalled();
+    await resolveUnsavedChanges("cancel");
+    await flushPromises();
+    await desktopMocks.closeHandler?.();
+    await flushPromises();
+    expect(desktopMocks.hide).toHaveBeenCalledOnce();
+    expect(desktopMocks.exit).not.toHaveBeenCalled();
+    remove();
+  });
+
   beforeEach(() => {
     window.localStorage.clear();
     desktopMocks.closeHandler = null;

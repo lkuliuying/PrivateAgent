@@ -39,6 +39,7 @@ export async function createCodingThread(input: CodingThreadCreateInput): Promis
     "/sessions",
     codingJsonInit("POST", {
       title: input.title,
+      ...(input.clientRequestId ? { client_request_id: input.clientRequestId } : {}),
       project_id: input.projectId,
       workspace_id: input.workspaceId,
       kind: "coding",

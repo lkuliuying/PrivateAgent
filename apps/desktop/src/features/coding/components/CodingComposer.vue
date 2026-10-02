@@ -17,8 +17,15 @@ import {
   PhShieldCheck,
   PhX,
 } from "@phosphor-icons/vue";
+import TaskAttachmentList from "./TaskAttachmentList.vue";
+import type { TaskAttachment } from "../../../types";
+import { listDraftAttachments, removeTaskAttachment } from "../api/attachments";
+import { composerDraftKey } from "../model/composerDrafts";
+import { loadComposerDraft, persistComposerDraft, inspectComposerDraft, resolveComposerDraft, type DurableComposerDraft } from "../model/composerDraftPersistence";
 import PaSelect from "../../../design/PaSelect.vue";
+import PaDialog from "../../../design/PaDialog.vue";
 import SkillPicker from "./SkillPicker.vue";
+import ModelScopePicker from "./ModelScopePicker.vue";
 import ModelStrengthPicker from "./ModelStrengthPicker.vue";
 import ContextUsageRing from "../../agent/ContextUsageRing.vue";
 import type { CodingFileHint } from "../model/runContracts";
@@ -45,7 +52,8 @@ const props = withDefaults(
     running?: boolean;
     previewMode?: boolean;
     searchFiles?: (query: string) => Promise<CodingFileHint[]>;
-    pickAttachment?: () => Promise<CodingFileHint | null>;
+    pickAttachment?: (draftId: string) => Promise<TaskAttachment | CodingFileHint | null>;
+    submit?: (payload: CodingComposerSendPayload) => Promise<boolean>;
     /**
      * v0.9.0 H1-A：发送前守卫（如 full_access 二次确认/授予）。返回 false 时
      * 不发送、不清空输入（不丢失用户草稿），由调用方呈现原因。
@@ -57,7 +65,7 @@ const props = withDefaults(
      * v0.9.0 H1-B（计划 §5.5/§5.6）：创建失败留在草稿态——父层把未成功的
      * 输入回填（不丢失输入）；引用变化即应用。
      */
-    restoreRequest?: { message: string; append?: boolean; seq: number; collaborationMode?: "default" | "plan" } | null;
+    restoreRequest?: Partial<CodingComposerSendPayload> & { message: string; append?: boolean; seq: number } | null;
     activeCollaborationMode?: "default" | "plan";
   }>(),
   {
@@ -79,13 +87,20 @@ const props = withDefaults(
 const emit = defineEmits<{
   send: [payload: CodingComposerSendPayload];
   pause: [];
+  "configure-provider": [profileId: string | null];
 }>();
 
 // ============ 文本与草稿（按 thread 保存，切换任务互不串线） ============
 const text = ref("");
 const sending = ref(false);
+const configurationError = ref("");
 const skillsOpen = ref(false);
 const chips = ref<CodingFileHint[]>([]);
+const attachments = ref<TaskAttachment[]>([]);
+const draftId = ref("");
+const clientRequestId = ref("");
+const requestSignature = ref("");
+const draftError = ref("");
 const inputEl = ref<HTMLTextAreaElement | null>(null);
 const attaching = ref(false);
 let caret = 0;
@@ -107,47 +122,180 @@ function resetHistoryNavigation(): void {
 }
 
 function draftKey(threadId: number | null): string {
-  return `pa_coding_draft_${threadId ?? "none"}`;
+  return composerDraftKey(props.store?.selectedProjectId.value ?? null, props.store?.selectedWorkspaceId.value ?? null, threadId);
 }
-
+const storageKey = computed(() => draftKey(props.threadId));
+const durableDrafts = computed(() => props.store?.capabilities.value?.coding_durable_drafts_enabled === true);
+const draftLoading = ref(false);
+const draftStatus = ref("");
+const draftReview = ref<{ key: string; revision: number; data: DurableComposerDraft | null } | null>(null);
+const reviewingDraft = ref(false);
+async function inspectSavedDraft(): Promise<void> {
+  const key = storageKey.value;
+  reviewingDraft.value = true;
+  try { const remote = await inspectComposerDraft(key); draftReview.value = { key, revision: remote.revision, data: remote.data }; }
+  catch (cause) { draftError.value = errorText(cause); }
+  finally { reviewingDraft.value = false; }
+}
+async function chooseDraft(useCurrent: boolean): Promise<void> {
+  const reviewed = draftReview.value;
+  if (!reviewed || reviewed.key !== storageKey.value) { draftReview.value = null; return; }
+  reviewingDraft.value = true;
+  if (saveTimer) clearTimeout(saveTimer);
+  pendingDraft = null;
+  const data = useCurrent ? snapshotDraft() : reviewed.data ?? { text: "", chips: [], attachments: [], draftId: freshId(), clientRequestId: "", requestSignature: "" };
+  try {
+    await resolveComposerDraft(reviewed.key, data, reviewed.revision);
+    restoringDraft = true;
+    applySavedDraft(data);
+    restoringDraft = false;
+    draftError.value = "";
+    draftStatus.value = "草稿已保存在本机";
+    draftReview.value = null;
+    lastSave = Promise.resolve();
+  } catch (cause) { draftError.value = errorText(cause); }
+  finally { reviewingDraft.value = false; }
+}
 let restoringDraft = false;
-
+let draftLoadSequence = 0;
+let saveSequence = 0;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingDraft: { key: string; data: DurableComposerDraft; sequence: number } | null = null;
+let lastSave: Promise<void> = Promise.resolve();
+const removedAttachmentIds = new Set<string>();
+function freshId(): string { return crypto.randomUUID().replace(/-/g, ""); }
+function snapshotDraft(): DurableComposerDraft {
+  return JSON.parse(JSON.stringify({ text: text.value, chips: chips.value, attachments: attachments.value,
+    draftId: draftId.value, clientRequestId: clientRequestId.value, requestSignature: requestSignature.value }));
+}
+function flushDraft(): Promise<void> {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = undefined;
+  const pending = pendingDraft;
+  if (!pending) return lastSave;
+  pendingDraft = null;
+  lastSave = persistComposerDraft(pending.key, pending.data).then(() => {
+    if (storageKey.value === pending.key && pending.sequence === saveSequence) {
+      draftError.value = "";
+      draftStatus.value = "草稿已保存在本机";
+    }
+  }).catch(cause => {
+    if (storageKey.value === pending.key) { draftError.value = errorText(cause) + " 输入仍保留，请重试保存后再关闭。"; draftStatus.value = ""; }
+    throw cause;
+  });
+  return lastSave;
+}
 function saveDraft(): void {
   if (props.previewMode || restoringDraft) return;
+  const data = snapshotDraft();
   try {
-    window.localStorage.setItem(
-      draftKey(props.threadId),
-      JSON.stringify({ text: text.value, chips: chips.value })
-    );
+    const existing = JSON.parse(window.localStorage.getItem(storageKey.value) ?? "{}");
+    window.localStorage.setItem(storageKey.value, JSON.stringify({ ...existing, ...data, ...(durableDrafts.value ? { _pending: true } : {}) }));
+    if (!durableDrafts.value) draftError.value = "";
   } catch {
-    // 本地存储不可用时静默降级（草稿非关键数据）
+    if (!durableDrafts.value) draftError.value = "草稿暂时无法保存在本机，输入仍在当前页面；请勿关闭应用。";
+  }
+  if (durableDrafts.value) {
+    pendingDraft = { key: storageKey.value, data, sequence: ++saveSequence };
+    draftStatus.value = "正在保存草稿…";
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { void flushDraft().catch(() => undefined); }, 150);
   }
 }
-
+async function retryDraftSave(): Promise<void> { saveDraft(); await flushDraft().catch(() => undefined); }
+function applySavedDraft(saved: Partial<DurableComposerDraft>): void {
+  text.value = typeof saved.text === "string" ? saved.text : "";
+  chips.value = Array.isArray(saved.chips) ? saved.chips.filter(item => typeof item?.relPath === "string") : [];
+  attachments.value = Array.isArray(saved.attachments) ? saved.attachments.filter(item => /^[a-f0-9]{32}$/.test(item?.id)) : [];
+  if (typeof saved.draftId === "string" && /^[a-f0-9]{32}$/.test(saved.draftId)) draftId.value = saved.draftId;
+  clientRequestId.value = typeof saved.clientRequestId === "string" ? saved.clientRequestId : "";
+  requestSignature.value = typeof saved.requestSignature === "string" ? saved.requestSignature : "";
+}
+function refreshAttachments(mine: number): void {
+  const owner = draftId.value;
+  void listDraftAttachments(owner).then(items => {
+    if (mine !== draftLoadSequence || owner !== draftId.value) return;
+    items = items.filter(item => !removedAttachmentIds.has(item.id));
+    // 已提交或选择响应丢失的材料仍按原标识核对，不把列表缺项视为主动移除。
+    attachments.value = [...attachments.value.map(item => items.find(current => current.id === item.id) ?? item), ...items.filter(item => !attachments.value.some(current => current.id === item.id))];
+  }).catch(() => { if (mine === draftLoadSequence) draftError.value = "附件状态暂时无法核对；已保留草稿，可以稍后重试。"; });
+}
 function loadDraft(): void {
+  const previousSave = flushDraft().catch(() => undefined);
   resetHistoryNavigation();
   restoringDraft = true;
+  const mine = ++draftLoadSequence;
+  const key = storageKey.value;
+  removedAttachmentIds.clear();
   chips.value = [];
+  attachments.value = [];
+  draftId.value = freshId();
+  clientRequestId.value = "";
+  requestSignature.value = "";
+  text.value = "";
+  draftError.value = "";
+  draftStatus.value = "";
+  let cached = false;
   try {
-    const raw = window.localStorage.getItem(draftKey(props.threadId));
-    if (!raw) {
-      text.value = "";
-      return;
+    const current = window.localStorage.getItem(key);
+    const raw = current ?? window.localStorage.getItem("pa_coding_draft_" + (props.threadId ?? "none"));
+    if (raw) {
+      applySavedDraft(JSON.parse(raw));
+      cached = true;
+      if (!current && durableDrafts.value) window.localStorage.setItem(key, raw);
     }
-    const draft = JSON.parse(raw) as { text?: string; chips?: CodingFileHint[] };
-    text.value = typeof draft.text === "string" ? draft.text : "";
-    chips.value = Array.isArray(draft.chips) ? draft.chips : [];
-  } catch {
-    text.value = "";
-  } finally {
+  } catch { if (!durableDrafts.value) draftError.value = "草稿读取失败，原记录仍保留，请勿覆盖。"; }
+  finally { restoringDraft = false; }
+  draftLoading.value = durableDrafts.value;
+  if (!durableDrafts.value) { if (cached) refreshAttachments(mine); return; }
+  void previousSave.then(() => loadComposerDraft(key)).then(saved => {
+    if (mine !== draftLoadSequence) return;
+    restoringDraft = true;
+    if (saved) applySavedDraft(saved);
     restoringDraft = false;
-  }
+    draftStatus.value = saved ? "已恢复本机草稿" : "";
+    if (saved) refreshAttachments(mine);
+  }).catch(cause => {
+    if (mine === draftLoadSequence) draftError.value = errorText(cause) + " 已保留当前输入，请重试保存。";
+  }).finally(() => { if (mine === draftLoadSequence) draftLoading.value = false; });
 }
-
 loadDraft();
-watch(() => props.threadId, loadDraft);
-// sync：草稿随每次输入立即落盘（不因批量更新时序丢草稿）
-watch([text, chips], saveDraft, { flush: "sync" });
+watch([storageKey, durableDrafts], loadDraft, { flush: "post" });
+function onDraftAcknowledged(event: Event): void {
+  const detail = (event as CustomEvent).detail;
+  if (typeof detail === "string") { if (detail === storageKey.value) loadDraft(); return; }
+  if (detail.key === storageKey.value && detail.requestId === clientRequestId.value && detail.message === buildMessage()
+      && JSON.stringify(detail.attachmentIds) === JSON.stringify(attachments.value.map(item => item.id))) loadDraft();
+}
+window.addEventListener("pa:draft-acknowledged", onDraftAcknowledged);
+onBeforeUnmount(() => {
+  draftLoadSequence += 1;
+  void flushDraft().catch(() => undefined);
+  window.removeEventListener("pa:draft-acknowledged", onDraftAcknowledged);
+});
+watch([text, chips, attachments, draftId, clientRequestId, requestSignature], saveDraft, { flush: "sync", deep: true });
+
+async function removeAttachment(item: TaskAttachment): Promise<void> {
+  if (sending.value || attaching.value) return;
+  const key = storageKey.value;
+  const owner = draftId.value;
+  attaching.value = true;
+  try {
+    await removeTaskAttachment(item.id, owner);
+    if (key === storageKey.value && owner === draftId.value) {
+      removedAttachmentIds.add(item.id);
+      attachments.value = attachments.value.filter(current => current.id !== item.id);
+    } else {
+      const saved = durableDrafts.value ? await loadComposerDraft(key) : JSON.parse(window.localStorage.getItem(key) ?? "{}");
+      if (saved?.draftId === owner) {
+        const changed = { ...saved, attachments: (saved.attachments ?? []).filter((current: TaskAttachment) => current.id !== item.id) };
+        if (durableDrafts.value) await persistComposerDraft(key, changed);
+        else window.localStorage.setItem(key, JSON.stringify(changed));
+      }
+    }
+  } catch (cause) { notify.error("附件移除未完成", errorText(cause)); }
+  finally { attaching.value = false; }
+}
 
 // ============ @ 文件发现（列表框键盘可达） ============
 const atQuery = ref<string | null>(null);
@@ -212,16 +360,28 @@ function applyAtHint(hint: CodingFileHint): void {
 }
 
 async function openContextPicker(): Promise<void> {
-  if (props.busy || props.previewMode) return;
+  if (props.busy || props.previewMode || draftLoading.value) return;
   if (props.pickAttachment) {
-    if (attaching.value) return;
+    if (attaching.value || sending.value) return;
+    if (attachments.value.length >= 8) { notify.error("附件未添加", "每条消息最多 8 个附件"); return; }
+    saveDraft();
+    if (durableDrafts.value) await flushDraft().catch(() => undefined);
+    if (draftError.value) { notify.error("附件未添加", draftError.value); return; }
+    const key = storageKey.value;
+    const selectedDraftId = draftId.value;
     attaching.value = true;
     try {
-      const attachment = await props.pickAttachment();
-      if (
-        attachment &&
-        !chips.value.some((item) => item.relPath === attachment.relPath)
-      ) {
+      const attachment = await props.pickAttachment(selectedDraftId);
+      if (attachment && "id" in attachment) {
+        if (storageKey.value === key) attachments.value = [...attachments.value, attachment];
+        else {
+          const saved = durableDrafts.value ? await loadComposerDraft(key) : JSON.parse(window.localStorage.getItem(key) ?? "{}");
+          if (!saved || saved.draftId !== selectedDraftId) throw new Error("原草稿已变化，材料仍保存在本机，请返回原工作区核对。");
+          const changed = { ...saved, draftId: selectedDraftId, attachments: [...(saved.attachments ?? []).filter((item: TaskAttachment) => item.id !== attachment.id), attachment] };
+          if (durableDrafts.value) await persistComposerDraft(key, changed);
+          else window.localStorage.setItem(key, JSON.stringify(changed));
+        }
+      } else if (attachment && storageKey.value === key && !chips.value.some(item => item.relPath === attachment.relPath)) {
         chips.value = [...chips.value, attachment];
       }
     } catch (error) {
@@ -339,6 +499,8 @@ watch(permissionMode, () => {
   }
 });
 const modelProfileId = ref("");
+const scopedModels = computed(() => props.store?.capabilities.value?.coding_model_scopes_enabled === true && !props.previewMode);
+const modelPreferenceReady = ref(false);
 const reasoningEffort = ref("");
 
 // v0.9.0 H1-A（计划 §5.3）：三档权限选项可用性绑定后端能力位——
@@ -465,7 +627,7 @@ const profileOptions = computed(() => [
 const selectedProfile = computed(
   () =>
     profiles.value.find((profile) => profile.id === modelProfileId.value) ??
-    defaultProfile.value
+    (scopedModels.value ? null : defaultProfile.value)
 );
 
 const selectedModelLabel = computed(() => selectedProfile.value?.modelName?.trim() || "未配置模型");
@@ -485,15 +647,24 @@ watch(selectedProfile, () => {
 });
 
 // ============ 发送/暂停 ============
-const disabled = computed(() => sending.value || props.busy || props.previewMode || props.running || !buildMessage().trim());
+const disabled = computed(() => (scopedModels.value && !modelPreferenceReady.value) || draftLoading.value || sending.value || props.busy || props.previewMode || props.running || attaching.value || !buildMessage().trim());
 
 function buildMessage(): string {
   const chipLines = chips.value.map((chip) => `@${chip.relPath}`);
-  return [text.value.trim(), ...chipLines].filter(Boolean).join("\n");
+  return [text.value.trim(), ...chipLines].filter(Boolean).join("\n") || (attachments.value.length ? "附件材料" : "");
 }
 
 async function send(): Promise<void> {
   if (disabled.value) return;
+  configurationError.value = "";
+  if (selectedProfile.value && !selectedProfile.value.contextTokens) {
+    configurationError.value = "所选模型尚未填写上下文容量，任务未发送。请补齐配置后再试。";
+    return;
+  }
+  if (attachments.value.some(item => item.requires_vision) && !selectedProfile.value?.supportsVision) {
+    configurationError.value = "附件包含图片或无文字 PDF 页，任务未发送。请在模型设置中确认视觉能力并选择对应模型。";
+    return;
+  }
   if (/^\/skill\s*$/.test(text.value)) {
     applyCommand("", "/skill");
     return;
@@ -503,7 +674,20 @@ async function send(): Promise<void> {
     text.value = text.value.trim().replace(/^\/plan\s*/, "");
     if (!buildMessage().trim()) return;
   }
+  const signature = JSON.stringify([buildMessage(), attachments.value.map(item => item.id), permissionMode.value, selectedProfile.value?.id, reasoningEffort.value, collaborationMode.value]);
+  if (requestSignature.value !== signature || !clientRequestId.value) {
+    requestSignature.value = signature;
+    clientRequestId.value = freshId();
+  }
+  const sentKey = storageKey.value;
   const payload: CodingComposerSendPayload = {
+    text: text.value,
+    projectFiles: [...chips.value],
+    attachments: [...attachments.value],
+    draftId: draftId.value,
+    draftStorageKey: sentKey,
+    clientRequestId: clientRequestId.value,
+    requestSignature: signature,
     message: buildMessage(),
     permissionMode: permissionMode.value,
     ...(planningSupported.value ? { collaborationMode: collaborationMode.value } : {}),
@@ -516,20 +700,32 @@ async function send(): Promise<void> {
   // 不发送、不清空草稿，避免丢失用户输入。
   sending.value = true;
   try {
+    if (durableDrafts.value) { saveDraft(); await flushDraft(); }
     if (props.beforeSend) {
       const proceed = await props.beforeSend(payload);
       if (!proceed) return;
       await refreshGrantState();
     }
-    emit("send", payload);
-    if (buildMessage() === payload.message) {
+    if (storageKey.value !== sentKey) return;
+    if (props.submit) {
+      if (!await props.submit(payload)) return;
+    } else { emit("send", payload); }
+    if (storageKey.value === sentKey && buildMessage() === payload.message && JSON.stringify(attachments.value.map(item => item.id)) === JSON.stringify(payload.attachments?.map(item => item.id))) {
       resetHistoryNavigation();
+      restoringDraft = true;
       text.value = "";
       chips.value = [];
+      attachments.value = [];
+      draftId.value = freshId();
+      clientRequestId.value = "";
+      requestSignature.value = "";
+      restoringDraft = false;
+      saveDraft();
       atQuery.value = null;
       slashQuery.value = null;
     }
-  } finally { sending.value = false; }
+  } catch (cause) { notify.error("任务未确认发送", errorText(cause) + " 输入和附件已保留，请核对后重试。"); }
+  finally { sending.value = false; }
 }
 
 function onPrimaryAction(): void {
@@ -582,8 +778,17 @@ watch(
       inputEl.value?.focus();
       return;
     }
+    if (request.attachments) {
+      attachments.value = [...request.attachments];
+      if (request.draftId) draftId.value = request.draftId;
+      if (request.clientRequestId) clientRequestId.value = request.clientRequestId;
+      if (request.requestSignature) requestSignature.value = request.requestSignature;
+    }
     resetHistoryNavigation();
-    applySerializedMessage(request.append ? [buildMessage(), request.message].filter(Boolean).join("\n\n") : request.message, true);
+    if (request.text !== undefined && !request.append) {
+      text.value = request.text;
+      chips.value = request.projectFiles ?? [];
+    } else applySerializedMessage(request.append ? [buildMessage(), request.message].filter(Boolean).join("\n\n") : request.message, true);
   }
 );
 
@@ -696,11 +901,25 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="coding-composer" data-testid="coding-composer">
+    <PaDialog :open="draftReview !== null" title="核对草稿版本" :width="680" :dismissible="!reviewingDraft" @close="draftReview = null">
+      <p>确认后使用所选版本。附件引用随正文保留，尚未发送的材料不会因此自动清理。</p>
+      <label>当前窗口输入<textarea class="pa-input" readonly :value="text" /></label>
+      <label>本机已保存输入<textarea class="pa-input" readonly :value="draftReview?.data?.text ?? ''" /></label>
+      <p>当前附件 {{ attachments.length }} 个；本机已保存附件 {{ draftReview?.data?.attachments.length ?? 0 }} 个。</p>
+      <template #footer>
+        <button class="pa-btn" data-autofocus :disabled="reviewingDraft" @click="draftReview = null">取消</button>
+        <button class="pa-btn" :disabled="reviewingDraft" @click="chooseDraft(false)">使用本机已保存版本</button>
+        <button class="pa-btn pa-btn--primary" :disabled="reviewingDraft" @click="chooseDraft(true)">保留当前输入并保存</button>
+      </template>
+    </PaDialog>
+    <p v-if="draftError" role="alert">{{ draftError }} <button v-if="durableDrafts" class="pa-btn pa-btn--subtle" :disabled="reviewingDraft" @click="inspectSavedDraft">核对已保存草稿</button> <button v-if="durableDrafts" class="pa-btn pa-btn--subtle" :disabled="draftLoading" @click="retryDraftSave">重试保存草稿</button></p>
+    <p v-else-if="draftStatus" class="composer-draft-status" aria-live="polite">{{ draftStatus }}</p>
+    <TaskAttachmentList :items="attachments" :draft-id="draftId" removable :disabled="sending || attaching || busy" @remove="removeAttachment" />
     <div v-if="chips.length" class="chip-row" data-testid="composer-chips">
       <span v-for="chip in chips" :key="chip.relPath" class="chip">
         <PhAt :size="12" aria-hidden="true" />
         <span class="mono">{{ chip.relPath }}</span>
-        <button class="chip-remove" :aria-label="`移除 ${chip.relPath}`" @click="removeChip(chip.relPath)">
+        <button class="chip-remove" :disabled="sending || busy" :aria-label="`移除 ${chip.relPath}`" @click="removeChip(chip.relPath)">
           <PhX :size="11" />
         </button>
       </span>
@@ -712,7 +931,7 @@ onBeforeUnmount(() => {
       class="composer-input"
       data-testid="coding-composer-input"
       rows="2"
-      :disabled="previewMode || busy && !running"
+      :disabled="draftLoading || previewMode || busy && !running"
       maxlength="32000"
       aria-label="任务输入"
       :placeholder="previewMode ? '预览模式' : paused ? '任务已暂停，可编辑草稿…' : running ? '任务执行中，可编辑草稿…' : '描述你希望完成的任务'"
@@ -781,7 +1000,7 @@ onBeforeUnmount(() => {
           class="composer-icon-btn add-context"
           data-testid="composer-add-context"
           :disabled="busy || previewMode || attaching"
-          :title="pickAttachment ? '从本机添加文件' : '引用项目文件'"
+          title="添加文本、图片或 PDF（文本 1 MiB，图片/PDF 10 MiB，PDF 50 页，最多 8 个）"
           :aria-label="pickAttachment ? '从本机添加文件' : '引用项目文件'"
           @click="void openContextPicker()"
         >
@@ -839,7 +1058,9 @@ onBeforeUnmount(() => {
             :context-tokens="selectedProfile?.contextTokens ?? null"
             :enabled="contextBudgetEnabled"
           />
-          <label class="toolbar-select model-select" :title="selectedModelLabel" :class="{ 'is-disabled': !profiles.length }">
+          <ModelScopePicker v-if="scopedModels" :project-id="store?.selectedProjectId.value ?? null" :session-id="threadId ?? null"
+            :profiles="profiles" :disabled="sending || busy" @resolved="(id, ready) => { modelProfileId = id || ''; modelPreferenceReady = ready; }" />
+          <label v-else class="toolbar-select model-select" :title="selectedModelLabel" :class="{ 'is-disabled': !profiles.length }">
             <span class="visually-hidden">模型</span>
             <span class="model-selection-label" aria-hidden="true">{{ selectedModelLabel }}</span>
             <PaSelect
@@ -887,9 +1108,16 @@ onBeforeUnmount(() => {
       <span class="visually-hidden">Enter 发送，Shift+Enter 换行，上下键浏览历史输入</span>
     </div>
   </div>
+  <div v-if="configurationError" class="composer-configuration-error" role="alert">
+    {{ configurationError }}
+    <button type="button" @click="emit('configure-provider', selectedProfile?.id ?? null)">填写模型容量</button>
+  </div>
 </template>
 
 <style scoped>
+.composer-draft-status { margin: 0 0 4px; font-size: 12px; color: var(--color-fg-muted); }
+.composer-configuration-error { color: var(--color-danger-fg); font-size: 13px; }
+.composer-configuration-error button { margin-left: 8px; min-height: 32px; color: var(--color-accent-soft-fg); }
 .skill-pop { padding: var(--space-2); }
 .coding-composer {
   position: relative;

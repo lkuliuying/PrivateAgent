@@ -27,6 +27,7 @@ const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 function onKeydown(event: KeyboardEvent) {
+  if (!props.open) return;
   if (event.key === "Escape" && props.dismissible) {
     event.stopPropagation();
     emit("close");
@@ -36,14 +37,14 @@ function onKeydown(event: KeyboardEvent) {
   const focusable = Array.from(
     panelRef.value.querySelectorAll<HTMLElement>(FOCUSABLE)
   );
-  if (!focusable.length) return;
+  if (!focusable.length) { event.preventDefault(); panelRef.value.focus(); return; }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
   const active = document.activeElement as HTMLElement | null;
   if (event.shiftKey && (active === first || !panelRef.value.contains(active))) {
     event.preventDefault();
     last.focus();
-  } else if (!event.shiftKey && active === last) {
+  } else if (!event.shiftKey && (active === last || !panelRef.value.contains(active))) {
     event.preventDefault();
     first.focus();
   }
@@ -56,14 +57,15 @@ function onScrimClick() {
 watch(
   () => props.open,
   async (open) => {
-    if (!open) return;
+    if (!open) { previousFocus?.focus?.(); previousFocus = null; return; }
     previousFocus = document.activeElement as HTMLElement | null;
     await nextTick();
     const target =
       panelRef.value?.querySelector<HTMLElement>("[data-autofocus]") ??
       panelRef.value?.querySelector<HTMLElement>(FOCUSABLE);
-    target?.focus();
-  }
+    if (props.open) (target ?? panelRef.value)?.focus();
+  },
+  { immediate: true }
 );
 
 onMounted(() => document.addEventListener("keydown", onKeydown, true));
@@ -87,6 +89,7 @@ onBeforeUnmount(() => {
           class="pa-dialog-panel"
           role="dialog"
           aria-modal="true"
+          tabindex="-1"
           :aria-label="title"
           :style="{ maxWidth: `${width}px` }"
         >

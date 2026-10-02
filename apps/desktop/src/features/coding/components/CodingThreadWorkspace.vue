@@ -22,7 +22,6 @@ import FileWorkspace from "./FileWorkspace.vue";
  */
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from "vue";
 import { PhChatsCircle, PhWarningCircle } from "@phosphor-icons/vue";
-import { pickFile } from "../../../api";
 import type { View } from "../../../types";
 import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
@@ -43,6 +42,7 @@ import type { CodingInstructionMarker } from "../model/contracts";
 import { isAbsoluteWorkspacePath, resolveWorkspaceFileTarget, type WorkspaceFileOpenRequest, type WorkspaceFileTarget } from "../model/outputFiles";
 import {
   approveRunApproval,
+  fetchRunByRequest,
   fetchRunApprovalPreview,
   fetchRunApprovals,
   fetchRunExecutionOutput,
@@ -50,7 +50,6 @@ import {
   rejectRunApproval,
 } from "../api/runs";
 import {
-  attachCodingProjectFile,
   fetchCodingWorkspacePath,
   searchCodingProjectFiles,
 } from "../api/projects";
@@ -66,6 +65,9 @@ import ThreadHeader from "./ThreadHeader.vue";
 import RunTranscript from "./RunTranscript.vue";
 import RunPlanPopover from "./RunPlanPopover.vue";
 import ContextDrawer from "./ContextDrawer.vue";
+import { pickTaskAttachment } from "../api/attachments";
+import { acknowledgeComposerDraft, composerDraftKey } from "../model/composerDrafts";
+import { loadComposerDraft } from "../model/composerDraftPersistence";
 import CodingComposer, { type CodingComposerSendPayload } from "./CodingComposer.vue";
 
 const props = withDefaults(
@@ -81,7 +83,8 @@ const props = withDefaults(
 const emit = defineEmits<{
   navigate: [view: View];
   /** v0.9.0 H1-D（§5.8）：模型类阻塞 → 进入同一模型管理区（带 returnTo） */
-  "configure-provider": [];
+  "configure-provider": [profileId?: string | null];
+  "open-source": [source: { projectId: number; sessionId: number; messageId: number | null }];
 }>();
 const notify = useNotifications();
 
@@ -153,6 +156,8 @@ let fileOpenGeneration = 0;
 const threadTools = ref<InstanceType<typeof ThreadTools>>();
 const cancelling = ref(false);
 const runControls = ref<InstanceType<typeof RunControlBar>>();
+const transcript = ref<InstanceType<typeof RunTranscript>>();
+const needsRecovery = computed(() => Boolean(projection.value && ["failed", "cancelled", "timed_out", "limit_exceeded", "paused", "waiting_input"].includes(projection.value.status)));
 const lastPermissionMode = ref<string | null>(null);
 const approvalRecords = shallowRef<RunApprovalRecord[]>([]);
 const instructionMarkers = ref<CodingInstructionMarker[]>([]);
@@ -271,6 +276,14 @@ async function hydrateSelectedThread(): Promise<void> {
     .find((message) => message.role === "user")?.content;
   props.store.recordThreadRun(current.id, runId);
   await stream.attachRun(runId, lastUserMessage ?? current.title);
+  const key = composerDraftKey(current.projectId, current.workspaceId, current.id);
+  try {
+    const durable = props.store.capabilities.value?.coding_durable_drafts_enabled === true;
+    const draft = durable ? await loadComposerDraft(key) : JSON.parse(window.localStorage.getItem(key) ?? "{}");
+    if (!draft?.clientRequestId) return;
+    const confirmed = await fetchRunByRequest(draft.clientRequestId);
+    if (confirmed.session_id === current.id) await acknowledgeComposerDraft(key, draft.clientRequestId, confirmed.submitted_message, confirmed.attachment_ids, durable);
+  } catch { /* 未确认的输入保留，用户可用同一请求标识重试。 */ }
 }
 
 watch(
@@ -287,12 +300,11 @@ watch(
     const firstTurn = props.store.takePendingFirstTurn(threadId);
     if (!firstTurn) return;
     const allowed = await guardFullAccess(firstTurn);
-    if (allowed) {
-      await send(firstTurn);
-      return;
-    }
+    if (thread.value?.id !== threadId) return;
+    if (allowed && await send(firstTurn)) return;
+    if (thread.value?.id !== threadId) return;
     restoreSeq += 1;
-    restoreRequest.value = { message: firstTurn.message, seq: restoreSeq, collaborationMode: firstTurn.collaborationMode };
+    restoreRequest.value = { ...firstTurn, seq: restoreSeq };
   },
   { immediate: true }
 );
@@ -305,26 +317,13 @@ const createBlocker = computed(() => {
   return describeRunBlocker(stream.createErrorCode.value);
 });
 const lastSentPayload = ref<CodingComposerSendPayload | null>(null);
-const restoreRequest = ref<{ message: string; append?: boolean; seq: number; collaborationMode?: "default" | "plan" } | null>(null);
+const restoreRequest = ref<Partial<CodingComposerSendPayload> & { message: string; append?: boolean; seq: number } | null>(null);
 function reviewFeedback(message: string) {
   restoreRequest.value = { message, append: true, seq: ++restoreSeq };
   notify.success("反馈已放入输入框", "可以补充说明后发送。");
 }
 let restoreSeq = 0;
 
-watch(
-  () => stream.phase.value,
-  (next, previous) => {
-    if (next === "error" && previous === "starting" && lastSentPayload.value) {
-      restoreSeq += 1;
-      restoreRequest.value = {
-        message: lastSentPayload.value.message,
-        collaborationMode: lastSentPayload.value.collaborationMode,
-        seq: restoreSeq,
-      };
-    }
-  }
-);
 
 async function retryBlockedSend(): Promise<void> {
   const payload = lastSentPayload.value;
@@ -571,24 +570,28 @@ async function guardFullAccess(payload: CodingComposerSendPayload): Promise<bool
   }
 }
 
-async function send(payload: CodingComposerSendPayload): Promise<void> {
+async function send(payload: CodingComposerSendPayload): Promise<boolean> {
   const currentThread = thread.value;
-  if (!currentThread) return;
+  if (!currentThread) return false;
   const projectId = props.store.selectedProjectId.value ?? currentThread.projectId;
   const workspaceId = props.store.selectedWorkspaceId.value ?? currentThread.workspaceId;
-  if (projectId === null || workspaceId === null) return;
+  if (projectId === null || workspaceId === null) return false;
   lastPermissionMode.value = payload.permissionMode;
   lastSentPayload.value = payload;
   // 新一轮会替换当前 run 投影；先收进已完成的上一轮对话，保证同一任务内
   // 连续发送时旧问答仍留在 transcript。读取失败不阻断本轮执行。
   if (stream.projection.value) {
     try {
-      durableHistory.value = await fetchThreadMessagesSafe(currentThread.id);
+      const messages = await fetchThreadMessagesSafe(currentThread.id);
+      if (thread.value?.id !== currentThread.id) return false;
+      durableHistory.value = messages;
     } catch {
       // 保留现有历史；运行创建仍按后端事实收敛。
     }
   }
-  await stream.startRun({
+  if (thread.value?.id !== currentThread.id) return false;
+  const accepted = await stream.startRun({
+    ...(payload.draftId ? { attachment_ids: payload.attachments?.map(item => item.id) ?? [], attachment_draft_id: payload.draftId, client_request_id: payload.clientRequestId } : {}),
     session_id: currentThread.id,
     execution_contract_version: props.store.capabilities.value?.coding_execution_sessions_enabled === true ? "1.0" : undefined,
     recovery_contract_version: props.store.capabilities.value?.coding_recovery_contract_version === "1.0" ? "1.0" : undefined,
@@ -601,8 +604,13 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
     model_profile_id: payload.modelProfileId ?? undefined,
     reasoning_effort: payload.reasoningEffort ?? undefined,
   });
+  if (accepted && payload.clientRequestId) {
+    try {
+      await acknowledgeComposerDraft(composerDraftKey(projectId, workspaceId, currentThread.id), payload.clientRequestId, payload.message, payload.attachments?.map(item => item.id) ?? [], props.store.capabilities.value?.coding_durable_drafts_enabled === true);
+    } catch { notify.error("任务已创建", "草稿清理未完成；输入副本仍在本机，请勿重复发送。"); }
+  }
   const createdRunId = stream.projection.value?.runId;
-  if (createdRunId && thread.value?.id === currentThread.id) {
+  if (accepted && createdRunId && thread.value?.id === currentThread.id) {
     props.store.recordThreadRun(
       currentThread.id,
       createdRunId,
@@ -617,6 +625,7 @@ async function send(payload: CodingComposerSendPayload): Promise<void> {
       // 事件流仍是当前 run 的事实源；消息同步失败留待下次重开恢复。
     }
   }
+  return accepted;
 }
 
 async function implementPlannedRun(runId: string): Promise<void> {
@@ -643,17 +652,10 @@ function searchFiles(query: string) {
   return searchCodingProjectFiles(projectId, query);
 }
 
-async function pickAttachment() {
-  const sourcePath = await pickFile();
-  if (!sourcePath) return null;
-  const currentThread = thread.value;
-  const projectId = props.store.selectedProjectId.value ?? currentThread?.projectId ?? null;
-  const workspaceId =
-    props.store.selectedWorkspaceId.value ?? currentThread?.workspaceId ?? null;
-  if (projectId === null || workspaceId === null) {
-    throw new Error("当前任务尚未绑定可用工作区");
-  }
-  return attachCodingProjectFile(projectId, workspaceId, sourcePath);
+async function pickAttachment(draftId: string) {
+  const current = thread.value;
+  if (!current || current.projectId === null || current.workspaceId === null) throw new Error("当前任务尚未绑定可用工作区");
+  return pickTaskAttachment({ project_id: current.projectId, workspace_id: current.workspaceId, session_id: current.id }, draftId);
 }
 
 async function cancelRun(): Promise<void> {
@@ -757,7 +759,7 @@ function navigateToInstruction(instructionId: string): void {
               <p v-else>任务运行后可查看与恢复现场。</p>
             </template>
             <template #context>
-              <ContextDrawer :session-id="thread.id" :context-enabled="store.capabilities.value?.coding_context_compaction_enabled === true" initial-tab="context" :projection="projection" :previews="approvalPreviews" :permission-mode="lastPermissionMode" />
+              <ContextDrawer :session-id="thread.id" :context-enabled="store.capabilities.value?.coding_context_compaction_enabled === true" initial-tab="context" :projection="projection" :previews="approvalPreviews" :permission-mode="lastPermissionMode" @open-source="emit('open-source', $event)" />
             </template>
             <template #evidence>
               <RunResultSummary v-if="projection" :projection="projection" />
@@ -796,7 +798,7 @@ function navigateToInstruction(instructionId: string): void {
         </aside>
 
         <div class="thread-main">
-          <RunTranscript
+          <RunTranscript ref="transcript"
             :projection="projection"
             :history="durableHistory"
             :search-target="searchTarget"
@@ -835,7 +837,8 @@ function navigateToInstruction(instructionId: string): void {
             <div class="blocker-copy">
               <strong>{{ createBlocker.title }}</strong>
               <span class="blocker-hint">{{ createBlocker.hint }}</span>
-              <span v-if="connectionError" class="blocker-detail">{{ connectionError }}</span>
+              <span>正文和附件已保留，尚未确认的操作不会自动重放。</span>
+              <details v-if="connectionError" class="blocker-detail"><summary>技术详情</summary>{{ connectionError }}</details>
             </div>
             <div class="blocker-actions">
               <PaButton
@@ -864,8 +867,14 @@ function navigateToInstruction(instructionId: string): void {
           />
 
           <div class="thread-composer">
+            <div v-if="projection" class="task-actions" aria-label="任务处理入口">
+              <PaButton v-if="approvalRecords.some(item => item.status === 'pending')" size="sm" variant="subtle" @click="transcript?.focusApproval()">查看审批</PaButton>
+              <PaButton v-if="needsRecovery && store.capabilities.value?.coding_recovery_contract_version === '1.0'" size="sm" variant="subtle" @click="threadTools?.openPanel('recovery')">查看恢复详情</PaButton>
+              <PaButton v-if="projection.runOutcome || isTerminalRunStatus(projection.status)" size="sm" variant="ghost" @click="threadTools?.openPanel('evidence')">查看验证结果</PaButton>
+            </div>
             <RunControlBar v-if="projection?.runId && !previewMode && store.capabilities.value?.coding_recovery_contract_version === '1.0'" ref="runControls" :run-id="projection.runId" :session-id="thread.id" @resumed="resumeRun" />
             <CodingComposer
+              @configure-provider="emit('configure-provider', $event)"
               :store="store"
               :thread-id="thread.id"
               :busy="composerBusy"
@@ -880,7 +889,7 @@ function navigateToInstruction(instructionId: string): void {
               :input-history="composerInputHistory"
               :restore-request="restoreRequest"
               :active-collaboration-mode="projection?.collaborationMode"
-              @send="send"
+              :submit="send"
               @pause="runControls?.pause()"
             />
           </div>
@@ -900,6 +909,7 @@ function navigateToInstruction(instructionId: string): void {
 </template>
 
 <style scoped>
+.task-actions { display: flex; flex-wrap: wrap; gap: 8px; width: min(var(--coding-content-width), 100%); margin: 0 auto 8px; }
 .coding-thread {
   --coding-content-width: 900px;
   display: flex;

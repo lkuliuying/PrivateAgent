@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import AppShell from "./components/AppShell.vue";
 import SettingsView from "./components/SettingsView.vue";
+import { allowDiscardingChanges } from "./services/unsavedChanges";
 import SettingsModuleNav from "./components/SettingsModuleNav.vue";
 import ExtensionRegistryPanel from "./components/CapabilityRegistryPanel.vue";
 import { ensureDesktopBackendReady } from "./services/backendStartup";
@@ -73,8 +74,25 @@ const codingThreadKey = computed(
 const commandPaletteOpen = ref(false);
 const searchTarget = ref<{ messageId: number; seq: number } | null>(null);
 let searchOpening = false;
+async function openMemorySource(source: { projectId: number; sessionId: number; messageId: number | null }) {
+  if (searchOpening || !await allowDiscardingChanges()) return;
+  searchOpening = true;
+  try {
+    const store = codingActiveStoreRef.value;
+    const thread = await fetchCodingThread(source.sessionId, source.projectId);
+    store.threadsByProject.value = { ...store.threadsByProject.value,
+      [source.projectId]: [...(store.threadsByProject.value[source.projectId] ?? []).filter(item => item.id !== thread.id), thread] };
+    store.selectThread(thread.id);
+    searchTarget.value = source.messageId === null ? null : { messageId: source.messageId, seq: Date.now() };
+    onNavigate("coding");
+  } catch {
+    useNotifications().error("无法打开记忆来源", "来源会话可能已删除或当前不可访问，请刷新记忆面板");
+  } finally {
+    searchOpening = false;
+  }
+}
 async function openSearchResult(hit: WorkspaceSearchHit) {
-  if (searchOpening) return;
+  if (searchOpening || !await allowDiscardingChanges()) return;
   searchOpening = true;
   try {
     const store = codingActiveStoreRef.value;
@@ -140,11 +158,11 @@ function onResize() {
   viewportWidth.value = window.innerWidth;
 }
 
-onMounted(() => {
+onMounted(async () => {
   window.addEventListener("resize", onResize);
   boot();
   if (route.query.view === "settings") {
-    onNavigate("settings");
+    await onNavigate("settings");
     if (route.query.section === "provider") settingsSection.value = "provider";
   }
 });
@@ -222,8 +240,22 @@ async function quitApp() {
 // ============ 导航 ============
 
 const settingsSection = ref<SettingsSection>("current-model");
+const focusProfileId = ref<string | null>(null);
+watch(view, (next, previous) => {
+  if (next === "coding" && previous === "settings") void codingActiveStoreRef.value.refresh();
+});
+async function selectSettingsSection(section: SettingsSection): Promise<void> {
+  if (section !== settingsSection.value && !await allowDiscardingChanges()) return;
+  settingsSection.value = section;
+}
+async function openProfile(): Promise<void> {
+  if (!await allowDiscardingChanges()) return;
+  await onNavigate("settings");
+  settingsSection.value = "profile";
+}
 
-function onNavigate(v: View) {
+async function onNavigate(v: View) {
+  if (v !== view.value && !await allowDiscardingChanges()) return;
   const target = CODING_ALLOWED_VIEWS.has(v) ? v : "coding";
   if (target === "settings" && view.value !== "settings" && settingsFocus.value === null) {
     settingsSection.value = "current-model";
@@ -235,18 +267,19 @@ function onNavigate(v: View) {
 // 往返保留项目/会话/草稿（由各自组件维护），保存后自动返回并原位重探测解除阻塞。
 const settingsFocus = ref<{ section: SettingsSection; returnTo: View } | null>(null);
 
-function openModelSettings(returnTo: View) {
+async function openModelSettings(returnTo: View, profileId: string | null = null) {
+  if (!await allowDiscardingChanges()) return;
+  focusProfileId.value = profileId;
   settingsFocus.value = { section: "provider", returnTo };
   settingsSection.value = "provider";
   onNavigate("settings");
 }
 
-function onSettingsReturn() {
+async function onSettingsReturn() {
+  if (!await allowDiscardingChanges()) return;
   const target = settingsFocus.value?.returnTo ?? null;
   settingsFocus.value = null;
   if (target === null) return;
-  // 返回后重拉 profile/能力位：首页阻塞原位解除，无需新建项目或重启应用。
-  if (target === "coding") void codingActiveStoreRef.value.refresh();
   onNavigate(target);
 }
 
@@ -259,7 +292,8 @@ function exitSettings() {
 }
 
 // v0.8.0 W1：coding 首页/侧栏动作接线（线程选择由 codingWorkspaceStore 维护）
-function onCodingNewTask() {
+async function onCodingNewTask() {
+  if (!await allowDiscardingChanges()) return;
   codingActiveStoreRef.value.startNewTask();
   onNavigate("coding");
 }
@@ -268,11 +302,13 @@ function onCodingThreadCreated() {
   onNavigate("coding");
 }
 
-function onGoBack() {
+async function onGoBack() {
+  if (!await allowDiscardingChanges()) return;
   const target = history.back();
   if (target && !CODING_ALLOWED_VIEWS.has(target.view)) onNavigate("coding");
 }
-function onGoForward() {
+async function onGoForward() {
+  if (!await allowDiscardingChanges()) return;
   const target = history.forward();
   if (target && !CODING_ALLOWED_VIEWS.has(target.view)) onNavigate("coding");
 }
@@ -339,14 +375,14 @@ async function initializeConnectedWorkspace() {
     :can-go-forward="history.state().canGoForward"
     @go-back="onGoBack"
     @go-forward="onGoForward"
-    @open-profile="onNavigate('settings'); settingsSection = 'profile'"
+    @open-profile="openProfile"
   >
     <template #rail>
       <SettingsModuleNav
         v-if="workspaceView === 'settings'"
         :active="settingsSection"
         :narrow="viewportWidth < CODING_RAIL_DRAWER_MAX"
-        @select="settingsSection = $event"
+        @select="selectSettingsSection"
         @exit="exitSettings"
       />
       <CodingSidebar
@@ -365,7 +401,7 @@ async function initializeConnectedWorkspace() {
       v-if="workspaceView === 'coding' && !codingThreadSelected"
       :store="codingActiveStoreRef"
       @navigate="onNavigate"
-      @configure-provider="openModelSettings('coding')"
+      @configure-provider="openModelSettings('coding', $event)"
       @thread-created="onCodingThreadCreated"
     />
     <CodingThreadWorkspace
@@ -374,15 +410,18 @@ async function initializeConnectedWorkspace() {
       :search-target="searchTarget"
       :store="codingActiveStoreRef"
       @navigate="onNavigate"
-      @configure-provider="openModelSettings('coding')"
+      @configure-provider="openModelSettings('coding', $event)"
+      @open-source="openMemorySource"
     />
     <SettingsView
       v-else-if="workspaceView === 'settings'"
       :active-section="settingsSection"
+      :focus-profile-id="focusProfileId"
       :focus-section="settingsFocus?.section ?? null"
       :return-to="settingsFocus?.returnTo ?? null"
       @return="onSettingsReturn"
-      @select-section="settingsSection = $event"
+      @select-section="selectSettingsSection"
+      @open-source="openMemorySource"
     />
     <ExtensionRegistryPanel v-else-if="workspaceView === 'extensions'" />
 

@@ -1,0 +1,33 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { beforeEach, expect, it, vi } from "vitest";
+import ModelScopePicker from "./ModelScopePicker.vue";
+import { getModelPreference, setModelPreference, type ModelPreference } from "../api/modelPreferences";
+vi.mock("../api/modelPreferences", () => ({ getModelPreference: vi.fn(), setModelPreference: vi.fn() }));
+const preference: ModelPreference = { profile_id: "one", source: "project", overrides: { global: "one", project: "one", session: null }, available: true };
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(getModelPreference).mockResolvedValue(preference); });
+it("显示实际来源，保存作用域通过显式按钮完成", async () => {
+  const wrapper = mount(ModelScopePicker, { props: { projectId: 1, sessionId: 2, profiles: [] }, attachTo: document.body });
+  await flushPromises();
+  expect(wrapper.text()).toContain("项目设置");
+  expect(setModelPreference).not.toHaveBeenCalled();
+  await wrapper.get("button").trigger("click");
+  await flushPromises();
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("继承上级设置");
+  vi.mocked(setModelPreference).mockResolvedValue(preference);
+  document.querySelector<HTMLButtonElement>('[role="dialog"] .pa-btn--primary')!.click();
+  await flushPromises();
+  expect(setModelPreference).toHaveBeenCalledWith("session", null, 1, 2);
+  expect(wrapper.emitted("resolved")?.slice(-1)[0]).toEqual(["one", true]);
+  wrapper.unmount();
+});
+it("迟到的旧项目响应不能替换新项目模型，失败时阻止发送", async () => {
+  let finish!: (value: ModelPreference) => void;
+  vi.mocked(getModelPreference).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValueOnce({ ...preference, profile_id: "missing", available: false });
+  const wrapper = mount(ModelScopePicker, { props: { projectId: 1, sessionId: null, profiles: [] } });
+  await wrapper.setProps({ projectId: 2 });
+  await flushPromises();
+  finish(preference); await flushPromises();
+  expect(wrapper.emitted("resolved")?.slice(-1)[0]).toEqual(["missing", false]);
+  expect(wrapper.text()).toContain("所选模型不可用");
+  wrapper.unmount();
+});

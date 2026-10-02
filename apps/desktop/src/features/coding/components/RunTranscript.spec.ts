@@ -176,22 +176,22 @@ describe("RunTranscript", () => {
     try {
       expect(wrapper.get('[data-testid="run-duration-toggle"]').text()).not.toContain("执行过程");
       expect(wrapper.get('[data-testid="run-duration-toggle"]').attributes("aria-label")).toContain("收起执行过程");
-      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 1.0 秒");
+      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 1 秒");
       await vi.advanceTimersByTimeAsync(2000);
-      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 3.0 秒");
+      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 3 秒");
       const done = projection([[1, "run.started", {}], [2, "run.completed", { output: "完成" }]]);
       done.startedAt = current.startedAt;
       done.completedAt = "2026-09-17T00:00:02.500Z";
       await wrapper.setProps({ projection: done });
       await vi.advanceTimersByTimeAsync(5000);
-      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("用时 2.5 秒");
+      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("用时 3 秒");
       expect(vi.getTimerCount()).toBe(0);
       const next = createRunProjection("run-2", "下一轮");
       next.status = "running";
       next.startedAt = new Date().toISOString();
       await wrapper.setProps({ projection: next });
       await vi.advanceTimersByTimeAsync(1000);
-      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 1.0 秒");
+      expect(wrapper.get('[data-testid="run-duration"]').text()).toContain("已用时 1 秒");
     } finally {
       wrapper.unmount();
       expect(vi.getTimerCount()).toBe(0);
@@ -306,7 +306,7 @@ describe("RunTranscript", () => {
     expect(wrapper.find('[data-testid="terminal-summary"]').text()).not.toContain("输出总结");
     expect(wrapper.find('[data-testid="terminal-output"]').text()).toContain("已创建 hello.txt");
     const duration = wrapper.find('[data-testid="run-duration-toggle"]');
-    expect(duration.text()).toContain("用时 5.4 秒");
+    expect(duration.text()).toContain("用时 5 秒");
     expect(duration.attributes("aria-expanded")).toBe("false");
     expect(wrapper.find('[data-testid="transcript-decision-summary"]').isVisible()).toBe(false);
     expect(wrapper.find('[data-testid="terminal-output"]').isVisible()).toBe(true);
@@ -732,7 +732,7 @@ describe("RunTranscript", () => {
     expect(command.text()).toContain("pytest tests");
     expect(command.text()).not.toContain("sk-demo");
     expect(command.text()).toContain("[REDACTED]");
-    expect(wrapper.find('[data-testid="tool-time"]').text()).toContain("4.0 秒");
+    expect(wrapper.find('[data-testid="tool-time"]').text()).toContain("4 秒");
     expect(wrapper.find('[data-testid="tool-result"]').text()).toContain("12 passed in 3.42s");
     // 单次调用不显示多次调用计数。
     expect(wrapper.find('[data-testid="tool-invocation"]').exists()).toBe(false);

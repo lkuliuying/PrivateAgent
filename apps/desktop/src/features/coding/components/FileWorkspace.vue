@@ -156,29 +156,30 @@ onMounted(() => pane.value?.focus());
 .file-workspace { display: flex; flex-direction: column; flex: 0 0 48%; min-width: 350px; min-height: 0; border-left: 1px solid var(--color-border); background: var(--color-surface); z-index: 20; }
 .workspace-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--color-border); }
 .workspace-head > span { color: var(--color-fg-muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.icon { display: inline-flex; justify-content: center; align-items: center; flex-shrink: 0; width: 28px; height: 28px; border: 0; background: transparent; color: var(--color-fg-muted); border-radius: 6px; cursor: pointer; }
-.icon:hover, .file-row:hover { background: var(--color-surface-sunken); }
+.icon { display: inline-flex; justify-content: center; align-items: center; flex-shrink: 0; width: 32px; height: 32px; border: 0; background: transparent; color: var(--color-fg-muted); border-radius: 6px; cursor: pointer; }
+.icon:disabled, .file-row:disabled, .file-tab button:disabled { opacity: .5; cursor: not-allowed; }
+.icon:hover:not(:disabled), .file-row:hover:not(:disabled) { background: var(--color-surface-sunken); }
 button:focus-visible, input:focus-visible { outline: var(--focus-ring); outline-offset: -2px; }
 .file-tabs { display: flex; min-height: 39px; overflow-x: auto; border-bottom: 1px solid var(--color-border); flex-shrink: 0; }
 .tab-empty { padding: 11px 14px; font-size: 12px; color: var(--color-fg-muted); }
 .file-tab { display: flex; flex-shrink: 0; border-right: 1px solid var(--color-border); border-bottom: 2px solid transparent; }
 .file-tab.active { border-bottom-color: var(--color-fg); background: var(--color-surface-sunken); }
-.file-tab button { display: flex; gap: 7px; align-items: center; padding: 8px; border: 0; background: transparent; color: var(--color-fg); cursor: pointer; font-size: 12px; }
+.file-tab button { min-width: 32px; min-height: 32px; display: flex; gap: 7px; align-items: center; padding: 8px; border: 0; background: transparent; color: var(--color-fg); cursor: pointer; font-size: 12px; }
 .file-layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }
 .explorer { display: flex; flex: 0 0 36%; min-width: 135px; flex-direction: column; min-height: 0; border-right: 1px solid var(--color-border); background: var(--color-panel); }
-.breadcrumbs { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; padding: 9px; font-size: 11px; border-bottom: 1px solid var(--color-border); }
-.breadcrumbs button { max-width: 100%; overflow-wrap: anywhere; padding: 2px; border: 0; background: transparent; color: var(--color-fg-muted); cursor: pointer; text-align: left; }
+.breadcrumbs { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; padding: 9px; font-size: 12px; border-bottom: 1px solid var(--color-border); }
+.breadcrumbs button { min-width: 32px; min-height: 32px; max-width: 100%; overflow-wrap: anywhere; padding: 2px; border: 0; background: transparent; color: var(--color-fg-muted); cursor: pointer; text-align: left; }
 .filter { display: flex; gap: 5px; align-items: center; margin: 10px 8px; color: var(--color-fg-muted); }
 .filter input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--color-fg); font-size: 12px; padding: 4px 0; }
 .file-list { overflow: auto; flex: 1; padding: 0 5px 10px; }
 .file-list p { font-size: 12px; color: var(--color-fg-muted); padding: 8px; overflow-wrap: anywhere; }
 .file-row { display: flex; align-items: center; width: 100%; gap: 7px; padding: 8px; border: 0; border-radius: 5px; background: transparent; color: var(--color-fg); cursor: pointer; font-size: 12px; text-align: left; }
 .file-row > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-row > svg { flex-shrink: 0; }.file-row.selected { background: var(--color-surface-sunken); }.parent-row { color: var(--color-fg-muted); font-size: 11px; }
+.file-row > svg { flex-shrink: 0; }.file-row.selected { background: var(--color-surface-sunken); }.parent-row { color: var(--color-fg-muted); font-size: 12px; }
 .file-preview { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
 .file-preview > header { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--color-border); }
-.file-preview > header code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--color-fg-muted); }
-.code-scroll { flex: 1; overflow: auto; min-height: 0; }.code-scroll pre { margin: 0; padding: 18px; tab-size: 4; font-size: 12px; line-height: 1.8; font-family: var(--font-mono, monospace); }
+.file-preview > header code { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--color-fg-muted); }
+.code-scroll { flex: 1; overflow: auto; min-height: 0; }.code-scroll pre { margin: 0; padding: 18px; tab-size: 4; font-size: 13px; line-height: 1.8; font-family: var(--font-mono, monospace); }
 .code-line--target { background: var(--color-accent-subtle, var(--color-surface-sunken)); color: inherit; outline: 1px solid var(--color-accent); }
 .preview-message { margin: 0; padding: 18px; font-size: 12px; overflow-wrap: anywhere; }
 .preview-empty { margin: auto; padding: 20px; display: flex; align-items: center; flex-direction: column; gap: 14px; color: var(--color-fg-muted); text-align: center; font-size: 12px; }

@@ -3,6 +3,7 @@ import McpIntegrationsPanel from "./McpIntegrationsPanel.vue";
 import { useCodingWorkspace } from "../features/coding/model/codingWorkspaceStore";
 const codingWorkspace = useCodingWorkspace();
 import WallpaperSettingsPanel from "./ExtensionRegistryPanel.vue";
+import HomeLayoutSettings from "./HomeLayoutSettings.vue";
 import { ref, computed, onMounted } from "vue";
 import { PhArchiveBox, PhCpu, PhInfo, PhPlugs } from "@phosphor-icons/vue";
 import { listModelProviders, type ModelProvider } from "../api";
@@ -11,6 +12,8 @@ import DocumentationMcpPanel from "./DocumentationMcpPanel.vue";
 import MemorySettingsPanel from "./MemorySettingsPanel.vue";
 import ModelProvidersPanel from "./ModelProvidersPanel.vue";
 import ProfileSettingsPanel from "./ProfileSettingsPanel.vue";
+import AttachmentStoragePanel from "./AttachmentStoragePanel.vue";
+import ApplicationBackup from "./ApplicationBackup.vue";
 import HistoryMigration from "./HistoryMigration.vue";
 import {
   settingsSectionMeta,
@@ -28,6 +31,7 @@ import type { CodingModelProfileSummary } from "../features/coding/model/contrac
 const props = withDefaults(
   defineProps<{
     activeSection?: SettingsSection;
+    focusProfileId?: string | null;
     focusSection?: SettingsSection | null;
     returnTo?: string | null;
   }>(),
@@ -37,6 +41,7 @@ const emit = defineEmits<{
   (e: "reconfigure"): void;
   (e: "return"): void;
   (e: "select-section", section: SettingsSection): void;
+  (e: "open-source", source: { projectId: number; sessionId: number; messageId: number | null }): void;
 }>();
 const currentSectionMeta = computed(() => settingsSectionMeta(props.activeSection));
 const sectionSubtitle = computed(() => currentSectionMeta.value.description);
@@ -129,7 +134,7 @@ const activeEndpoint = computed(() => activeModelProvider.value?.baseUrl || "—
 
     <!-- 统一模型供应商：保存后的启用模型直接进入对话/Coding 选择器。 -->
     <section v-if="activeSection === 'provider'" class="model-provider-section">
-      <ModelProvidersPanel @saved="onModelProfilesSaved" />
+      <ModelProvidersPanel :focus-profile-id="focusProfileId" @saved="onModelProfilesSaved" />
     </section>
 
     <!-- MCP -->
@@ -147,10 +152,10 @@ const activeEndpoint = computed(() => activeModelProvider.value?.baseUrl || "—
     </section>
 
     <section v-if="activeSection === 'memories'" class="setting-card wide">
-      <MemorySettingsPanel />
+      <MemorySettingsPanel :initial-project-id="codingWorkspace.selectedProjectId.value" @open-source="emit('open-source', $event)" />
     </section>
 
-    <section v-if="activeSection === 'appearance'" class="setting-card wide"><WallpaperSettingsPanel /></section>
+    <section v-if="activeSection === 'appearance'" class="setting-card wide"><HomeLayoutSettings /><WallpaperSettingsPanel /></section>
 
     <!-- 个人资料：首版头像和个性资料保存在当前设备。 -->
     <section v-if="activeSection === 'profile'" class="profile-section">
@@ -160,7 +165,9 @@ const activeEndpoint = computed(() => activeModelProvider.value?.baseUrl || "—
     <!-- 备份 -->
     <section v-if="activeSection === 'backup'" class="setting-card wide">
       <div class="card-heading"><span><PhArchiveBox :size="21" /></span><div><h2>备份与恢复</h2><p>导入或导出本机会话历史，导入前可预览内容</p></div></div>
-      <HistoryMigration />
+      <ApplicationBackup v-if="codingWorkspace.capabilities?.value?.coding_app_backups_enabled" />
+      <AttachmentStoragePanel v-if="codingWorkspace.capabilities?.value?.coding_attachment_storage_enabled" />
+      <details><summary>历史导入与导出（兼容旧版本）</summary><HistoryMigration /></details>
     </section>
 
     <!-- 关于 / 更新 -->

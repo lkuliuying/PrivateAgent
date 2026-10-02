@@ -4,6 +4,8 @@ import { RouterView, useRoute, useRouter } from "vue-router";
 import zhCN from "ant-design-vue/es/locale/zh_CN";
 
 import { cmdExitApp, cmdHideMainWindow, listenForMainWindowClose } from "./api/tauri";
+import UnsavedChangesDialog from "./components/UnsavedChangesDialog.vue";
+import { allowDiscardingChanges } from "./services/unsavedChanges";
 import CloseBehaviorDialog from "./components/CloseBehaviorDialog.vue";
 import ButtonTooltipHost from "./design/ButtonTooltipHost.vue";
 import {
@@ -52,7 +54,8 @@ async function performClose(behavior: WindowCloseBehavior): Promise<void> {
       await cmdHideMainWindow();
       closeDialogOpen.value = false;
     } else {
-      await cmdExitApp();
+      closeDialogOpen.value = false;
+      if (await allowDiscardingChanges()) await cmdExitApp();
     }
   } catch {
     closeDialogOpen.value = true;
@@ -65,7 +68,8 @@ async function performClose(behavior: WindowCloseBehavior): Promise<void> {
   }
 }
 
-function handleWindowCloseRequest(): void {
+function handleWindowCloseRequest(forceExit = false): void {
+  if (forceExit) { void performClose("exit"); return; }
   if (closeDialogOpen.value || closeBusy.value) return;
   const savedBehavior = getSavedWindowCloseBehavior();
   if (savedBehavior) {
@@ -160,6 +164,7 @@ onBeforeUnmount(() => {
         </button>
       </section>
     </main>
+    <UnsavedChangesDialog />
     <CloseBehaviorDialog
       v-model:selected="closeBehavior"
       v-model:dont-ask-again="dontAskAgain"

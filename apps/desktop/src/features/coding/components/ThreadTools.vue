@@ -18,9 +18,11 @@ const busy = ref(false);
 const error = ref("");
 const thread = computed(() => props.store.selectedThread.value);
 let alive = true;
+let returnFocus: HTMLElement | null = null;
 const tabs = [{ key: "overview", label: "环境" }, { key: "changes", label: "变更" }, { key: "execution", label: "进程" }, { key: "evidence", label: "验证" }, { key: "context", label: "上下文" }];
 
 async function toggle(value: "menu" | "environment") {
+  if (!open.value) returnFocus = document.activeElement as HTMLElement | null;
   open.value = open.value === value ? null : value;
   error.value = "";
   emit("panel-change", open.value === "environment");
@@ -34,7 +36,10 @@ function close(restore = false) {
   const value = open.value;
   open.value = null;
   emit("panel-change", false);
-  if (restore && value) root.value?.querySelector<HTMLElement>(`[data-tool="${value}"]`)?.focus();
+  if (restore && value) {
+    if (returnFocus?.isConnected) returnFocus.focus();
+    else root.value?.querySelector<HTMLElement>(`[data-tool="${value}"]`)?.focus();
+  }
 }
 function outside(event: PointerEvent) { if (open.value === "menu" && !root.value?.contains(event.target as Node)) close(); }
 function keyboard(event: KeyboardEvent) {
@@ -83,7 +88,14 @@ async function action(kind: "rename" | "pin" | "delete" | "copy" | "archive") {
     }
   } finally { if (alive) busy.value = false; }
 }
-defineExpose({ close, focusFiles: () => root.value?.querySelector<HTMLElement>('[data-testid="thread-files-toggle"]')?.focus() });
+async function openPanel(target: "recovery" | "evidence") {
+  returnFocus = document.activeElement as HTMLElement | null;
+  tab.value = target;
+  if (open.value !== "environment") await toggle("environment");
+  await nextTick();
+  panel.value?.querySelector<HTMLElement>('button[aria-label="关闭环境面板"]')?.focus();
+}
+defineExpose({ close, openPanel, focusFiles: () => root.value?.querySelector<HTMLElement>('[data-testid="thread-files-toggle"]')?.focus() });
 </script>
 
 <template>

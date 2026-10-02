@@ -8,6 +8,7 @@
  * 竞态防护：bootstrap/refresh 使用序号令牌，迟到响应不回写状态
  * （对齐 App.vue contextSeq 范式）；切换项目只改选择，不整页重置树。
  */
+import { transferFirstTurnDraft } from "./composerDrafts";
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
 import { checkLocalExecutorHealth, setLocalProjectContext } from "../../../services/localExecutor";
 import { getRuntimeCapabilities } from "../../../api";
@@ -464,7 +465,7 @@ export function createCodingWorkspaceStore(
     return source.length > 36 ? `${source.slice(0, 36).trimEnd()}…` : source;
   }
 
-  async function createThreadFromInput(title: string): Promise<CodingThreadSummary> {
+  async function createThreadFromInput(title: string, select = true, clientRequestId?: string): Promise<CodingThreadSummary> {
     const trimmed = title.trim();
     if (!trimmed) {
       throw { status: 422, code: "coding_context_incomplete", message: "请先描述要完成的任务" } satisfies CodingApiError;
@@ -488,21 +489,27 @@ export function createCodingWorkspaceStore(
       projectId: workspace.projectId,
       workspaceId: workspace.id,
       title: trimmed,
+      ...(clientRequestId ? { clientRequestId } : {}),
     });
     const existing = threadsByProject.value[thread.projectId] ?? [];
     threadsByProject.value = {
       ...threadsByProject.value,
       [thread.projectId]: [thread, ...existing.filter((item) => item.id !== thread.id)],
     };
-    selectedThreadId.value = thread.id;
+    if (select) selectedThreadId.value = thread.id;
     return thread;
   }
 
   async function createThreadFromFirstTurn(
     payload: CodingFirstTurnPayload
   ): Promise<CodingThreadSummary> {
-    const thread = await createThreadFromInput(titleFromFirstInstruction(payload.message));
-    pendingFirstTurn.value = { threadId: thread.id, ...payload };
+    const thread = await createThreadFromInput(titleFromFirstInstruction(payload.message), false, capabilities.value?.coding_durable_drafts_enabled === true ? payload.clientRequestId : undefined);
+    await transferFirstTurnDraft(payload, thread.projectId!, thread.workspaceId!, thread.id, capabilities.value?.coding_durable_drafts_enabled === true);
+    // 创建期间离开原工作区时只保留该会话草稿，不在其他项目继续发送。
+    if (selectedProjectId.value === thread.projectId && selectedWorkspaceId.value === thread.workspaceId && selectedThreadId.value === null) {
+      pendingFirstTurn.value = { threadId: thread.id, ...payload };
+      selectedThreadId.value = thread.id;
+    }
     return thread;
   }
 

@@ -52,6 +52,7 @@ export async function prepareRedesignFixture(page: Page) {
     else if (path === "/model-providers") json = [{ id: "fixture", name: "示例供应商", protocol: "openai", base_url: "https://example.com/v1",
       api_format: "chat_completions", enabled: true, is_builtin: false, api_key_configured: true,
       models: [{ profile_id: "fixture-model", model_id: "deepseek-flash", context_tokens: 128000, max_output_tokens: 8192, metadata_source: "user_override" }] }];
+    else if (path === "/task-attachments") json = [];
     else if (path === "/model-settings") json = { llm_temperature: 0.7, llm_context_length: 8192, kb_enabled_by_default: false };
     else if (path.endsWith("/observer-config")) json = { version: 0, enabled: false, checks: [] };
     else if (path.endsWith("/turn-queue")) json = { item: null };

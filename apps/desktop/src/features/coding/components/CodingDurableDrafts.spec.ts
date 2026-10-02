@@ -1,0 +1,44 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { beforeEach, expect, it, vi } from "vitest";
+import CodingComposer from "./CodingComposer.vue";
+import { createCodingWorkspaceStore } from "../model/codingWorkspaceStore";
+import { codingFetchJson } from "../api/codingHttp";
+vi.mock("../api/codingHttp", async (original) => ({ ...await original<typeof import("../api/codingHttp")>(), codingFetchJson: vi.fn() }));
+const saved = new Map<string, { revision: number; mutation_id: string | null; data: unknown; updated_at: string | null }>();
+let sequence = 1500;
+beforeEach(() => {
+  localStorage.clear(); saved.clear(); vi.clearAllMocks();
+  vi.mocked(codingFetchJson).mockImplementation(async (path, init) => {
+    const current = saved.get(path) || { revision: 0, mutation_id: null, data: null, updated_at: null };
+    if (!init) return structuredClone(current);
+    const input = JSON.parse(init.body as string);
+    if (input.revision !== current.revision) throw new Error("revision conflict");
+    const value = { revision: current.revision + 1, mutation_id: input.mutation_id, data: input.data, updated_at: "saved" };
+    saved.set(path, value); return structuredClone(value);
+  });
+});
+it("清空浏览器缓存后重新挂载仍找回正文和失败请求标识", async () => {
+  const store = createCodingWorkspaceStore();
+  store.selectedProjectId.value = ++sequence; store.selectedWorkspaceId.value = ++sequence;
+  store.capabilities.value = { coding_durable_drafts_enabled: true };
+  const submit = vi.fn(async () => false);
+  let wrapper = mount(CodingComposer, { props: { store, threadId: ++sequence, submit } });
+  const threadId = sequence;
+  await flushPromises();
+  await wrapper.get("textarea").setValue("必须恢复的正文");
+  await wrapper.get('[data-testid="coding-composer-send"]').trigger("click");
+  await flushPromises();
+  expect(submit).toHaveBeenCalledTimes(1);
+  const first = wrapper.props().submit;
+  expect(first).toBe(submit);
+  wrapper.unmount(); await flushPromises(); localStorage.clear();
+  wrapper = mount(CodingComposer, { props: { store, threadId, submit } });
+  await flushPromises();
+  expect((wrapper.get("textarea").element as HTMLTextAreaElement).value).toBe("必须恢复的正文");
+  await wrapper.get('[data-testid="coding-composer-send"]').trigger("click");
+  await flushPromises();
+  expect(submit).toHaveBeenCalledTimes(2);
+  const requests = submit.mock.calls as unknown as Array<[{ clientRequestId: string }]>;
+  expect(requests[1][0].clientRequestId).toBe(requests[0][0].clientRequestId);
+  wrapper.unmount();
+});

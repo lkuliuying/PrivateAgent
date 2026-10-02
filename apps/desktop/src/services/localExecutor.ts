@@ -15,11 +15,11 @@ export function usesLocalExecutor(): boolean {
 
 /** 项目执行与所有模型接口均由本机处理，失败时不回退服务器。 */
 export function isLocalProjectPath(path: string): boolean {
-  return /^\/(projects|sessions|agent-runs|full-access-grants|local-history|local-models|local-memories|capabilities|workspace-search|chat)(\/|$)/.test(path) || isLocalModelPath(path);
+  return /^\/(projects|sessions|agent-runs|composer-drafts|task-attachments|attachment-storage|full-access-grants|local-history|local-backups|local-models|local-memories|mcp-services|capabilities|workspace-search|chat)(\/|$)/.test(path) || isLocalModelPath(path);
 }
 
 export function isLocalModelPath(path: string): boolean {
-  return /^\/(model-providers|agent-model-profiles|model-settings|model-evaluation|providers|desktop\/model)(\/|$)/.test(path);
+  return /^\/(model-preferences|model-providers|model-save-operations|agent-model-profiles|model-settings|model-evaluation|providers|desktop\/model)(\/|$)/.test(path);
 }
 
 export async function startLocalExecutor(): Promise<void> {

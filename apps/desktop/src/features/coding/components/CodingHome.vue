@@ -12,7 +12,6 @@ import {
   PhArrowRight,
   PhBookOpen,
   PhCode,
-  PhDownloadSimple,
   PhFolderPlus,
   PhFolderSimple,
   PhGitBranch,
@@ -28,19 +27,16 @@ import PaSelect from "../../../design/PaSelect.vue";
 import PaSkeleton from "../../../design/PaSkeleton.vue";
 import type {
   CodingApiError,
-  CodingProfileImportStatus,
   CodingThreadSummary,
 } from "../model/contracts";
 import { WORKSPACE_STATUS_META } from "../model/contracts";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
-import {
-  fetchCodingProfileImportStatus,
-  importCodingModelProfile,
-} from "../api/modelProfiles";
+import { pickTaskAttachment } from "../api/attachments";
 import CodingComposer, { type CodingComposerSendPayload } from "./CodingComposer.vue";
 // v0.9.0 H1：新建项目对话框（选目录+授权；空态与侧栏共用）
 import NewProjectDialog from "./NewProjectDialog.vue";
 import heroImage from "../../../assets/companion/home-hero.png";
+import { homeLayout } from "../../../services/homeLayout";
 import { useLocalProfile } from "../../../services/localProfile";
 
 const { profile } = useLocalProfile();
@@ -61,7 +57,7 @@ const emit = defineEmits<{
    * v0.9.0 H1-D（§5.8）：进入同一模型管理区（带 returnTo，由 App 接线；
    * 往返保留项目/会话/草稿，保存后原位解除阻塞）。
    */
-  "configure-provider": [];
+  "configure-provider": [profileId?: string | null];
 }>();
 
 const homeState = computed(() => props.store.homeState.value);
@@ -74,69 +70,13 @@ const profileBlocker = computed<"feature_disabled" | "profile_missing" | null>((
   return result?.status === "disabled" ? "feature_disabled" : "profile_missing";
 });
 
-// 一次性导入向导：旧全局配置 → 默认 Coding profile（幂等；失败显示精确原因）
-const importState = ref<CodingProfileImportStatus | null>(null);
-const importing = ref(false);
-const importError = ref("");
-
-watch(
-  profileBlocker,
-  async (blocker) => {
-    importError.value = "";
-    if (blocker !== "profile_missing") {
-      importState.value = null;
-      return;
-    }
-    try {
-      importState.value = await fetchCodingProfileImportStatus();
-    } catch {
-      importState.value = null;
-    }
-  },
-  { immediate: true }
-);
-
-const importPossible = computed(() => {
-  const state = importState.value;
-  if (!state) return false;
-  return state.importState === "pending" || state.importState === "wizard";
-});
-
-function importErrorText(error: unknown): string {
-  if (error && typeof error === "object") {
-    const coded = error as { code?: unknown; message?: unknown };
-    const message = typeof coded.message === "string" ? coded.message : "";
-    switch (coded.code) {
-      case "provider_unreachable":
-        return "Provider 不可达：请确认 Ollama 已启动后重试。";
-      case "model_missing":
-        return "Provider 可达，但配置的模型不存在：请先拉取模型或修改配置。";
-      case "credentials_missing":
-        return "远程凭据缺失：请先在设置中配置系统凭据。";
-      case "feature_disabled":
-        return "远程 Provider 未启用：请先在设置中开启。";
-      case "no_global_provider":
-        return "全局 Provider 尚未配置模型：请先在设置中配置。";
-      default:
-        return message || "导入失败，请重试";
-    }
-  }
-  return "导入失败，请重试";
-}
-
-async function onImportProfile(): Promise<void> {
-  if (importing.value) return;
-  importing.value = true;
-  importError.value = "";
-  try {
-    await importCodingModelProfile();
-    await props.store.refresh();
-  } catch (error) {
-    importError.value = importErrorText(error);
-  } finally {
-    importing.value = false;
-  }
-}
+// 就绪项只根据已保存的配置与工作区事实派生，不触发模型调用。
+const modelReady = computed(() => props.store.modelProfiles.value?.status === "ok" && props.store.modelProfiles.value.profiles.some(item => Number(item.contextTokens) > 0));
+const incompleteProfileId = computed(() => props.store.modelProfiles.value?.status === "ok" ? props.store.modelProfiles.value.profiles.find(item => !item.contextTokens)?.id : undefined);
+const projectReady = computed(() => Boolean(props.store.selectedProject.value?.status === "active" && props.store.selectedWorkspace.value && ["active", "dirty"].includes(props.store.selectedWorkspace.value.status)));
+const requiredReady = computed(() => modelReady.value && projectReady.value);
+const readinessExpanded = ref(false);
+watch(requiredReady, ready => { if (ready) readinessExpanded.value = false; });
 const projects = computed(() => props.store.projects.value);
 const projectCards = computed(() => projects.value.filter((project) => project.status === "active").slice(0, 3));
 function projectBranch(projectId: number): string {
@@ -236,17 +176,22 @@ async function onProjectCreated(projectId: number): Promise<void> {
   if (projectId > 0) props.store.selectProject(projectId);
 }
 
-async function submitFirstTurn(payload: CodingComposerSendPayload): Promise<void> {
-  if (creating.value || !payload.message.trim()) return;
+async function pickAttachment(draftId: string) {
+  if (selectedProjectId.value === null || selectedWorkspaceId.value === null) throw new Error("请先选择项目和工作区");
+  return pickTaskAttachment({ project_id: selectedProjectId.value, workspace_id: selectedWorkspaceId.value }, draftId);
+}
+
+async function submitFirstTurn(payload: CodingComposerSendPayload): Promise<boolean> {
+  if (creating.value || !payload.message.trim()) return false;
   creating.value = true;
   createError.value = null;
   try {
     const thread = await props.store.createThreadFromFirstTurn(payload);
     emit("thread-created", thread);
+    return false;
   } catch (cause) {
     createError.value = asCodingApiError(cause);
-    restoreSeq += 1;
-    restoreRequest.value = { message: payload.message, seq: restoreSeq };
+    return false;
   } finally {
     creating.value = false;
   }
@@ -282,7 +227,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
 <template>
   <section class="coding-home" :class="{ 'is-ready': homeState === 'ready' }" data-testid="coding-home">
     <div class="home-column" :class="{ 'is-ready': homeState === 'ready' }" :data-testid="`coding-home-${homeState}`">
-      <header class="home-hero" data-testid="home-hero">
+      <header v-if="homeLayout === 'standard'" class="home-hero" data-testid="home-hero">
         <img :src="heroImage" class="home-hero__art" alt="" fetchpriority="high" />
         <div class="home-hero__copy">
           <p class="home-hero__greeting">你好，{{ profile.nickname || '开发者' }}</p>
@@ -290,12 +235,21 @@ function asCodingApiError(cause: unknown): CodingApiError {
           <p class="home-hero__description">在本地项目中，一起阅读代码、修改文件、验证想法。</p>
         </div>
       </header>
+      <header v-else class="home-compact" data-testid="home-compact"><h1>你好，{{ profile.nickname || '开发者' }}</h1><p>选择项目，开始今天的任务。</p></header>
+      <details v-if="homeState !== 'loading'" v-show="!requiredReady || readinessExpanded" class="readiness" :open="!requiredReady || readinessExpanded" @toggle="readinessExpanded = ($event.target as HTMLDetailsElement).open" data-testid="home-readiness">
+        <summary>{{ requiredReady ? '已就绪，可以开始任务' : '开始前的就绪清单' }}<span>{{ Number(modelReady) + Number(projectReady) }}/2 必需项</span></summary>
+        <div class="readiness-items">
+          <div><strong>{{ modelReady ? '已配置' : '待完成' }} · 模型配置</strong><p>{{ modelReady ? '已保存可用的模型 ID 和上下文容量。' : '添加模型服务与模型 ID，并填写上下文容量。' }}</p><button class="pa-btn pa-btn--subtle" @click="emit('configure-provider', incompleteProfileId)">配置模型</button></div>
+          <div><strong>{{ projectReady ? '已选择' : '待完成' }} · 项目目录</strong><p>{{ projectReady ? '当前项目已有可用工作区。' : '选择本机目录并授权后，任务才能读取项目。' }}</p><button class="pa-btn pa-btn--subtle" @click="newProjectOpen = true">选择项目目录</button></div>
+          <div><strong>可选 · 模型验证</strong><p>列表检查与实际生成、工具能力验证是不同结果。跳过验证仍可使用。</p><button class="pa-btn pa-btn--ghost" @click="emit('configure-provider')">查看或运行验证</button></div>
+        </div>
+      </details>
       <PaSkeleton v-if="homeState === 'loading'" :lines="5" />
 
       <PaErrorState
         v-else-if="homeState === 'sidecar-unavailable'"
-        title="本地后端未就绪"
-        message="无法连接本地 sidecar。本地数据不受影响，可稍后重试。"
+        title="本机执行器未就绪"
+        message="暂时无法连接本机执行器，任务尚未发送，草稿仍保留。请点击重试连接。"
         retry-label="重试连接"
         data-testid="coding-home-retry"
         @retry="props.store.refresh()"
@@ -320,7 +274,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
         <PaEmptyState
           :icon="PhFolderSimple"
           title="项目还没有可用工作区"
-          description="Coding 任务在项目工作区中执行。可为项目创建根工作区（对应默认分支的仓库根目录）。"
+          description="项目目录尚未准备完成，任务未发送。请创建对应的工作区后重试。"
         >
           <PaButton variant="primary" :loading="ensuring" @click="ensureWorkspace()">
             创建根工作区
@@ -337,48 +291,15 @@ function asCodingApiError(cause: unknown): CodingApiError {
       </template>
 
       <template v-else-if="homeState === 'provider-unconfigured'">
-        <!-- v0.9.0 H1-D（§5.8）：能力位关闭与 profile 缺失分别呈现 -->
         <PaEmptyState
-          v-if="profileBlocker === 'feature_disabled'"
           :icon="PhLightning"
-          title="模型能力未开启"
-          description="Runtime 未启用 Coding 模型能力位（或版本过旧）。请更新 Runtime 或在配置中启用后重试。"
+          :title="profileBlocker === 'feature_disabled' ? '模型服务暂不可用' : '尚未配置模型'"
+          description="任务尚未发送。请在设置中添加模型服务；服务不提供模型列表时，也可以手动填写模型 ID。"
         >
-          <PaButton variant="primary" data-testid="home-provider-retry" @click="props.store.refresh()">重试</PaButton>
-          <PaButton variant="ghost" @click="emit('configure-provider')">前往设置</PaButton>
+          <PaButton variant="primary" data-testid="home-provider-create" @click="emit('configure-provider')">配置模型</PaButton>
+          <PaButton v-if="profileBlocker === 'feature_disabled'" variant="ghost" data-testid="home-provider-retry" @click="props.store.refresh()">重试</PaButton>
         </PaEmptyState>
-        <PaEmptyState
-          v-else
-          :icon="PhLightning"
-          title="尚无 Coding 模型"
-          description="Coding 任务需要一个模型 profile（具体模型标识与能力声明）。可一键导入当前全局配置，或在设置中创建并验证。"
-        >
-          <PaButton
-            v-if="importPossible"
-            variant="primary"
-            data-testid="home-provider-import"
-            :loading="importing"
-            @click="void onImportProfile()"
-          >
-            <PhDownloadSimple :size="14" aria-hidden="true" />
-            验证并导入当前模型配置
-          </PaButton>
-          <PaButton
-            :variant="importPossible ? 'ghost' : 'primary'"
-            data-testid="home-provider-create"
-            @click="emit('configure-provider')"
-          >创建 Coding 模型</PaButton>
-          <PaButton variant="ghost" @click="emit('configure-provider')">前往设置</PaButton>
-        </PaEmptyState>
-        <PaInlineNotice
-          v-if="importError"
-          tone="danger"
-          title="导入未完成"
-          class="home-notice"
-          data-testid="home-provider-import-error"
-        >
-          {{ importError }}
-        </PaInlineNotice>
+        <details v-if="profileBlocker === 'feature_disabled'"><summary>技术详情</summary>本机执行器未报告 coding 模型能力，请检查客户端版本。</details>
       </template>
 
       <template v-else-if="homeState === 'workspace-invalid'">
@@ -398,7 +319,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
           <section class="home-projects" aria-labelledby="home-projects-title">
             <div class="home-section-heading">
               <h2 id="home-projects-title">继续你的项目</h2>
-              <PaButton variant="ghost" @click="newProjectOpen = true"><PhFolderSimple :size="17" />打开项目</PaButton>
+              <div class="home-heading-actions"><button v-if="requiredReady && !readinessExpanded" class="pa-btn pa-btn--ghost" @click="readinessExpanded = true">已就绪 · 查看清单</button><PaButton variant="ghost" @click="newProjectOpen = true"><PhFolderSimple :size="17" />打开项目</PaButton></div>
             </div>
             <div class="home-project-grid">
               <button v-for="project in projectCards" :key="project.id" type="button" class="home-project" :class="{ 'is-selected': project.id === selectedProjectId }" :aria-pressed="project.id === selectedProjectId" :data-testid="`home-project-${project.id}`" :disabled="creating" @click="onProjectChange(project.id)">
@@ -424,6 +345,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
                   :model-value="selectedProjectId ?? ''"
                   :options="projectOptions"
                   size="sm"
+                  :disabled="creating"
                   data-testid="coding-home-project-select"
                   aria-label="项目"
                   @update:model-value="onProjectChange"
@@ -436,6 +358,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
                   :model-value="workspaceSelection"
                   :options="workspaceOptions"
                   size="sm"
+                  :disabled="creating"
                   data-testid="coding-home-workspace-select"
                   aria-label="工作区 / 分支"
                   @update:model-value="void onWorkspaceChange($event)"
@@ -451,11 +374,13 @@ function asCodingApiError(cause: unknown): CodingApiError {
               {{ branchSwitchError }}
             </PaInlineNotice>
             <CodingComposer
+              @configure-provider="emit('configure-provider', $event)"
               :store="store"
               :thread-id="null"
               :busy="creating"
               :restore-request="restoreRequest"
-              @send="submitFirstTurn"
+              :submit="submitFirstTurn"
+              :pick-attachment="pickAttachment"
             />
             <PaInlineNotice
               v-if="createError"
@@ -463,7 +388,7 @@ function asCodingApiError(cause: unknown): CodingApiError {
               title="对话创建失败"
               class="home-notice"
             >
-              {{ createError.message }}
+              {{ createError.message }} 任务尚未发送，正文和附件仍在草稿中。请处理问题后再次发送。
             </PaInlineNotice>
           </div>
         </div>
@@ -503,6 +428,14 @@ function asCodingApiError(cause: unknown): CodingApiError {
   gap: var(--space-6);
 }
 
+.readiness { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); padding: 10px 14px; font-size: 13px; }
+.readiness summary { min-height: 32px; cursor: pointer; line-height: 32px; font-weight: 600; }
+.readiness summary span { float: right; margin-left: 12px; color: var(--color-fg-muted); font-size: 12px; font-weight: 400; }
+.readiness-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 16px; padding: 12px 0; }
+.readiness-items p { color: var(--color-fg-muted); line-height: 1.5; min-height: 40px; }
+.home-compact { padding: 20px 0 4px; }
+.home-compact h1 { margin: 0; font-size: 24px; line-height: 1.5; }
+.home-compact p { margin: 4px 0 0; font-size: 13px; color: var(--color-fg-muted); }
 .home-notice {
   margin: 0 var(--space-2) var(--space-2);
 }
@@ -531,7 +464,9 @@ function asCodingApiError(cause: unknown): CodingApiError {
 .home-hero h1 { margin: 0; font-size: var(--pa-text-hero); font-weight: 700; line-height: 1.35; letter-spacing: -.035em; }
 .home-hero h1 span { color: var(--color-hero-accent); }
 .home-hero__description { max-width: 370px; margin: var(--space-4) 0 0; font-size: var(--pa-text-body); line-height: 1.7; color: var(--color-hero-muted); }
-.home-section-heading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.home-heading-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.home-heading-actions > button { min-height: 32px; font-size: 12px; }
+.home-section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
 .home-section-heading h2 { margin: 0; font-size: var(--pa-text-section); font-weight: var(--font-semibold); }
 .home-project-grid, .task-starters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-3); }
 .home-project, .task-starter { display: flex; min-width: 0; align-items: center; gap: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface); color: var(--color-fg); text-align: left; cursor: pointer; transition: border-color var(--pa-motion-fast), background var(--pa-motion-fast); }

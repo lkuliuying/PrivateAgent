@@ -44,7 +44,8 @@ describe("describeRunBlocker", () => {
 
   it("未知/null 错误码收敛为通用阻塞（不猜测、不隐藏）", () => {
     expect(describeRunBlocker(null).title).toBe("执行创建结果未知");
-    expect(describeRunBlocker("never_seen_code").title).toBe("执行创建失败");
+    expect(describeRunBlocker("never_seen_code").title).toBe("任务创建结果尚未确认");
+    expect(describeRunBlocker("never_seen_code").hint).toContain("沿用原请求标识");
     expect(describeRunBlocker("never_seen_code").recovery).toBe("retry");
   });
 });

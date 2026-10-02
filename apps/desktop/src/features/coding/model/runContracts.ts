@@ -205,6 +205,8 @@ export interface RunSnapshot {
 
 /** POST /agent-runs 创建输入（coding 判定：project_id+workspace_id 成对） */
 export interface CodingRunCreateInput {
+  attachment_ids?: string[];
+  attachment_draft_id?: string;
   output_schema?: Record<string, unknown>;
   collaboration_mode?: "default" | "plan";
   recovery_contract_version?: "1.0";

@@ -6,6 +6,7 @@ import SessionMemoryPanel from "./SessionMemoryPanel.vue";
 import { compactSessionContext, fetchSessionBudget, fetchSessionContext, setInstructionTrust, type ContextState } from "../api/context";
 
 const props = defineProps<{ sessionId: number; revision?: number }>();
+const emit = defineEmits<{ "open-source": [source: { projectId: number; sessionId: number; messageId: number | null }] }>();
 const notify = useNotifications();
 const state = ref<ContextState | null>(null);
 const budget = ref<ContextBudgetResponse | null>(null);
@@ -119,7 +120,7 @@ async function trust() {
       <button class="pa-btn pa-btn--subtle" :disabled="busy || !!state.pending" @click="compact">{{ state.pending ? "压缩已排队" : busy ? "处理中…" : "压缩历史" }}</button>
     </template>
   </section>
-  <SessionMemoryPanel :session-id="sessionId" :revision="revision" />
+  <SessionMemoryPanel :session-id="sessionId" :revision="revision" @open-source="emit('open-source', $event)" />
 </template>
 
 <style scoped>

@@ -37,6 +37,7 @@ const OK_PROFILES: CodingWorkspaceFetchers["modelProfiles"] = async () => ({
       provider: "ollama",
       displayName: "Local Coder",
       isLocal: true,
+      contextTokens: 32768,
       reasoningEfforts: ["low", "medium", "high"],
     },
   ],
@@ -119,6 +120,17 @@ async function mountPreview(key: Parameters<typeof createCodingWorkspacePreviewS
 }
 
 describe("CodingHome", () => {
+  it("必需项完成后收起就绪清单，未验证模型不阻止输入", async () => {
+    const { wrapper, store } = await mountHome(readyFetchers({ modelProfiles: async () => ({ status: "ok", profiles: [] }) }));
+    expect(wrapper.get('[data-testid="home-readiness"]').attributes()).toHaveProperty("open");
+    store.modelProfiles.value = await OK_PROFILES();
+    await flushPromises();
+    expect(wrapper.get('[data-testid="home-readiness"]').attributes("open")).toBeUndefined();
+    expect(wrapper.text()).toContain("可选 · 模型验证");
+    expect(wrapper.find("textarea").exists()).toBe(true);
+    wrapper.unmount();
+  });
+
   it("就绪态：快捷任务位于输入区上方，点击仅填入草稿并聚焦", async () => {
     const { wrapper } = await mountHome(readyFetchers());
     expect(wrapper.find('[data-testid="coding-home-empty-chat"]').exists()).toBe(true);
@@ -151,7 +163,8 @@ describe("CodingHome", () => {
       workspaceId: 101,
       title: "修复窄屏侧栏遮挡问题",
     });
-    expect((input.element as HTMLTextAreaElement).value).toBe("");
+    expect((input.element as HTMLTextAreaElement).value).toBe("修复窄屏侧栏遮挡问题。并补充对应的回归测试与说明");
+    expect(JSON.parse(localStorage.getItem("pa_coding_draft_v2_1_101_99")!).text).toBe((input.element as HTMLTextAreaElement).value);
     expect(store.selectedThreadId.value).toBe(99);
     expect(store.pendingFirstTurn.value).toMatchObject({
       threadId: 99,
@@ -221,28 +234,24 @@ describe("CodingHome", () => {
 
   it("能力位关闭（feature_disabled）：呈现更新/重试语义（H1-D 拆分）", async () => {
     const { wrapper } = await mountPreview("provider-unconfigured");
-    expect(wrapper.text()).toContain("模型能力未开启");
+    expect(wrapper.text()).toContain("模型服务暂不可用");
     expect(wrapper.find('[data-testid="home-provider-retry"]').exists()).toBe(true);
     // 前往设置入口进入同一模型管理区（configure-provider）
     const buttons = wrapper.findAll("button.pa-button");
-    const settingsBtn = buttons.find((btn) => btn.text().includes("前往设置"));
+    const settingsBtn = buttons.find((btn) => btn.text().includes("配置模型"));
     await settingsBtn?.trigger("click");
     expect(wrapper.emitted("configure-provider")).toBeTruthy();
   });
 
-  it("profile 缺失（profile_missing）：一键导入与创建入口（H1-D）", async () => {
+  it("模型缺失时进入统一配置，不再调用旧导入接口", async () => {
     const { wrapper } = await mountHome(
       readyFetchers({
         modelProfiles: async () => ({ status: "ok", profiles: [] }),
       })
     );
-    expect(wrapper.text()).toContain("尚无 Coding 模型");
-    // 全局配置可导入 → 一键验证并导入按钮可见并调用 typed API
-    const importBtn = wrapper.find('[data-testid="home-provider-import"]');
-    expect(importBtn.exists()).toBe(true);
-    await importBtn.trigger("click");
-    await flushPromises();
-    expect(importCodingModelProfile).toHaveBeenCalled();
+    expect(wrapper.text()).toContain("尚未配置模型");
+    expect(wrapper.find('[data-testid="home-provider-import"]').exists()).toBe(false);
+    expect(importCodingModelProfile).not.toHaveBeenCalled();
     // 创建入口进入同一模型管理区（不丢失项目/草稿）
     await wrapper.find('[data-testid="home-provider-create"]').trigger("click");
     expect(wrapper.emitted("configure-provider")).toBeTruthy();
@@ -251,7 +260,7 @@ describe("CodingHome", () => {
   it("sidecar 不可达：错误态与重试入口", async () => {
     const health = vi.fn(async () => false);
     const { wrapper } = await mountHome(readyFetchers({ health }));
-    expect(wrapper.text()).toContain("本地后端未就绪");
+    expect(wrapper.text()).toContain("本机执行器未就绪");
     await wrapper.find("button.pa-button").trigger("click");
     await flushPromises();
     expect(health).toHaveBeenCalledTimes(2);

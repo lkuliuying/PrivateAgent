@@ -56,6 +56,7 @@ function makeDeps() {
   const timers: Array<() => void> = [];
   const deps: RunStreamDeps = {
     createRun: vi.fn(async () => snapshot()),
+    findRequest: vi.fn(async () => null),
     fetchSnapshot: vi.fn(async () => snapshot()),
     fetchEvents: vi.fn(async () => ({ items: [] as RunStreamFrame[] })),
     openStream: vi.fn((runId, afterSequence, callbacks) => {
@@ -88,6 +89,34 @@ const INPUT = {
 };
 
 describe("useRunStream", () => {
+  it("响应丢失只读核对已创建任务，不再次调用创建", async () => {
+    const { deps } = makeDeps();
+    vi.mocked(deps.createRun).mockRejectedValueOnce(new Error("连接中断"));
+    vi.mocked(deps.findRequest).mockResolvedValueOnce({ ...snapshot(), submitted_message: INPUT.message, attachment_ids: [] });
+    const { scope, controller } = scopedSetup(deps);
+    expect(await controller.startRun({ ...INPUT, client_request_id: "stable" })).toBe(true);
+    expect(deps.findRequest).toHaveBeenCalledWith("stable");
+    expect(deps.createRun).toHaveBeenCalledTimes(1);
+    expect(controller.projection.value?.runId).toBe("run-1");
+    scope.stop();
+  });
+
+  it.each([
+    { submitted_message: "另一条正文", attachment_ids: [] },
+    { submitted_message: INPUT.message, attachment_ids: ["another-attachment"] },
+  ])("核对到同会话的不同提交仍保留失败状态：%j", async mismatch => {
+    const { deps } = makeDeps();
+    vi.mocked(deps.createRun).mockRejectedValueOnce(new Error("请求内容不匹配"));
+    vi.mocked(deps.findRequest).mockResolvedValueOnce({ ...snapshot(), ...mismatch });
+    const { scope, controller } = scopedSetup(deps);
+    try {
+      expect(await controller.startRun({ ...INPUT, client_request_id: "stable" })).toBe(false);
+      expect(controller.projection.value).toBeNull();
+      expect(controller.phase.value).toBe("error");
+      expect(deps.createRun).toHaveBeenCalledTimes(1);
+    } finally { scope.stop(); }
+  });
+
   it("实时开始事件保留创建快照的起点，终态快照补齐最终耗时", async () => {
     const { deps, streams } = makeDeps();
     const { scope, controller } = scopedSetup(deps);

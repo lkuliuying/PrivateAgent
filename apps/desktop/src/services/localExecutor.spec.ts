@@ -52,10 +52,37 @@ describe("connected desktop API routing", () => {
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  it("附件暂存、预览、移除和显式导入均经过受保护的本机通道", async () => {
+    const { http, fetchMock } = await setup();
+    for (const [path, method] of [
+      ["/task-attachments", "POST"], ["/task-attachments?draft_id=draft", "GET"],
+      ["/task-attachments/item/content?draft_id=draft", "GET"],
+      ["/task-attachments/item?draft_id=draft", "DELETE"], ["/task-attachments/item/import", "POST"],
+    ]) {
+      await http.apiFetch("http://privateagent.localhost" + path, { method });
+      const [url, init] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1];
+      expect(url).toBe("http://127.0.0.1:43188" + path);
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer local-session:" + "a".repeat(43));
+    }
+    fetchMock.mockClear();
+    expect((await http.apiFetch("http://privateagent.localhost/task-attachments-other")).status).toBe(410);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("工作区健康检查只访问本机", async () => {
     const { local, fetchMock } = await setup();
     expect(await local.checkLocalExecutorHealth()).toBe(true);
     expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43188/health");
+  });
+
+  it("MCP 服务管理只进入本机通道且不放宽相似前缀", async () => {
+    const { http, fetchMock } = await setup();
+    await http.apiFetch("http://privateagent.localhost/mcp-services/prepare", { method: "POST", body: "{}" });
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43188/mcp-services/prepare");
+    expect(new Headers(fetchMock.mock.calls[0][1]?.headers).get("Authorization")).toBe("Bearer local-session:" + "a".repeat(43));
+    fetchMock.mockClear();
+    expect((await http.apiFetch("http://privateagent.localhost/mcp-services-other")).status).toBe(410);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("旧手动配置不再控制执行位置，模型清单由本机提供", async () => {

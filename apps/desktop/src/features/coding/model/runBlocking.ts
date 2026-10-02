@@ -27,13 +27,13 @@ export interface RunBlockerFacts {
 const BLOCKERS: Record<string, RunBlockerFacts> = {
   coding_mode_disabled: {
     title: "Coding 执行能力未开启",
-    hint: "Runtime 的 project-bound run 能力位未启用，无法创建执行。",
+    hint: "本机执行器暂不支持当前任务，任务尚未创建。请检查客户端版本后重试。",
     recovery: "retry",
-    recoveryLabel: "更新 Runtime 后重试",
+    recoveryLabel: "更新客户端后重试",
   },
   coding_context_incomplete: {
     title: "项目/工作区信息不完整",
-    hint: "project_id 与 workspace_id 必须同时提供；请重新选择项目后发起。",
+    hint: "任务尚未创建，请重新选择项目目录与工作区后发送。",
     recovery: "select-project",
     recoveryLabel: "选择项目",
   },
@@ -57,9 +57,9 @@ const BLOCKERS: Record<string, RunBlockerFacts> = {
   },
   full_access_unsupported: {
     title: "完全访问能力不可用",
-    hint: "Runtime 未启用完全访问能力；请更新 Runtime 或改选其他权限模式。",
+    hint: "本机执行器不支持完全访问，本次任务未创建；请更新客户端或选择其他权限模式。",
     recovery: "retry",
-    recoveryLabel: "更新 Runtime 后重试",
+    recoveryLabel: "更新客户端后重试",
   },
   full_access_revoked: {
     title: "完全访问已被撤销",
@@ -75,13 +75,13 @@ const BLOCKERS: Record<string, RunBlockerFacts> = {
   },
   model_profile_not_found: {
     title: "模型配置缺失",
-    hint: "所选模型 profile 不存在；请配置 PrivateAgent 使用的模型。",
+    hint: "所选模型配置不存在，任务尚未发送；请重新配置模型。",
     recovery: "configure-model",
     recoveryLabel: "配置 PrivateAgent",
   },
   model_profile_unsupported: {
     title: "模型不满足执行要求",
-    hint: "模型 profile 不支持原生工具调用或 Provider 未启用；请调整模型配置。",
+    hint: "所选模型的工具能力或模型服务尚未就绪，任务未执行；请检查模型配置。",
     recovery: "configure-model",
     recoveryLabel: "配置 PrivateAgent",
   },
@@ -118,8 +118,8 @@ const BLOCKERS: Record<string, RunBlockerFacts> = {
 };
 
 const UNKNOWN_BLOCKER: RunBlockerFacts = {
-  title: "执行创建失败",
-  hint: "后端拒绝了本次执行创建；请检查后端连接与配置后重试。",
+  title: "任务创建结果尚未确认",
+  hint: "未能确认本次任务的创建结果，输入和附件仍在草稿中；请检查连接后重试，将沿用原请求标识核对。",
   recovery: "retry",
   recoveryLabel: "重试",
 };

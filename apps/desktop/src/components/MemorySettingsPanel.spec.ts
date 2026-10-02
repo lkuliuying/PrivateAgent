@@ -4,7 +4,8 @@ import MemorySettingsPanel from "./MemorySettingsPanel.vue";
 import * as api from "../api/memories";
 
 vi.mock("../api/memories", () => ({ memorySettings: vi.fn(), memoryStatus: vi.fn(), memoryProjects: vi.fn(),
-  memoryItems: vi.fn(), saveMemorySettings: vi.fn(), createMemory: vi.fn(), editMemory: vi.fn(), forgetMemory: vi.fn() }));
+  memoryItems: vi.fn(), saveMemorySettings: vi.fn(), createMemory: vi.fn(), editMemory: vi.fn(), forgetMemory: vi.fn(),
+  reviewMemory: vi.fn(), searchMemories: vi.fn(), memoryRevisions: vi.fn(), memorySource: vi.fn() }));
 vi.mock("../features/coding/api/modelProfiles", () => ({ fetchCodingModelProfiles: vi.fn().mockResolvedValue({ status: "ok", profiles: [] }) }));
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock("../stores/notifications", () => ({ useNotifications: () => ({ confirm }) }));
@@ -24,6 +25,32 @@ describe("本机记忆设置", () => {
     vi.mocked(api.memoryProjects).mockResolvedValue([{ id: 7, name: "项目甲" }]);
     vi.mocked(api.memoryItems).mockResolvedValue([]);
     confirm.mockResolvedValue(true);
+  });
+
+  it("默认管理当前项目并标明迁移的历史自动记忆", async () => {
+    vi.mocked(api.memoryItems).mockResolvedValue([{ ...item, origin: "generated", legacy: true }]);
+    const wrapper = mount(MemorySettingsPanel, { props: { initialProjectId: 7 } });
+    await flushPromises();
+    expect(api.memoryItems).toHaveBeenCalledWith(7, expect.any(AbortSignal));
+    expect(wrapper.get<HTMLSelectElement>('form[aria-label="编辑记忆"] select').element.value).toBe("project");
+    expect(wrapper.text()).toContain("历史自动记忆");
+    wrapper.unmount();
+  });
+
+  it("工作区项目迟到时采用项目默认范围，已有输入不被切换", async () => {
+    const wrapper = mount(MemorySettingsPanel, { props: { initialProjectId: null } });
+    await flushPromises();
+    await wrapper.setProps({ initialProjectId: 7 });
+    await flushPromises();
+    expect(api.memoryItems).toHaveBeenLastCalledWith(7, expect.any(AbortSignal));
+    const editor = wrapper.get('form[aria-label="编辑记忆"]');
+    expect(editor.get('select').element.value).toBe("project");
+    await editor.get('input').setValue("还未保存的标题");
+    await wrapper.setProps({ initialProjectId: null });
+    await flushPromises();
+    expect(editor.get('input').element.value).toBe("还未保存的标题");
+    expect(editor.get('select').element.value).toBe("project");
+    wrapper.unmount();
   });
 
   it("开启自动生成前说明模型费用，取消不保存，确认后携带版本保存", async () => {
@@ -49,7 +76,7 @@ describe("本机记忆设置", () => {
     vi.mocked(api.editMemory).mockResolvedValue({ ...item, content: "先中文再英文", version: 2 });
     const wrapper = mount(MemorySettingsPanel);
     await flushPromises();
-    const editor = wrapper.findAll("form")[1];
+    const editor = wrapper.get('form[aria-label="编辑记忆"]');
     await editor.get('input').setValue("语言");
     await editor.get('textarea').setValue("中文回答");
     await editor.trigger("submit");
@@ -100,5 +127,26 @@ describe("本机记忆设置", () => {
     resolve(true);
     await flushPromises();
     expect(api.saveMemorySettings).not.toHaveBeenCalled();
+  });
+
+  it("待复核内容确认后刷新，编辑冲突保留用户输入", async () => {
+    vi.mocked(api.memoryItems).mockResolvedValueOnce([{ ...item, status: "pending_review", review_reason: "volatile" }]).mockResolvedValue([{ ...item, status: "active", version: 2 }]);
+    vi.mocked(api.reviewMemory).mockResolvedValue({ ...item, status: "active", version: 2 });
+    const wrapper = mount(MemorySettingsPanel);
+    await flushPromises();
+    expect(wrapper.text()).toContain("当前列表有 1 条待复核记忆");
+    await button(wrapper, "确认使用").trigger("click");
+    await flushPromises();
+    expect(api.reviewMemory).toHaveBeenCalledWith(null, expect.objectContaining({ version: 1 }), "accept", expect.any(AbortSignal));
+    expect(wrapper.text()).not.toContain("当前列表有 1 条待复核记忆");
+    await button(wrapper, "编辑").trigger("click");
+    const editor = wrapper.get('form[aria-label="编辑记忆"]');
+    await editor.get("textarea").setValue("用户刚输入的纠正");
+    vi.mocked(api.editMemory).mockRejectedValueOnce(new Error("记忆已变化，请刷新后重新编辑"));
+    await editor.trigger("submit");
+    await flushPromises();
+    expect(wrapper.get('[role="alert"]').text()).toContain("记忆已变化");
+    expect(editor.get<HTMLTextAreaElement>("textarea").element.value).toBe("用户刚输入的纠正");
+    wrapper.unmount();
   });
 });

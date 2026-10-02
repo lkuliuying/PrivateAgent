@@ -16,7 +16,7 @@ describe("本机 API 路由及失效边界", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
   it("MCP 和模型请求带本机会话并进入 IPC", async () => {
-    for (const path of ["/projects/1/documentation-sources", "/model-providers", "/workspace-search?q=test&archived=true", "/sessions/1/turn-queue", "/sessions/1/review?scope=task", "/projects/1/skills", "/projects/1/integrations", "/agent-runs/run/browser-evidence/image"]) {
+    for (const path of ["/projects/1/documentation-sources", "/model-providers", "/workspace-search?q=test&archived=true", "/sessions/1/turn-queue", "/sessions/1/review?scope=task", "/projects/1/skills", "/projects/1/integrations", "/mcp-services", "/mcp-services/preflight", "/mcp-services/prepare", "/mcp-services/changes/fixture/commit", "/mcp-services/credential-cleanup", "/agent-runs/run/browser-evidence/image"]) {
       await apiFetch(`${await ensureApiBase()}${path}`);
       expect(local.fetch).toHaveBeenLastCalledWith(path, expect.objectContaining({ headers: expect.any(Headers) }));
       expect(new Headers(local.fetch.mock.lastCall?.[1].headers).get("Authorization")).toBe(`Bearer ${token}`);

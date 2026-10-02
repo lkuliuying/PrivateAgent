@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { onBeforeUnmount, ref, watch } from "vue";
-import { sessionMemorySettings, saveSessionMemorySettings, type SessionMemorySettings } from "../../../api/memories";
+import { sessionMemorySettings, saveSessionMemorySettings, type SessionMemorySettings, type MemorySourceTarget } from "../../../api/memories";
+import MemoryEvidence from "../../../components/MemoryEvidence.vue";
+import SessionMemoryActions from "./SessionMemoryActions.vue";
 
 const props = defineProps<{ sessionId: number; revision?: number }>();
+const emit = defineEmits<{ "open-source": [target: MemorySourceTarget] }>();
+const reasons: Record<string, string> = { keyword_match: "关键词匹配", manual_reference: "人工维护参考", pending_review: "待复核，未使用", stale: "已过期，未使用", memory_budget: "记忆预算不足", context_budget: "上下文预算不足" };
 const state = ref<SessionMemorySettings | null>(null);
 const busy = ref(false);
 const error = ref("");
@@ -41,6 +45,16 @@ onBeforeUnmount(() => { generation++; controller.abort(); });
       <label><input v-model="state.generate_memories" type="checkbox" :disabled="busy" @change="dirty = true">允许本会话生成记忆</label>
       <p>当前生效：使用{{ state.effective_use ? '开' : '关' }} · 生成{{ state.effective_generate ? '开' : '关' }}。还需在设置中启用对应的全局选项。</p>
       <p v-if="state.last_recall">最近一次请求引用 {{ state.last_recall.recalled_ids.length }} 条记忆，因预算省略 {{ state.last_recall.omitted_ids.length }} 条。</p>
+      <ul v-if="state.last_recall?.entries?.length" class="session-memory__entries">
+        <li v-for="entry in state.last_recall.entries" :key="entry.memory_id">
+          <strong>{{ entry.title ?? '记忆' }}</strong> · {{ entry.scope === 'user' ? '跨项目偏好' : '当前项目' }} · {{ entry.decision === 'included' ? '已使用' : '未使用' }}
+          <p>{{ reasons[entry.reason] ?? entry.reason }}<template v-if="entry.matched_terms.length">：{{ entry.matched_terms.join('、') }}</template></p>
+          <small v-if="entry.updated_at">本轮引用版本 {{ entry.version }} · 更新时间 {{ entry.updated_at }}</small>
+          <MemoryEvidence v-if="entry.available !== false" :memory-id="entry.current_memory_id ?? entry.memory_id" :project-id="entry.project_id ?? null" :source-item-ids="entry.source_item_ids" @open-source="emit('open-source', $event)" />
+          <SessionMemoryActions v-if="entry.available !== false" :memory-id="entry.current_memory_id ?? entry.memory_id" :project-id="entry.project_id ?? null" :recalled-version="entry.version" @changed="change => { if (change.forgotten) { entry.available = false; entry.title = '已遗忘的记忆'; } else { entry.title = change.title ?? entry.title; entry.current_memory_id = change.memoryId; } }" />
+          <p v-else>该记忆已遗忘或不可用；本轮历史引用记录保留。</p>
+        </li>
+      </ul>
       <button class="pa-btn pa-btn--subtle" :disabled="busy" @click="load(true)">保存会话设置</button>
     </template>
     <button class="pa-btn pa-btn--ghost" :disabled="busy" @click="load()">刷新记忆状态</button>
@@ -52,4 +66,5 @@ onBeforeUnmount(() => { generation++; controller.abort(); });
 .session-memory label { display: flex; align-items: center; gap: var(--space-2); }
 .session-memory p { margin: 0; color: var(--color-fg-muted); }
 .session-memory [role='alert'] { color: var(--color-danger-fg); }
+.session-memory__entries { margin: 0; padding-left: var(--space-4); display: grid; gap: var(--space-3); overflow-wrap: anywhere; }
 </style>

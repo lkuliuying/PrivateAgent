@@ -1,26 +1,32 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import {
-  createMemory, editMemory, forgetMemory, memoryItems, memoryProjects, memorySettings, memoryStatus, saveMemorySettings,
-  type MemoryConfig, type MemoryInput, type MemoryItem, type MemorySettings, type MemoryStatus,
+  createMemory, editMemory, forgetMemory, memoryItems, memoryProjects, memorySettings, memoryStatus, reviewMemory, saveMemorySettings, searchMemories,
+  type MemoryConfig, type MemoryInput, type MemoryItem, type MemorySettings, type MemoryStatus, type MemorySourceTarget,
 } from "../api/memories";
+import MemoryEvidence from "./MemoryEvidence.vue";
 import { useNotifications } from "../stores/notifications";
 import { fetchCodingModelProfiles } from "../features/coding/api/modelProfiles";
 import type { CodingModelProfileSummary } from "../features/coding/model/contracts";
 
 const notify = useNotifications();
+const props = defineProps<{ initialProjectId?: number | null }>();
+const emit = defineEmits<{ "open-source": [target: MemorySourceTarget] }>();
 const settings = ref<MemorySettings | null>(null);
 const draft = ref<MemoryConfig | null>(null);
 const status = ref<MemoryStatus | null>(null);
 const profiles = ref<CodingModelProfileSummary[]>([]);
 const projects = ref<Array<{ id: number; name: string }>>([]);
-const projectId = ref<number | null>(null);
+const projectId = ref<number | null>(props.initialProjectId ?? null);
+const rangeTouched = ref(false);
 const items = ref<MemoryItem[]>([]);
+const pendingCount = computed(() => items.value.filter(item => item.status === "pending_review").length);
 const editing = ref<MemoryItem | null>(null);
-const form = ref<MemoryInput>({ scope: "user", kind: "preference", title: "", content: "" });
+const form = ref<MemoryInput>({ scope: projectId.value === null ? "user" : "project", kind: "preference", title: "", content: "" });
 const busy = ref(false);
 const error = ref("");
 const feedback = ref("");
+const query = ref("");
 let controller = new AbortController();
 let generation = 0;
 
@@ -59,12 +65,17 @@ async function refresh() {
 }
 watch(projectId, () => {
   items.value = [];
+  query.value = "";
   resetEditor();
+  if (!settings.value) { void refresh(); return; }
   const project = projectId.value;
   void run(async (signal, valid) => {
     const records = await memoryItems(project, signal);
     if (valid()) items.value = records;
   });
+});
+watch(() => props.initialProjectId, value => {
+  if (!rangeTouched.value && !editing.value && !form.value.title && !form.value.content) projectId.value = value ?? null;
 });
 watch(() => form.value.scope, scope => { if (scope === "user") form.value.kind = "preference"; });
 onMounted(refresh);
@@ -100,8 +111,8 @@ async function saveItem() {
   await run(async (signal, valid) => {
     const record = selected ? await editMemory(project, selected, data, signal) : await createMemory(project, data, signal);
     if (!valid()) return;
-    items.value = [record, ...items.value.filter(item => item.id !== record.id)];
-    resetEditor(); feedback.value = "已保存。你的编辑不会被后台生成覆盖。";
+    items.value = [record, ...items.value.filter(item => item.id !== record.id && item.id !== selected?.id && item.supersedes_id !== record.id)];
+    resetEditor(); feedback.value = `已保存到${record.scope === 'user' ? '跨项目偏好' : '当前项目'}。你的编辑不会被后台生成覆盖。${settings.value?.enabled && settings.value.use_memories ? '' : '当前未启用使用，开关保持不变。'}`;
   });
 }
 async function forget(item: MemoryItem) {
@@ -109,13 +120,33 @@ async function forget(item: MemoryItem) {
   const project = projectId.value;
   await run(async (signal, valid) => {
     const accepted = await notify.confirm({ title: "遗忘这条记忆", message: item.title, danger: true, confirmLabel: "遗忘",
-      impact: "删除记忆正文并停止后续召回；保留去重标记以阻止相同内容重新生成。会话原文保持不变。" });
+      impact: "删除记忆及修订正文并停止后续召回；保留去重标记以阻止相同内容重新生成。会话原文保持不变。" });
     if (!accepted || !valid()) return;
     await forgetMemory(project, item, signal);
     if (valid()) { items.value = items.value.filter(record => record.id !== item.id); resetEditor(); feedback.value = "已遗忘，下次请求不再引用。"; }
   });
 }
 const stateLabels = { running: "生成中", completed: "已完成", cancelled: "已取消", failed: "未完成" };
+const memoryStates = { active: "可使用", pending_review: "待复核", stale: "已过期／需更新" };
+async function search() {
+  const project = projectId.value, text = query.value.trim();
+  await run(async (signal, valid) => {
+    const result = text ? await searchMemories(project, text, signal) : await memoryItems(project, signal);
+    if (valid()) items.value = result;
+  });
+}
+async function review(item: MemoryItem, decision: "accept" | "reject" | "stale") {
+  const project = projectId.value;
+  await run(async (signal, valid) => {
+    if (decision === "reject") {
+      const accepted = await notify.confirm({ title: "不采用这条候选", message: item.title, impact: "移除候选正文，保留其去重标记；有冲突的旧记忆恢复使用。", confirmLabel: "不采用" });
+      if (!accepted || !valid()) return;
+    }
+    await reviewMemory(project, item, decision, signal);
+    const result = await memoryItems(project, signal);
+    if (valid()) { items.value = result; resetEditor(); feedback.value = "记忆复核结果已保存。"; }
+  });
+}
 </script>
 
 <template>
@@ -131,7 +162,7 @@ const stateLabels = { running: "生成中", completed: "已完成", cancelled: "
         <label><input v-model="draft.enabled" type="checkbox">启用本机长期记忆</label>
         <label><input v-model="draft.use_memories" type="checkbox">在模型请求中使用相关记忆</label>
         <label><input v-model="draft.generate_memories" type="checkbox">从空闲会话自动生成记忆</label>
-        <label><input v-model="draft.exclude_external_context" type="checkbox">跳过使用过外部文档工具的会话</label>
+        <label><input v-model="draft.exclude_external_context" type="checkbox">跳过包含 MCP、网页等外部内容的会话</label>
         <label>生成模型<select v-model="draft.model_profile_id" class="pa-input">
           <option :value="null">沿用会话模型</option>
           <option v-for="profile in profiles" :key="profile.id" :value="profile.id">{{ profile.modelName || profile.id }}</option>
@@ -147,19 +178,33 @@ const stateLabels = { running: "生成中", completed: "已完成", cancelled: "
     <p v-if="status?.error || status?.last_attempt?.error" role="alert">{{ status.error || status.last_attempt?.error }}</p>
     <section class="memory-panel__section" aria-label="管理长期记忆">
       <h3>记忆内容</h3>
-      <label>查看范围<select v-model="projectId" class="pa-input" :disabled="busy">
+      <p v-if="pendingCount">当前列表有 {{ pendingCount }} 条待复核记忆，确认前不会自动使用。</p>
+      <label>查看范围<select v-model="projectId" class="pa-input" :disabled="busy" @change="rangeTouched = true">
         <option :value="null">跨项目偏好</option>
         <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}（含跨项目偏好）</option>
       </select></label>
+      <p v-if="projectId === null">当前范围为跨项目偏好。保存后可在所有项目使用；如只适用于一个项目，请先选择该项目。</p>
+      <form class="memory-panel__actions" @submit.prevent="search"><input v-model="query" class="pa-input" aria-label="搜索记忆" placeholder="搜索标题、中文关键词或路径" maxlength="500"><button class="pa-btn pa-btn--subtle" :disabled="busy">搜索</button></form>
       <p v-if="!items.length && !busy">此范围暂无记忆。可以手动添加，也可以开启后台生成。</p>
       <article v-for="item in items" :key="item.id" class="memory-panel__item">
         <strong>{{ item.title }}</strong>
-        <small>{{ item.scope === 'user' ? '跨项目偏好' : '项目记忆' }} · {{ item.origin === 'user' ? '手动维护' : '自动提取' }}</small>
+        <small>{{ item.scope === 'user' ? '跨项目偏好' : '项目记忆' }} · {{ item.origin === 'user' ? '手动维护' : '自动提取' }} · {{ memoryStates[item.status ?? 'active'] }} · 版本 {{ item.version }}</small>
+        <small v-if="item.legacy">历史自动记忆 · 保留原有使用状态，尚未按新策略复核</small>
         <p class="memory-panel__content">{{ item.content }}</p>
+        <p v-if="item.review_reason === 'conflict'">同一主题出现不同陈述，复核前不会作为当前事实引用。</p>
+        <p v-if="item.review_reason === 'volatile'">工作流、项目事实或参考位置需要核对，确认后再使用。</p>
+        <p v-if="item.review_reason === 'cross_project'">跨项目推广需要你确认，确认前不会用于任何项目。</p>
+        <p v-if="item.review_reason === 'needs_confirmation'">尚不能核验为用户直接陈述的稳定偏好，请核对来源。</p>
         <details v-if="item.source_session_id"><summary>来源会话 {{ item.source_session_id }}</summary><p>来源条目：{{ item.source_item_ids.join('、') }}</p></details>
-        <div class="memory-panel__actions"><button class="pa-btn pa-btn--subtle" :disabled="busy" @click="selectItem(item)">编辑</button><button class="pa-btn pa-btn--ghost" :disabled="busy" @click="forget(item)">遗忘</button></div>
+        <MemoryEvidence :memory-id="item.id" :project-id="projectId" :source-item-ids="item.source_item_ids" show-revisions @open-source="emit('open-source', $event)" />
+        <div class="memory-panel__actions">
+          <button v-if="item.status === 'pending_review' || item.status === 'stale'" class="pa-btn pa-btn--subtle" :disabled="busy" @click="review(item, 'accept')">确认使用</button>
+          <button v-if="item.status === 'pending_review'" class="pa-btn pa-btn--ghost" :disabled="busy" @click="review(item, 'reject')">不采用</button>
+          <button v-if="!item.status || item.status === 'active'" class="pa-btn pa-btn--ghost" :disabled="busy" @click="review(item, 'stale')">标记过期</button>
+          <button class="pa-btn pa-btn--subtle" :disabled="busy" @click="selectItem(item)">编辑</button><button class="pa-btn pa-btn--ghost" :disabled="busy" @click="forget(item)">遗忘</button>
+        </div>
       </article>
-      <form class="memory-panel__section" @submit.prevent="saveItem">
+      <form class="memory-panel__section" aria-label="编辑记忆" @submit.prevent="saveItem">
         <h3>{{ editing ? '编辑记忆' : '添加记忆' }}</h3>
         <fieldset :disabled="busy">
           <label>适用范围<select v-model="form.scope" class="pa-input" :disabled="!!editing">

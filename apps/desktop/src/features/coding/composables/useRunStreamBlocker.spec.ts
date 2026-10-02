@@ -14,6 +14,7 @@ import { describeRunBlocker } from "../model/runBlocking";
 function makeDeps(createRun: RunStreamDeps["createRun"]) {
   const deps: RunStreamDeps = {
     createRun,
+    findRequest: vi.fn(async () => null),
     fetchSnapshot: vi.fn(async () => ({} as RunSnapshot)),
     fetchEvents: vi.fn(async () => ({ items: [] as RunStreamFrame[] })),
     openStream: vi.fn(() => new AbortController()),

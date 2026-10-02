@@ -138,3 +138,9 @@ describe("coding api 映射层", () => {
     expect(legacy.isDefault).toBe(false);
   });
 });
+
+it("未知上下文容量保持为空，不被默认容量掩盖", () => {
+  const dto = { id: "manual", provider: "openai", display_name: "手动模型", is_local: false, reasoning_efforts: [], enabled: true, context_tokens: null };
+  expect(toModelProfileDetail(dto).contextTokens).toBeNull();
+  expect(toModelProfileDetail({ ...dto, context_tokens: undefined }).contextTokens).toBe(8192);
+});

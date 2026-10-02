@@ -41,7 +41,23 @@ export interface Session {
   archived_at?: string | null;
 }
 
+export interface TaskAttachment {
+  kind?: "text" | "image" | "pdf";
+  page_count?: number;
+  scan_pages?: number[];
+  requires_vision?: boolean;
+  id: string;
+  name: string;
+  size_bytes: number;
+  sha256: string;
+  language: string | null;
+  project_id: number;
+  workspace_id: number;
+  error?: string | null;
+}
+
 export interface Message {
+  attachments?: TaskAttachment[];
   id: number;
   session_id: number;
   role: "user" | "assistant" | "system";

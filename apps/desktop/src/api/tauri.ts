@@ -84,14 +84,19 @@ export async function cmdRelaunchApp(): Promise<void> {
 }
 
 export async function listenForMainWindowClose(
-  handler: () => void | Promise<void>
+  handler: (forceExit?: boolean) => void | Promise<void>
 ): Promise<() => void> {
   if (!isTauri()) return () => undefined;
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  return getCurrentWindow().onCloseRequested((event) => {
-    event.preventDefault();
-    return handler();
-  });
+  const { listen } = await import("@tauri-apps/api/event");
+  const unlistenExit = await listen("pa:request-exit", () => { void handler(true); });
+  try {
+    const unlistenClose = await getCurrentWindow().onCloseRequested((event) => {
+      event.preventDefault();
+      return handler();
+    });
+    return () => { unlistenClose(); unlistenExit(); };
+  } catch (error) { unlistenExit(); throw error; }
 }
 
 export async function cmdHideMainWindow(): Promise<void> {
