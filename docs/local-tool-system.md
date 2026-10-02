@@ -1,6 +1,6 @@
 # 本机 Agent 工具系统
 
-更新日期：2026-09-22。适用于 `private_agent_local` 桌面执行链。本文记录源码能力与本机验证，不代表安装包、生产部署或真实模型验收。
+更新日期：2026-10-02。适用于 `private_agent_local` 桌面执行链。本文记录源码能力与本机验证，不代表安装包、生产部署或真实模型验收。
 
 ## 工具边界
 
@@ -22,6 +22,9 @@
 | `private_agent_local/secret_filter.py` | 公开输出、模型请求与文档外发参数的秘密检测和跨分片过滤 |
 | `private_agent_core/runtime.py`、`private_agent_local/core_adapter.py`、`run_controls.py` | 有界并行、按调用顺序记录结果、暂停/追加约束/取消处理 |
 | `private_agent_local/documentation_mcp.py`、`documentation_transport.py`、`documentation_routes.py` | 项目文档源配置、受控 MCP 通信和逐次审批 |
+| `private_agent_local/mcp_library.py`、`integration_mcp.py` | 个人服务库、项目绑定、目录兼容、认证生命周期及写调用阶段 |
+| `private_agent_local/mcp_credentials.py`、桌面 Rust `mcp_credentials.rs`、`local_executor.rs` | 按身份／服务／配置版本／固定槽访问系统凭据；私有 IPC 取值不进入 WebView |
+| `private_agent_local/memory_tools.py`、`memories.py`、`memory_store.py` | 记忆工具授权、共用管理服务、来源召回、候选修订与幂等回执 |
 | `apps/desktop/src/components/DocumentationMcpPanel.vue` | 桌面设置中的文档源发现、工具选择、启用、停用与移除 |
 
 注册表是工具声明的单一来源。模型只获得名称、说明和输入 schema；权限元数据由程序解释，远端描述不能改变它。现有路径检查、文件版本、任务限制和审批仍在最终执行边界生效。输入错误返回 `invalid_tool_arguments`；结果在记为成功前检查 JSON、大小与声明结构。保留旧导入入口和旧省略参数的默认值。
@@ -41,6 +44,20 @@
 
 ## 任务计划与进展
 
+### 记忆与 MCP 的执行边界
+
+记忆的搜索、读取、保存、纠正和遗忘通过 `tool_search` 按需加载，仅在现行执行协议 1.0 暴露。写操作复用记忆管理服务，绑定当前真实用户消息和目标版本；只读、规划及禁止写入的任务不能借助记忆工具持久写入。工具加载和记忆内容均不授予权限，详见[记忆设计](memory-design.md)。
+
+MCP 配置由个人服务库保存，项目绑定独立保存工具选择、目录与审批策略。配置变化使各项目原授权失效；stdio 仍以调用项目根目录启动。写调用依次持久化 `prepared`、`dispatched`、`acknowledged`；发送后断流、取消、超时或回执校验失败进入 `execution_unknown`，恢复和同目标重试均被阻止。已持久确认的回执在重启和用户目标变化后保留，不因连接回收故障或旧读取结果过滤重发操作。回执只匹配当前模型响应对应的执行，不能借用旧调用标识。
+
+`projects.sqlite3` 升级到 schema 10，新增服务与保存记录表；旧库先备份再事务迁移。每条旧配置分别建立服务与项目绑定，保留原来源 ID、项目和工具选择，不按地址合并。迁移失败回滚，更高版本库拒绝写入。
+
+连接配置 API 沿用 `/projects/{id}/integrations` 组合视图，新增 `/mcp-services` 个人库、`/mcp-services/preflight` 本地预检、`/mcp-services/prepare` 和 `/mcp-services/changes/{id}/commit` 保存流程，以及 `/projects/{id}/integrations/bind` 绑定入口。HTTP 请求只接收认证字段名和凭据引用，静态值通过固定 Tauri 命令写入系统 keyring；Python OAuth 通过私有管道访问固定 `oauth` 槽。静态槽版本不可覆写不同值，OAuth 槽允许刷新。长值在 keyring 内有界分片并使用恢复记录，不落明文文件；保存异常保留原配置。
+
+准备或提交前失败保留原配置；配置提交成功后，旧凭据清理失败不会回退新配置。取消、删除与退出先提交状态和不含秘密的清理记录，再尝试删除系统凭据。活动配置引用的凭据，以及待保存配置引用的静态凭据，暂不清理；OAuth 草稿不保留旧登录。清理失败通过 `credential_cleanup_pending` 展示，可经 `POST /mcp-services/credential-cleanup` 重试；HTTP 兼容模式无法删除系统 keyring 时保留待办，不谎报已清除。
+
+`read_task_attachment` 仅在会话有已提交附件时暴露，判断包含历史消息；执行与规划模式均可只读当前会话材料，未发送草稿不增加工具预算。外部结果及包含远端描述的目录写入统一来源标记，模型后续回答继承外部上下文属性。
+
 ### 规划模式与实施交接
 
 能力位 `coding_planning_contract_version="1.0"` 与恢复协议共同开启桌面“规划 / 执行”选择；输入 `/plan 任务内容` 可进入规划。创建请求新增 `collaboration_mode="plan" | "default"`，默认执行模式保持原行为。协作模式与权限模式是两个独立维度。
@@ -57,7 +74,7 @@
 | `POST /agent-runs/{run_id}/answer` | 控制版本、问题 ID、全部问题的文本回答；原子记录用户消息、目标修订及 `input.resolved` |
 | `POST /agent-runs/{run_id}/implement-plan` | 控制版本、检查点、`expected_plan_version`；返回 `result_run_id` 并在事务提交后启动 |
 
-新增 `input.requested`、`input.resolved`、`input.invalidated` 事件；所有事件和状态继续使用现有 SQLite schema 7，无新增数据库迁移。旧客户端应继续省略 `collaboration_mode`；新版客户端在能力位缺失时不显示新入口。
+新增 `input.requested`、`input.resolved`、`input.invalidated` 事件；计划事件和状态沿用运行 JSON 结构，本功能本身不另建表。旧客户端应继续省略 `collaboration_mode`；新版客户端在能力位缺失时不显示新入口。
 
 ### 执行中的计划
 
@@ -68,7 +85,7 @@
 - 状态为 `pending`、`in_progress`、`completed`、`blocked`、`failed`、`cancelled`。已有步骤不能删除；不再需要的未结束步骤应明确取消。终态不能重新打开或改写标题及既有证据，需要修正时追加后续步骤。
 - 后续补救步骤可用 `supersedes` 引用排在前面的失败步骤，并保留其全部 `requirement_ids`。补救完成后解除关联失败的计划阻塞，也支持多次补救形成的链；原失败与证据不被覆盖。是否完成用户目标仍由独立验证器检查，补救勾选不能代替文件或测试证据。
 - 更新必须匹配计划版本和目标版本；无效引用、非法转换及过期更新均失败关闭。证据调用必须已在当前逻辑任务或其恢复祖先中提交，并能关联执行记录和终态事件；其他任务的调用不能借用。
-- 计划、完整 `plan.created` / `plan.updated` 事件及工具完成事件在同一事务中提交。已有 SQLite schema 7 的运行 JSON 保存计划，无迁移。前端兼容旧版本事件，并防止旧计划覆盖新快照。
+- 计划、完整 `plan.created` / `plan.updated` 事件及工具完成事件在同一事务中提交。计划沿用运行 JSON 结构，本功能本身不另建表。前端兼容旧版本事件，并防止旧计划覆盖新快照。
 - 追加目标会使已有计划进入 `needs_review`，重新核对后才能交付。恢复检查点核对计划与进度摘要，恢复运行继承原计划及逻辑任务预算，不重放旧工具或审批。
 - 已完成步骤表示模型报告的进度；调用引用只是来源索引。待核对、未完成或受阻计划会限制交付，全部勾选仍必须经过原有文件、命令、测试及需求验证。
 
