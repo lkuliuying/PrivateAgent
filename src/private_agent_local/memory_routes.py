@@ -21,6 +21,12 @@ class SessionInput(BaseModel):
     expected_version: int = Field(ge=1)
 
 
+class ReviewInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    expected_version: int = Field(ge=1)
+    decision: str = Field(pattern="^(accept|reject|stale)$")
+
+
 def install_memory_routes(app, local):
     @app.exception_handler(MemoryConflict)
     async def conflict(request, error):
@@ -59,17 +65,38 @@ def install_memory_routes(app, local):
     async def items(project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
         return runtime.memories.store.list(scope(runtime, project_id))
 
+    @app.get("/local-memories/search")
+    async def search(query: str = Query(min_length=1, max_length=500), project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
+        return runtime.memories.search(scope(runtime, project_id), query, limit=20)
+
+    @app.get("/local-memories/items/{memory_id}")
+    async def item(memory_id: str, project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
+        return runtime.memories.store.get(scope(runtime, project_id), memory_id)
+
+    @app.get("/local-memories/items/{memory_id}/revisions")
+    async def revisions(memory_id: str, project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
+        return runtime.memories.store.revisions(scope(runtime, project_id), memory_id)
+
+    @app.get("/local-memories/items/{memory_id}/sources/{source_id}")
+    async def source(memory_id: str, source_id: str, project_id: int | None = Query(default=None, ge=1),
+                     offset: int = Query(default=0, ge=0), limit: int = Query(default=2000, ge=1, le=6000), runtime=Depends(local)):
+        return runtime.memories.read_source(scope(runtime, project_id), memory_id, source_id, offset, limit)
+
+    @app.post("/local-memories/items/{memory_id}/review")
+    async def review(memory_id: str, data: ReviewInput, project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
+        project = scope(runtime, project_id)
+        runtime.memories.revision += 1
+        return runtime.memories.store.review(project, memory_id, data.expected_version, data.decision)
+
     @app.post("/local-memories/items", status_code=201)
     async def create(data: MemoryInput, project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
         project = validate(runtime, data, project_id)
-        runtime.memories.revision += 1
-        return runtime.memories.store.put(project, data)
+        return runtime.memories.save(project, data)
 
     @app.put("/local-memories/items/{memory_id}")
     async def edit(memory_id: str, data: EditInput, project_id: int | None = Query(default=None, ge=1), runtime=Depends(local)):
         project = validate(runtime, data, project_id)
-        runtime.memories.revision += 1
-        return runtime.memories.store.put(project, MemoryInput.model_validate(data.model_dump(exclude={"expected_version"})),
+        return runtime.memories.save(project, MemoryInput.model_validate(data.model_dump(exclude={"expected_version"})),
                                          identifier=memory_id, expected_version=data.expected_version)
 
     @app.delete("/local-memories/items/{memory_id}", status_code=204)
@@ -83,10 +110,22 @@ def install_memory_routes(app, local):
     async def session_settings(session_id: int, runtime=Depends(local)):
         session = runtime.store.get("session", session_id)
         last = runtime.store.run_state(session["last_run_id"]) if session.get("last_run_id") else {}
+        recall = last.get("memory_context")
+        if recall:
+            # 仅在读取时补齐当前标题；运行持久记录不增加遗忘正文副本。
+            recall = {**recall, "run_id": last.get("id"), "entries": [dict(entry) for entry in recall.get("entries", [])]}
+            for entry in recall["entries"]:
+                try:
+                    record = runtime.memories.store.get(session["project_id"], entry["memory_id"])
+                    entry.update(title=record["title"], project_id=record["project_id"])
+                    if "updated_at" not in entry and entry.get("version") == record["version"]:
+                        entry["updated_at"] = record["updated_at"]
+                except KeyError:
+                    entry.update(title="记忆已遗忘或不可用", available=False)
         return {**runtime.memories.store.session(session_id),
                 "effective_use": runtime.memories.allowed(session_id, "use_memories"),
                 "effective_generate": runtime.memories.allowed(session_id, "generate_memories"),
-                "last_recall": last.get("memory_context")}
+                "last_recall": recall}
 
     @app.put("/sessions/{session_id}/memory-settings")
     async def save_session(session_id: int, data: SessionInput, runtime=Depends(local)):

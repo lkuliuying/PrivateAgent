@@ -5,6 +5,8 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -41,6 +43,7 @@ class Input(BaseModel):
 
 
 class ProviderModel(Input):
+    supports_vision: bool | None = None
     model_id: str = Field(min_length=1, max_length=200)
     context_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
     max_output_tokens: int | None = Field(default=None, ge=1, le=10_000_000)
@@ -119,6 +122,18 @@ class ModelCatalog:
             self._committed = json.dumps(self.data, ensure_ascii=False)
             if self.data.get("version") != 1:
                 raise ValueError("本机模型配置版本不兼容，请升级客户端")
+            if not self.db.execute("SELECT 1 FROM sqlite_master WHERE name='model_save_operations'").fetchone():
+                if row:
+                    backup_path = path.with_name(path.stem + ".pre-save-recovery-" + uuid.uuid4().hex + ".sqlite3")
+                    backup = sqlite3.connect(backup_path)
+                    try:
+                        self.db.backup(backup)
+                        if backup.execute("PRAGMA quick_check").fetchone() != ("ok",):
+                            raise ValueError("模型配置迁移备份校验失败，未修改配置")
+                    finally:
+                        backup.close()
+            from .model_saves import create_schema
+            create_schema(self.db)
             for snapshot in self.data["probes"].values():
                 if snapshot.get("status") == "running":
                     snapshot.update(status="failed", error_code="probe_interrupted")
@@ -127,12 +142,12 @@ class ModelCatalog:
             self.db.close()
             raise
 
-    def save(self):
+    def save(self, *, commit=True):
         try:
             encoded = json.dumps(self.data, ensure_ascii=False, allow_nan=False)
             if len(encoded.encode()) > 4 * 1024 * 1024:
                 raise ValueError("本机模型配置超过容量限制")
-            with self.db:
+            with self.db if commit else nullcontext():
                 self.db.execute("INSERT INTO model_catalog VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data", (encoded,))
         except (sqlite3.Error, ValueError, TypeError):
             # 磁盘写入失败后回到已提交快照，内存不能假装配置已生效。
@@ -149,7 +164,8 @@ class ModelCatalog:
     def reference(self, provider_id: str) -> dict:
         provider = self.provider(provider_id)
         # 地址也参与隔离，修改端点不会把旧供应商密钥交给新主机。
-        alias = hashlib.sha256(f"{self.scope}\0{provider_id}\0{provider['protocol']}\0{provider['base_url']}".encode()).hexdigest()
+        version = "\0" + provider["credential_version"] if provider.get("credential_version") else ""
+        alias = hashlib.sha256(f"{self.scope}\0{provider_id}\0{provider['protocol']}\0{provider['base_url']}{version}".encode()).hexdigest()
         return {"alias": alias, "reference": f"secret://os-keyring/model-provider/{alias}"}
 
     def profiles(self, enabled_only=False) -> list[dict]:
@@ -162,12 +178,19 @@ class ModelCatalog:
         for profile in self.data["profiles"].values():
             profile["is_default"] = bool(selected and profile["id"] == selected["id"])
 
-    def upsert(self, provider_id: str, value: ProviderInput) -> dict:
+    def upsert(self, provider_id: str, value: ProviderInput, *, persist=True) -> dict:
         validate_id(provider_id)
         if provider_id not in self.data["providers"] and len(self.data["providers"]) >= 64:
             raise ValueError("供应商数量已达到上限")
         previous = self.data["providers"].get(provider_id)
         provider = {**value.model_dump(exclude={"credential_reference"}), "id": provider_id}
+        if previous and (previous["protocol"], previous["base_url"]) == (value.protocol, value.base_url) and previous.get("credential_version"):
+            provider["credential_version"] = previous["credential_version"]
+        version = "\0" + provider["credential_version"] if provider.get("credential_version") else ""
+        alias = hashlib.sha256(f"{self.scope}\0{provider_id}\0{provider['protocol']}\0{provider['base_url']}{version}".encode()).hexdigest()
+        if self.db.execute("SELECT 1 FROM model_retired_credentials WHERE alias=?", (alias,)).fetchone():
+            # 被用户选中清理的槽位不再复用，避免清理确认与配置切换发生竞争。
+            provider["credential_version"] = uuid.uuid4().hex
         profiles = self.data["profiles"]
         original = {key: dict(p) for key, p in profiles.items() if p["provider_id"] == provider_id}
         if len(profiles) - len(original) + len(value.models) > 2048:
@@ -179,13 +202,14 @@ class ModelCatalog:
             model["profile_id"] = identifier
             keep.add(identifier)
             old = original.get(identifier, {})
+            model["supports_vision"] = model["supports_vision"] if model.get("supports_vision") is not None else old.get("supports_vision", False)
             profiles[identifier] = {
                 "id": identifier, "provider": value.protocol, "provider_id": provider_id,
                 "provider_name": value.name, "display_name": old.get("display_name", model["model_id"]),
                 "model_name": model["model_id"], "is_local": urlsplit(value.base_url).hostname in {"localhost", "127.0.0.1", "::1"},
                 "is_default": old.get("is_default", False), "enabled": value.enabled,
                 "native_tool_calls": old.get("native_tool_calls", True), "supports_streaming": old.get("supports_streaming", True),
-                "supports_structured_output": old.get("supports_structured_output", False), "supports_vision": old.get("supports_vision", False),
+                "supports_structured_output": old.get("supports_structured_output", False), "supports_vision": model["supports_vision"],
                 "context_tokens": model["context_tokens"], "reasoning_efforts": old.get("reasoning_efforts", ["low", "medium", "high", "max"] if value.protocol != "ollama" else []),
                 "usage_reporting": old.get("usage_reporting", value.protocol != "ollama"),
                 "created_at": old.get("created_at", timestamp), "updated_at": timestamp,
@@ -198,7 +222,8 @@ class ModelCatalog:
                 self.data["probes"].pop(identifier, None)
         self.data["providers"][provider_id] = provider
         self.reconcile_default()
-        self.save()
+        if persist:
+            self.save()
         return provider
 
     def delete(self, provider_id: str):
@@ -211,7 +236,7 @@ class ModelCatalog:
         self.reconcile_default()
         self.save()
 
-    def update_profile(self, identifier: str, value: ProfileInput) -> dict:
+    def update_profile(self, identifier: str, value: ProfileInput, *, persist=True) -> dict:
         profile = self.data["profiles"][identifier]
         provider = self.provider(profile["provider_id"])
         if value.provider != provider["protocol"] or value.model_name != profile["model_name"] or value.is_local != profile["is_local"]:
@@ -222,9 +247,11 @@ class ModelCatalog:
         for model in provider["models"]:
             if model["profile_id"] == identifier:
                 model["context_tokens"] = value.context_tokens
+                model["supports_vision"] = value.supports_vision
         self.data["probes"].pop(identifier, None)
         self.reconcile_default(identifier if value.is_default else None)
-        self.save()
+        if persist:
+            self.save()
         return dict(profile)
 
     def set_default(self, identifier: str) -> dict:

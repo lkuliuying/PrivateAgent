@@ -14,7 +14,7 @@ from private_agent_core.coding_contracts import ExecutionResult, RunOutcome
 
 from . import observer_steps
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
 TABLES = {"project": "projects", "workspace": "workspaces", "session": "sessions", "message": "messages"}
 COLLECTIONS = {"events": "sequence", "approvals": "id", "executions": "id"}
 INLINE_BYTES = 32 * 1024
@@ -55,6 +55,8 @@ class Store:
             raise
         self.db.recovery_lock = recovery_lock
         try:
+            if self.db.execute("PRAGMA user_version").fetchone()[0] > SCHEMA_VERSION:
+                raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
             sandbox_directory = path.parent / "sandbox-leases"
             if os.name == "nt" and sandbox_directory.exists():
                 from .windows_sandbox import SandboxLease
@@ -64,6 +66,9 @@ class Store:
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
             self._migrate()
+            from .attachments import Attachments
+            self.attachments = Attachments(self)
+            self.attachments.cleanup(scan_orphans=True)
             from .context_history import ContextHistory
             self.context = ContextHistory(self)
             from .execution_store import ExecutionStore
@@ -90,6 +95,9 @@ class Store:
                 run.clear()
                 run.update(previous)
             raise
+        finally:
+            if hasattr(self, "attachments"):
+                self.attachments.cleanup()
 
     def _backup(self) -> dict:
         backup = self.path.with_name(f"{self.path.stem}.pre-v{SCHEMA_VERSION}-{uuid.uuid4().hex}.sqlite3")
@@ -108,7 +116,7 @@ class Store:
             raise ValueError("本机数据库由更新版本创建，请升级客户端，不要降级写入")
         if version == SCHEMA_VERSION:
             return
-        if version in {2, 3, 4, 5, 6}:
+        if version in {2, 3, 4, 5, 6, 7, 8, 9}:
             backup = self._backup()
             with self.transaction():
                 if version == 2:
@@ -119,8 +127,13 @@ class Store:
                     self._patch_schema()
                 if version < 6:
                     self._execution_schema()
-                self._recovery_schema()
-                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "recovery_controls_workspace_leases"})))
+                if version < 7:
+                    self._recovery_schema()
+                self._attachment_schema()
+                self._draft_schema()
+                from .mcp_library import migrate_sources
+                migrate_sources(self)
+                self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "change": "mcp_service_library"})))
                 self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             return
         names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -152,6 +165,8 @@ class Store:
             self._patch_schema()
             self._execution_schema()
             self._recovery_schema()
+            self._attachment_schema()
+            self._draft_schema()
             counts = {"objects": 0, "runs": 0}
             if legacy:
                 for item_id, kind, data in self.db.execute("SELECT id,kind,data FROM legacy_objects_v1 ORDER BY id").fetchall():
@@ -171,8 +186,18 @@ class Store:
                     if self.run(run_id) != {**value, **{key: value.get(key, []) for key in COLLECTIONS}}:
                         raise ValueError("旧版运行迁移内容校验失败")
                     counts["runs"] += 1
+            from .mcp_library import migrate_sources
+            migrate_sources(self)
             self.db.execute("INSERT INTO schema_migrations VALUES (?,?,?)", (SCHEMA_VERSION, now(), encode({"backup": backup, "counts": counts})))
             self.db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+
+    def _draft_schema(self):
+        from .drafts import create_schema
+        create_schema(self.db)
+
+    def _attachment_schema(self):
+        from .attachments import create_schema
+        create_schema(self.db)
 
     def _history_schema(self):
         self.db.execute("CREATE TABLE history_imports(id TEXT PRIMARY KEY, sha256 TEXT UNIQUE NOT NULL, data TEXT NOT NULL, archive TEXT NOT NULL)")
@@ -248,6 +273,9 @@ class Store:
                     if approval["status"] == "pending":
                         approval["status"] = "cancelled"
                 for execution in run["executions"]:
+                    from .recovery import reconcile_mcp_execution
+                    if reconcile_mcp_execution(run, execution):
+                        continue
                     if execution["status"] == "running":
                         execution.update(status="unknown", error_code="desktop_restarted", completed_at=now())
                         if execution.get("operation_id") and execution.get("command"):
@@ -399,6 +427,7 @@ class Store:
                 family.update(additions)
             for identifier in family:
                 self.ensure_deletable("session", identifier)
+            self.attachments.needs_cleanup = True
             for identifier in sorted(family):
                 self._delete_runs("session_id", identifier)
                 for table in ("context_items", "context_checkpoints", "messages", "grants"):
@@ -415,6 +444,12 @@ class Store:
                 if self.db.execute("SELECT 1 FROM sessions WHERE id=?", (session_id,)).fetchone():
                     self.delete_session(session_id)
             self._delete_runs("project_id", project_id)
+            self.db.execute("DELETE FROM attachment_drafts WHERE project_id=?", (project_id,))
+            self.attachments.needs_cleanup = True
+            # 项目删除时所有引用已经移除；正文由事务提交后的回收器处理。
+            rows = self.db.execute("SELECT id FROM task_attachments WHERE project_id=?", (project_id,)).fetchall()
+            self.attachments.pending_blobs.update(row[0] for row in rows)
+            self.db.execute("DELETE FROM task_attachments WHERE project_id=?", (project_id,))
             for table in ("messages", "grants", "workspaces"):
                 self.db.execute(f"DELETE FROM {table} WHERE project_id=?", (project_id,))
             self.db.execute("DELETE FROM projects WHERE id=?", (project_id,))

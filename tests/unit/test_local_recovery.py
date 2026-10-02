@@ -306,6 +306,34 @@ async def test_cancel_resume_creates_link_and_keeps_budget_and_old_events(api):
     assert owner.store.run(run_id) == previous
 
 
+async def test_cancelled_task_attachment_remains_readable_after_linked_resume(api, tmp_path):
+    owner = api[0].state.desktop.runtime
+    source = tmp_path / "reference.txt"
+    source.write_text("恢复后仍能读取的材料", encoding="utf-8")
+    draft = "a" * 32
+    item = owner.store.attachments.stage(source, draft, api[4]["project_id"], api[4]["workspace_id"],
+                                         api[4]["session_id"], secret_filter=owner.secret_filter)
+    run_id = await create(api, permission_mode="readonly", attachment_ids=[item["id"]], attachment_draft_id=draft)
+    await waiting_model(api, run_id)
+    await control(api, run_id, "cancel")
+    api[2].responses = [
+        response(call("read_task_attachment", {"attachment_id": item["id"], "offset": 0, "limit": 6000})),
+        response(text="已读取恢复材料"),
+    ]
+    _, result = await control(api, run_id, "resume")
+    child = result["result_run_id"]
+    assert child != run_id
+    await until(api[1], child, TERMINAL)
+    restored = owner.store.run(child)
+    assert restored["attachment_ids"] == [item["id"]]
+    execution = next(row for row in restored["executions"] if row["tool_name"] == "read_task_attachment")
+    assert execution["status"] == "completed"
+    assert execution["output"]["content"] == "恢复后仍能读取的材料"
+    assert len(owner.store.list("message")) == 2
+    user_message = next(message for message in owner.store.list("message") if message["role"] == "user")
+    assert owner.store.attachments.for_message(user_message["id"])[0]["id"] == item["id"]
+
+
 async def test_budget_exhaustion_blocks_resume(api):
     run_id = await create(api, context_limits={"max_model_requests": 1})
     await waiting_model(api, run_id)

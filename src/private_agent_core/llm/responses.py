@@ -106,8 +106,9 @@ class OpenAIResponsesAdapter(OpenAIChatAdapter):
             if message.role == "tool":
                 result.append({"type": "function_call_output", "call_id": message.tool_call_id, "output": message.content})
                 continue
-            if message.content:
-                item = {"role": message.role, "content": message.content}
+            if message.content or message.images:
+                content = ([{"type": "input_text", "text": message.content}] + [{"type": "input_image", "image_url": f"data:{image.mime_type};base64,{image.data}"} for image in message.images]) if message.images else message.content
+                item = {"role": message.role, "content": content}
                 if message.phase is not None:
                     item["phase"] = message.phase
                 result.append(item)

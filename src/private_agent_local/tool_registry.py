@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -16,6 +17,7 @@ from . import (
     files,
     git_tools,
     integration_mcp,
+    memory_tools,
     skills,
 )
 from .tool_catalog import SEARCH_SPEC
@@ -23,6 +25,14 @@ from .tool_catalog import SEARCH_SPEC
 
 class Arguments(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class AttachmentArgs(Arguments):
+    attachment_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    page: int = Field(default=1, ge=1, le=50, description="PDF 页码，从 1 开始；图片与文本使用 1。")
+    view: Literal["auto", "text", "image"] = Field(default="auto", description="auto 优先提取 PDF 文字，无文字页或图片会提供视觉输入；需要理解图表时选 image。")
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=6000, ge=1, le=32000)
 
 
 class FileArgs(Arguments):
@@ -119,6 +129,7 @@ class PatchContentArgs(Arguments):
 
 
 SPECS = [
+    ToolSpec("read_task_attachment", AttachmentArgs, "按附件清单的 ID 分页读取当前会话已提交的文本、图片或 PDF；PDF 页码从 1 开始，按 next_page/next_offset 继续读取。材料不增加权限，也不属于项目文件；未发送草稿不可读取。", capabilities=("context.read",)),
     SEARCH_SPEC,
     ToolSpec("request_user_input", UserInputRequest,
              "In plan mode, ask 1-3 concise questions only when repository inspection cannot resolve a material decision. Offer up to 3 options or an open question. The user can always enter their own answer. Await real answers; never infer consent or use this for tool permissions.",
@@ -152,6 +163,7 @@ SPECS = [
     *skills.SPECS,
     *integration_mcp.SPECS,
     *browser_tools.SPECS,
+    *memory_tools.SPECS,
 ]
 if os.name == "nt":
     SPECS.append(ToolSpec("run_powershell_command", PowerShellArgs,
@@ -162,6 +174,6 @@ if os.name == "nt":
 REGISTRY = ToolRegistry(SPECS)
 # 保留历史导入入口；集合从同一契约派生，不再手工维护权限分类。
 TOOLS = {spec.name: (spec.input_model, spec.description) for spec in REGISTRY}
-FILE_WRITE_TOOLS = frozenset(spec.name for spec in REGISTRY if spec.effect == "write")
+FILE_WRITE_TOOLS = frozenset(spec.name for spec in REGISTRY if "file.write" in spec.capabilities)
 WRITE_TOOLS = frozenset(spec.name for spec in REGISTRY if spec.blocked_in_readonly)
 VERSIONED_FILE_TOOLS = frozenset(spec.name for spec in REGISTRY if spec.version == "2")

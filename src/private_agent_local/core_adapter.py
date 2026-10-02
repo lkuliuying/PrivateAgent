@@ -37,6 +37,7 @@ class LocalRunAdapter:
         self.context = LocalContext(owner, run, root)
         owner.contexts[run["id"]] = self.context
         self.response_generation = run.get("generation", 0)
+        self.response_execution_offset = len(run.get("executions", []))
         self.pending_calls: set[str] = set()
         self.exposed_tool_names: frozenset[str] = frozenset()
 
@@ -73,6 +74,7 @@ class LocalRunAdapter:
             self.run["response_attempt_id"] = self._completed_attempt_id
             self.run["pending_response"] = result.model_dump(mode="json")
             self.pending_calls = {call.id for call in result.tool_calls}
+            self.response_execution_offset = len(self.run.get("executions", []))
             self.owner.event(self.run, "model.response_confirmed", generation=generation)
             return result
 
@@ -354,9 +356,13 @@ class LocalRunAdapter:
     async def _finalize_result(self, call, result):
         """整个批次完成后按模型顺序复核代次，避免已完成的兄弟读取夹带旧结果。"""
         await self.owner.controls.boundary(self.run)
-        if (call.name in self.owner.registry
+        generation_changed = self.response_generation != self.run.get("generation", 0)
+        mcp_write_result = self._mcp_write_result(call) if generation_changed else None
+        if mcp_write_result is not None:
+            result = mcp_write_result
+        elif (call.name in self.owner.registry
                 and (self.owner.registry[call.name].effect in {"read", "external"} or call.name == "tool_search")
-                and self.response_generation != self.run.get("generation", 0)):
+                and generation_changed):
             result = ToolResult(tool_call_id=call.id, name=call.name, success=False,
                                 error="用户约束已更新，旧读取结果未进入模型上下文，请重新查询", error_code="steering_superseded")
         if (self.run.get("recovery_contract_version") == "1.0"
@@ -391,6 +397,24 @@ class LocalRunAdapter:
         if correction:
             result = result.model_copy(update={"output": {**(result.output or {}), "correction": correction}})
         return result
+
+    def _mcp_write_result(self, call):
+        if call.name != "call_mcp_tool":
+            return None
+        execution = next((item for item in reversed(self.run.get("executions", [])[self.response_execution_offset:])
+                          if item.get("tool_call_id") == call.id and item.get("tool_name") == call.name), None)
+        state = (execution or {}).get("mcp_call") or {}
+        if state.get("readonly") is not False:
+            return None
+        # 已持久的外部副作用事实不随目标代次变化；模型正文不能代替原生回执。
+        if state.get("phase") == "acknowledged" and isinstance(execution.get("output"), dict):
+            return ToolResult(tool_call_id=call.id, name=call.name, success=True,
+                              output={**execution["output"], "goal_changed": True,
+                                      "notice": "用户目标已更新；此 MCP 写入此前已确认完成，回执保留，不得因此重复执行。"})
+        if state.get("phase") == "dispatched":
+            return ToolResult(tool_call_id=call.id, name=call.name, success=False, error_code="execution_unknown",
+                              error="MCP 写入已经发送，但远端结果未确认；用户目标变化不能消除未知副作用，禁止自动重放。")
+        return None
 
     async def record_context(self, message):
         await self.context.record(message)

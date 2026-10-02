@@ -70,12 +70,12 @@ class MemoryStore:
     def __init__(self, path: Path):
         self.db = sqlite3.connect(path, timeout=5)
         try:
+            version = self.db.execute("PRAGMA user_version").fetchone()[0]
+            if version not in {0, 1, 2}:
+                raise ValueError("记忆数据库需要更新版本的客户端")
             self.db.execute("PRAGMA busy_timeout=5000")
             self.db.execute("PRAGMA journal_mode=WAL")
             self.db.execute("PRAGMA synchronous=FULL")
-            version = self.db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1}:
-                raise ValueError("记忆数据库需要更新版本的客户端")
             if version == 0:
                 with self.transaction():
                     self.db.execute("CREATE TABLE settings(id INTEGER PRIMARY KEY CHECK(id=1), data TEXT NOT NULL)")
@@ -86,6 +86,16 @@ class MemoryStore:
                     self.db.execute("CREATE TABLE attempts(id TEXT PRIMARY KEY, created_at TEXT NOT NULL, data TEXT NOT NULL)")
                     self.db.execute("INSERT INTO settings VALUES (1,?)", (encode({**MemorySettings().model_dump(), "version": 1, "generation_since": now()}),))
                     self.db.execute("PRAGMA user_version=1")
+            if version < 2:
+                if version == 1:
+                    # 只备份旧版本；迁移失败保留原库和可恢复副本，不覆盖历史备份。
+                    backup = path.with_name(path.name + ".schema1-" + uuid.uuid4().hex + ".bak")
+                    target = sqlite3.connect(backup)
+                    try:
+                        self.db.backup(target)
+                    finally:
+                        target.close()
+                self._upgrade_v2()
             # 原进程退出后不存在仍在运行的生成任务，避免界面永久显示“生成中”。
             with self.transaction():
                 for identifier, raw in self.db.execute("SELECT id,data FROM attempts").fetchall():
@@ -96,6 +106,36 @@ class MemoryStore:
         except BaseException:
             self.db.close()
             raise
+
+    def _upgrade_v2(self):
+        with self.transaction():
+            self.db.execute("CREATE TABLE memory_revisions(memory_id TEXT NOT NULL, version INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(memory_id,version))")
+            self.db.execute("CREATE TABLE memory_receipts(run_id TEXT NOT NULL, call_id TEXT NOT NULL, request_sha256 TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run_id,call_id))")
+            for identifier, raw in self.db.execute("SELECT id,data FROM memories").fetchall():
+                value = json.loads(raw)
+                value.update(status="active", review_reason=None, supersedes_id=None, topic_key=value["stable_key"], legacy=value["origin"] == "generated")
+                self.db.execute("UPDATE memories SET data=? WHERE id=?", (encode(value), identifier))
+                self._revision(value, "migration")
+            self.db.execute("PRAGMA user_version=2")
+
+    def _revision(self, value: dict, reason: str):
+        self.db.execute("INSERT INTO memory_revisions VALUES (?,?,?)", (
+            value["id"], value["version"], encode({**value, "revision_reason": reason})))
+
+    def revisions(self, project_id: int, identifier: str) -> list[dict]:
+        self.get(project_id, identifier)
+        return [json.loads(row[0]) for row in self.db.execute(
+            "SELECT data FROM memory_revisions WHERE memory_id=? ORDER BY version DESC LIMIT 100", (identifier,))]
+
+    def receipt(self, run_id: str, call_id: str, digest: str) -> dict | None:
+        row = self.db.execute("SELECT request_sha256,data FROM memory_receipts WHERE run_id=? AND call_id=?", (run_id, call_id)).fetchone()
+        if row and row[0] != digest:
+            raise MemoryConflict("记忆操作标识已用于不同请求，未重复执行")
+        return json.loads(row[1]) if row else None
+
+    def save_receipt(self, run_id: str, call_id: str, digest: str, result: dict):
+        # 回执只保存标识和版本，不保留可绕过遗忘的正文副本。
+        self.db.execute("INSERT INTO memory_receipts VALUES (?,?,?,?)", (run_id, call_id, digest, encode(result)))
 
     @contextmanager
     def transaction(self):
@@ -150,7 +190,8 @@ class MemoryStore:
         return json.loads(row[0])
 
     def put(self, project_id: int, data: MemoryInput, *, identifier=None, expected_version=None,
-            stable_key=None, sources=(), source_session_id=None, source_project_id=None, source_updated_at=None) -> dict | None:
+            stable_key=None, sources=(), source_session_id=None, source_project_id=None, source_updated_at=None,
+            status="active", review_reason=None, supersedes_id=None, supersedes_version=None, topic_key=None) -> dict | None:
         scope_id = 0 if data.scope == "user" else project_id
         digest = fingerprint(data.content)
         key = stable_key or uuid.uuid4().hex
@@ -180,10 +221,88 @@ class MemoryStore:
                  "updated_at": now(), "source_session_id": source_session_id if not identifier else previous["source_session_id"],
                  "source_project_id": source_project_id if not identifier else previous["source_project_id"],
                  "source_updated_at": source_updated_at or (previous or {}).get("source_updated_at", ""),
-                 "source_item_ids": list(sources) if not identifier else previous["source_item_ids"]}
+                  "source_item_ids": list(sources) if sources else (previous or {}).get("source_item_ids", []),
+                  "status": status, "review_reason": review_reason, "supersedes_id": supersedes_id,
+                  "supersedes_version": supersedes_version,
+                  "topic_key": topic_key or (previous or {}).get("topic_key", key)}
+        value["legacy"] = False
+        if identifier and source_session_id is not None:
+            value.update(source_session_id=source_session_id, source_project_id=source_project_id)
         with self.transaction():
             self.db.execute("INSERT INTO memories VALUES (?,?,?,?,0,?) ON CONFLICT(id) DO UPDATE SET fingerprint=excluded.fingerprint, data=excluded.data", (value["id"], scope_id, key, digest, encode(value)))
+            self._revision(value, "edited" if identifier else "generated" if stable_key else "created")
         return value
+
+    def propose(self, project_id: int, data: MemoryInput, *, stable_key: str, auto_activate: bool = False, pending_reason="needs_confirmation", **source) -> dict | None:
+        """后台纠正保留旧事实和新候选，不能静默覆盖用户确认内容。"""
+        scope_id = 0 if data.scope == "user" else project_id
+        row = self.db.execute("SELECT data,deleted FROM memories WHERE scope_id=? AND stable_key=?", (scope_id, stable_key)).fetchone()
+        previous = json.loads(row[0]) if row else None
+        if row and (row[1] or previous.get("source_updated_at", "") >= source.get("source_updated_at", "")):
+            return None
+        if self.db.execute("SELECT 1 FROM memories WHERE scope_id=? AND fingerprint=?", (scope_id, fingerprint(data.content))).fetchone():
+            return None
+        pending = next((item for item in self.list(project_id) if item.get("topic_key") == stable_key and item.get("status") == "pending_review"), None)
+        if pending:
+            return None
+        reason = "conflict" if previous else None if auto_activate else pending_reason
+        with self.transaction():
+            result = self.put(project_id, data, stable_key=stable_key if not previous else "candidate:" + uuid.uuid4().hex,
+                              status="pending_review" if reason else "active", review_reason=reason,
+                              supersedes_id=previous["id"] if previous else None,
+                              supersedes_version=(previous["version"] + (previous.get("status", "active") == "active")) if previous else None,
+                              topic_key=stable_key, **source)
+            if result and previous and previous.get("status", "active") == "active":
+                self.set_state(project_id, previous["id"], previous["version"], "stale", "conflict")
+            return result
+
+    def set_state(self, project_id: int, identifier: str, expected_version: int, status: str, reason=None) -> dict:
+        if status not in {"active", "pending_review", "stale"}:
+            raise ValueError("记忆状态无效")
+        value = self.get(project_id, identifier)
+        if value["version"] != expected_version:
+            raise MemoryConflict("记忆已变化，请刷新后重试")
+        value.update(status=status, review_reason=reason, version=value["version"] + 1, updated_at=now())
+        with self.transaction():
+            self.db.execute("UPDATE memories SET data=? WHERE id=?", (encode(value), identifier))
+            self._revision(value, "state_changed")
+        return value
+
+    def review(self, project_id: int, identifier: str, expected_version: int, decision: str) -> dict:
+        candidate = self.get(project_id, identifier)
+        if candidate["version"] != expected_version:
+            raise MemoryConflict("记忆已变化，请刷新后重试")
+        if decision not in {"accept", "reject", "stale"}:
+            raise ValueError("记忆复核操作无效")
+        if decision == "stale":
+            return self.set_state(project_id, identifier, expected_version, "stale", "user_marked")
+        if candidate.get("status") not in {"pending_review", "stale"}:
+            raise ValueError("该记忆无需复核")
+        with self.transaction():
+            prior_id = candidate.get("supersedes_id")
+            prior = self.get(project_id, prior_id) if prior_id else None
+            if decision == "reject":
+                self.forget(project_id, identifier, expected_version)
+                if prior and prior["version"] == candidate.get("supersedes_version") and prior.get("status") == "stale" and prior.get("review_reason") == "conflict":
+                    return self.set_state(project_id, prior_id, prior["version"], "active")
+                return {"id": identifier, "status": "forgotten", "version": expected_version + 1}
+            if prior and prior["version"] != candidate.get("supersedes_version"):
+                raise MemoryConflict("候选对应的旧记忆已变化，请刷新后编辑解决冲突")
+            if not prior and candidate.get("review_reason") == "conflict":
+                related = [item for item in self.list(project_id) if item.get("supersedes_id") == identifier]
+                if any(item.get("supersedes_version") != expected_version for item in related):
+                    raise MemoryConflict("关联候选已变化，请刷新后编辑解决冲突")
+                # 确认旧值等同保留旧值，结束整组冲突并移除新候选正文。
+                for item in related:
+                    self.forget(project_id, item["id"], item["version"])
+            target = prior or candidate
+            data = MemoryInput.model_validate({key: candidate[key] for key in MemoryInput.model_fields})
+            result = self.put(project_id, data, identifier=target["id"], expected_version=target["version"],
+                              sources=candidate["source_item_ids"], source_session_id=candidate["source_session_id"],
+                              source_project_id=candidate["source_project_id"], source_updated_at=candidate["source_updated_at"])
+            if prior:
+                self.forget(project_id, identifier, expected_version)
+            return result
 
     def forget(self, project_id: int, identifier: str, expected_version: int):
         value = self.get(project_id, identifier)
@@ -193,6 +312,11 @@ class MemoryStore:
         value.update(title="", content="", source_item_ids=[], version=value["version"] + 1, updated_at=now())
         with self.transaction():
             self.db.execute("UPDATE memories SET deleted=1,data=? WHERE id=?", (encode(value), identifier))
+            # 遗忘包含旧版本正文；仅保留无正文墓碑和独立的操作回执。
+            self.db.execute("DELETE FROM memory_revisions WHERE memory_id=?", (identifier,))
+            for related in self.list(project_id):
+                if related.get("supersedes_id") == identifier:
+                    self.forget(project_id, related["id"], related["version"])
 
     def cursor(self, session_id: int) -> int:
         row = self.db.execute("SELECT through_ordinal FROM extractions WHERE session_id=?", (session_id,)).fetchone()
@@ -227,6 +351,7 @@ class MemoryStore:
                 if ((scope and scope not in projects) or (not deleted and item["origin"] == "generated"
                         and (item.get("source_session_id") not in sessions or item.get("source_project_id") not in projects))):
                     self.db.execute("DELETE FROM memories WHERE id=?", (identifier,))
+                    self.db.execute("DELETE FROM memory_revisions WHERE memory_id=?", (identifier,))
             for table in ("session_settings", "extractions"):
                 for (session_id,) in self.db.execute(f"SELECT session_id FROM {table}").fetchall():
                     if session_id not in sessions:

@@ -44,15 +44,20 @@ def request_budget(request: ModelRequest, capacity: int | None, reserve: int, *,
     known = type(capacity) is int and 0 < capacity <= 1_000_000_000
     # UTF-8 字节数提供跨语言保守估计；协议展开和 tokenizer 差异另留 25% 与固定余量。
     size = len(request.model_dump_json().encode("utf-8"))
-    estimated = math.ceil(size * max(1.0, calibration) * 1.25)
+    images = [image for message in request.messages for image in message.images]
+    text_size = size - sum(len(image.data) for image in images)
+    # 图片采用独立保守预算，不能把 Base64 长度当作文本 token；实际用量仍以服务回执为准。
+    estimated = math.ceil((text_size * 1.25 + 8192 * len(images)) * max(1.0, calibration))
     source = "utf8_conservative"
-    if previous_usage and size >= previous_usage[0]:
+    if previous_usage and not images and size >= previous_usage[0]:
         # 已发送前缀采用供应商实测值，新增内容仍保守估算，避免把字节数当作真实 token。
         estimated = previous_usage[1] + math.ceil((size - previous_usage[0]) * max(1.0, calibration) * 1.25)
         source = "provider_usage_with_growth"
     effective_capacity = capacity if known else 8192
     # 大窗口请求不能被旧的小窗口字节限制提前截断，同时保留总内存与协议保护。
     max_request_bytes = min(64 * 1024 * 1024, max(1_500_000, effective_capacity * 8))
+    if images:
+        max_request_bytes = 32 * 1024 * 1024
     margin = max(512, math.ceil(effective_capacity * 0.05))
     available = max(0, effective_capacity - reserve - margin)
     # 小窗口及大输出预留下，压缩必须先于硬上限；显式阈值也不能越过此边界。

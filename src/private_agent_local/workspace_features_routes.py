@@ -33,6 +33,49 @@ class SkillCreate(BaseModel):
 
 def install_workspace_features(app, local):
     from .integration_mcp import SelectionInput, SourceInput
+    from .mcp_library import (
+        BindInput,
+        CommitInput,
+        PrepareInput,
+        VersionInput,
+        required_fields,
+    )
+
+    @app.get("/mcp-services")
+    async def mcp_services(runtime=Depends(local)):
+        library = runtime.integrations.library
+        pending = [library.change(row[0]) for row in runtime.store.db.execute("SELECT id FROM mcp_service_changes WHERE status='prepared' ORDER BY id")]
+        return {"items": library.services(), "pending_changes": pending, "credential_cleanup_pending": library.cleanup_pending()}
+
+    @app.post("/mcp-services/credential-cleanup")
+    async def mcp_cleanup(runtime=Depends(local)):
+        return await runtime.integrations.library.cleanup()
+
+    @app.post("/mcp-services/preflight")
+    async def mcp_preflight(data: SourceInput, runtime=Depends(local)):
+        runtime.integrations.library.check_config(data.model_dump())
+        return {"valid": True, "required_fields": required_fields(data.model_dump()), "network_contacted": False,
+                "notice": "配置结构检查通过，尚未连接服务或启动进程。"}
+
+    @app.post("/mcp-services/prepare")
+    async def mcp_prepare(data: PrepareInput, runtime=Depends(local)):
+        return await runtime.integrations.library.prepare(data)
+
+    @app.post("/mcp-services/changes/{change_id}/commit")
+    async def mcp_commit(change_id: str, data: CommitInput, runtime=Depends(local)):
+        return await runtime.integrations.library.commit(change_id, data.reference)
+
+    @app.delete("/mcp-services/changes/{change_id}")
+    async def mcp_discard(change_id: str, runtime=Depends(local)):
+        return await runtime.integrations.library.discard(change_id)
+
+    @app.delete("/mcp-services/{service_id}")
+    async def mcp_delete(service_id: str, expected_version: str = Query(pattern=r"^[a-f0-9]{32}$"), runtime=Depends(local)):
+        return await runtime.integrations.library.delete(service_id, expected_version)
+
+    @app.post("/mcp-services/{service_id}/logout")
+    async def mcp_logout(service_id: str, data: VersionInput, runtime=Depends(local)):
+        return await runtime.integrations.logout(service_id, data.expected_version)
 
     @app.get("/projects/{project_id}/handoffs")
     async def handoffs(project_id: int, runtime=Depends(local)):
@@ -56,6 +99,10 @@ def install_workspace_features(app, local):
     @app.post("/projects/{project_id}/integrations", status_code=201)
     async def integration_create(project_id: int, data: SourceInput, runtime=Depends(local)):
         return runtime.integrations.create(project_id, data)
+
+    @app.post("/projects/{project_id}/integrations/bind", status_code=201)
+    async def integration_bind(project_id: int, data: BindInput, runtime=Depends(local)):
+        return runtime.integrations.library.bind(project_id, data.service_id)
 
     @app.post("/projects/{project_id}/integrations/{source_id}/connect")
     async def integration_connect(project_id: int, source_id: str, runtime=Depends(local)):

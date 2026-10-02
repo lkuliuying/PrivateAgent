@@ -1,6 +1,7 @@
 """显式迁移历史，保留原始记录与备份；不恢复授权、不重放副作用。"""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import sqlite3
@@ -12,11 +13,13 @@ from private_agent_core.history import (
     FIELDS,
     FORMAT,
     MAX_BYTES,
+    attachment_bytes,
     encode_archive,
     validate_archive,
 )
 
 from . import files
+from .attachments import read_blob
 from .store import Store, encode, now
 
 
@@ -58,8 +61,8 @@ def archive_sqlite(path: Path, *, authority: str, owner_id: int) -> dict:
     try:
         db.execute("PRAGMA query_only=ON")
         db.execute("BEGIN")
-        # 4–7 保留相同的基础记录表；交换格式仍只导出白名单字段，不导出恢复授权。
-        if db.execute("PRAGMA user_version").fetchone()[0] not in {0, 2, 3, 4, 5, 6, 7}:
+        # 基础记录保持白名单导出；v8 额外携带已提交附件，不包含草稿或恢复授权。
+        if db.execute("PRAGMA user_version").fetchone()[0] not in {0, 2, 3, 4, 5, 6, 7, 8, 9, 10}:
             raise ValueError("SQLite 来自不支持的版本，请使用该版本的导出功能")
         names = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if db.execute("PRAGMA quick_check").fetchone() != ("ok",):
@@ -76,6 +79,15 @@ def archive_sqlite(path: Path, *, authority: str, owner_id: int) -> dict:
             for table in tables.values():
                 for row in db.execute(f"SELECT substr(data,1,{MAX_BYTES + 1}) FROM {table} ORDER BY id LIMIT 50001"):
                     append(table, _unpack_legacy(path, row[0]))
+        if "task_attachments" in names:
+            for (raw,) in db.execute("SELECT a.data FROM task_attachments a WHERE EXISTS(SELECT 1 FROM message_attachments m WHERE m.attachment_id=a.id)"):
+                item = json.loads(raw)
+                binary = item.get("kind", "text") != "text"
+                raw_body = read_blob(path.parent, item)
+                append("attachments", {**item, "kind": item.get("kind", "text"), "content_encoding": "base64" if binary else "utf8",
+                                       "content": base64.b64encode(raw_body).decode("ascii") if binary else raw_body.decode("utf-8")})
+            for message_id, attachment_id, ordinal in db.execute("SELECT message_id,attachment_id,ordinal FROM message_attachments ORDER BY message_id,ordinal"):
+                append("message_attachments", {"id": f"{message_id}:{attachment_id}", "message_id": message_id, "attachment_id": attachment_id, "ordinal": ordinal})
         for (raw,) in db.execute(f"SELECT substr(data,1,{MAX_BYTES + 1}) FROM runs ORDER BY id LIMIT 50001"):
             run = _unpack_legacy(path, raw)
             append("runs", run)
@@ -129,7 +141,7 @@ def preview_history(source: str, *, authority: str, owner_id: int) -> dict:
 
 def fingerprint(store: Store) -> str:
     digest = hashlib.sha256()
-    for table in ("record_ids", "projects", "workspaces", "sessions", "messages", "runs", "events", "approvals", "executions", "grants", "audit_events", "schema_migrations", "sqlite_sequence"):
+    for table in ("record_ids", "projects", "workspaces", "sessions", "messages", "runs", "events", "approvals", "executions", "grants", "audit_events", "schema_migrations", "sqlite_sequence", "task_attachments", "attachment_drafts", "attachment_draft_refs", "message_attachments", "composer_drafts"):
         digest.update(table.encode())
         for row in store.db.execute(f"SELECT * FROM {table} ORDER BY rowid"):
             digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
@@ -140,6 +152,12 @@ def apply_history(store: Store, source: str, digest: str, mappings: dict[str, st
     archive, current_digest = load_history(source, authority=authority, owner_id=owner_id)
     if digest != current_digest:
         raise ValueError("预览后的历史包已变化，请重新预览；未导入记录")
+    return apply_archive(store, archive, digest, mappings, authority=authority, owner_id=owner_id)
+
+
+def apply_archive(store: Store, archive: dict, digest: str, mappings: dict[str, str], *, authority: str, owner_id: int,
+                  workspace_roots: dict[str, str] | None = None, augment=None) -> dict:
+    validate_archive(archive, authority=authority, owner_id=owner_id)
     prior = store.db.execute("SELECT data FROM history_imports WHERE sha256=?", (digest,)).fetchone()
     if prior:
         return json.loads(prior[0])
@@ -166,8 +184,9 @@ def apply_history(store: Store, source: str, digest: str, mappings: dict[str, st
                 maps["projects"][item["id"]] = value["id"]
         for item in records["workspaces"]:
             project = maps["projects"].get(item.get("project_id"))
-            if project and item.get("kind") == "root":
-                value = store.create("workspace", {"project_id": project, "kind": "root", "root_path": roots[str(item["project_id"])], "branch_name": None, "head_sha": None, "status": "active", "last_used_at": None})
+            if project and (item.get("kind") == "root" or workspace_roots is not None):
+                workspace_root = workspace_roots[str(item["id"])] if workspace_roots is not None else roots[str(item["project_id"])]
+                value = store.create("workspace", {"project_id": project, "kind": "root", "root_path": workspace_root, "branch_name": None, "head_sha": None, "status": "active", "last_used_at": None})
                 maps["workspaces"][item["id"]] = value["id"]
         for item in records["sessions"]:
             project, workspace = maps["projects"].get(item.get("project_id")), maps["workspaces"].get(item.get("workspace_id"))
@@ -184,6 +203,20 @@ def apply_history(store: Store, source: str, digest: str, mappings: dict[str, st
                     raise ValueError("消息角色或内容无效")
                 value = store.create("message", {"session_id": session, "role": item["role"], "content": item["content"], "created_at": item.get("created_at") or now()})
                 maps["messages"][item["id"]] = value["id"]
+        attachment_maps = {}
+        linked_ids = {item["attachment_id"] for item in records.get("message_attachments", []) if item["message_id"] in maps["messages"]}
+        for item in records.get("attachments", []):
+            if item["id"] not in linked_ids:
+                continue
+            project, workspace = maps["projects"].get(item["project_id"]), maps["workspaces"].get(item["workspace_id"])
+            if not project or not workspace:
+                raise ValueError("附件所属项目或工作区未映射")
+            attached = store.attachments.install_bytes(item["name"], attachment_bytes(item), project, workspace)
+            attachment_maps[item["id"]] = attached["id"]
+        for item in records.get("message_attachments", []):
+            message = maps["messages"].get(item["message_id"])
+            if message:
+                store.db.execute("INSERT INTO message_attachments VALUES (?,?,?)", (message, attachment_maps[item["attachment_id"]], item["ordinal"]))
         for item in records["runs"]:
             session = maps["sessions"].get(item.get("session_id"))
             if not session:
@@ -219,6 +252,8 @@ def apply_history(store: Store, source: str, digest: str, mappings: dict[str, st
             session, run_id = maps["sessions"].get(item["id"]), maps["runs"].get(item.get("last_run_id"))
             if session and run_id:
                 store.update("session", session, last_run_id=run_id)
+        if augment is not None:
+            augment(maps, attachment_maps)
         imported["imported_counts"] = {kind: len(values) for kind, values in maps.items()}
         store.audit("history.imported", import_id=imported["id"], sha256=digest, counts=imported["imported_counts"])
         imported["rollback_fingerprint"] = fingerprint(store)
@@ -241,4 +276,5 @@ def rollback_history(store: Store, import_id: str) -> dict:
         source.backup(store.db)
     finally:
         source.close()
+    store.attachments.cleanup(scan_orphans=True)
     return {"rolled_back": True, "retained_backup": backup.name}

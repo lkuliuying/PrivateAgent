@@ -34,6 +34,7 @@ from . import (
     git_tools,
     git_workspace,
     integration_mcp,
+    memory_tools,
     policy,
     readonly_agents,
     repository,
@@ -60,7 +61,7 @@ from .output import parse_structured_output, validate_output_schema
 from .patchsets import PatchService
 from .planning import LocalPlanner
 from .planning_interaction import PlanningInteraction
-from .recovery import Recovery
+from .recovery import Recovery, reconcile_mcp_execution
 from .run_controls import RunControls
 from .secret_filter import SecretFilter
 from .store import Store, now
@@ -157,6 +158,7 @@ class Runtime:
         self.observer = Observer(self)
         try:
             self.memories = Memories(self)
+            self.memory_tools = memory_tools.MemoryTools(self)
         except BaseException:
             # 记忆初始化失败时释放主库及其所有者锁，允许修复后重新连接。
             self.store.db.close()
@@ -222,6 +224,9 @@ class Runtime:
     def create(self, data: dict, *, parent: dict | None = None, launch: bool = True) -> dict:
         if data.get("allow_subagents") and not parent:
             raise ValueError("独立只读子任务功能已移除")
+        attachment_ids = data.get("attachment_ids", [])
+        if not isinstance(attachment_ids, list) or len(attachment_ids) > 8 or len(set(attachment_ids)) != len(attachment_ids):
+            raise ValueError("附件重复或超过 8 个")
         output_schema = validate_output_schema((parent or data).get("output_schema"))
         session = self.store.get("session", data["session_id"])
         if any(session.get(key) != data[key] for key in ("project_id", "workspace_id")):
@@ -233,6 +238,8 @@ class Runtime:
                 raise ValueError("重复请求标识与任务不匹配")
             if prior.get("output_schema") != output_schema:
                 raise ValueError("重复请求标识与输出格式不匹配")
+            if prior.get("attachment_ids", []) != attachment_ids or prior.get("goal") != data["message"]:
+                raise ValueError("重复请求标识与正文或附件不匹配")
             return snapshot(prior)
         if self.store.has_active_run() and data.get("recovery_contract_version") != "1.0":
             raise ValueError("本机已有任务执行中，请完成或取消后再开始")
@@ -280,6 +287,7 @@ class Runtime:
                "steps": [], "plan": None, "artifacts": [], "events": [], "approvals": [], "executions": []}
         run.update(completion_contract_version="1.0", completion_requirements=[item.model_dump(mode="json") for item in requirements],
                    completion_policy=completion_policy, denied_operations=[], workspace_version=0, verification_state="pending")
+        run["attachment_ids"] = attachment_ids
         run.update(goal=data["message"], task_interpretation=interpretation.model_dump(mode="json"))
         run["collaboration_mode"] = collaboration
         run["allow_subagents"] = False
@@ -295,7 +303,7 @@ class Runtime:
             for key in ("logical_task_id", "goal", "goal_version", "generation", "completion_requirements", "completion_policy", "task_interpretation",
                         "workspace_version", "loop_budget", "denied_operations", "uncertain_operations", "command_scope_issue", "model_config_version",
                         "model_capability_version", "verification_retries", "plan", "orchestration_progress", "tool_catalog", "reflection_state", "reflection_review",
-                        "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "tool_call_count", "usage_complete"):
+                        "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "tool_call_count", "usage_complete", "attachment_ids"):
                 if key in parent:
                     run[key] = json.loads(json.dumps(parent[key]))
             run.update(resumed_from_run_id=parent["id"], ancestor_run_ids=[*parent.get("ancestor_run_ids", []), parent["id"]])
@@ -309,7 +317,9 @@ class Runtime:
             self.store.context.import_legacy(session["id"])
             if not parent:
                 user_message = self.store.create("message", {"session_id": session["id"], "role": "user", "content": data["message"]})
-                self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content=data["message"]),
+                from .attachments import manifest
+                attached = self.store.attachments.bind(attachment_ids, data.get("attachment_draft_id"), session, user_message["id"])
+                self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content=data["message"] + manifest(attached)),
                                           key=f"message:{user_message['id']}", source="user")
             else:
                 continuation = ("用户选择按当前计划执行。切换为执行模式，保留原目标、约束、步骤及预算。每项工具操作仍须通过原权限检查，计划确认不是额外授权。"
@@ -477,8 +487,11 @@ class Runtime:
         documentation["integrations"] = self.integrations.visible(run["project_id"])["sources"]
         skills_enabled = bool(self.store.get("project", run["project_id"]).get("enabled_skills"))
         git_enabled = (root / ".git").exists()
+        attachments_enabled = self.store.attachments.has_committed(run["session_id"])
         eligible = []
         for spec in self.registry.visible(run["permission_mode"], run.get("execution_contract_version")):
+            if spec.name == "read_task_attachment" and not attachments_enabled:
+                continue
             if run.get("agent_parent_run_id") and spec.name not in readonly_agents.READ_TOOLS:
                 continue
             if spec.name in readonly_agents.TOOLS:
@@ -664,7 +677,7 @@ class Runtime:
                 return self.secret_filter.redact_value(output)
             if name in readonly_agents.TOOLS:
                 raise ToolFailure("feature_removed", "独立只读子任务功能已移除")
-            if name in skills.TOOLS | integration_mcp.TOOLS | browser_tools.TOOLS:
+            if name in skills.TOOLS | integration_mcp.TOOLS | browser_tools.TOOLS | memory_tools.TOOLS:
                 self.controls.guard(run, generation)
                 self.require_grant(run)
                 self.event(run, "tool.started", name=name, tool_call_id=call["id"], execution_id=execution["id"])
@@ -672,6 +685,7 @@ class Runtime:
                     raise ValueError("项目位置已变化")
                 output = (self.skills.execute(run, root, call) if name in skills.TOOLS
                           else await self.integrations.execute(run, root, call, execution) if name in integration_mcp.TOOLS
+                          else await self.memory_tools.execute(run, root, call, execution) if name in memory_tools.TOOLS
                           else await self.browser.execute(run, root, call, execution))
                 spec.validate_output(output)
                 execution.update(status="completed", output=output, completed_at=now())
@@ -704,7 +718,7 @@ class Runtime:
             if name == "read_patch_preview":
                 preview_patch = self.patches.get(run["id"], args.patch_set_id)
                 task_constraints.guard_paths(run, root, [item["rel_path"] for item in preview_patch["changes"]])
-            if name == "read_context_content" and task_constraints.restrictions(run).access_scopes:
+            if name in {"read_context_content", "read_task_attachment"} and task_constraints.restrictions(run).access_scopes:
                 raise task_constraints.TaskConstraintError("当前限定访问路径，历史内容范围无法确认；请通过文件工具读取允许的路径")
             if name in WRITE_TOOLS:
                 execution["scope"] = ({"kind": "files", "paths": [item["rel_path"] for item in patch["changes"]]}
@@ -799,7 +813,15 @@ class Runtime:
                 task_constraints.guard_command(run, root, command, diagnostic=plan.profile == "diagnostic",
                     powershell_paths=execution["scope"].get("paths", []) if name == "run_powershell_command" else None)
             self.event(run, "tool.started", name=name, tool_call_id=call["id"], execution_id=execution["id"])
-            if name == "read_context_content":
+            if name == "read_task_attachment":
+                output = self.store.attachments.read(args.attachment_id, args.offset, args.limit, session_id=run["session_id"], page=args.page, view=args.view)
+                if output.get("image_ref"):
+                    profile = next((item for item in self._profiles if item["id"] == run["model_profile_id"]), {})
+                    if profile.get("supports_vision") is not True:
+                        raise ValueError("当前模型未声明支持视觉输入；PDF 可选 view=text，图片识别请先配置视觉模型")
+                if self.secret_filter.contains_secret(output["content"]):
+                    raise ToolFailure("sensitive_content_blocked", "附件包含疑似凭据，未返回正文")
+            elif name == "read_context_content":
                 output = self.store.context.read(run["session_id"], args.item_id, args.offset, args.limit)
             elif name == "read_patch_preview":
                 output = self.patches.diff_page(run["id"], args.patch_set_id, args.change_id, args.offset, args.limit)
@@ -928,8 +950,13 @@ class Runtime:
                     execution_id=execution["id"], operation_id=execution["operation_id"], argv=command, outcome=outcome,
                     output_ref=content_ref(output)).model_dump(mode="json")
         except asyncio.CancelledError as error:
+            if (execution.get("mcp_call") or {}).get("phase") == "acknowledged" and isinstance(execution.get("output"), dict):
+                reconcile_mcp_execution(run, execution)
+                self.complete_tool(run, call, execution, failed=False)
+                raise
             output = self.secret_filter.redact_value(getattr(error, "execution_output", {}))
             execution.update(status="cancelled", output=output, error_code="command_cancelled", completed_at=now())
+            reconcile_mcp_execution(run, execution)
             if invoked:
                 execution["execution_result"] = interpret_execution(
                     execution_id=execution["id"], operation_id=execution["operation_id"], argv=command, outcome="cancelled",
@@ -952,7 +979,9 @@ class Runtime:
         execution["output"] = self.secret_filter.redact_value(execution.get("output"))
         execution["error_message"] = self.secret_filter.redact_text(execution.get("error_message") or "") or None
         if execution.get("error_code") == "execution_unknown" and execution.get("scope"):
-            run.setdefault("uncertain_operations", []).append({"operation_id": execution["operation_id"], "scope": execution["scope"]})
+            operation = {"operation_id": execution["operation_id"], "scope": execution["scope"]}
+            if operation not in run.setdefault("uncertain_operations", []):
+                run["uncertain_operations"].append(operation)
         execution["source_sequence"] = run["last_event_sequence"] + 1
         self.event(run, "tool.failed" if failed else "tool.completed", name=call["name"], tool_call_id=call["id"],
                    execution_id=execution["id"], operation_id=execution["operation_id"],
@@ -1002,6 +1031,8 @@ class Runtime:
         for run_id in list(self.tasks):
             await self.cancel(run_id)
         await self.execution_sessions.close()
+        if getattr(self, "mcp_credentials", None) is not None:
+            self.mcp_credentials.close()
         self.token = ""
         for (grant_id,) in self.store.db.execute("SELECT id FROM grants WHERE revoked_at IS NULL").fetchall():
             self.store.revoke_grant(grant_id, "app_exit")

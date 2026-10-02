@@ -98,6 +98,11 @@
           "default": null,
           "title": "Execution Id"
         },
+        "external_context": {
+          "default": false,
+          "title": "External Context",
+          "type": "boolean"
+        },
         "item_id": {
           "maxLength": 128,
           "minLength": 1,
@@ -134,6 +139,16 @@
           "minimum": 1,
           "title": "Ordinal",
           "type": "integer"
+        },
+        "provenance": {
+          "default": "unknown",
+          "enum": [
+            "local",
+            "external_untrusted",
+            "unknown"
+          ],
+          "title": "Provenance",
+          "type": "string"
         },
         "role": {
           "enum": [

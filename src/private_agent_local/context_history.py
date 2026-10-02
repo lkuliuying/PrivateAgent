@@ -29,10 +29,19 @@ class ContextHistory:
             item_id = str(uuid.uuid4())
             evidence = {"execution_id": execution["id"], "operation_id": execution["operation_id"],
                         "source_sequence": execution["source_sequence"]} if execution else {}
+            from .context_provenance import external_message
+            external = external_message(payload)
+            if source in {"model", "summary"}:
+                external = external or self.store.db.execute(
+                    "SELECT 1 FROM context_items WHERE session_id=? AND json_extract(data,'$.external_context')=1 LIMIT 1",
+                    (session_id,),
+                ).fetchone() is not None
             item = ContextItem(item_id=item_id, session_id=session_id, run_id=run_id, ordinal=ordinal,
                 role=message.role, kind="tool_result" if message.role == "tool" else "tool_call" if message.tool_calls else "message",
                 tool_call_id=message.tool_call_id, content_ref=ContentRef(
-                    sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw)), source=source, created_at=now(), **evidence)
+                    sha256=hashlib.sha256(raw).hexdigest(), bytes=len(raw)), source=source, created_at=now(),
+                provenance="external_untrusted" if external else "unknown" if source == "legacy" else "local",
+                external_context=external, **evidence)
             data = item.model_dump(mode="json")
             self.store.db.execute("INSERT INTO context_items VALUES (?,?,?,?,?,?,?)",
                 (item_id, session_id, run_id, ordinal, key, encode(data), self.store._pack(payload)))
@@ -63,7 +72,9 @@ class ContextHistory:
             for message in reversed(self.store.list("message", session_id=session_id)):
                 if message["role"] not in {"user", "assistant"}:
                     continue
-                self.append(session_id, "legacy", ModelMessage(role=message["role"], content=message["content"]),
+                from .attachments import manifest
+                attached = self.store.attachments.for_message(message["id"])
+                self.append(session_id, "legacy", ModelMessage(role=message["role"], content=message["content"] + manifest(attached)),
                             key=f"legacy-message:{message['id']}", source="legacy")
             if self.store.list("message", session_id=session_id):
                 self.append(session_id, "legacy", ModelMessage(role="user", content="历史导入说明：旧工具正文未保存，执行事实缺失；历史对话不恢复授权。"),
@@ -72,17 +83,28 @@ class ContextHistory:
 
     def close_pending(self, session_id: int, run_id: str):
         """仅补记结果缺失，不构造执行成功，也不重放副作用。"""
-        pending: dict[str, str] = {}
+        pending: dict[str, tuple[str, str]] = {}
         for item in self.items(session_id, run_id=run_id):
             message = item["message"]
             for call in message.get("tool_calls", []):
-                pending[call["id"]] = call["name"]
+                pending[call["id"]] = (call["name"], item["item_id"])
             if message["role"] == "tool":
                 pending.pop(message["tool_call_id"], None)
-        for call_id, name in pending.items():
+        saved = self.store.run(run_id) if pending else {}
+        for call_id, (name, context_item_id) in pending.items():
+            # 供应商可能复用调用 ID；只有当前模型消息绑定的持久回执可以补全。
+            acknowledged = next((item for item in saved.get("executions", [])
+                                 if item.get("tool_call_id") == call_id and item.get("tool_name") == name
+                                 and (item.get("mcp_call") or {}).get("context_item_id") == context_item_id
+                                 and (item.get("mcp_call") or {}).get("phase") == "acknowledged"
+                                 and isinstance(item.get("output"), dict)), None)
+            if acknowledged is not None:
+                self.append(session_id, run_id, ModelMessage(role="tool", name=name, tool_call_id=call_id,
+                    content=json.dumps(acknowledged["output"], ensure_ascii=False)), key=f"{run_id}:missing:{context_item_id}:{call_id}", source="tool")
+                continue
             self.append(session_id, run_id, ModelMessage(role="tool", name=name, tool_call_id=call_id,
                 content=json.dumps({"success": False, "error_code": "result_unknown", "error": "调用结果未提交，可能取消或中断；不得自动重放"}, ensure_ascii=False)),
-                key=f"{run_id}:missing:{call_id}", source="tool")
+                key=f"{run_id}:missing:{context_item_id}:{call_id}", source="tool")
 
     def read(self, session_id: int, item_id: str, offset: int, limit: int) -> dict:
         if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 6000:

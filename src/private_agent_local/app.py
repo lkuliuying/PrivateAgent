@@ -55,6 +55,8 @@ CAPABILITIES = {
     "coding_context_compaction_enabled": True, "coding_project_instructions_enabled": True,
     "coding_local_memories_enabled": True,
     "coding_workbench_version": "1.0",
+    "coding_durable_drafts_enabled": True,
+    "coding_model_save_recovery_enabled": True, "coding_model_scopes_enabled": True, "coding_app_backups_enabled": True, "coding_attachment_storage_enabled": True,
     "coding_patchsets_enabled": True, "coding_repository_tools_version": "2",
     "coding_powershell_file_writes_enabled": False,
     "coding_rg_available": shutil.which("rg") is not None,
@@ -117,6 +119,7 @@ class WorktreeInput(Input):
 
 
 class SessionInput(Binding):
+    client_request_id: str | None = Field(default=None, min_length=1, max_length=100)
     title: str = Field(default="新任务", min_length=1, max_length=255)
     kind: Literal["coding"] = "coding"
 
@@ -131,6 +134,8 @@ class AttachmentInput(Input):
 
 class RunInput(Binding):
     session_id: int = Field(gt=0)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=8)
+    attachment_draft_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
     message: str = Field(min_length=1, max_length=32000)
     permission_mode: Literal["readonly", "confirm", "workspace", "full_access"] = "confirm"
     collaboration_mode: Literal["default", "plan"] = "default"
@@ -195,6 +200,8 @@ class DesktopState:
         if hasattr(self.cloud, "bind_models"):
             await self.cloud.bind_models(self.data_dir / account, account, token)
         self.runtime = Runtime(Store(self.data_dir / account / "projects.sqlite3"), self.cloud, token)
+        from .mcp_credentials import McpCredentials
+        self.runtime.mcp_credentials = McpCredentials(account, getattr(self, "mcp_credential_transport", None))
         self.runtime.owner_id = owner_id
         self.runtime.authority = authority
         self.runtime.memories.start()
@@ -230,7 +237,7 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
             return JSONResponse({"detail": "不允许的本机请求来源"}, status_code=403)
         if not hmac.compare_digest(request.headers.get("x-privateagent-local", ""), nonce):
             return JSONResponse({"detail": "本机连接凭证无效"}, status_code=403)
-        if evaluation and request.method not in {"GET", "HEAD"} and request.url.path.startswith(("/model-providers", "/agent-model-profiles", "/model-settings", "/local-models")):
+        if evaluation and request.method not in {"GET", "HEAD"} and request.url.path.startswith(("/model-providers", "/model-save-operations", "/model-preferences", "/local-backups", "/agent-model-profiles", "/model-settings", "/local-models")):
             return JSONResponse({"error_code": "evaluation_configuration_frozen"}, status_code=409)
         # Bound all mutation bodies before Pydantic parses them.
         body = bytearray()
@@ -281,6 +288,18 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
         return await state.require(token)
 
     install_model_routes(app, cloud, local)
+    from .model_preferences import install_model_preference_routes
+    install_model_preference_routes(app, cloud, local)
+    from .model_saves import install_model_save_routes
+    install_model_save_routes(app, cloud, local)
+    from .attachment_routes import install_attachment_routes
+    install_attachment_routes(app, local)
+    from .attachment_storage import install_attachment_storage_routes
+    install_attachment_storage_routes(app, local)
+    from .backups import install_backup_routes
+    install_backup_routes(app, local)
+    from .drafts import install_draft_routes
+    install_draft_routes(app, local)
     from .workspace_features_routes import install_workspace_features
     install_workspace_features(app, local)
     from private_agent_core.tool_specs import ToolFailure
@@ -647,7 +666,15 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
     @app.post("/sessions", status_code=201)
     async def create_session(data: SessionInput, runtime: Runtime = Depends(local)):
         runtime.root(data.project_id, data.workspace_id)
-        return runtime.store.create("session", {**data.model_dump(), "last_run_id": None, "pinned_at": None})
+        with runtime.store.transaction():
+            if data.client_request_id:
+                prior = runtime.store.db.execute("SELECT id FROM sessions WHERE json_extract(data,'$.client_request_id')=?", (data.client_request_id,)).fetchone()
+                if prior:
+                    existing = runtime.store.get("session", prior[0])
+                    if any(existing.get(field) != getattr(data, field) for field in ("project_id", "workspace_id", "kind", "title")):
+                        raise CloudError(409, "同一创建标识不能用于其他输入或工作区", code="session_request_conflict")
+                    return existing
+            return runtime.store.create("session", {**data.model_dump(), "last_run_id": None, "pinned_at": None})
 
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: int, runtime: Runtime = Depends(local)):
@@ -663,7 +690,8 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
     @app.get("/sessions/{session_id}/messages")
     async def messages(session_id: int, runtime: Runtime = Depends(local)):
         runtime.store.get("session", session_id)
-        return list(reversed(runtime.store.list("message", session_id=session_id)))
+        return [{**item, "attachments": runtime.store.attachments.for_message(item["id"])}
+                for item in reversed(runtime.store.list("message", session_id=session_id))]
 
     @app.get("/sessions/{session_id}/latest-agent-run")
     async def latest_run(session_id: int, runtime: Runtime = Depends(local)):
@@ -750,11 +778,31 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
 
     @app.post("/agent-runs", status_code=201)
     async def create_run(data: RunInput, runtime: Runtime = Depends(local)):
+        if not data.model_profile_id and not runtime.store.find_request(data.client_request_id):
+            from .model_preferences import resolve
+            choice = resolve(runtime.store, await cloud.profiles(runtime.token), data.project_id, data.session_id)
+            if choice["profile_id"] and not choice["available"]:
+                raise CloudError(409, "当前作用域选择的模型已删除或禁用，请重新选择模型；任务尚未创建", code="model_preference_unavailable")
+            data.model_profile_id = choice["profile_id"]
+        if data.attachment_ids and not runtime.store.find_request(data.client_request_id):
+            materials = [runtime.store.attachments.visible(identifier, draft_id=data.attachment_draft_id) for identifier in data.attachment_ids]
+            if any(item.get("requires_vision") for item in materials):
+                profiles = await runtime.cloud.profiles(runtime.token)
+                profile = next((item for item in profiles if item.get("id") == data.model_profile_id), None) if data.model_profile_id else next((item for item in profiles if item.get("is_default")), None)
+                if not profile or profile.get("supports_vision") is not True:
+                    raise CloudError(422, "附件包含图片或无文字 PDF 页，任务尚未创建；请在模型设置中选择并确认支持视觉输入的模型", code="model_vision_unsupported")
         if data.execution_contract_version == "1.0" and data.permission_mode != "readonly" and data.collaboration_mode != "plan":
             capabilities = await runtime.execution_sessions.capabilities()
             if not capabilities["contract"]["execution"]:
                 raise ValueError("执行宿主缺少 S4 持续执行能力，请升级完整客户端；仍可创建只读任务")
         return runtime.create(data.model_dump())
+
+    @app.get("/agent-runs/by-request/{request_id}")
+    async def get_run_by_request(request_id: str, runtime: Runtime = Depends(local)):
+        run = runtime.store.find_request(request_id)
+        if not run:
+            raise KeyError("尚未找到对应任务；草稿仍保留")
+        return {**snapshot(run), "submitted_message": run.get("goal", ""), "attachment_ids": run.get("attachment_ids", [])}
 
     @app.get("/agent-runs/{run_id}")
     async def get_run(run_id: str, runtime: Runtime = Depends(local)):

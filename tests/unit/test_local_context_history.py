@@ -15,6 +15,38 @@ def history_store(tmp_path):
     return store, session
 
 
+@pytest.mark.parametrize("name,payload", [
+    ("call_documentation_tool", {"result": {"text": "外部文档"}}),
+    ("call_mcp_tool", {"result": {"content": []}}),
+    ("read_web_page", {"text": "网页"}),
+    ("list_mcp_tools", {"sources": [{"description": "服务说明"}]}),
+    ("tool_search", {"matches": [{"untrusted": True, "description": "远端描述"}]}),
+])
+def test_external_provenance_propagates_to_model_answers(tmp_path, name, payload):
+    store, session = history_store(tmp_path)
+    try:
+        external = store.context.append(session, "run", ModelMessage(role="tool", name=name,
+            tool_call_id="call", content=json.dumps(payload)), key="external", source="tool")
+        answer = store.context.append(session, "run", ModelMessage(role="assistant", content="根据上述资料"), key="answer", source="model")
+        user = store.context.append(session, "run", ModelMessage(role="user", content="我要求中文"), key="user", source="user")
+        assert external["provenance"] == answer["provenance"] == "external_untrusted"
+        assert external["external_context"] and answer["external_context"]
+        assert user["provenance"] == "local" and not user["external_context"]
+        assert store.context.items(session)[0]["external_context"]
+    finally:
+        store.db.close()
+
+
+def test_local_tool_search_does_not_mark_external_context(tmp_path):
+    store, session = history_store(tmp_path)
+    try:
+        item = store.context.append(session, "run", ModelMessage(role="tool", name="tool_search",
+            tool_call_id="call", content='{"matches":[{"name":"exec_command"}]}'), key="local", source="tool")
+        assert not item["external_context"]
+    finally:
+        store.db.close()
+
+
 def test_idempotent_context_and_session_scoped_content(tmp_path):
     store, session = history_store(tmp_path)
     try:

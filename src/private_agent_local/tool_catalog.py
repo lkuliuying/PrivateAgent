@@ -19,7 +19,8 @@ from private_agent_core.tool_specs import (
 from .task_constraints import tool_allowed
 
 DEFERRED_TOOLS = frozenset({"request_execution", "list_executions", "run_powershell_command",
-                            "list_documentation_sources", "call_documentation_tool", "list_mcp_tools", "call_mcp_tool", "read_web_page", "verify_local_preview", "list_skills", "load_skill", "read_skill_reference"})
+                            "list_documentation_sources", "call_documentation_tool", "list_mcp_tools", "call_mcp_tool", "read_web_page", "verify_local_preview", "list_skills", "load_skill", "read_skill_reference",
+                            "search_memories", "read_memory", "remember_memory", "update_memory", "forget_memory"})
 SKILL_TOOLS = frozenset({"list_skills", "load_skill", "read_skill_reference"})
 MCP_TOOLS = frozenset({"list_mcp_tools", "call_mcp_tool"})
 DOCUMENTATION_TOOLS = frozenset({"list_documentation_sources", "call_documentation_tool"})
@@ -57,7 +58,7 @@ class CatalogState(BaseModel):
 SEARCH_SPEC = ToolSpec(
     "tool_search", SearchArgs,
     "Find and load optional tools by name or concise English/Chinese keywords: advanced command options, "
-    "execution sessions, PowerShell, web pages, browser previews, or configured MCP tools. Search is local and grants no "
+    "execution sessions, PowerShell, web pages, browser previews, memories (remember/update/forget), or configured MCP tools. Search is local and grants no "
     "permissions. Matching tools become callable in the NEXT model response; do not call them in this batch. "
     "Documentation matches include source versions and argument schemas; use call_documentation_tool "
     "after loading. No match means no available matching tool.",
@@ -67,6 +68,11 @@ SEARCH_SPEC = ToolSpec(
 )
 
 KEYWORDS = {
+    "search_memories": "memory memories search 记忆 搜索 查找 偏好",
+    "read_memory": "memory detail source 记忆 详情 来源",
+    "remember_memory": "remember save memory 记住 记下 保存记忆",
+    "update_memory": "correct update memory 纠正 更正 更新记忆 修改记忆",
+    "forget_memory": "forget delete memory 忘记 遗忘 删除记忆",
     "list_skills": "skill skills 技能 目录",
     "load_skill": "skill skills instructions 技能 指引",
     "read_skill_reference": "skill reference 技能 参考 资料",

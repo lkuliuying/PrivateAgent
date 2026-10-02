@@ -207,6 +207,8 @@ class ConfiguredModels:
         gateway = ModelGateway(adapter, request_timeout_seconds=180, retry_policy=RetryPolicy(max_attempts=1))
         try:
             parsed = self._safe_request(ModelRequest.model_validate(request))
+            if any(message.images for message in parsed.messages) and selected.get("supports_vision") is not True:
+                raise CloudError(422, "当前模型未声明支持视觉输入，请检查模型设置", code="model_vision_unsupported")
             async with asyncio.timeout(190), self.limit:
                 if on_delta is None or not selected["supports_streaming"]:
                     result = await gateway.complete(parsed, cancellation=CancellationToken())

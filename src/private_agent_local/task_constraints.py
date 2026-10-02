@@ -259,11 +259,14 @@ def tool_allowed(name: str, run: dict) -> bool:
         return run.get("collaboration_mode") == "plan" and run.get("recovery_contract_version") == "1.0"
     if run.get("collaboration_mode") == "plan" and name not in {
         "update_run_plan", "read_code_file", "list_project_directory", "search_project_files",
-        "read_context_content", "read_patch_preview", "get_git_status", "get_git_diff",
+        "read_context_content", "read_task_attachment", "read_patch_preview", "get_git_status", "get_git_diff",
+        "search_memories", "read_memory",
         "list_documentation_sources", "call_documentation_tool", "tool_search", "list_skills", "load_skill", "read_skill_reference", "list_mcp_tools", "call_mcp_tool", "run_readonly_agents", "read_web_page", "verify_local_preview",
     }:
         return False
     limits = restrictions(run)
+    if name in {"remember_memory", "update_memory", "forget_memory"}:
+        return not (limits.writes_forbidden or limits.preview_only)
     if name in {"call_documentation_tool", "call_mcp_tool", "read_web_page", "verify_local_preview"}:
         return not limits.network_forbidden
     if name in {"write_project_file", "apply_project_patch"}:

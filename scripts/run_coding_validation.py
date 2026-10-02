@@ -13,7 +13,9 @@ from coding_validation_process import managed_process
 
 ROOT = Path(__file__).resolve().parents[1]
 SUITES = {
-    "workbench": ["tests/unit/test_workspace_features.py", "tests/unit/test_workbench_integrations.py"],
+    "mcp-memory-boundaries": ["tests/unit/test_mcp_memory_boundaries.py"],
+    "mcp-credentials": ["tests/unit/test_mcp_credentials.py", "tests/unit/test_local_ipc.py"],
+    "workbench": ["tests/unit/test_workspace_features.py", "tests/unit/test_workbench_integrations.py", "tests/unit/test_mcp_library.py", "tests/unit/test_mcp_credential_lifecycle.py"],
     "security": ["tests/unit/test_security_permissions.py", "tests/unit/test_secret_filter.py",
                  "tests/unit/test_security_boundaries.py", "tests/unit/test_sandbox_sensitive_paths.py",
                  "tests/unit/test_security_streaming.py"],
@@ -24,7 +26,7 @@ SUITES = {
     "reasoning": ["tests/unit/test_responses_adapter.py", "tests/unit/test_reasoning_decisions.py"],
     "context-alignment": ["tests/unit/test_context_alignment.py", "tests/unit/test_local_distribution.py"],
     "orchestration": ["tests/unit/test_local_planning.py", "tests/unit/test_local_progress.py", "tests/unit/test_local_plan_mode.py"],
-    "memory": ["tests/unit/test_local_memories.py", "tests/unit/test_local_compaction.py", "tests/unit/test_local_context_history.py", "tests/unit/test_local_instructions.py"],
+    "memory": ["tests/unit/test_local_memories.py", "tests/unit/test_memory_management.py", "tests/unit/test_local_compaction.py", "tests/unit/test_local_context_history.py", "tests/unit/test_local_instructions.py"],
     "project-management": ["tests/unit/test_local_project_management.py", "tests/unit/test_local_store.py"],
     "shared-models": ["tests/unit/test_model_gateway.py", "tests/unit/test_model_metadata.py", "tests/unit/test_model_probe.py"],
     "desktop-packaging": ["tests/packaging/test_nsis_installer_template.py", "tests/packaging/test_release_manifest.py", "tests/packaging/test_sign_installer.py",

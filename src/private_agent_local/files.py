@@ -78,17 +78,25 @@ def file_identity(path: Path) -> dict:
 
 
 def safe_bytes(root: Path, relative: str) -> tuple[bytes, dict]:
+    raw, identity = safe_file_bytes(root, relative, max_bytes=MAX_FILE_BYTES)
+    if b"\x00" in raw:
+        raise ValueError("文件包含二进制内容")
+    raw.decode("utf-8-sig")
+    return raw, identity
+
+
+def safe_file_bytes(root: Path, relative: str, *, max_bytes: int) -> tuple[bytes, dict]:
     """有界读取并核对打开句柄与路径身份，拒绝链接和读取期间的修改。"""
     path = within(root, relative)
     before = path.lstat()
-    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > MAX_FILE_BYTES:
-        raise ValueError("只支持 1 MiB 以内、无硬链接的普通文本文件")
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > max_bytes:
+        raise ValueError(f"只支持 {max_bytes // (1024 * 1024)} MiB 以内、无硬链接的普通文件")
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0))
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
         if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino) or opened.st_nlink != 1:
             raise ValueError("打开的文件身份已变化")
-        raw = stream.read(MAX_FILE_BYTES + 1)
+        raw = stream.read(max_bytes + 1)
         after = os.fstat(stream.fileno())
     current = within(root, relative).stat()
     # Python 3.12/Windows 的 stat 与 fstat 对 ctime 语义可能不同，只在同类采样间比较。
@@ -96,9 +104,8 @@ def safe_bytes(root: Path, relative: str) -> tuple[bytes, dict]:
             (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, 1) for s in (opened, after, current))
             or current.st_ctime_ns != before.st_ctime_ns or after.st_ctime_ns != opened.st_ctime_ns):
         raise ValueError("文件在读取期间发生变化，请重新读取")
-    if len(raw) > MAX_FILE_BYTES or b"\x00" in raw:
-        raise ValueError("文件过大或包含二进制内容")
-    raw.decode("utf-8-sig")
+    if len(raw) > max_bytes:
+        raise ValueError("文件超过大小限制")
     return raw, {"device": before.st_dev, "inode": before.st_ino, "mode": stat.S_IMODE(before.st_mode)}
 
 
@@ -201,6 +208,29 @@ def apply_patch(root: Path, preview: dict, content: str) -> dict:
     if digest(path.read_bytes()) != preview["new_sha256"]:
         raise ValueError("写入后的文件校验失败")
     return {**preview, "applied": True, "verified": True}
+
+
+def create_binary_file(root: Path, relative: str, data: bytes) -> None:
+    """显式导入二进制附件；先落临时文件，再原子创建目标，绝不覆盖。"""
+    path = within(root, relative, allow_missing=True)
+    if path.exists():
+        raise ValueError("目标文件已经存在，请改名；未覆盖文件")
+    if not path.parent.is_dir():
+        raise ValueError("目标父目录不存在，请先创建目录")
+    parent_identity = file_identity(path.parent)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".privateagent-import-", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        path = within(root, relative, allow_missing=True)
+        if file_identity(path.parent) != parent_identity:
+            raise ValueError("导入目录已变化，请重新选择")
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def prepare_process(args: list[str]) -> tuple[list[str], dict[str, str]]:

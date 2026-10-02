@@ -15,6 +15,9 @@ dependencies = [
     "httpx[socks]>=0.27",
     # 模型与工具契约校验
     "jsonschema>=4.26,<5",
+    # 附件图片校验与 PDF 本机文字提取、页面渲染。
+    "Pillow>=12,<13",
+    "pypdfium2>=5,<6",
     # MCP 与安全加固的 HTTP 传输（代码实际引用；与 requirements.txt 版本对齐）
     "mcp==2.0.0",
     "httpx2==2.9.1",

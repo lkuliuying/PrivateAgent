@@ -134,6 +134,9 @@ async def test_opt_in_watermark_and_independent_use_generate(worker):
     assert len(worker.owner.cloud.requests) == 1
     records = worker.store.list(session["project_id"])
     assert len(records) == 1 and records[0]["source_item_ids"]
+    assert records[0]["status"] == "pending_review"
+    assert worker.recall(session["id"], session["project_id"], "测试") == ([], [])
+    worker.store.review(session["project_id"], records[0]["id"], records[0]["version"], "accept")
     assert worker.store.cursor(session["id"]) > 0
     assert not await worker.tick()
     policy = worker.store.session(session["id"])
@@ -272,6 +275,7 @@ async def test_generation_reuses_stable_key_for_corrections_and_honors_forgettin
     session = seed(worker)
     await worker.tick()
     first = worker.store.list(session["project_id"])[0]
+    first = worker.store.review(session["project_id"], first["id"], first["version"], "accept")
     for batch in range(2):
         sources = []
         for index in range(2):
@@ -282,10 +286,15 @@ async def test_generation_reuses_stable_key_for_corrections_and_honors_forgettin
             "content": f"改用集成测试，版本 {batch}", "stable_key": first["stable_key"], "source_item_ids": sources}]}
         assert await worker.tick()
         if batch == 0:
-            corrected, = worker.store.list(session["project_id"])
-            assert corrected["id"] == first["id"] and corrected["version"] == 2
+            candidates = worker.store.list(session["project_id"])
+            pending = next(item for item in candidates if item["status"] == "pending_review")
+            previous = worker.store.get(session["project_id"], first["id"])
+            assert previous["content"] == first["content"] and previous["status"] == "stale"
+            assert pending["supersedes_id"] == first["id"] and pending["source_item_ids"] == sources
+            corrected = worker.store.review(session["project_id"], pending["id"], pending["version"], "accept")
+            assert corrected["id"] == first["id"] and corrected["version"] == first["version"] + 2
             assert corrected["content"] == "改用集成测试，版本 0"
-            worker.store.forget(session["project_id"], corrected["id"], 2)
+            worker.store.forget(session["project_id"], corrected["id"], corrected["version"])
         else:
             assert worker.store.list(session["project_id"]) == []
 

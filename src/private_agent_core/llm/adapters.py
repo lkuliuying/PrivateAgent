@@ -111,7 +111,8 @@ def _openai_messages(messages: tuple[ModelMessage, ...]) -> list[dict[str, Any]]
                 }
             )
         else:
-            converted.append({"role": message.role, "content": message.content})
+            content = ([{"type": "text", "text": message.content}] + [{"type": "image_url", "image_url": {"url": f"data:{image.mime_type};base64,{image.data}"}} for image in message.images]) if message.images else message.content
+            converted.append({"role": message.role, "content": content})
     return converted
 
 
@@ -486,6 +487,8 @@ def _ollama_messages(messages: tuple[ModelMessage, ...]) -> list[dict[str, Any]]
     converted: list[dict[str, Any]] = []
     for message in messages:
         item: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.images:
+            item["images"] = [image.data for image in message.images]
         if message.role == "assistant" and message.tool_calls:
             item["tool_calls"] = [
                 {
@@ -751,7 +754,8 @@ def _claude_messages(
             )
             converted.append({"role": "assistant", "content": content})
         else:
-            converted.append({"role": message.role, "content": message.content})
+            content = ([{"type": "text", "text": message.content}] + [{"type": "image", "source": {"type": "base64", "media_type": image.mime_type, "data": image.data}} for image in message.images]) if message.images else message.content
+            converted.append({"role": message.role, "content": content})
         index += 1
     return "\n\n".join(system_parts) or None, converted
 

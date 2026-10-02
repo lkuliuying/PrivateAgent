@@ -160,6 +160,8 @@ class ContextItem(CodingContract):
     kind: Literal["message", "instruction", "tool_call", "tool_result", "summary"]
     content_ref: ContentRef
     source: Literal["user", "project_instruction", "model", "tool", "summary", "legacy"]
+    provenance: Literal["local", "external_untrusted", "unknown"] = "unknown"
+    external_context: bool = False
     created_at: datetime
     tool_call_id: str | None = Field(default=None, min_length=1, max_length=200)
     execution_id: Identifier | None = None

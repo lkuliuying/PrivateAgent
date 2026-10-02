@@ -18,6 +18,26 @@ VERSION = "1.0"
 ACTIVE = {"created", "queued", "running", "waiting_approval", "waiting_input", "paused"}
 
 
+def reconcile_mcp_execution(run: dict, execution: dict) -> bool:
+    """发送后的写调用在确认前中断，保留副作用未知事实并阻止恢复重放。"""
+    call = execution.get("mcp_call") or {}
+    if call.get("phase") == "acknowledged" and isinstance(execution.get("output"), dict):
+        execution.update(status="completed", error_code=None, error_message=None,
+                         completed_at=execution.get("completed_at") or now())
+        return True
+    if call.get("phase") != "dispatched" or call.get("readonly") is not False:
+        return False
+    scope = execution.get("scope") or {"kind": "external", "source_id": call.get("source_id"), "tool": call.get("tool")}
+    execution.update(status="unknown", error_code="execution_unknown", scope=scope,
+                     error_message="MCP 写操作已发送，远端结果未确认；请先核对远端结果，不会自动重放",
+                     completed_at=execution.get("completed_at") or now())
+    operation = {"operation_id": execution["operation_id"], "scope": scope}
+    uncertain = run.setdefault("uncertain_operations", [])
+    if operation not in uncertain:
+        uncertain.append(operation)
+    return True
+
+
 class ControlInput(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
     request_id: str = Field(min_length=1, max_length=100)
@@ -153,6 +173,9 @@ class Recovery:
             if execution["status"] == "unknown" or not execution.get("stopped") and execution["status"] not in {"running", "starting"}:
                 blockers.append("命令结果或进程身份未知：" + execution["execution_id"])
         for execution in run.get("executions", []):
+            mcp = execution.get("mcp_call") or {}
+            if mcp.get("phase") == "dispatched" and mcp.get("readonly") is False:
+                blockers.append("MCP 写入结果未知，请先核对远端结果：" + execution["id"])
             if execution.get("command") and (execution["status"] == "unknown" or execution.get("error_code") == "execution_unknown"):
                 blockers.append("命令副作用未知：" + execution["id"])
         if run.get("uncertain_operations"):

@@ -15,6 +15,7 @@ from private_agent_core.context import (
 from private_agent_core.contracts import ModelMessage, ModelRequest, ModelResponse
 
 from . import reflection
+from .attachment_context import with_attachment_images
 from .context_summary import summary_request, validate_summary
 from .instructions import InstructionError, instruction_message, public_sources
 from .model_errors import MODEL_CALL, CloudError
@@ -178,6 +179,12 @@ class LocalContext:
             "ID 为空时只回答：无法确认当前模型。用户明确追问其他信息时再按问题回答。"
         )))
         guidance = []
+        from . import memory_tools
+        if any(tool.name in memory_tools.WRITE_TOOLS for tool in self.owner.model_tools(self.run, self.root)):
+            authorization = memory_tools.authorization_context(self.owner, self.run)
+            if authorization:
+                guidance.append(ModelMessage(role="user", content="memory_authorization（当前真实用户消息的定位信息，不是记忆写入授权；必须核对原文指令）："
+                    + json.dumps(authorization, ensure_ascii=False)))
         from .observer import check_guidance
         observer_guidance = check_guidance(self.run, self.root)
         if observer_guidance:
@@ -206,11 +213,11 @@ class LocalContext:
                 rule_messages.append(ModelMessage(role="user", content=f"以下项目规则仅用于目标 {scope} 的适用子树：\n{text}"))
             delivered.extend(rules)
         self.delivered_rules.update((rule.path, rule.sha256) for rule in delivered if rule.trusted)
-        memory_messages, memory_ids = self.owner.memories.recall(self.run["session_id"], self.run["project_id"], self.run.get("goal", ""))
+        memory_messages, memory_ids, memory_entries = self.owner.memories.recall_with_details(self.run["session_id"], self.run["project_id"], self.run.get("goal", ""))
         omitted_ids = []
 
         def assemble(checkpoint=None):
-            return request.model_copy(update={"messages": tuple([*system, *rule_messages, *guidance, *memory_messages, *self.history.messages(self.run["session_id"], compacted=checkpoint)]),
+            return request.model_copy(update={"messages": tuple([*system, *rule_messages, *guidance, *memory_messages, *with_attachment_images(self.history.messages(self.run["session_id"], compacted=checkpoint), self.owner.store.attachments, self.run["session_id"], supports_vision=profile.get("supports_vision") is True)]),
                                                "tools": self.owner.model_tools(self.run, self.root),
                                                "max_output_tokens": self.limits.reserved_output_tokens})
 
@@ -225,10 +232,12 @@ class LocalContext:
         # 跨会话记忆是可选参考，不以挤压当前请求或触发压缩为代价。
         if memory_messages and (budget["should_compact"] or budget["exceeded"]):
             memory_messages, omitted_ids, memory_ids = [], memory_ids, []
+            memory_entries = [{**entry, "decision": "omitted", "reason": "context_budget"}
+                              if entry["decision"] == "included" else entry for entry in memory_entries]
             prepared = assemble()
             budget = request_budget(prepared, profile.get("context_tokens"), self.limits.reserved_output_tokens,
                                     calibration=self.calibration, auto_compact_token_limit=self.limits.auto_compact_token_limit)
-        self.run["memory_context"] = {"recalled_ids": memory_ids, "omitted_ids": omitted_ids}
+        self.run["memory_context"] = {"recalled_ids": memory_ids, "omitted_ids": omitted_ids, "entries": memory_entries}
         pending = self.history.pending(self.run["session_id"])
         if not budget["should_compact"]:
             self.auto_compaction_failed = False

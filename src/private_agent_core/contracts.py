@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -143,9 +145,28 @@ class ProviderState(ContractModel):
     output_json: str = Field(min_length=2, max_length=1_500_000, repr=False)
 
 
+class ModelImage(ContractModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+    mime_type: Literal["image/jpeg", "image/png", "image/webp"]
+    data: str = Field(min_length=4, max_length=2_800_000, repr=False)
+    width: int = Field(gt=0, le=1536)
+    height: int = Field(gt=0, le=1536)
+
+    @model_validator(mode="after")
+    def validate_data(self):
+        try:
+            raw = base64.b64decode(self.data, validate=True)
+        except (ValueError, binascii.Error):
+            raise ValueError("图片必须是有效的 Base64 数据") from None
+        if len(raw) > 2 * 1024 * 1024:
+            raise ValueError("图片数据超过 2 MiB")
+        return self
+
+
 class ModelMessage(ContractModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str = ""
+    images: tuple[ModelImage, ...] = Field(default=(), max_length=8, repr=False)
     name: str | None = Field(default=None, max_length=200)
     tool_call_id: str | None = Field(default=None, max_length=200)
     tool_calls: tuple[ToolCall, ...] = ()
@@ -155,6 +176,8 @@ class ModelMessage(ContractModel):
     @model_serializer(mode="wrap")
     def serialize_message(self, handler):
         data = handler(self)
+        if not self.images:
+            data.pop("images", None)
         # 旧协议不增加空字段，保持既有小窗口预算和持久化兼容性。
         for key in ("phase", "provider_state"):
             if data.get(key) is None:
@@ -163,6 +186,8 @@ class ModelMessage(ContractModel):
 
     @model_validator(mode="after")
     def validate_role_fields(self) -> ModelMessage:
+        if self.images and self.role != "user":
+            raise ValueError("图片只能作为用户参考材料发送")
         if self.role == "tool" and (not self.name or not self.tool_call_id):
             raise ValueError("tool 消息必须包含 name 和 tool_call_id")
         if self.tool_calls and self.role != "assistant":

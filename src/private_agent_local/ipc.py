@@ -9,6 +9,8 @@ import queue
 import threading
 from urllib.parse import unquote, urlsplit
 
+from .mcp_credentials import CredentialTransport, McpCredentialError
+
 MAX_FRAME = 8 * 1024 * 1024
 MAX_BODY = 2 * 1024 * 1024
 
@@ -116,6 +118,9 @@ async def serve(app, nonce: str, input_stream, output_stream, *, parent_alive=No
             stopped.set()
             raise ConnectionError("桌面管道读取超时") from None
 
+    credentials = CredentialTransport(send)
+    app.state.desktop.mcp_credential_transport = credentials
+
     async def dispatch(frame):
         request_id = frame["id"]
         decoder = codecs.getincrementaldecoder("utf-8")()
@@ -180,10 +185,15 @@ async def serve(app, nonce: str, input_stream, output_stream, *, parent_alive=No
                         break
                     if not isinstance(frame, dict):
                         break
+                    try:
+                        if credentials.receive(frame):
+                            continue
+                    except McpCredentialError:
+                        break
                     if frame.get("method") == "shutdown":
                         break
                     request_id = frame.get("id")
-                    if not isinstance(request_id, str) or not request_id.isascii() or not request_id.replace("-", "").isalnum() or len(request_id) > 64:
+                    if not isinstance(request_id, str) or request_id.startswith("mcp-") or not request_id.isascii() or not request_id.replace("-", "").isalnum() or len(request_id) > 64:
                         break
                     if frame.get("method") == "cancel":
                         if task := tasks.get(request_id):
@@ -199,6 +209,8 @@ async def serve(app, nonce: str, input_stream, output_stream, *, parent_alive=No
                 await asyncio.gather(*active, return_exceptions=True)
     finally:
         stopped.set()
+        credentials.close()
+        app.state.desktop.mcp_credential_transport = None
         for task in (watcher, pending_read, stop_waiter):
             if task:
                 task.cancel()
