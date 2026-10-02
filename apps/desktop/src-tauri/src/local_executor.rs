@@ -1,6 +1,7 @@
 //! 统一运行时的私有管道宿主；不监听端口，也不向网页暴露启动凭证。
 use serde::Serialize;
 use serde_json::{json, Value};
+use zeroize::Zeroizing;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -16,6 +17,7 @@ struct Process {
     input: Arc<Mutex<ChildStdin>>,
     pending: Pending,
     broken: Arc<AtomicBool>,
+    credentials: Arc<crate::mcp_credentials::CredentialBridge>,
     model_config_json: String,
 }
 
@@ -36,8 +38,13 @@ fn fail_pending(pending: &Pending) {
     }
 }
 
-fn write_frame(input: &Arc<Mutex<ChildStdin>>, frame: Value) -> Result<(), String> {
-    let mut bytes = serde_json::to_vec(&frame).map_err(|_| "管道请求无效")?;
+fn write_frame(input: &Arc<Mutex<ChildStdin>>, mut frame: Value) -> Result<(), String> {
+    if let Some(request) = frame.get_mut("params") {
+        crate::model_save_credentials::hydrate_request(request)?;
+    }
+    let encoded = serde_json::to_vec(&frame);
+    crate::mcp_credentials::erase_frame(&mut frame);
+    let mut bytes = Zeroizing::new(encoded.map_err(|_| "管道请求无效")?);
     if bytes.len() as u64 >= MAX_FRAME { return Err("管道请求超过大小限制".into()); }
     bytes.push(b'\n');
     let mut pipe = input.lock().map_err(|_| "管道不可用")?;
@@ -123,15 +130,42 @@ pub(crate) fn start_local_executor(
     let child = Arc::new(Mutex::new(child));
     let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
     let broken = Arc::new(AtomicBool::new(false));
+    let credentials = Arc::new(crate::mcp_credentials::CredentialBridge::new());
+    let (credential_sender, credential_receiver) = std::sync::mpsc::sync_channel::<Value>(16);
+    let (credential_input, credential_bridge) = (input.clone(), credentials.clone());
+    // 系统凭据库可能阻塞；独立有界队列避免阻塞普通响应读取，也不生成 WebView channel。
+    std::thread::spawn(move || {
+        while let Ok(frame) = credential_receiver.recv() {
+            let reply = credential_bridge.handle(frame);
+            if write_frame(&credential_input, reply).is_err() { break; }
+        }
+    });
     let (reader_pending, reader_broken, reader_child) = (pending.clone(), broken.clone(), child.clone());
+    let (reader_input, reader_credentials) = (input.clone(), credentials.clone());
     std::thread::spawn(move || {
         let mut reader = BufReader::new(output);
         loop {
-            let mut bytes = Vec::new();
+            let mut bytes = Zeroizing::new(Vec::new());
             if reader.by_ref().take(MAX_FRAME + 1).read_until(b'\n', &mut bytes).is_err()
                 || bytes.is_empty() || bytes.len() as u64 > MAX_FRAME || bytes.last() != Some(&b'\n') { break; }
             let Ok(frame) = serde_json::from_slice::<Value>(&bytes) else { break };
+            if frame.get("method").and_then(Value::as_str) == Some("mcp_credential") {
+                match credential_sender.try_send(frame) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(mut frame)) => {
+                        let id = frame.get("id").cloned().unwrap_or(Value::Null);
+                        crate::mcp_credentials::erase_frame(&mut frame);
+                        if write_frame(&reader_input, json!({"id":id, "method":"mcp_credential_result", "error":"credential_busy"})).is_err() { break; }
+                    }
+                    Err(std::sync::mpsc::TrySendError::Disconnected(mut frame)) => {
+                        crate::mcp_credentials::erase_frame(&mut frame);
+                        break;
+                    }
+                }
+                continue;
+            }
             let Some(id) = frame.get("id").and_then(Value::as_str) else { break };
+            if id.starts_with("mcp-") || frame.get("method").is_some() { break; }
             #[cfg(all(windows, feature = "readiness-probe"))]
             let drop_frame = crate::readiness_transport::drop_frame(&frame);
             #[cfg(not(all(windows, feature = "readiness-probe")))]
@@ -145,10 +179,11 @@ pub(crate) fn start_local_executor(
             }
         }
         reader_broken.store(true, Ordering::Release);
+        reader_credentials.close();
         fail_pending(&reader_pending);
         if let Ok(mut process) = reader_child.lock() { terminate_owned_tree(&mut process); }
     });
-    *guard = Some(Process { child, input, pending, broken, model_config_json: model_json });
+    *guard = Some(Process { child, input, pending, broken, credentials, model_config_json: model_json });
     Ok(LocalConnection { transport: "stdio", protocol: 2 })
 }
 
@@ -156,7 +191,7 @@ pub(crate) fn start_local_executor(
 pub(crate) async fn local_executor_request(
     state: State<'_, LocalExecutorState>, id: String, request: Value, on_event: Channel<Value>,
 ) -> Result<(), String> {
-    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+    if id.is_empty() || id.starts_with("mcp-") || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err("请求标识无效".into());
     }
     let (input, pending) = {
@@ -186,7 +221,7 @@ pub(crate) async fn local_executor_request(
 
 #[tauri::command]
 pub(crate) async fn local_executor_cancel(state: State<'_, LocalExecutorState>, id: String) -> Result<(), String> {
-    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+    if id.is_empty() || id.starts_with("mcp-") || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         return Err("请求标识无效".into());
     }
     #[cfg(all(windows, feature = "readiness-probe"))]
@@ -204,9 +239,26 @@ pub(crate) async fn local_executor_cancel(state: State<'_, LocalExecutorState>, 
 #[tauri::command]
 pub(crate) fn stop_local_executor(app: AppHandle) { stop(&app); }
 
+#[tauri::command]
+pub(crate) async fn set_mcp_credential(
+    state: State<'_, LocalExecutorState>, binding: crate::mcp_credentials::Binding, value: String,
+) -> Result<crate::mcp_credentials::CredentialStatus, String> {
+    let value = Zeroizing::new(value);
+    let bridge = {
+        let guard = state.0.lock().map_err(|_| "本机运行时状态不可用")?;
+        let process = guard.as_ref().ok_or("本机运行时尚未启动")?;
+        if process.broken.load(Ordering::Acquire) { return Err("MCP 凭据连接已关闭，请重新连接".into()); }
+        process.credentials.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || bridge.save_static(binding, value.to_string()))
+        .await.map_err(|_| "MCP 凭据操作未完成，请重新连接后核对配置".to_string())?
+        .map_err(|_| "MCP 凭据未确认保存；请重新准备配置后重试，输入无需重建".to_string())
+}
+
 pub(crate) fn stop(app: &AppHandle) {
     let Some(state) = app.try_state::<LocalExecutorState>() else { return };
     let Some(process) = state.0.lock().ok().and_then(|mut guard| guard.take()) else { return };
+    process.credentials.close();
     let shutdown_input = process.input.clone();
     // 不能让阻塞的管道写入阻止退出超时与最终进程回收。
     std::thread::spawn(move || { let _ = write_frame(&shutdown_input, json!({"method": "shutdown"})); });

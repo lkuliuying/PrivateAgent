@@ -38,4 +38,5 @@ zeroize = "1"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_System_Threading",
+  "Win32_Security_Cryptography",
 ] }

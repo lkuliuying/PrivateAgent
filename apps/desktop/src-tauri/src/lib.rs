@@ -1,5 +1,8 @@
 // 桌面壳仅管理本机执行器、模型凭据、窗口和更新生命周期。
 mod credentials;
+mod credential_draft;
+mod model_save_credentials;
+mod mcp_credentials;
 mod local_executor;
 mod updater_config;
 #[cfg(all(windows, feature = "readiness-probe"))]
@@ -16,7 +19,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 use tauri_plugin_updater::UpdaterExt;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -117,8 +120,7 @@ fn write_model_provider_secret_aliases(aliases: &BTreeSet<String>) -> Result<(),
         aliases: aliases.iter().cloned().collect(),
     })
     .map_err(|_| "model provider credential index serialization failed")?;
-    fs::write(model_provider_secret_index_path(), encoded)
-        .map_err(|_| "model provider credential index write failed".to_string())
+    credential_draft::atomic_write(&model_provider_secret_index_path(), &encoded)
 }
 
 fn collect_model_provider_secrets_for_sidecar() -> Result<Zeroizing<String>, String> {
@@ -163,6 +165,32 @@ fn read_model_provider_secret_status(alias: &str) -> Result<ModelProviderSecretS
     })
 }
 
+fn check_draft_store_access() -> Result<(), String> {
+    #[cfg(all(windows, feature = "readiness-probe"))]
+    if readiness_probe::config().is_some() {
+        return Err("探针模式禁止访问加密凭据草稿".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn read_model_provider_draft() -> Result<Option<String>, String> {
+    check_draft_store_access()?;
+    credential_draft::read(&config_dir().join("model-provider-draft.bin"))
+}
+
+#[tauri::command]
+fn write_model_provider_draft(payload: String) -> Result<(), String> {
+    check_draft_store_access()?;
+    credential_draft::write(&config_dir().join("model-provider-draft.bin"), payload)
+}
+
+#[tauri::command]
+fn clear_model_provider_draft() -> Result<(), String> {
+    check_draft_store_access()?;
+    credential_draft::clear(&config_dir().join("model-provider-draft.bin"))
+}
+
 #[tauri::command]
 fn model_provider_secret_status(alias: String) -> Result<ModelProviderSecretStatus, String> {
     read_model_provider_secret_status(&alias)
@@ -173,6 +201,7 @@ fn set_model_provider_secret(
     alias: String,
     secret: String,
 ) -> Result<ModelProviderSecretStatus, String> {
+    let secret = Zeroizing::new(secret);
     let normalized = secret.trim();
     if normalized.is_empty() {
         return Err("model provider API key must not be empty".to_string());
@@ -181,10 +210,11 @@ fn set_model_provider_secret(
         return Err("model provider API key is too long".to_string());
     }
     let account = model_provider_account(&alias)?;
-    credentials::set(&account, normalized)?;
     let mut aliases = read_model_provider_secret_aliases()?;
     aliases.insert(alias.clone());
+    // 先持久化不含密钥的索引；即使在写入凭据后被强制结束，下次也能找到密钥。
     write_model_provider_secret_aliases(&aliases)?;
+    credentials::set(&account, normalized)?;
     read_model_provider_secret_status(&alias)
 }
 
@@ -315,7 +345,11 @@ fn install_system_tray(app: &tauri::App) -> tauri::Result<()> {
             TRAY_SHOW_ID => {
                 let _ = show_main_window(app);
             }
-            TRAY_EXIT_ID => request_app_exit(app),
+            TRAY_EXIT_ID => {
+                // 托盘退出先展示主窗口，由前端完成未保存配置检查。
+                let _ = show_main_window(app);
+                let _ = app.emit("pa:request-exit", ());
+            },
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -378,6 +412,9 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
+            read_model_provider_draft,
+            write_model_provider_draft,
+            clear_model_provider_draft,
             model_provider_secret_status,
             set_model_provider_secret,
             clear_model_provider_secret,
@@ -385,6 +422,7 @@ pub fn run() {
             local_executor::stop_local_executor,
             local_executor::local_executor_request,
             local_executor::local_executor_cancel,
+            local_executor::set_mcp_credential,
             check_for_updates,
             get_update_configuration,
             download_and_install_update,

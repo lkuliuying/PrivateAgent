@@ -243,6 +243,7 @@ function main(args = process.argv.slice(2)) {
   run(python, ["-m", "PyInstaller", "--noconfirm", "--onefile", "--console", "--name", localName,
     "--paths", path.join(root, "src"), "--distpath", localBin,
     "--workpath", path.join(output, "pyinstaller-work"), "--specpath", output,
+    "--collect-all", "pypdfium2", "--collect-all", "pypdfium2_raw", "--copy-metadata", "Pillow",
     "--exclude-module", "personal_assistant", "--exclude-module", "torch", "--exclude-module", "numpy",
     path.join(root, "src", "private_agent_local", "entry.py")]);
   run(process.execPath, [typecheck, "--noEmit"]);
