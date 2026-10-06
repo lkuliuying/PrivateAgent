@@ -131,11 +131,23 @@ def test_workflow_is_manual_tagged_and_secret_scoped():
         if "        run: |" in block:
             assert "${{" not in run_body(name)
     assert "TAURI_SIGNING_PRIVATE_KEY" not in TEXT.split("    steps:", 1)[0]
-    cache_path = re.search(r"^      UV_CACHE_DIR: (.+)$", TEXT, re.M).group(1)
-    assert cache_path == "${{ runner.temp }}\\privateagent-uv-cache"
     assert "--github-repo $env:RELEASE_REPOSITORY" in run_body("Build the Tauri-signed Windows installer")
     assert "scripts/verify_update_release.py" in run_body("Verify final updater assets and record evidence")
     assert all(re.fullmatch(r"[0-9a-f]{40}", pin) for pin in re.findall(r"uses: [^@]+@([^\s]+)", TEXT))
+
+
+def test_cache_and_utf8_are_initialized_in_supported_contexts():
+    job_configuration = TEXT.split("    steps:", 1)[0]
+    assert "runner.temp" not in job_configuration
+    assert 'PYTHONUTF8: "1"' in job_configuration
+    assert "PYTHONIOENCODING: utf-8" in job_configuration
+    install = STEPS["Install local executor build dependencies"]
+    cache_path = re.search(r"^          UV_CACHE_DIR: (.+)$", install, re.M).group(1)
+    assert cache_path == "${{ runner.temp }}\\privateagent-uv-cache"
+    body = run_body("Install local executor build dependencies")
+    assert '"UV_CACHE_DIR=$env:UV_CACHE_DIR"' in body
+    assert "$env:GITHUB_ENV" in body
+    assert body.index("$env:GITHUB_ENV") < body.index("uv sync --locked --all-extras")
 
 
 def test_all_powershell_blocks_parse(release_context):

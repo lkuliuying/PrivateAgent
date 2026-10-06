@@ -25,7 +25,8 @@ jobs:
       run:
         shell: pwsh
     env:
-      UV_CACHE_DIR: ${{ runner.temp }}\privateagent-uv-cache
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
       RELEASE_REPOSITORY: lkuliuying/PrivateAgent
       RELEASE_TAG: ${{ inputs.release_tag }}
 
@@ -103,7 +104,12 @@ jobs:
         run: npm ci
 
       - name: Install local executor build dependencies
-        run: uv sync --locked --all-extras
+        env:
+          UV_CACHE_DIR: ${{ runner.temp }}\privateagent-uv-cache
+        run: |
+          "UV_CACHE_DIR=$env:UV_CACHE_DIR" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          uv sync --locked --all-extras
+          if ($LASTEXITCODE -ne 0) { throw 'Local executor dependency installation failed' }
 
       - name: Build the Tauri-signed Windows installer
         id: build
