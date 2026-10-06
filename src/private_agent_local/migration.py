@@ -22,6 +22,8 @@ from . import files
 from .attachments import read_blob
 from .store import Store, encode, now
 
+ROLLBACK_FINGERPRINT_VERSION = 2
+
 
 def _unpack_legacy(source: Path, value: str):
     if len(value.encode("utf-8")) > MAX_BYTES:
@@ -141,7 +143,7 @@ def preview_history(source: str, *, authority: str, owner_id: int) -> dict:
 
 def fingerprint(store: Store) -> str:
     digest = hashlib.sha256()
-    for table in ("record_ids", "projects", "workspaces", "sessions", "messages", "runs", "events", "approvals", "executions", "grants", "audit_events", "schema_migrations", "sqlite_sequence", "task_attachments", "attachment_drafts", "attachment_draft_refs", "message_attachments", "composer_drafts"):
+    for table in ("record_ids", "projects", "workspaces", "sessions", "messages", "runs", "events", "approvals", "executions", "grants", "audit_events", "schema_migrations", "sqlite_sequence", "task_attachments", "attachment_drafts", "attachment_draft_refs", "message_attachments", "composer_drafts", "mcp_services", "mcp_service_changes"):
         digest.update(table.encode())
         for row in store.db.execute(f"SELECT * FROM {table} ORDER BY rowid"):
             digest.update(json.dumps(row, ensure_ascii=False, separators=(",", ":")).encode())
@@ -156,7 +158,7 @@ def apply_history(store: Store, source: str, digest: str, mappings: dict[str, st
 
 
 def apply_archive(store: Store, archive: dict, digest: str, mappings: dict[str, str], *, authority: str, owner_id: int,
-                  workspace_roots: dict[str, str] | None = None, augment=None) -> dict:
+                  workspace_roots: dict[str, str] | None = None, augment=None, source_kind="history", backup_format=None) -> dict:
     validate_archive(archive, authority=authority, owner_id=owner_id)
     prior = store.db.execute("SELECT data FROM history_imports WHERE sha256=?", (digest,)).fetchone()
     if prior:
@@ -170,7 +172,8 @@ def apply_archive(store: Store, archive: dict, digest: str, mappings: dict[str, 
     roots = {key: str(files.authorize_root(value)) for key, value in mappings.items()}
     backup = store._backup()
     imported = {"id": str(uuid.uuid4()), "sha256": digest, "source": archive["source"], "created_at": now(),
-                "backup": backup, "counts": {kind: len(rows) for kind, rows in records.items()}, "imported_counts": {}}
+                "backup": backup, "counts": {kind: len(rows) for kind, rows in records.items()}, "imported_counts": {},
+                "source_kind": source_kind, "backup_format": backup_format or archive["format"]}
     maps: dict[str, dict] = {kind: {} for kind in ("projects", "workspaces", "sessions", "messages", "runs")}
     related = {kind: defaultdict(list) for kind in ("events", "approvals", "executions")}
     for kind in related:
@@ -252,10 +255,15 @@ def apply_archive(store: Store, archive: dict, digest: str, mappings: dict[str, 
             session, run_id = maps["sessions"].get(item["id"]), maps["runs"].get(item.get("last_run_id"))
             if session and run_id:
                 store.update("session", session, last_run_id=run_id)
-        if augment is not None:
-            augment(maps, attachment_maps)
-        imported["imported_counts"] = {kind: len(values) for kind, values in maps.items()}
+        source_counts = {kind: len(values) for kind, values in maps.items()}
+        sent_attachments = len(attachment_maps)
+        imported["skipped_counts"] = {kind: len(records[kind]) - count for kind, count in source_counts.items()}
+        imported["skipped_counts"]["attachments"] = len(records.get("attachments", [])) - sent_attachments
+        extra_counts = augment(maps, attachment_maps) if augment is not None else {}
+        imported["imported_counts"] = {**source_counts, "attachments": len(attachment_maps), "sent_attachments": sent_attachments,
+                                       **(extra_counts or {})}
         store.audit("history.imported", import_id=imported["id"], sha256=digest, counts=imported["imported_counts"])
+        imported["rollback_fingerprint_version"] = ROLLBACK_FINGERPRINT_VERSION
         imported["rollback_fingerprint"] = fingerprint(store)
         store.db.execute("INSERT INTO history_imports VALUES (?,?,?,?)", (imported["id"], digest, encode(imported), store._pack(archive)))
     return imported
@@ -266,6 +274,9 @@ def rollback_history(store: Store, import_id: str) -> dict:
     if not row:
         raise KeyError("迁移记录不存在")
     imported = json.loads(row[0])
+    version = imported.get("rollback_fingerprint_version")
+    if type(version) is not int or version != ROLLBACK_FINGERPRINT_VERSION:
+        raise ValueError("此导入记录的回滚校验版本过旧或不受支持，无法确认后续配置是否变化；原记录和备份已保留，仍可查看和导出，请先导出当前数据后人工核对")
     if store.has_active_run() or fingerprint(store) != imported["rollback_fingerprint"]:
         raise ValueError("迁移后已有其他修改，不能自动回滚；请先导出新记录并人工核对备份")
     backup = files.within(store.path.parent, imported["backup"]["filename"])

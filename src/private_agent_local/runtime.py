@@ -57,6 +57,7 @@ from .executor import ExecutionFailure, run_command
 from .instructions import InstructionError, InstructionLoader
 from .memories import Memories
 from .model_errors import CloudError
+from .model_preferences import require_model_restore_confirmed
 from .output import parse_structured_output, validate_output_schema
 from .patchsets import PatchService
 from .planning import LocalPlanner
@@ -241,6 +242,7 @@ class Runtime:
             if prior.get("attachment_ids", []) != attachment_ids or prior.get("goal") != data["message"]:
                 raise ValueError("重复请求标识与正文或附件不匹配")
             return snapshot(prior)
+        require_model_restore_confirmed(self.store, data["project_id"], data["session_id"])
         if self.store.has_active_run() and data.get("recovery_contract_version") != "1.0":
             raise ValueError("本机已有任务执行中，请完成或取消后再开始")
         active = self.store.runs(active_only=True)

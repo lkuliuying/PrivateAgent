@@ -22,6 +22,12 @@ from private_agent_core.history import (
 
 from . import files, migration
 from .attachments import read_blob
+from .backup_models import (
+    export_selections,
+    normalize_selections,
+    restore_selection,
+    review_selection,
+)
 from .drafts import DraftData, Drafts, DraftWrite
 from .model_catalog import (
     Input,
@@ -33,7 +39,17 @@ from .model_catalog import (
 )
 from .store import now
 
-FORMAT = "privateagent.backup.v1"
+LEGACY_FORMAT = "privateagent.backup.v1"
+FORMAT = "privateagent.backup.v2"
+
+
+class LoadedBackup(dict):
+    """保留文件元数据，不把内部字段混入已校验的备份正文。"""
+
+    def __init__(self, payload, backup_format, size_bytes):
+        super().__init__(payload)
+        self.backup_format = backup_format
+        self.size_bytes = size_bytes
 
 
 class ProviderBackup(Input):
@@ -71,12 +87,6 @@ class DraftAttachmentBackup(Input):
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     content_encoding: Literal["base64"]
     content: str = Field(max_length=14 * 1024 * 1024)
-
-
-class SelectionBackup(Input):
-    scope: Literal["project", "session"]
-    id: int = Field(gt=0)
-    profile_id: str = Field(min_length=1, max_length=128)
 
 
 class BackupExport(Input):
@@ -137,8 +147,7 @@ def export_backup(runtime, kind, home_layout):
             raw = read_blob(store.path.parent, item)
             attachments.append({key: item[key] for key in ("id", "name", "size_bytes", "sha256", "project_id", "workspace_id", "kind") if key in item} | {
                 "content_encoding": "base64", "content": base64.b64encode(raw).decode("ascii")})
-        selections = [{"scope": kind, "id": item["id"], "profile_id": item["model_profile_id"]}
-                      for kind in ("project", "session") for item in store.list(kind) if item.get("model_profile_id")]
+        selections = export_selections(store, payload["configuration"])
         payload.update(history=history, drafts=drafts, draft_attachments=attachments, model_selections=selections)
     # 仅导出白名单业务数据；凭据、凭据草稿、探测状态和模型保存日志均不进入备份。
     data = encode_archive(payload)
@@ -152,11 +161,11 @@ def load_backup(path, runtime):
         raise ValueError("请选择实际位置的普通备份 JSON 文件，不接受链接或凭据文件")
     content, _ = files.safe_file_bytes(source.parent, source.name, max_bytes=MAX_BYTES)
     package = json.loads(content)
-    if not isinstance(package, dict) or set(package) != {"format", "sha256", "payload"} or package["format"] != FORMAT:
-        raise ValueError("不支持的备份格式，请使用历史导入入口读取旧历史包")
+    if not isinstance(package, dict) or set(package) != {"format", "sha256", "payload"} or package["format"] not in {LEGACY_FORMAT, FORMAT}:
+        raise ValueError("不支持的备份格式；v2 备份需使用支持新版格式的客户端，旧历史包请使用历史导入入口")
     data = package["payload"]
     if not isinstance(data, dict) or hashlib.sha256(encode_archive(data)).hexdigest() != package["sha256"]:
-        raise ValueError("备份摘要校验失败，文件可能损坏；未导入数据")
+        raise ValueError("备份摘要校验失败，文件可能损坏或被旧客户端改写；未导入数据。请保留原包；原数据仍在时，请用新版客户端重新导出")
     expected = {"kind", "created_at", "home_layout", "configuration"}
     if data.get("kind") == "application":
         expected |= {"history", "drafts", "draft_attachments", "model_selections"}
@@ -164,6 +173,8 @@ def load_backup(path, runtime):
         raise ValueError("备份种类无效")
     if set(data) != expected or data.get("home_layout") not in {"standard", "compact"}:
         raise ValueError("备份包含未知配置字段")
+    if not isinstance(data["created_at"], str) or not 1 <= len(data["created_at"]) <= 100:
+        raise ValueError("备份创建时间无效")
     config = ConfigBackup.model_validate(data["configuration"])
     identifiers = set()
     for provider in config.providers:
@@ -178,11 +189,11 @@ def load_backup(path, runtime):
             raise ValueError("模型能力配置包含未知或重复的模型引用")
         seen_profiles.add(profile.id)
     if data["kind"] == "application":
-        validate_data(data, runtime)
-    return data, hashlib.sha256(content).hexdigest()
+        validate_data(data, runtime, backup_format=package["format"])
+    return LoadedBackup(data, package["format"], len(content)), hashlib.sha256(content).hexdigest()
 
 
-def validate_data(data, runtime):
+def validate_data(data, runtime, *, backup_format=FORMAT):
     history = validate_archive(data["history"], authority=runtime.authority, owner_id=runtime.owner_id)["records"]
     projects = {item["id"]: item for item in history["projects"]}
     workspaces = {item["id"]: item for item in history["workspaces"]}
@@ -191,7 +202,7 @@ def validate_data(data, runtime):
         raise ValueError("备份草稿或附件数量超限")
     data["drafts"] = [DraftBackup.model_validate(item).model_dump() for item in data["drafts"]]
     data["draft_attachments"] = [DraftAttachmentBackup.model_validate(item).model_dump() for item in data["draft_attachments"]]
-    data["model_selections"] = [SelectionBackup.model_validate(item).model_dump() for item in data["model_selections"]]
+    data["model_selections"] = normalize_selections(data, legacy=backup_format == LEGACY_FORMAT)
     attachments = {item["id"]: item for item in history["attachments"]}
     for item in data["draft_attachments"]:
         if not isinstance(item, dict) or set(item) - {"id", "name", "size_bytes", "sha256", "project_id", "workspace_id", "kind", "content_encoding", "content"}:
@@ -233,11 +244,6 @@ def validate_data(data, runtime):
         referenced.update(ids)
     if {item["id"] for item in data["draft_attachments"]} - referenced:
         raise ValueError("备份包含没有草稿引用的附件")
-    for choice in data["model_selections"]:
-        if (not isinstance(choice, dict) or set(choice) != {"scope", "id", "profile_id"} or choice["scope"] not in {"project", "session"}
-                or choice["id"] not in (projects if choice["scope"] == "project" else sessions)
-                or not isinstance(choice["profile_id"], str) or len(choice["profile_id"]) > 128):
-            raise ValueError("模型选择范围无效")
 
 
 def preview_backup(path, runtime):
@@ -246,10 +252,15 @@ def preview_backup(path, runtime):
     providers = [{"id": item["id"], "name": item["configuration"]["name"], "base_url": item["configuration"]["base_url"],
                   "conflict": item["id"] in catalog.data["providers"]} for item in data["configuration"]["providers"]]
     records = data.get("history", {}).get("records", {})
-    return {"sha256": digest, "kind": data["kind"], "providers": providers, "home_layout": data["home_layout"],
+    coverage = ["供应商与模型普通配置", "模型参数", "首页布局"]
+    if data["kind"] == "application":
+        coverage += ["当前项目、工作区、会话与消息", "运行历史子集", "持久草稿与项目引用", "已发送及未发送附件", "模型偏好与待确认来源"]
+    return {"sha256": digest, "format": data.backup_format, "created_at": data["created_at"], "size_bytes": data.size_bytes,
+            "coverage": coverage, "kind": data["kind"], "providers": providers, "home_layout": data["home_layout"],
+            "model_selections": [review_selection(item, catalog) for item in data.get("model_selections", [])],
             "projects": records.get("projects", []), "workspaces": records.get("workspaces", []),
             "counts": {**{key: len(items) for key, items in records.items()}, "drafts": len(data.get("drafts", [])), "draft_attachments": len(data.get("draft_attachments", []))},
-            "warnings": ["同名供应商保留现有配置；新增供应商默认禁用，需要重新输入密钥并启用。", "数据导入创建新的项目与会话，不覆盖已有记录。每个工作区必须重新选择本机目录。", "草稿恢复为待发送内容，旧请求标识、授权和任务操作不会恢复。", "工作树恢复为已映射目录，不自动创建 Git 工作树。项目文件、API Key、加密设置草稿、长期记忆、Skills、MCP 和界面资源不在此备份中。"]}
+            "warnings": ["供应商 ID 冲突时保留现有配置；新增供应商默认禁用，需要重新输入密钥并启用。", "数据导入创建新的项目与会话，不覆盖已有记录。每个工作区必须重新选择本机目录。", "草稿恢复为待发送内容，旧请求标识、授权和任务操作不会恢复。", "模型身份缺失、冲突或禁用时先恢复数据，核对并选择本机模型后才能发送。", "工作树恢复为已映射目录，不自动创建 Git 工作树。项目文件、API Key、加密设置草稿、长期记忆、Skills、MCP 和界面资源不在此备份中。", "应用数据包包含当前工作台记录及运行历史子集，不包含此前导入保留的历史归档。历史导入记录可单独导出历史归档子集，该子集不含配置、草稿、未发送附件或模型选择。"]}
 
 
 def import_configuration(data, catalog):
@@ -288,17 +299,20 @@ def import_data(data, digest, mappings, workspace_mappings, runtime):
         raise ValueError("此文件仅包含普通配置")
     prior = runtime.store.db.execute("SELECT data FROM history_imports WHERE sha256=?", (digest,)).fetchone()
     if prior:
-        return json.loads(prior[0])
+        return {**json.loads(prior[0]), "already_imported": True}
     records = data["history"]["records"]
     if set(mappings) != {str(item["id"]) for item in records["projects"]} or set(workspace_mappings) != {str(item["id"]) for item in records["workspaces"]}:
         raise ValueError("请为每个项目和工作区选择本机目录，避免遗漏材料")
     roots = {key: str(files.authorize_root(path)) for key, path in workspace_mappings.items()}
     store = runtime.store
+    catalog = runtime.cloud.authorized(runtime.token)
+    selections = [review_selection(item, catalog) for item in data["model_selections"]]
     existing_home = Drafts(store).get("pa_coding_draft_v2_none_none_new")["data"]
     if existing_home and (existing_home["text"] or existing_home["chips"] or existing_home["attachments"]) and any(item["project_id"] is None for item in data["drafts"]):
         raise ValueError("当前首页有未绑定项目的草稿，请先为其选择项目并保存，再导入首页草稿")
 
     def augment(maps, attachment_map):
+        orphan_sessions = 0
         for item in data["draft_attachments"]:
             installed = store.attachments.install_bytes(item["name"], base64.b64decode(item["content"], validate=True), maps["projects"][item["project_id"]], maps["workspaces"][item["workspace_id"]], secret_filter=runtime.secret_filter)
             attachment_map[item["id"]] = installed["id"]
@@ -308,6 +322,7 @@ def import_data(data, digest, mappings, workspace_mappings, runtime):
                 raise ValueError("草稿所属会话类型不能恢复，请核对备份")
             if item["orphan"]:
                 session = store.create("session", {"project_id": project, "workspace_id": workspace, "title": "恢复的附件草稿", "kind": "coding", "last_run_id": None})["id"]
+                orphan_sessions += 1
             draft = DraftData.model_validate(item["data"])
             draft.draftId, draft.clientRequestId, draft.requestSignature = uuid.uuid4().hex, "", ""
             for ref in draft.attachments:
@@ -318,12 +333,18 @@ def import_data(data, digest, mappings, workspace_mappings, runtime):
             key = f"pa_coding_draft_v2_{project or 'none'}_{workspace or 'none'}_{session or 'new'}"
             current = Drafts(store).get(key)
             Drafts(store).put(key, DraftWrite(revision=current["revision"], mutation_id=uuid.uuid4().hex, data=draft))
-        for item in data["model_selections"]:
+        restored_models = pending_models = 0
+        for item in selections:
             identifier = maps[item["scope"] + "s"].get(item["id"])
             if identifier:
-                store.update(item["scope"], identifier, model_profile_id=item["profile_id"])
-    return migration.apply_archive(store, data["history"], digest, mappings, authority=runtime.authority, owner_id=runtime.owner_id,
-                                   workspace_roots=roots, augment=augment)
+                pending_models += restore_selection(store, item["scope"], identifier, item)
+                restored_models += 1
+        return {"sessions": len(maps["sessions"]) + orphan_sessions, "drafts": len(data["drafts"]),
+                "draft_attachments": len(data["draft_attachments"]), "model_selections": restored_models,
+                "models_pending_confirmation": pending_models}
+    imported = migration.apply_archive(store, data["history"], digest, mappings, authority=runtime.authority, owner_id=runtime.owner_id,
+                                       workspace_roots=roots, augment=augment, source_kind="application", backup_format=getattr(data, "backup_format", FORMAT))
+    return {**imported, "already_imported": False}
 
 
 def install_backup_routes(app, local):

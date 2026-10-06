@@ -31,6 +31,10 @@ from .identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID, LOCAL_TOKEN_PREFIX
 from .local_models import LocalInference
 from .model_errors import CloudError
 from .model_evaluation import EvaluationBinding, bind_evaluation
+from .model_preferences import (
+    ModelRestoreConfirmationRequired,
+    require_model_restore_confirmed,
+)
 from .model_routes import install_model_routes
 from .output import validate_output_schema
 from .planning_interaction import AnswerInput, ImplementPlanInput
@@ -261,6 +265,10 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
     @app.exception_handler(ValueError)
     async def invalid(request, error):
         return JSONResponse({"detail": str(error)}, status_code=422)
+
+    @app.exception_handler(ModelRestoreConfirmationRequired)
+    async def model_restore_pending(request, error):
+        return JSONResponse({"detail": str(error), "error_code": error.code}, status_code=409)
 
     @app.exception_handler(RequestValidationError)
     async def invalid_input(request, error):
@@ -778,6 +786,8 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
 
     @app.post("/agent-runs", status_code=201)
     async def create_run(data: RunInput, runtime: Runtime = Depends(local)):
+        if not runtime.store.find_request(data.client_request_id):
+            require_model_restore_confirmed(runtime.store, data.project_id, data.session_id)
         if not data.model_profile_id and not runtime.store.find_request(data.client_request_id):
             from .model_preferences import resolve
             choice = resolve(runtime.store, await cloud.profiles(runtime.token), data.project_id, data.session_id)
