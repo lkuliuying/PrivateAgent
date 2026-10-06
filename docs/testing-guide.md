@@ -40,7 +40,9 @@ cargo build --offline --locked --release --manifest-path scripts/windows/updater
 
 | 套件 | 范围 |
 | --- | --- |
-| `workbench` | 全文搜索、归档、后续队列、技能版本与路径、通用 MCP/OAuth/stdio、worktree 交接、浏览器证据，以及已移除的只读子任务许可不再继承 |
+| `workbench` | 全文搜索、归档、后续队列、技能版本与路径、通用 MCP/OAuth/stdio、worktree 交接、浏览器证据、文本/图片/PDF 附件及存储、持久草稿与数据库升级、应用数据备份，以及已移除的只读子任务许可不再继承 |
+| `history` | 历史导入导出、回滚指纹、MCP 后续改动保护、旧版/未知指纹与损坏备份拒绝回滚 |
+| `backup-recovery` | 应用备份 v1/v2、模型来源核对与待确认、作用域继承、API/内部队列阻断、持久化、重复导入和回滚 |
 | `shared-models` | 共享适配器、模型元数据与能力探测 |
 | `output` | 可选 JSON Schema、格式纠错、事实门禁、任务恢复与最终结果事务提交 |
 | `reasoning`、`streaming` | 原生消息阶段、公开增量、取消及旧文本协议兼容 |
@@ -48,7 +50,7 @@ cargo build --offline --locked --release --manifest-path scripts/windows/updater
 | `reflection` | 结构化纠错、重复失败独立复核、预算与恢复边界；全部使用合成模型响应 |
 | `desktop-packaging` | 安装模板、发布清单、签名 |
 | `context-alignment`、`context`、`memory` | 请求预算、上下文归档、压缩和记忆 |
-| `local`、`direct-models` | 本机请求、供应商直连及模型路由 |
+| `local`、`direct-models` | 本机请求、供应商直连及模型路由；`direct-models` 还覆盖模型保存恢复和模型偏好 |
 | `tool-evolution` | 工具、审批、执行、文档 MCP 与任务约束的组合回归 |
 | `security` | 各权限模式的沙箱边界、真实 Windows 敏感对象保护、跨分片脱敏、模型和 MCP 外发阻断、流式取消与持久化 |
 | `security-regression` | 安全专项与既有沙箱、执行授权、工具、原生续接、供应商、文档 MCP、文件和流式回归的去重集合 |
@@ -68,7 +70,30 @@ npm run e2e --prefix apps/desktop -- --list
 npm run e2e --prefix apps/desktop -- e2e/local-access.spec.ts e2e/documentation-mcp.spec.ts
 ```
 
-Vitest 跟随源码发现测试，Playwright 从 `e2e/` 收集当前流程并按配置启动 Vite。浏览器测试使用接口或 IPC 替身，不能替代真实 Tauri 安装、更新和系统凭据库验证。
+Vitest 跟随源码发现测试，Playwright 从 `e2e/` 收集当前流程并按配置启动 Vite。多数浏览器测试使用接口或 IPC 替身；下述备份往返通过隔离 Python 子进程连接实际本机后端，仍不能替代真实 Tauri 安装、更新和系统凭据库验证。
+
+备份与模型恢复专项：在仓库根目录运行后端，在 `apps/desktop` 运行前端和浏览器命令。
+
+```powershell
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite backup-recovery
+node node_modules/vitest/vitest.mjs run src/api/backups.spec.ts src/components/StorageManagement.spec.ts src/components/HistoryMigration.spec.ts src/components/SettingsView.spec.ts src/features/coding/components/ModelScopePicker.spec.ts src/features/coding/components/CodingComposer.spec.ts
+node node_modules/@playwright/test/cli.js test e2e/backup-roundtrip.spec.ts --retries=0
+npm run build
+```
+
+浏览器往返使用 `tests/coding_acceptance/backup_roundtrip_fixture.py` 启动隔离 ASGI 后端，在独立 `.run` 目录生成 SQLite、中文历史、浮点参数、历史费用及文本/图片/PDF 附件。后端实际导出，经桌面组件下载后读取原始文件，再交实际后端预览和恢复；测试不重新计算下载文件摘要。Tauri 启动、IPC、文件对话框和更新信息使用替身，应用 API 与备份正文来自实际后端；模型传输被阻断。默认使用仓库 `.venv/Scripts/python.exe`，可通过 `PA_E2E_PYTHON` 指定已安装项目测试依赖的 Python。所有夹具使用合成数据，不访问真实用户数据库或凭据库。
+
+该浏览器流程覆盖 `0.0`、`1.0`、普通小数、零费用、导入结果与材料清单刷新，以及从界面回滚数据后独立导入的配置仍保留。64 MiB 恰好上限与超出 1 字节的文件边界在后端专项中使用真实大小的合成文件验证。
+
+连接恢复和凭据清理专项在 `apps/desktop` 执行：
+
+```powershell
+node node_modules/@playwright/test/cli.js test e2e/recovery-fixes.spec.ts --retries=0
+```
+
+该流程模拟执行器在身份绑定前或进入工作台后退出，验证实际重试按钮、草稿保留及项目上下文重新同步；同时验证超过 64 项旧凭据分批清理、第二批失败提示已确认数量、重新读取剩余项并确认后继续。原生命令和凭据均由 IPC 替身提供，不调用真实模型或操作系统凭据库。服务和 store 的 Vitest 另覆盖并发握手、重试、会话切换及迟到响应；凭据测试覆盖 0/64/65/129 项和各阶段失败。
+
+存储回归的六个测试文件 `test_local_attachments.py`、`test_attachment_media.py`、`test_attachment_storage.py`、`test_local_drafts.py`、`test_local_backups.py`、`test_backup_model_restore.py` 已纳入 `workbench`；`test_model_saves.py`、`test_model_preferences.py` 纳入 `direct-models`，备份与恢复专项再组合偏好和历史回归，由现有去重逻辑进入 `all`。v8 迁移夹具应仅保留 v8 的表、索引与迁移记录；升级后检查当前 `SCHEMA_VERSION`、升级前备份仍为 v8、原项目和会话完整，不能用放宽生产迁移约束修复夹具。
 
 输出交付专项在仓库根目录运行以下后端回归：
 

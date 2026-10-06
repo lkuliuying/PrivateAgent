@@ -1,4 +1,5 @@
 """持久草稿在隔离数据库中的迁移、并发、引用与回执回归。"""
+import json
 import sqlite3
 import uuid
 
@@ -14,7 +15,7 @@ from private_agent_local.drafts import (
     DraftWrite,
 )
 from private_agent_local.model_errors import CloudError
-from private_agent_local.store import Store
+from private_agent_local.store import SCHEMA_VERSION, Store, encode, now
 
 
 def key(project, workspace, session=None):
@@ -129,20 +130,32 @@ def test_removed_attachment_does_not_block_saving_remaining_draft(tmp_path):
 
 
 def test_v8_migration_backups_before_new_table(tmp_path):
-    store, pid, wid, _ = fixture_store(tmp_path)
-    store.db.execute("DROP TABLE composer_drafts")
-    store.db.execute("DELETE FROM schema_migrations WHERE version=9")
+    store, pid, wid, session = fixture_store(tmp_path)
+    originals = {"project": store.get("project", pid), "workspace": store.get("workspace", wid), "session": session}
+    # 还原 v8 的真实对象边界，不能只降低版本号而留下后续版本的迁移记录。
+    for table in ("composer_drafts", "mcp_service_changes", "mcp_services"):
+        store.db.execute("DROP TABLE " + table)
+    store.db.execute("DROP INDEX session_creation_request")
+    store.db.execute("DELETE FROM schema_migrations WHERE version>=9")
+    store.db.execute("INSERT OR IGNORE INTO schema_migrations VALUES (?,?,?)", (8, now(), encode({"fixture": "v8"})))
     store.db.execute("PRAGMA user_version=8")
     store.db.commit()
     store.db.close()
     restored = Store(store.path)
     try:
-        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == 9
-        backups = list(store.path.parent.glob("projects.pre-v9-*.sqlite3"))
+        assert restored.db.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+        backups = list(store.path.parent.glob(f"projects.pre-v{SCHEMA_VERSION}-*.sqlite3"))
         assert len(backups) == 1
         with sqlite3.connect(backups[0]) as backup:
             assert backup.execute("PRAGMA user_version").fetchone()[0] == 8
-        assert restored.get("project", pid)["name"] == "材料测试"
+            assert backup.execute("SELECT version FROM schema_migrations").fetchall() == [(8,)]
+            later_objects = {"composer_drafts", "session_creation_request", "mcp_services", "mcp_service_changes"}
+            assert not later_objects.intersection(row[0] for row in backup.execute("SELECT name FROM sqlite_master"))
+            for kind, original in originals.items():
+                assert json.loads(backup.execute(f"SELECT data FROM {kind}s WHERE id=?", (original["id"],)).fetchone()[0]) == original
+        assert later_objects <= {row[0] for row in restored.db.execute("SELECT name FROM sqlite_master")}
+        for kind, original in originals.items():
+            assert restored.get(kind, original["id"]) == original
         assert save(Drafts(restored), key(pid, wid), payload())["revision"] == 1
     finally:
         restored.db.close()

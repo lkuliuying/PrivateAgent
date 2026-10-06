@@ -64,7 +64,7 @@ def test_hardlink_binary_invalid_encoding_and_case_alias(repository):
 
 @pytest.mark.asyncio
 async def test_workspace_browser_uses_authorized_workspace_and_bounded_versioned_read(tmp_path):
-    from test_local_executor import setup, close
+    from test_local_executor import close, setup
     app, client, server, root, body = await setup(tmp_path)
     try:
         (root / "中文.py").write_text("print('hello world!')\n" + "x" * 40000, encoding="utf-8")
