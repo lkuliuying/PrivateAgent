@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises } from "@vue/test-utils";
 import {
   createCodingWorkspaceStore,
@@ -10,6 +10,9 @@ import type {
   CodingWorkspaceSummary,
 } from "./contracts";
 import { createCodingWorkspacePreviewStore } from "../dev/codingHomePreview";
+import * as localExecutor from "../../../services/localExecutor";
+
+afterEach(() => vi.restoreAllMocks());
 
 function project(id: number, name = `项目 ${id}`): CodingProjectSummary {
   return { id, name, status: "active", updatedAt: "2026-08-22T00:00:00Z" };
@@ -93,6 +96,114 @@ function baseFetchers(
 }
 
 describe("codingWorkspaceStore", () => {
+  it("普通刷新不握手，显式并发重连保留会话和草稿且不重放任务", async () => {
+    const reconnect = vi.fn(async () => undefined);
+    const context = vi.spyOn(localExecutor, "setLocalProjectContext").mockResolvedValue(undefined);
+    const createThread = vi.fn(baseFetchers().createThread);
+    const store = createCodingWorkspaceStore(baseFetchers({ reconnect, createThread }));
+    await store.bootstrap();
+    store.selectThread(12);
+    const key = "pa_coding_draft_v2_1_102_12";
+    localStorage.setItem(key, JSON.stringify({ text: "保留未发送输入" }));
+    try {
+      await store.refresh();
+      expect(reconnect).not.toHaveBeenCalled();
+      context.mockClear();
+      const first = store.reconnect();
+      const second = store.reconnect();
+      expect(first).toBe(second);
+      expect(store.reconnecting.value).toBe(true);
+      await Promise.all([first, second, store.refresh()]);
+      expect(reconnect).toHaveBeenCalledTimes(1);
+      expect(context).toHaveBeenCalledWith(1);
+      expect(store.selectedProjectId.value).toBe(1);
+      expect(store.selectedWorkspaceId.value).toBe(102);
+      expect(store.selectedThreadId.value).toBe(12);
+      expect(JSON.parse(localStorage.getItem(key)!).text).toBe("保留未发送输入");
+      expect(createThread).not.toHaveBeenCalled();
+      expect(store.reconnecting.value).toBe(false);
+    } finally { localStorage.removeItem(key); }
+  });
+
+  it("重连过程中切换项目，握手、上下文和加载均保留最新选择", async () => {
+    let finishHandshake!: () => void;
+    const reconnect = vi.fn(() => new Promise<void>(resolve => { finishHandshake = resolve; }));
+    const context = vi.spyOn(localExecutor, "setLocalProjectContext").mockResolvedValue(undefined);
+    const projects = vi.fn(baseFetchers().projects);
+    const store = createCodingWorkspaceStore(baseFetchers({ reconnect, projects }));
+    await store.bootstrap();
+    await flushPromises();
+    context.mockClear();
+    let finishContext!: () => void;
+    context.mockImplementationOnce(() => new Promise<void>(resolve => { finishContext = resolve; }));
+    let finishProjects!: (value: CodingProjectSummary[]) => void;
+    projects.mockImplementationOnce(() => new Promise(resolve => { finishProjects = resolve; }));
+    const pending = store.reconnect();
+    await flushPromises();
+    store.selectProject(2);
+    expect(context).not.toHaveBeenCalled();
+    finishHandshake();
+    await flushPromises();
+    expect(context).toHaveBeenLastCalledWith(2);
+    store.selectThread(12);
+    finishContext();
+    await flushPromises();
+    expect(context).toHaveBeenLastCalledWith(1);
+    store.selectProject(2);
+    finishProjects([project(1), project(2)]);
+    await pending;
+    expect(context).toHaveBeenLastCalledWith(2);
+    expect(store.selectedProjectId.value).toBe(2);
+    expect(store.selectedWorkspaceId.value).toBe(201);
+    expect(store.selectedThreadId.value).toBeNull();
+  });
+
+  it("重连失败保留当前数据和选择，失败的旧项目回执不覆盖重连结果", async () => {
+    let failOldContext!: (reason: Error) => void;
+    vi.spyOn(localExecutor, "setLocalProjectContext")
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => { failOldContext = reject; }))
+      .mockResolvedValue(undefined);
+    const reconnect = vi.fn().mockRejectedValueOnce(new Error("进程不可用")).mockResolvedValue(undefined);
+    const store = createCodingWorkspaceStore(baseFetchers({ reconnect }));
+    await store.bootstrap();
+    store.selectThread(12);
+    const reconnecting = store.reconnect();
+    const refreshing = store.refresh();
+    const bootstrapping = store.bootstrap();
+    await expect(reconnecting).rejects.toThrow("进程不可用");
+    await expect(refreshing).resolves.toBeUndefined();
+    await expect(bootstrapping).resolves.toBeUndefined();
+    expect(store.selectedThreadId.value).toBe(12);
+    expect(store.projects.value).toHaveLength(2);
+    expect(store.loadError.value?.code).toBe("local_reconnect_failed");
+    expect(store.reconnecting.value).toBe(false);
+    await store.reconnect();
+    failOldContext(new Error("旧连接回执"));
+    await flushPromises();
+    expect(store.homeState.value).toBe("ready");
+    expect(store.loadError.value).toBeNull();
+    expect(store.selectedThreadId.value).toBe(12);
+  });
+
+  it("重连阻止旧数据和能力回执覆盖新进程事实", async () => {
+    let finishOldCapabilities!: (value: Record<string, unknown>) => void;
+    const capabilities = vi.fn().mockImplementationOnce(() => new Promise<Record<string, unknown>>(resolve => { finishOldCapabilities = resolve; }))
+      .mockResolvedValue({ generation: "new" });
+    const projects = vi.fn(baseFetchers().projects);
+    const store = createCodingWorkspaceStore(baseFetchers({ reconnect: async () => undefined, projects, capabilities }));
+    await store.bootstrap();
+    let finishOldProjects!: (value: CodingProjectSummary[]) => void;
+    projects.mockImplementationOnce(() => new Promise(resolve => { finishOldProjects = resolve; }));
+    const oldRefresh = store.refresh();
+    await flushPromises();
+    await store.reconnect();
+    finishOldProjects([project(99)]);
+    finishOldCapabilities({ generation: "old" });
+    await oldRefresh;
+    await flushPromises();
+    expect(store.projects.value.map(item => item.id)).toEqual([1, 2]);
+    expect(store.capabilities.value).toEqual({ generation: "new" });
+  });
   it("bootstrap 组树：线程按 workspace 分组，未知 workspace 落入 orphan", async () => {
     const store = createCodingWorkspaceStore(baseFetchers());
     await store.bootstrap();

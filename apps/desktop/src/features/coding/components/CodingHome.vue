@@ -88,6 +88,11 @@ const selectedWorkspaceId = computed(() => props.store.selectedWorkspaceId.value
 const selectedBranchName = computed(() => props.store.selectedBranchName.value);
 const selectedWorkspace = computed(() => props.store.selectedWorkspace.value);
 const loadError = computed(() => props.store.loadError.value);
+async function reconnectWorkspace(): Promise<void> {
+  if (props.store.reconnecting.value) return;
+  try { await props.store.reconnect(); }
+  catch { /* 重连错误保留在当前工作台，用户可以原位重试。 */ }
+}
 
 const projectOptions = computed(() =>
   projects.value.map((project) => ({ value: project.id, label: project.name }))
@@ -249,10 +254,11 @@ function asCodingApiError(cause: unknown): CodingApiError {
       <PaErrorState
         v-else-if="homeState === 'sidecar-unavailable'"
         title="本机执行器未就绪"
-        message="暂时无法连接本机执行器，任务尚未发送，草稿仍保留。请点击重试连接。"
-        retry-label="重试连接"
+        :message="loadError?.code === 'local_reconnect_failed' ? loadError.message : '暂时无法连接本机执行器，任务尚未发送，草稿仍保留。请点击重试连接。'"
+        :retry-label="store.reconnecting.value ? '正在重连…' : '重试连接'"
+        :aria-busy="store.reconnecting.value"
         data-testid="coding-home-retry"
-        @retry="props.store.refresh()"
+        @retry="reconnectWorkspace"
       />
 
       <PaErrorState

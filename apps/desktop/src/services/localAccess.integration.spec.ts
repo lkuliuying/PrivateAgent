@@ -67,6 +67,98 @@ describe("API Key 免登录调用链", () => {
     expect(runtime.invoke.mock.calls.every(([command]) => command === "start_local_executor")).toBe(true);
   });
 
+  it("健康检查后进程退出导致绑定失败，启动页重试会重新启动进程", async () => {
+    let dead = false;
+    let terminateAfterHealth = true;
+    runtime.invoke.mockImplementation(async () => { dead = false; return { transport: "stdio", protocol: 2 }; });
+    runtime.request.mockImplementation(async (path: string) => {
+      if (dead) throw new Error("本机运行时已断开");
+      if (path === "/health") {
+        if (terminateAfterHealth) { terminateAfterHealth = false; dead = true; }
+        return json({ mode: "desktop-local", protocol: 1 });
+      }
+      return json({ ready: true, access_token: token });
+    });
+    const { ensureDesktopBackendReady, retryDesktopBackendStartup, backendStartupState } = await import("./backendStartup");
+    await expect(ensureDesktopBackendReady()).rejects.toThrow("本机运行时已断开");
+    expect(backendStartupState.status).toBe("error");
+    await retryDesktopBackendStartup();
+    expect(runtime.invoke).toHaveBeenCalledTimes(2);
+    expect(backendStartupState.status).toBe("ready");
+    expect(window.sessionStorage.getItem("pa_local_access_token")).toBe(token);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("工作台运行时退出后显式重连重新启动和绑定，但不卸载全局工作台或重放写请求", async () => {
+    await setup();
+    const { backendStartupState } = await import("./backendStartup");
+    const { createCodingWorkspaceStore } = await import("../features/coding/model/codingWorkspaceStore");
+    const workspace = createCodingWorkspaceStore();
+    await workspace.bootstrap();
+    let dead = true;
+    runtime.invoke.mockImplementation(async () => { dead = false; return { transport: "stdio", protocol: 2 }; });
+    runtime.request.mockImplementation(async (path: string) => {
+      if (dead) throw new Error("本机运行时已断开");
+      if (path === "/health") return json({ mode: "desktop-local", protocol: 1 });
+      if (path === "/identity/local") return json({ ready: true, access_token: token });
+      return json([]);
+    });
+    await workspace.refresh();
+    expect(workspace.homeState.value).toBe("sidecar-unavailable");
+    const pending = workspace.reconnect();
+    expect(backendStartupState.status).toBe("ready");
+    await pending;
+    expect(runtime.invoke).toHaveBeenCalledTimes(2);
+    expect(workspace.sidecarOk.value).toBe(true);
+    expect(backendStartupState.status).toBe("ready");
+    const writes = runtime.request.mock.calls.filter(([, init]) => init?.method === "POST").map(([path]) => path);
+    expect(writes.every(path => ["/identity/local", "/projects/context"].includes(path))).toBe(true);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("握手期间重置会话复用身份绑定，旧工作台不再恢复项目上下文", async () => {
+    await setup();
+    const { retryDesktopBackendStartup, backendStartupState } = await import("./backendStartup");
+    const { useCodingWorkspace, resetCodingWorkspace } = await import("../features/coding/model/codingWorkspaceStore");
+    const { setLocalProjectContext } = await import("./localExecutor");
+    const previous = useCodingWorkspace();
+    previous.selectedProjectId.value = 1;
+    await setLocalProjectContext(1);
+    runtime.request.mockClear();
+
+    let finishBinding!: (response: Response) => void;
+    runtime.request.mockImplementation(async (path: string) => {
+      if (path === "/health") return json({ mode: "desktop-local", protocol: 1 });
+      if (path === "/identity/local") return new Promise<Response>(resolve => { finishBinding = resolve; });
+      return json([]);
+    });
+    const reconnecting = previous.reconnect();
+    const retired = expect(reconnecting).rejects.toThrow("当前工作台会话已失效");
+    await vi.waitFor(() => expect(finishBinding).toBeTypeOf("function"));
+    resetCodingWorkspace();
+    const current = useCodingWorkspace();
+    const starting = retryDesktopBackendStartup();
+    const replacementToken = `local-session:${"b".repeat(43)}`;
+    finishBinding(json({ ready: true, access_token: replacementToken }));
+    await Promise.all([retired, starting]);
+    await current.bootstrap();
+    current.selectedProjectId.value = 2;
+    await vi.waitFor(() => expect(runtime.request).toHaveBeenCalledWith("/projects/context", expect.any(Object)));
+
+    previous.selectedProjectId.value = 3;
+    const requests = runtime.request.mock.calls.length;
+    await previous.refresh();
+    expect(runtime.request).toHaveBeenCalledTimes(requests);
+    expect(runtime.request.mock.calls.filter(([path]) => path === "/projects/context").map(([, init]) => JSON.parse(init.body).project_id)).toEqual([2]);
+    expect(runtime.request.mock.calls.filter(([path]) => path === "/identity/local")).toHaveLength(1);
+    expect(runtime.invoke).toHaveBeenCalledTimes(2);
+    expect(window.sessionStorage.getItem("pa_local_access_token")).toBe(replacementToken);
+    expect(current.loadPhase.value).toBe("ready");
+    expect(current.loadError.value).toBeNull();
+    expect(backendStartupState.status).toBe("ready");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("账号服务器不可达时，Coding 首页按本机执行器状态正常加载", async () => {
     await setup();
     const { createCodingWorkspaceStore } = await import("../features/coding/model/codingWorkspaceStore");

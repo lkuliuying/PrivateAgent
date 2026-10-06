@@ -10,6 +10,7 @@ import * as projectsApi from "../api/projects";
 import * as streamApi from "../composables/useRunStream";
 import { createRunProjection } from "../model/runProjector";
 import { useNotifications } from "../../../stores/notifications";
+import * as localExecutor from "../../../services/localExecutor";
 
 const mounted: { unmount: () => void }[] = [];
 afterEach(() => { mounted.splice(0).forEach(wrapper => wrapper.unmount()); document.body.innerHTML = ""; vi.restoreAllMocks(); useNotifications().clearToasts(); useNotifications().clearHistory(); });
@@ -26,6 +27,16 @@ async function mountWorkspace(selectThreadId?: number) {
   const wrapper = mount(CodingThreadWorkspace, { props: { store }, attachTo: document.body });
   mounted.push(wrapper);
   return { wrapper, store };
+}
+
+function mockRetryStream() {
+  const stream: streamApi.RunStreamController = {
+    projection: shallowRef(createRunProjection("retry-run")), phase: ref("reconnecting"),
+    connectionError: ref("连接中断"), createErrorCode: ref(null), startRun: vi.fn(),
+    attachRun: vi.fn(), cancelActive: vi.fn(), retryConnection: vi.fn(), detach: vi.fn(),
+  };
+  vi.spyOn(streamApi, "useRunStream").mockReturnValue(stream);
+  return stream;
 }
 
 /** 基于 DOM 条件的有界等待（替代固定延时：动态 import 完成时机随套件负载漂移）。*/
@@ -45,6 +56,84 @@ async function waitForCondition(
 }
 
 describe("CodingThreadWorkspace（W2 组装）", () => {
+  it("手动续流在进程健康时只续接当前运行", async () => {
+    const stream = mockRetryStream();
+    vi.spyOn(localExecutor, "checkLocalExecutorHealth").mockResolvedValue(true);
+    const { wrapper, store } = await mountWorkspace(11);
+    const reconnect = vi.spyOn(store, "reconnect").mockResolvedValue(undefined);
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    await flushPromises();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(stream.retryConnection).toHaveBeenCalledTimes(1);
+    expect(stream.startRun).not.toHaveBeenCalled();
+  });
+
+  it("手动续流遇到执行器退出时先重连，恢复期间新草稿保持不变", async () => {
+    const stream = mockRetryStream();
+    vi.spyOn(localExecutor, "checkLocalExecutorHealth").mockRejectedValue(new Error("进程已退出"));
+    const { wrapper, store } = await mountWorkspace(11);
+    let finish!: () => void;
+    const reconnect = vi.spyOn(store, "reconnect").mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const input = wrapper.get('[data-testid="coding-composer-input"]');
+    await input.setValue("恢复后继续修改的草稿");
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    await flushPromises();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(stream.retryConnection).not.toHaveBeenCalled();
+    finish();
+    await flushPromises();
+    expect(stream.retryConnection).toHaveBeenCalledTimes(1);
+    expect(stream.startRun).not.toHaveBeenCalled();
+    expect((input.element as HTMLTextAreaElement).value).toBe("恢复后继续修改的草稿");
+  });
+
+  it.each(["thread", "run", "unmount"] as const)("重连等待期间改变 %s 时不把迟到恢复应用到其他任务", async (change) => {
+    const stream = mockRetryStream();
+    vi.spyOn(localExecutor, "checkLocalExecutorHealth").mockResolvedValue(false);
+    const { wrapper, store } = await mountWorkspace(11);
+    let finish!: () => void;
+    vi.spyOn(store, "reconnect").mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    await flushPromises();
+    if (change === "thread") store.selectThread(12);
+    else if (change === "run") stream.projection.value = createRunProjection("another-run");
+    else wrapper.unmount();
+    finish();
+    await flushPromises();
+    expect(stream.retryConnection).not.toHaveBeenCalled();
+    expect(stream.startRun).not.toHaveBeenCalled();
+  });
+
+  it("健康检查等待期间切换会话时不发起重连", async () => {
+    const stream = mockRetryStream();
+    let finish!: (value: boolean) => void;
+    vi.spyOn(localExecutor, "checkLocalExecutorHealth").mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    const { wrapper, store } = await mountWorkspace(11);
+    const reconnect = vi.spyOn(store, "reconnect").mockResolvedValue(undefined);
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    store.selectThread(12);
+    finish(false);
+    await flushPromises();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(stream.retryConnection).not.toHaveBeenCalled();
+  });
+
+  it("手动重连失败不发送任务，用户可再次重试", async () => {
+    const stream = mockRetryStream();
+    vi.spyOn(localExecutor, "checkLocalExecutorHealth").mockResolvedValue(false);
+    const { wrapper, store } = await mountWorkspace(11);
+    const reconnect = vi.spyOn(store, "reconnect").mockRejectedValueOnce(new Error("进程无法启动")).mockResolvedValue(undefined);
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    await flushPromises();
+    expect(useNotifications().toasts.value.some(item => item.title === "连接恢复未完成")).toBe(true);
+    expect(stream.retryConnection).not.toHaveBeenCalled();
+    wrapper.getComponent(RunTranscript).vm.$emit("retry-stream");
+    await flushPromises();
+    expect(reconnect).toHaveBeenCalledTimes(2);
+    expect(stream.retryConnection).toHaveBeenCalledTimes(1);
+    expect(stream.startRun).not.toHaveBeenCalled();
+  });
   it("输出文件点击在任务工作区打开，只在绝对引用时查询路径", async () => {
     const read = mockFileApi();
     const root = vi.spyOn(projectsApi, "fetchCodingWorkspacePath").mockResolvedValue("F:/My Project");

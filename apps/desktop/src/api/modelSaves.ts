@@ -71,18 +71,25 @@ export async function unusedModelCredentials(): Promise<string[]> {
   return (await requestJson<{ aliases: string[] }>("/model-save-operations/credentials/unused")).aliases;
 }
 export async function removeUnusedModelCredentials(reviewed: string[]): Promise<number> {
+  const aliases = [...reviewed];
+  if (!aliases.length) return 0;
   const { check, headers } = session();
-  const reserved = await requestJson<{ aliases: string[] }>("/model-save-operations/credentials/cleanup", {
-    method: "POST", headers, body: JSON.stringify({ aliases: reviewed }),
-  });
   let removed = 0;
   try {
-    for (const alias of reserved.aliases) {
+    // 每批沿用后端的 64 项上限；上一批确认完成后再保留下一个已核对范围。
+    for (let offset = 0; offset < aliases.length; offset += 64) {
       check();
-      await cmdClearModelProviderSecret(alias);
-      check();
-      await requestJson(`/model-save-operations/credentials/${alias}/cleared`, { method: "POST", headers });
-      removed += 1;
+      const reserved = await requestJson<{ aliases: string[] }>("/model-save-operations/credentials/cleanup", {
+        method: "POST", headers, body: JSON.stringify({ aliases: aliases.slice(offset, offset + 64) }),
+      });
+      for (const alias of reserved.aliases) {
+        check();
+        await cmdClearModelProviderSecret(alias);
+        check();
+        await requestJson(`/model-save-operations/credentials/${alias}/cleared`, { method: "POST", headers });
+        removed += 1;
+        check();
+      }
     }
   } catch (cause) {
     throw new Error(`已确认清理 ${removed} 项，其余凭据清理尚未完成，请重新核对。` + (cause instanceof Error ? cause.message : ""));

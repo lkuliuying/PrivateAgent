@@ -11,6 +11,7 @@
 import { transferFirstTurnDraft } from "./composerDrafts";
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
 import { checkLocalExecutorHealth, setLocalProjectContext } from "../../../services/localExecutor";
+import { reconnectDesktopBackend } from "../../../services/backendStartup";
 import { getRuntimeCapabilities } from "../../../api";
 import {
   ensureCodingRootWorkspace,
@@ -49,6 +50,7 @@ export interface CodingWorkspaceStore {
   loadPhase: Ref<CodingLoadPhase>;
   loadError: Ref<CodingApiError | null>;
   sidecarOk: Ref<boolean | null>;
+  reconnecting: Ref<boolean>;
   selectedProjectId: Ref<number | null>;
   selectedWorkspaceId: Ref<number | null>;
   selectedBranchName: Ref<string | null>;
@@ -61,6 +63,8 @@ export interface CodingWorkspaceStore {
   selectedThread: ComputedRef<CodingThreadSummary | null>;
   bootstrap: () => Promise<void>;
   refresh: () => Promise<void>;
+  reconnect: () => Promise<void>;
+  dispose: () => void;
   removeDeletedProject: (projectId: number) => void;
   removeDeletedThread: (threadId: number) => void;
   selectProject: (projectId: number) => void;
@@ -82,6 +86,7 @@ const defaultFetchers: CodingWorkspaceFetchers = {
   threads: fetchCodingThreads,
   modelProfiles: fetchCodingModelProfiles,
   health: checkLocalExecutorHealth,
+  reconnect: reconnectDesktopBackend,
   createThread: createCodingThread,
   ensureRootWorkspace: ensureCodingRootWorkspace,
   branches: fetchCodingBranches,
@@ -110,6 +115,7 @@ export function createCodingWorkspaceStore(
   const customSource = Object.keys(fetchers).length > 0;
   if (customSource && !("branches" in fetchers)) source.branches = undefined;
   if (customSource && !("switchBranch" in fetchers)) source.switchBranch = undefined;
+  if (customSource && !("reconnect" in fetchers)) source.reconnect = undefined;
 
   const projects = ref<CodingProjectSummary[]>([]);
   const workspacesByProject = ref<Record<number, CodingWorkspaceSummary[]>>({});
@@ -120,6 +126,9 @@ export function createCodingWorkspaceStore(
   const loadPhase = ref<CodingLoadPhase>("idle");
   const loadError = ref<CodingApiError | null>(null);
   const sidecarOk = ref<boolean | null>(null);
+  const reconnecting = ref(false);
+  let reconnectPromise: Promise<void> | null = null;
+  let disposed = false;
 
   const selectedProjectId = ref<number | null>(null);
   const selectedWorkspaceId = ref<number | null>(null);
@@ -127,14 +136,20 @@ export function createCodingWorkspaceStore(
   const selectedThreadId = ref<number | null>(null);
   const pendingFirstTurn = ref<CodingPendingFirstTurn | null>(null);
 
+  let contextSequence = 0;
   function syncProjectContext(projectId: number | null): void {
+    const mine = ++contextSequence;
+    // 重连尚未绑定身份时先保留选择，由重连流程同步最后选中的项目。
+    if (disposed || reconnecting.value) return;
     void setLocalProjectContext(projectId).then(() => {
+      if (mine !== contextSequence) return;
       if (loadError.value?.code === "project_context_failed") loadError.value = null;
     }).catch(() => {
+      if (mine !== contextSequence) return;
       loadError.value = { status: 0, code: "project_context_failed", message: "项目切换撤权失败，请重新选择项目或退出客户端；新操作已阻止" };
     });
   }
-  watch(selectedProjectId, syncProjectContext, { flush: "sync" });
+  const stopProjectContextSync = watch(selectedProjectId, syncProjectContext, { flush: "sync" });
 
   // bootstrap/refresh 序号令牌：迟到响应放弃回写
   let loadSeq = 0;
@@ -233,6 +248,7 @@ export function createCodingWorkspaceStore(
   }
 
   async function load(): Promise<void> {
+    if (disposed) return;
     const mine = ++loadSeq;
     loadPhase.value = "loading";
     loadError.value = null;
@@ -262,7 +278,7 @@ export function createCodingWorkspaceStore(
       modelProfiles.value = profiles;
       // v0.9.0 H1-A：能力位不阻塞首页状态机（真实网络请求），单独尽力获取；
       // 失败/未提供时保持 null，权限高级选项不可选（不在前端扩大授权）。
-      void loadCapabilities();
+      void loadCapabilities(mine);
 
       const workspaceEntries = await Promise.all(
         projectList.map(async (project) => [project.id, await source.workspaces(project.id)] as const)
@@ -310,12 +326,13 @@ export function createCodingWorkspaceStore(
     }
   }
 
-  async function loadCapabilities(): Promise<void> {
+  async function loadCapabilities(mine: number): Promise<void> {
     if (!source.capabilities) return;
     try {
-      capabilities.value = await source.capabilities();
+      const loaded = await source.capabilities();
+      if (mine === loadSeq) capabilities.value = loaded;
     } catch {
-      capabilities.value = null;
+      if (mine === loadSeq) capabilities.value = null;
     }
   }
 
@@ -332,11 +349,74 @@ export function createCodingWorkspaceStore(
   }
 
   async function bootstrap(): Promise<void> {
-    return load();
+    // 普通加载延续由状态反馈错误的契约，只有显式重连向调用者报告失败。
+    return reconnectPromise?.catch(() => undefined) ?? load();
   }
 
   async function refresh(): Promise<void> {
-    return load();
+    return reconnectPromise?.catch(() => undefined) ?? load();
+  }
+
+  async function restoreProjectContext(): Promise<void> {
+    while (true) {
+      assertActive();
+      const projectId = selectedProjectId.value;
+      try { await setLocalProjectContext(projectId); }
+      catch (cause) { if (projectId === selectedProjectId.value) throw cause; }
+      assertActive();
+      if (projectId === selectedProjectId.value) return;
+    }
+  }
+
+  function reconnect(): Promise<void> {
+    if (disposed) return Promise.reject(new Error("当前工作台会话已失效"));
+    if (reconnectPromise) return reconnectPromise;
+    reconnecting.value = true;
+    ++loadSeq;
+    ++contextSequence;
+    loadError.value = null;
+    const operation = async () => {
+      try {
+        assertActive();
+        if (!source.reconnect) throw new Error("当前数据源不支持本机重连");
+        await source.reconnect();
+        await restoreProjectContext();
+        await load();
+        assertActive();
+        if (sidecarOk.value !== true || loadError.value) {
+          throw loadError.value ?? new Error("本机执行器仍不可用，请重试连接");
+        }
+        // 数据加载期间允许继续选择项目；结束前核对最终选择，不能恢复旧项目权限。
+        await restoreProjectContext();
+      } catch (cause) {
+        if (disposed) throw cause;
+        sidecarOk.value = false;
+        loadPhase.value = "error";
+        loadError.value = {
+          status: 0, code: "local_reconnect_failed",
+          message: cause instanceof Error ? cause.message : normalizeError(cause).message,
+        };
+        throw cause;
+      } finally {
+        reconnecting.value = false;
+        reconnectPromise = null;
+      }
+    };
+    reconnectPromise = Promise.resolve().then(operation);
+    return reconnectPromise;
+  }
+
+  function assertActive(): void {
+    if (disposed) throw new Error("当前工作台会话已失效");
+  }
+
+  /** 会话替换后停止旧实例的上下文同步，迟到响应不能恢复旧项目权限。 */
+  function dispose(): void {
+    disposed = true;
+    ++loadSeq;
+    ++contextSequence;
+    stopProjectContextSync();
+    reconnecting.value = false;
   }
 
   /** 删除成功后先清理本地状态，避免刷新失败或旧响应让记录重新出现。 */
@@ -555,6 +635,7 @@ export function createCodingWorkspaceStore(
     loadPhase,
     loadError,
     sidecarOk,
+    reconnecting,
     selectedProjectId,
     selectedWorkspaceId,
     selectedBranchName,
@@ -567,6 +648,8 @@ export function createCodingWorkspaceStore(
     selectedThread,
     bootstrap,
     refresh,
+    reconnect,
+    dispose,
     removeDeletedProject,
     removeDeletedThread,
     selectProject,
@@ -584,8 +667,9 @@ export function createCodingWorkspaceStore(
 
 let codingWorkspaceStore = createCodingWorkspaceStore();
 
-/** A new account must never inherit project IDs, first-turn drafts or late responses. */
+/** 新会话不能继承旧项目、首轮草稿或迟到响应。 */
 export function resetCodingWorkspace(): void {
+  codingWorkspaceStore.dispose();
   codingWorkspaceStore = createCodingWorkspaceStore();
 }
 

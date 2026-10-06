@@ -31,6 +31,38 @@ describe("connected desktop API routing", () => {
     return { local, fetchMock, http: await import("../api/http") };
   }
 
+  it("成功启动后的再次连接重新核对原生进程与健康状态", async () => {
+    const { local, fetchMock } = await setup();
+    host.invoke.mockResolvedValueOnce({ port: 43189, token: "synthetic-new-nonce-".repeat(3) });
+    await local.startLocalExecutor();
+    expect(host.invoke).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("http://127.0.0.1:43189/health");
+  });
+
+  it("并发启动只共享正在执行的原生命令", async () => {
+    const { local, fetchMock } = await setup();
+    let finish!: (value: { port: number; token: string }) => void;
+    host.invoke.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = local.startLocalExecutor();
+    const second = local.startLocalExecutor();
+    expect(host.invoke).toHaveBeenCalledTimes(2);
+    finish({ port: 43190, token: "synthetic-nonce-".repeat(4) });
+    await Promise.all([first, second]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("重新启动失败清除旧连接，并允许再次启动", async () => {
+    const { local, fetchMock } = await setup();
+    host.invoke.mockRejectedValueOnce(new Error("进程启动失败"));
+    await expect(local.startLocalExecutor()).rejects.toThrow("进程启动失败");
+    await expect(local.fetchLocalProject("/projects", {})).rejects.toThrow("本机执行器未就绪");
+    expect(fetchMock).not.toHaveBeenCalled();
+    await local.startLocalExecutor();
+    expect(host.invoke).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("sends Windows project paths only to the nonce-protected local executor", async () => {
     const { http, fetchMock } = await setup();
     const controller = new AbortController();

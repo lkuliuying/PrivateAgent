@@ -231,6 +231,8 @@ export interface CodingWorkspaceFetchers {
   modelProfiles: () => Promise<CodingModelProfilesResult>;
   /** /health 可达即视为 sidecar 就绪（依赖项故障由状态栏呈现，不阻断首页） */
   health: () => Promise<boolean>;
+  /** 仅显式重连执行启动与身份握手，普通数据刷新不触发。 */
+  reconnect?: () => Promise<void>;
   createThread: (input: CodingThreadCreateInput) => Promise<CodingThreadSummary>;
   ensureRootWorkspace: (projectId: number) => Promise<CodingWorkspaceSummary>;
   /** 本机根目录分支；旧 Runtime 不提供时保持可选并回落工作区展示。 */

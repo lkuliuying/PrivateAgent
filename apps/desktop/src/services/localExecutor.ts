@@ -25,7 +25,7 @@ export function isLocalModelPath(path: string): boolean {
 export async function startLocalExecutor(): Promise<void> {
   if (!usesLocalExecutor()) return;
   if (starting) return starting;
-  starting = (async () => {
+  const current = (async () => {
     if (!isTauri()) throw new Error("本机文件执行需要安装桌面客户端，不能在浏览器中运行");
     // 迁移旧模型参数，推理路由只由所选模型配置决定。
     getConnectionProfile();
@@ -43,12 +43,15 @@ export async function startLocalExecutor(): Promise<void> {
     }
     throw new Error("本机执行器启动超时，请重试；项目请求不会发送到服务器");
   })();
+  starting = current;
   try {
-    await starting;
+    await current;
   } catch (error) {
-    connection = null;
-    starting = null;
+    if (starting === current) connection = null;
     throw error;
+  } finally {
+    // 只合并正在进行的启动；后续重连必须再次核对原生进程与健康状态。
+    if (starting === current) starting = null;
   }
 }
 

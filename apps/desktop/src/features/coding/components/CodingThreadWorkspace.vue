@@ -27,6 +27,7 @@ import type { Message } from "../../../types";
 import PaEmptyState from "../../../design/PaEmptyState.vue";
 import PaButton from "../../../design/PaButton.vue";
 import { useNotifications } from "../../../stores/notifications";
+import { checkLocalExecutorHealth } from "../../../services/localExecutor";
 import { useCodingWorkspace, type CodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import { useRunStream } from "../composables/useRunStream";
 import { describeRunBlocker } from "../model/runBlocking";
@@ -190,6 +191,24 @@ if (previewKey) {
 const projection = computed(() => previewProjection.value ?? stream.projection.value);
 const phase = computed(() => (previewMode.value ? "idle" : stream.phase.value));
 const connectionError = computed(() => (previewMode.value ? null : stream.connectionError.value));
+let retryingConnection = false;
+let workspaceUnmounted = false;
+async function retryRunConnection(): Promise<void> {
+  const threadId = thread.value?.id;
+  const runId = stream.projection.value?.runId;
+  if (retryingConnection || previewMode.value || !threadId || !runId) return;
+  const current = () => !workspaceUnmounted && thread.value?.id === threadId && stream.projection.value?.runId === runId;
+  retryingConnection = true;
+  try {
+    const healthy = await checkLocalExecutorHealth().catch(() => false);
+    if (!current()) return;
+    if (!healthy) await props.store.reconnect();
+    if (!current()) return;
+    await stream.retryConnection();
+  } catch {
+    if (current()) notify.error("连接恢复未完成", "当前任务和草稿仍保留，请重试连接。");
+  } finally { retryingConnection = false; }
+}
 
 watch(() => [thread.value?.id, project.value?.id, workspace.value?.id, projection.value?.runId], () => {
   fileOpenGeneration += 1;
@@ -524,6 +543,7 @@ function scheduleOutputPoll(): void {
 }
 
 onBeforeUnmount(() => {
+  workspaceUnmounted = true;
   executionRequestSeq += 1;
   hydrationSeq += 1;
   workspacePathSeq += 1;
@@ -816,7 +836,7 @@ function navigateToInstruction(instructionId: string): void {
             @approve="onApprove"
             @reject="onReject"
             @open-plan="openPlanFromTranscript"
-            @retry-stream="stream.retryConnection()"
+            @retry-stream="retryRunConnection"
             @load-output="loadOutput"
             @open-file="openOutputFile"
             @instruction-markers-change="onInstructionMarkersChange"
@@ -862,7 +882,7 @@ function navigateToInstruction(instructionId: string): void {
             :projection="projection"
             @implemented="implementPlannedRun"
             @revise="revisePlan"
-            @refresh="stream.retryConnection()"
+            @refresh="retryRunConnection"
             @cancel="cancelRun"
           />
 

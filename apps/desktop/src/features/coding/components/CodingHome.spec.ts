@@ -257,13 +257,39 @@ describe("CodingHome", () => {
     expect(wrapper.emitted("configure-provider")).toBeTruthy();
   });
 
-  it("sidecar 不可达：错误态与重试入口", async () => {
-    const health = vi.fn(async () => false);
-    const { wrapper } = await mountHome(readyFetchers({ health }));
-    expect(wrapper.text()).toContain("本机执行器未就绪");
-    await wrapper.find("button.pa-button").trigger("click");
+  it("sidecar 不可达：显式重连后恢复所选项目与未发送草稿", async () => {
+    const health = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false).mockResolvedValue(true);
+    const reconnect = vi.fn(async () => undefined);
+    const createThread = vi.fn(readyFetchers().createThread);
+    const { wrapper, store } = await mountHome(readyFetchers({ health, reconnect, createThread }));
+    await wrapper.get('[data-testid="coding-composer-input"]').setValue("重连后继续编辑的草稿");
+    await store.refresh();
     await flushPromises();
-    expect(health).toHaveBeenCalledTimes(2);
+    expect(wrapper.text()).toContain("本机执行器未就绪");
+    await wrapper.get('[data-testid="coding-home-retry"] button').trigger("click");
+    await flushPromises();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(health).toHaveBeenCalledTimes(3);
+    expect(store.selectedProjectId.value).toBe(1);
+    expect(store.selectedWorkspaceId.value).toBe(101);
+    expect((wrapper.get('[data-testid="coding-composer-input"]').element as HTMLTextAreaElement).value).toBe("重连后继续编辑的草稿");
+    expect(createThread).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it("重连失败在首页保留具体错误并允许再次重连", async () => {
+    const health = vi.fn(async () => false);
+    const reconnect = vi.fn().mockRejectedValueOnce(new Error("本机进程无法启动")).mockResolvedValue(undefined);
+    const { wrapper } = await mountHome(readyFetchers({ health, reconnect }));
+    await wrapper.get('[data-testid="coding-home-retry"] button').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("本机进程无法启动");
+    health.mockResolvedValue(true);
+    await wrapper.get('[data-testid="coding-home-retry"] button').trigger("click");
+    await flushPromises();
+    expect(reconnect).toHaveBeenCalledTimes(2);
+    expect(wrapper.find('[data-testid="coding-composer-input"]').exists()).toBe(true);
+    wrapper.unmount();
   });
 
   it("工作区异常（路径缺失）：呈现状态语义并允许新建授权项目", async () => {
