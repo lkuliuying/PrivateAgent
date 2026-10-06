@@ -1,5 +1,13 @@
 # 更新日志
 
+## 1.0.1（2026-10-06，API Key 本机桌面正式版）
+
+- 汇集 1.0.23 候选版和后续修复，以正式应用身份重新构建，保留现有更新公钥与 `unified-windows-x86_64` 目标。
+- 备份导出保留原始字节，导入增加模型恢复确认、重复导入反馈和历史回滚保护。
+- 完善模型作用域与默认模型恢复，修复本机连接恢复并分批清理旧凭据。
+- 增加备份往返和恢复浏览器回归，同步隔离验证入口及使用说明。
+- 正式资产、签名和公开状态以 [1.0.1 发布说明](docs/releases/v1.0.1/github-release.md) 与 GitHub Release 为准。
+
 ## 0.4.0-alpha.2（2026-08-08，Workbench UX 2.0 收口 · 开发中）
 
 > 计划：[`docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md`](docs/releases/v0.4.0/v0.4.0-ui-ux-redesign-plan.md)。

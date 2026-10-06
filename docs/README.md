@@ -16,7 +16,7 @@
 | 上下文预算、压缩与原文续读 | [上下文设计](context-design.md) |
 | 本机记忆与用户控制 | [记忆设计](memory-design.md) |
 | 测试目录、隔离运行与验证命令 | [测试指南](testing-guide.md) |
-| GitHub Release 更新源与正式发布验收 | [1.0.0 发布操作说明](releases/v1.0.0/github-release.md) · [签名政策](../CODE_SIGNING_POLICY.md) |
+| GitHub Release 更新源与正式发布验收 | [1.0.1 正式发布](releases/v1.0.1/github-release.md) · [签名政策](../CODE_SIGNING_POLICY.md) |
 | 历史签名方案 | [SignPath 申请记录（未启用）](signpath-application.md) |
 | 本次目录整理及删除依据 | [2026-09-22 清理记录](solutions/2026-09-22-project-cleanup.md) · [2026-09-20 历史清理](solutions/2026-09-20-project-cleanup.md) |
 

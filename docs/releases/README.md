@@ -12,6 +12,7 @@
 | `v0.8.0` | 计划：Coding Workbench | [开发计划](./v0.8.0/v0.8.0-development-plan-20260820.md) |
 | `v0.9.0` | 功能范围已封版；不可变发布基线待收拢 | [封版决议](./v0.9.0/v0.9.0-freeze-decision-20260824.md) · [开发计划](./v0.9.0/v0.9.0-development-plan-20260820.md) · [1.0 交接包](./v0.9.0/v0.9.0-handoff-to-v1.0.0-20260823.md) |
 | `v1.0.0` | 计划：Codex-inspired Agent 架构代际升级 | [新开发计划](./v1.0.0/v1.0.0-agent-rearchitecture-plan-20260824.md) · [被替代的稳定收口计划](./v1.0.0/v1.0.0-development-plan-20260820.md) |
+| `v1.0.1` | 正式发布契约与验收边界 | [发布说明](./v1.0.1/github-release.md) |
 
 正式发布状态、安装包和变更说明应同时对照仓库根目录的 `CHANGELOG.md` 与实际 Git 标签，不能只根据计划文档判断。
 

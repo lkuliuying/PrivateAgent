@@ -167,7 +167,7 @@ cargo build --offline --locked --release --manifest-path scripts/windows/updater
 ```powershell
 node scripts/build-client.cjs --help
 .\scripts\build-client.cmd
-.\scripts\build-client.cmd --preview-installer --version 1.0.0
+.\scripts\build-client.cmd --preview-installer --version 1.0.1
 ```
 
 默认构建生成未签名便携验证目录，`--preview-installer` 生成未签名安装器；示例版本不表示已经发布。脚本会打印本次 `.run/unified-client-*` 输出位置，其中包含桌面程序、`private-agent-local.exe`、`exec-host.exe`、宿主校验摘要和源码清单；便携运行须保持这些文件同目录。前端与执行器应来自同一次构建。
@@ -181,7 +181,7 @@ node scripts/build-client.cjs --help
 只核对正式构建参数，不签名或生成安装包：
 
 ```powershell
-node scripts/build-client.cjs --release --version 1.0.0 --github-repo lkuliuying/PrivateAgent --dry-run
+node scripts/build-client.cjs --release --version 1.0.1 --github-repo lkuliuying/PrivateAgent --dry-run
 ```
 
 正式构建由维护者通过 `scripts\build-client.cmd --release` 执行。`--github-repo lkuliuying/PrivateAgent` 配置 GitHub Release 的 `latest.json` 更新入口，与自定义 `--update-url` / `--download-base-url` 互斥；地址已配置不代表远端更新产物已经可用。
@@ -194,7 +194,7 @@ node scripts/build-client.cjs --release --version 1.0.0 --github-repo lkuliuying
 .venv\Scripts\python.exe scripts/generate_release_manifest.py --bundle "<本次构建目录>" --write
 ```
 
-预览更新测试、离线验签和草稿资产发布步骤见[发布操作说明](docs/releases/v1.0.0/github-release.md)。正式流程使用 Tauri 更新签名，不依赖 SignPath 或 `PRIVATEAGENT_UPDATE_URL`；工作流仅手动触发，验签后向已有非预发布草稿附加资产，不自动发布或设置 Latest。构建脚本本身不上传、不安装、不发布，源码变更不会自动更新已安装副本。
+预览更新测试、离线验签和草稿资产发布步骤见[发布操作说明](docs/releases/v1.0.1/github-release.md)。正式流程使用 Tauri 更新签名，不依赖 SignPath 或 `PRIVATEAGENT_UPDATE_URL`；工作流仅手动触发，验签后向已有非预发布草稿附加资产，不自动发布或设置 Latest。构建脚本本身不上传、不安装、不发布，源码变更不会自动更新已安装副本。
 
 ## 数据与权限
 
@@ -218,7 +218,7 @@ node scripts/build-client.cjs --release --version 1.0.0 --github-repo lkuliuying
 | 工具、审批与执行边界 | [本机工具系统](docs/local-tool-system.md) |
 | 上下文与长期记忆 | [上下文设计](docs/context-design.md) · [记忆设计](docs/memory-design.md) |
 | 开发、验证与文件保留规则 | [目录说明](docs/repository-layout.md) · [测试指南](docs/testing-guide.md) |
-| 发布、验签与更新清单 | [发布操作说明](docs/releases/v1.0.0/github-release.md) |
+| 发布、验签与更新清单 | [发布操作说明](docs/releases/v1.0.1/github-release.md) |
 | 全部文档与历史记录 | [文档中心](docs/README.md) · [交付记录](docs/solutions/README.md) |
 
 接手开发先读 [AGENTS.md](AGENTS.md) 和[项目状态记忆](docs/project-state.md)。状态记忆保留 2026-09-19 及更早的历史事实，当前实现需与源码及后续交付记录交叉核对。旧 MySQL、Alembic、Chroma 和服务器部署资料位于历史归档，不适用于当前本机链。
