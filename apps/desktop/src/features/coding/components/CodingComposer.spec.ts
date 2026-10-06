@@ -5,8 +5,10 @@ import CodingComposer from "./CodingComposer.vue";
 import { createCodingWorkspaceStore } from "../model/codingWorkspaceStore";
 import type { CodingFileHint } from "../model/runContracts";
 import { listSkills } from "../api/skills";
+import { getModelPreference, setModelPreference } from "../api/modelPreferences";
 
 vi.mock("../api/skills", () => ({ listSkills: vi.fn() }));
+vi.mock("../api/modelPreferences", () => ({ getModelPreference: vi.fn(), setModelPreference: vi.fn() }));
 
 const HINTS: CodingFileHint[] = [
   { relPath: "src/features/coding/components/CodingSidebar.vue", name: "CodingSidebar.vue", language: "vue" },
@@ -57,6 +59,30 @@ async function setInputValue(wrapper: ReturnType<typeof mount>, value: string, c
 }
 
 describe("CodingComposer", () => {
+  it("恢复模型待确认时禁止按钮和回车发送，明确选择后才允许发送", async () => {
+    const store = profilesStore();
+    await store.bootstrap();
+    store.selectedProjectId.value = 1;
+    store.capabilities.value = { coding_model_scopes_enabled: true };
+    const overrides = { global: "local-coder", project: "local-coder", session: null };
+    vi.mocked(getModelPreference).mockResolvedValue({ profile_id: null, source: "project", overrides, available: false, requires_confirmation: true, confirmation_reason: "原模型来源待核对", restore_source: { profile_id: "local-coder", source_scope: "project", source_identity: null } });
+    vi.mocked(setModelPreference).mockResolvedValue({ profile_id: "local-coder", source: "project", overrides, available: true, requires_confirmation: false });
+    const { wrapper } = mountComposer({ store });
+    await flushPromises(); await setInputValue(wrapper, "确认模型后再发送");
+    const send = wrapper.get('[data-testid="coding-composer-send"]');
+    expect(send.attributes("disabled")).toBeDefined();
+    await send.trigger("click"); await wrapper.get("textarea").trigger("keydown", { key: "Enter" });
+    expect(wrapper.emitted("send")).toBeUndefined();
+    await wrapper.get('[data-testid="model-scope-picker"]').trigger("click"); await flushPromises();
+    const choice = document.querySelector<HTMLSelectElement>('[aria-label="作用域模型"]')!;
+    choice.value = "local-coder"; choice.dispatchEvent(new Event("change", { bubbles: true })); await flushPromises();
+    document.querySelector<HTMLButtonElement>('[role="dialog"] .pa-btn--primary')!.click(); await flushPromises();
+    expect(send.attributes("disabled")).toBeUndefined();
+    await send.trigger("click");
+    expect(wrapper.emitted("send")?.[0]?.[0]).toMatchObject({ message: "确认模型后再发送", modelProfileId: "local-coder" });
+    wrapper.unmount(); store.dispose();
+  });
+
   it("/skill 按需读取技能，选择后插入引用，不发送内置命令", async () => {
     vi.mocked(listSkills).mockResolvedValue({ items: [
       { id: "project:review", name: "project-review", description: "审查项目", scope: "project", version: "v1", enabled: true, missing_dependencies: [], error: null },

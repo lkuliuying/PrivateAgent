@@ -1,6 +1,11 @@
 import { codingFetchJson, codingJsonInit } from "./codingHttp";
+import type { BackupModelIdentity } from "../../../api/backups";
 export type ModelScope = "global" | "project" | "session";
-export interface ModelPreference { profile_id: string | null; source: ModelScope; overrides: Record<ModelScope, string | null>; available: boolean }
+export interface ModelPreference {
+  profile_id: string | null; source: ModelScope; overrides: Record<ModelScope, string | null>; available: boolean;
+  requires_confirmation?: boolean; confirmation_reason?: string | null;
+  restore_source?: { profile_id: string | null; source_scope: ModelScope; source_identity: BackupModelIdentity | null } | null;
+}
 export function getModelPreference(projectId: number | null, sessionId: number | null): Promise<ModelPreference> {
   const query = new URLSearchParams();
   if (projectId) query.set("project_id", String(projectId));

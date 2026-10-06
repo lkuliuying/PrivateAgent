@@ -127,6 +127,25 @@ beforeEach(() => {
 });
 
 describe("SettingsView 统一模型设置", () => {
+  it("应用数据导入后即时刷新工作区、历史记录和材料，配置导入保留数据视图", async () => {
+    codingScope.capabilities.value = { coding_app_backups_enabled: true, coding_attachment_storage_enabled: true };
+    const wrapper = mount(SettingsView, { props: { activeSection: "backup" }, global: { stubs: { ApplicationBackup: true, AttachmentStoragePanel: true, HistoryMigration: true } } });
+    await flushPromises();
+    const historyBefore = wrapper.findComponent({ name: "HistoryMigration" }).element;
+    const attachmentsBefore = wrapper.findComponent({ name: "AttachmentStoragePanel" }).element;
+    wrapper.findComponent({ name: "ApplicationBackup" }).vm.$emit("imported", "configuration", {}); await flushPromises();
+    expect(refreshCoding).toHaveBeenCalledOnce();
+    expect(wrapper.findComponent({ name: "HistoryMigration" }).element).toBe(historyBefore);
+    wrapper.findComponent({ name: "ApplicationBackup" }).vm.$emit("imported", "data", { id: "new-import" }); await flushPromises();
+    expect(refreshCoding).toHaveBeenCalledTimes(2);
+    expect(wrapper.findComponent({ name: "HistoryMigration" }).element).not.toBe(historyBefore);
+    expect(wrapper.findComponent({ name: "AttachmentStoragePanel" }).element).not.toBe(attachmentsBefore);
+    expect(wrapper.get("details").attributes("open")).toBeDefined();
+    wrapper.findComponent({ name: "HistoryMigration" }).vm.$emit("changed"); await flushPromises();
+    expect(refreshCoding).toHaveBeenCalledTimes(3);
+    wrapper.unmount();
+  });
+
   it("新版执行器使用分步保存，并保留未完成操作的同一标识", async () => {
     codingScope.capabilities.value = { coding_model_save_recovery_enabled: true };
     vi.mocked(secureDraftAvailable).mockReturnValue(true);

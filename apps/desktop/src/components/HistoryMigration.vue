@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { apiFetch, ensureApiBase } from "../api/http";
+import { exportHistoryArchive } from "../api/backups";
 import { useNotifications } from "../stores/notifications";
 
 interface Preview { sha256: string; counts: Record<string, number>; projects: { id: number; name: string; root_path: string }[]; warnings: string[] }
-interface Imported { id: string; created_at: string; counts: Record<string, number>; imported_counts: Record<string, number> }
+interface Imported { id: string; created_at: string; counts: Record<string, number>; imported_counts: Record<string, number>; source_kind?: string; backup_format?: string }
+const emit = defineEmits<{ changed: [] }>();
 const path = ref("");
 const preview = ref<Preview | null>(null);
 const mappings = ref<Record<string, string>>({});
@@ -16,6 +18,9 @@ const selectedImport = ref("");
 const selectedKind = ref("agent_tasks");
 const offset = ref(0);
 const notify = useNotifications();
+let alive = true;
+const downloads = new Map<string, ReturnType<typeof setTimeout>>();
+onBeforeUnmount(() => { alive = false; downloads.forEach((timer, url) => { clearTimeout(timer); URL.revokeObjectURL(url); }); downloads.clear(); });
 
 async function request<T>(url: string, body?: object): Promise<T> {
   const base = await ensureApiBase();
@@ -28,59 +33,67 @@ async function request<T>(url: string, body?: object): Promise<T> {
 }
 
 async function act(work: () => Promise<void>): Promise<void> {
-  if (busy.value) return;
+  if (!alive || busy.value) return;
   busy.value = true; error.value = "";
-  try { await work(); } catch (reason) { error.value = reason instanceof Error ? reason.message : "历史操作失败"; }
-  finally { busy.value = false; }
+  try { await work(); } catch (reason) { if (alive) error.value = reason instanceof Error ? reason.message : "历史操作失败"; }
+  finally { if (alive) busy.value = false; }
 }
-async function refresh(): Promise<void> { imports.value = await request<Imported[]>("/local-history/imports"); }
+async function refresh(): Promise<void> { const value = await request<Imported[]>("/local-history/imports"); if (alive) imports.value = value; }
 onMounted(() => void act(refresh));
 
 async function chooseFile(): Promise<void> {
   await act(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({ multiple: false, directory: false, filters: [{ name: "PrivateAgent 历史", extensions: ["json", "sqlite3", "sqlite", "db"] }] });
-    if (typeof selected !== "string") return;
+    if (!alive || typeof selected !== "string") return;
     path.value = selected; preview.value = null; mappings.value = {};
-    preview.value = await request<Preview>("/local-history/preview", { path: selected });
+    const value = await request<Preview>("/local-history/preview", { path: selected }); if (alive) preview.value = value;
   });
 }
 async function chooseRoot(id: number): Promise<void> {
   await act(async () => {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({ multiple: false, directory: true });
-    if (typeof selected === "string") mappings.value = { ...mappings.value, [String(id)]: selected };
+    if (alive && typeof selected === "string") mappings.value = { ...mappings.value, [String(id)]: selected };
   });
 }
 async function importHistory(): Promise<void> {
   if (!preview.value) return;
-  const confirmed = await notify.confirm({ title: "导入本机工作区的历史？", impact: "所选本机目录将授权给导入的 Coding 任务。未选择目录的记录和旧 AgentTask 仅归档。不会恢复完全访问授权、审批或执行中的命令。", confirmLabel: "确认导入" });
-  if (!confirmed) return;
+  const reviewed = { path: path.value, sha256: preview.value.sha256, mappings: { ...mappings.value } };
   await act(async () => {
-    await request("/local-history/import", { path: path.value, sha256: preview.value!.sha256, mappings: mappings.value });
+    const confirmed = await notify.confirm({ title: "导入本机工作区的历史？", impact: "所选本机目录将授权给导入的 Coding 任务。未选择目录的记录和旧 AgentTask 仅归档。不会恢复完全访问授权、审批或执行中的命令。", confirmLabel: "确认导入" });
+    if (!confirmed || !alive) return;
+    await request("/local-history/import", reviewed);
+    if (!alive) return;
     preview.value = null;
+    emit("changed");
     await refresh();
-    notify.success("历史已导入", "重新进入项目页即可刷新任务列表；只读归档可在下方查看。");
+    if (alive) notify.success("历史已导入", "工作区已请求刷新，导入记录与只读归档可在下方查看。");
   });
 }
 async function rollback(item: Imported): Promise<void> {
-  if (!await notify.confirm({ title: "回滚这次历史导入？", impact: "只有导入后没有其他本机修改时才允许自动回滚。备份会保留。", confirmLabel: "核对并回滚", danger: true })) return;
-  await act(async () => { await request(`/local-history/imports/${item.id}/rollback`, {}); records.value = null; await refresh(); });
+  await act(async () => {
+    if (!await notify.confirm({ title: "回滚这次数据导入？", impact: "仅回滚历史、草稿与附件等应用数据，不撤销单独导入的模型配置。只有导入后没有其他本机修改时才允许自动回滚，备份会保留。", confirmLabel: "核对并回滚", danger: true }) || !alive) return;
+    await request(`/local-history/imports/${item.id}/rollback`, {});
+    if (!alive) return;
+    records.value = null; emit("changed"); await refresh();
+  });
 }
 async function browse(item: Imported, nextOffset = 0): Promise<void> {
   await act(async () => {
     selectedImport.value = item.id; offset.value = nextOffset;
-    records.value = await request(`/local-history/imports/${item.id}/records?kind=${selectedKind.value}&offset=${nextOffset}&limit=20`);
+    const value = await request<{ total: number; items: unknown[] }>(`/local-history/imports/${item.id}/records?kind=${selectedKind.value}&offset=${nextOffset}&limit=20`);
+    if (alive) records.value = value;
   });
 }
 async function download(importId?: string): Promise<void> {
-  if (!await notify.confirm({ title: "导出本机工作区的历史？", impact: "文件包含对话、代码片段和工具记录，请保存在可信位置。不会包含供应商配置或有效授权令牌。", confirmLabel: "导出历史" })) return;
   await act(async () => {
-    const data = await request(importId ? `/local-history/imports/${importId}/export` : "/local-history/export");
-    const blob = new Blob([JSON.stringify(data)], { type: "application/json" });
+    if (!await notify.confirm({ title: "导出历史归档？", impact: "文件只包含历史、已发送附件及工具记录，不含配置、草稿、未发送附件和模型选择，不能替代完整应用备份。请保存在可信位置。", confirmLabel: "导出历史" }) || !alive) return;
+    const blob = await exportHistoryArchive(importId);
+    if (!alive) return;
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a"); link.href = url; link.download = "privateagent-history.json"; link.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
+    downloads.set(url, setTimeout(() => { URL.revokeObjectURL(url); downloads.delete(url); }, 60000));
   });
 }
 </script>
@@ -104,11 +117,15 @@ async function download(importId?: string): Promise<void> {
       </div>
       <button :disabled="busy" @click="importHistory">确认导入所选历史</button>
     </template>
-    <h3 v-if="imports.length">迁移记录与只读归档</h3>
+    <div class="actions"><h3>导入记录与只读历史归档</h3><button :disabled="busy" @click="act(refresh)">刷新导入记录</button></div>
+    <p v-if="!imports.length && !busy">暂无数据导入记录。普通配置导入不在此列表中。</p>
     <article v-for="item in imports" :key="item.id">
-      <p>{{ item.created_at }} · 导入 Coding 会话 {{ item.imported_counts.sessions || 0 }} · 归档旧 AgentTask {{ item.counts.agent_tasks || 0 }}</p>
+      <p>{{ item.source_kind === 'application' ? '应用数据备份' : item.source_kind === 'history' ? '历史迁移' : '旧导入记录（来源类型未知）' }} · {{ item.created_at }} · {{ item.backup_format || '格式未记录' }}</p>
+      <p>导入 Coding 会话 {{ item.imported_counts.sessions ?? '未知' }} · 归档旧 AgentTask {{ item.counts.agent_tasks ?? '未知' }}</p>
+      <p v-if="item.source_kind === 'application'">草稿 {{ item.imported_counts.drafts ?? '未知' }} 个 · 未发送附件 {{ item.imported_counts.draft_attachments ?? '未知' }} 个 · 模型选择 {{ item.imported_counts.model_selections ?? '未知' }} 个 · 待确认模型 {{ item.imported_counts.models_pending_confirmation ?? '未知' }} 个</p>
+      <p>这里保留的是历史子集，重新导出不包含配置、草稿、未发送附件和模型选择。数据回滚也不会撤销模型配置导入。</p>
       <div class="actions"><select v-model="selectedKind" aria-label="历史记录类型"><option v-for="(_, kind) in item.counts" :key="kind" :value="kind">{{ kind }}</option></select>
-        <button :disabled="busy" @click="browse(item)">只读查看</button><button :disabled="busy" @click="download(item.id)">导出原始归档</button><button :disabled="busy" @click="rollback(item)">核对并回滚</button></div>
+        <button :disabled="busy" @click="browse(item)">只读查看</button><button :disabled="busy" @click="download(item.id)">导出历史归档（不含配置和草稿）</button><button :disabled="busy" @click="rollback(item)">核对并回滚数据</button></div>
       <template v-if="records && selectedImport === item.id">
         <p>共 {{ records.total }} 条，本页从第 {{ offset + 1 }} 条开始；归档内容不会执行。</p>
         <pre>{{ JSON.stringify(records.items, null, 2) }}</pre>

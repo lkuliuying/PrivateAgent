@@ -45,6 +45,23 @@ const emit = defineEmits<{
 }>();
 const currentSectionMeta = computed(() => settingsSectionMeta(props.activeSection));
 const sectionSubtitle = computed(() => currentSectionMeta.value.description);
+const historyRevision = ref(0);
+const attachmentRevision = ref(0);
+const backupRefreshError = ref("");
+
+async function refreshAfterImport(): Promise<void> {
+  backupRefreshError.value = "";
+  try { await Promise.all([codingWorkspace.refresh(), loadCurrentModel()]); }
+  catch { backupRefreshError.value = "数据操作已完成，但工作区列表刷新失败。请返回工作区后重试刷新。"; }
+}
+async function onBackupImported(part: "configuration" | "data"): Promise<void> {
+  if (part === "data") { historyRevision.value++; attachmentRevision.value++; }
+  await refreshAfterImport();
+}
+async function onHistoryChanged(): Promise<void> {
+  attachmentRevision.value++;
+  await refreshAfterImport();
+}
 
 async function onModelProfilesSaved(): Promise<void> {
   await Promise.all([useCodingWorkspace().refresh(), loadCurrentModel()]);
@@ -165,9 +182,10 @@ const activeEndpoint = computed(() => activeModelProvider.value?.baseUrl || "—
     <!-- 备份 -->
     <section v-if="activeSection === 'backup'" class="setting-card wide">
       <div class="card-heading"><span><PhArchiveBox :size="21" /></span><div><h2>备份与恢复</h2><p>导入或导出本机会话历史，导入前可预览内容</p></div></div>
-      <ApplicationBackup v-if="codingWorkspace.capabilities?.value?.coding_app_backups_enabled" />
-      <AttachmentStoragePanel v-if="codingWorkspace.capabilities?.value?.coding_attachment_storage_enabled" />
-      <details><summary>历史导入与导出（兼容旧版本）</summary><HistoryMigration /></details>
+      <ApplicationBackup v-if="codingWorkspace.capabilities?.value?.coding_app_backups_enabled" @imported="onBackupImported" />
+      <p v-if="backupRefreshError" role="alert">{{ backupRefreshError }}</p>
+      <AttachmentStoragePanel v-if="codingWorkspace.capabilities?.value?.coding_attachment_storage_enabled" :key="attachmentRevision" />
+      <details :open="historyRevision > 0"><summary>导入记录、数据回滚与旧历史迁移</summary><HistoryMigration :key="historyRevision" @changed="onHistoryChanged" /></details>
     </section>
 
     <!-- 关于 / 更新 -->
