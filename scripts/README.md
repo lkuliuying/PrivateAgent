@@ -12,6 +12,7 @@
 | 包内隔离验证 | `verify-local-executor.py`、`verify-unified-client.py`，使用合成模型及临时数据 |
 | 来源与发布清单 | `generate_release_manifest.py --bundle <明确构建目录>`；不推断安装或测试通过 |
 | 签名与更新辅助 | `sign_installer.py`、`generate-latest-json.py`、`windows/updater-signature-verifier/` |
+| 自有静态下载源 | `prepare_download_source.py` 生成公钥复验后的上传包；服务器入口为 `linux/setup-download-source.sh`、`linux/publish_download_source.py`，见[搭建与验收流程](../docs/releases/self-hosted-download-source.md) |
 | 模型质量验收 | `run_coding_acceptance.py`、`run_coding_local_probe.py`；真实模型调用需要另行确认费用和测试数据 |
 | Windows 开发辅助 | `run-tauri-dev.bat`、`cargo-check-tauri.bat`、`cargo-test-tauri.bat`；先核对脚本里的本机路径和 MSVC 环境 |
 
