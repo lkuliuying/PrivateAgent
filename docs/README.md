@@ -7,6 +7,7 @@
 | 需要了解 | 文档 |
 | --- | --- |
 | 产品、架构、开发环境与构建 | [项目 README](../README.md) |
+| 系统学习当前项目与准备 Agent 开发面试 | [四周学习与面试准备](learning/README.md) |
 | 完整目录职责、产物位置与保留规则 | [项目目录说明](repository-layout.md) · [脚本入口](../scripts/README.md) · [正式测试目录](../tests/README.md) |
 | 会话约定与历史状态 | [AGENTS.md](../AGENTS.md) · [项目状态记忆](project-state.md) |
 | 当前源码范围与已知验证限制 | [本机化与上下文改进](solutions/2026-09-20-local-only-context.md) |
@@ -15,6 +16,8 @@
 | 工具契约、审批、Git 与文档 MCP | [本机工具系统](local-tool-system.md) |
 | 上下文预算、压缩与原文续读 | [上下文设计](context-design.md) |
 | 本机记忆与用户控制 | [记忆设计](memory-design.md) |
+| 短期与长期记忆改造、DeepSeek 执行与验收 | [记忆改造计划](analysis/2026-10-20-context-management-improvement-plan.md) |
+| 任务中断、现场核对、续跑与文件恢复改造 | [任务恢复改造计划](analysis/2026-10-21-task-recovery-improvement-plan.md) |
 | 测试目录、隔离运行与验证命令 | [测试指南](testing-guide.md) |
 | GitHub Release 更新源与正式发布验收 | [1.0.1 正式发布](releases/v1.0.1/github-release.md) · [签名政策](../CODE_SIGNING_POLICY.md) |
 | 历史签名方案 | [SignPath 申请记录（未启用）](signpath-application.md) |

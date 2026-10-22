@@ -45,11 +45,12 @@ cargo build --offline --locked --release --manifest-path scripts/windows/updater
 | `backup-recovery` | 应用备份 v1/v2、模型来源核对与待确认、作用域继承、API/内部队列阻断、持久化、重复导入和回滚 |
 | `shared-models` | 共享适配器、模型元数据与能力探测 |
 | `output` | 可选 JSON Schema、格式纠错、事实门禁、任务恢复与最终结果事务提交 |
+| `recovery` | 活动计时回执与离线间隔、未知现场逐项核对（按文件路径与原调用身份绑定）、可恢复模型故障续跑、显式模型交接（含同一配置变化）与公开历史投影；组合 `test_local_recovery.py`、`test_recovery_timing.py`、`test_recovery_reconcile.py`、`test_recovery_handoff.py` |
 | `reasoning`、`streaming` | 原生消息阶段、公开增量、取消及旧文本协议兼容 |
 | `parallel` | 并行读取、AgentRuntime 与恢复 |
 | `reflection` | 结构化纠错、重复失败独立复核、预算与恢复边界；全部使用合成模型响应 |
 | `desktop-packaging` | 安装模板、发布清单、签名 |
-| `context-alignment`、`context`、`memory` | 请求预算、上下文归档、压缩和记忆 |
+| `context-alignment`、`context`、`context-baseline`、`memory` | 请求预算、上下文归档、压缩与分项计量、证据选择与六类交接、归档搜索、记忆召回及长任务基线 |
 | `local`、`direct-models` | 本机请求、供应商直连及模型路由；`direct-models` 还覆盖模型保存恢复和模型偏好 |
 | `tool-evolution` | 工具、审批、执行、文档 MCP 与任务约束的组合回归 |
 | `security` | 各权限模式的沙箱边界、真实 Windows 敏感对象保护、跨分片脱敏、模型和 MCP 外发阻断、流式取消与持久化 |
@@ -92,6 +93,19 @@ node node_modules/@playwright/test/cli.js test e2e/recovery-fixes.spec.ts --retr
 ```
 
 该流程模拟执行器在身份绑定前或进入工作台后退出，验证实际重试按钮、草稿保留及项目上下文重新同步；同时验证超过 64 项旧凭据分批清理、第二批失败提示已确认数量、重新读取剩余项并确认后继续。原生命令和凭据均由 IPC 替身提供，不调用真实模型或操作系统凭据库。服务和 store 的 Vitest 另覆盖并发握手、重试、会话切换及迟到响应；凭据测试覆盖 0/64/65/129 项和各阶段失败。
+
+任务恢复专项在仓库根目录与 `apps/desktop` 分别执行：
+
+```powershell
+.venv/Scripts/python.exe -B scripts/run_coding_validation.py --suite recovery
+.venv/Scripts/python.exe -B scripts/protocol_codegen.py --check
+cd apps/desktop
+node node_modules/vitest/vitest.mjs run src/features/coding/composables/useRunStream.spec.ts src/features/coding/components/RecoveryPanel.spec.ts src/features/coding/components/PatchReviewPanel.spec.ts --maxWorkers=2 --minWorkers=1
+node node_modules/@playwright/test/cli.js test e2e/task-recovery.spec.ts --retries=0
+npm run build
+```
+
+`recovery` 套件用真实子进程在模型请求、工具请求、补丁意图、补丁落盘等边界强制退出（返回码 23），据此检查已提交事实、检查点与续跑资格；活动计时用例把运行时钟推进到次日，确认离线间隔不再累加，并用损坏元数据与旧策略记录验证保守派生。核对用例区分机器观察与用户说明，覆盖写入前/后/第三种内容、未知命令、MCP 已派发与记账项上限，并单独验证同一补丁组内两个文件各自阻塞（核对一个不解除另一个）与核对后文件内容再变化时旧观察失效；受控 MCP 连接替身用例验证核对过的原调用不会重发、同一工具的新参数仍可执行、缺参数指纹的旧记录继续保守阻止。交接用例覆盖五类可恢复模型故障、显式接受与预览摘要过期、同一模型配置改端点后必须重新预览并显式接受，以及按待发上下文与附件 `requires_vision` 判定能力缺口，并用受控 `ModelRequest` 检查跨路由出站消息不含旧不透明状态。浏览器流程 `e2e/task-recovery.spec.ts` 全部使用页面内路由夹具与本机 IPC 替身，验证结构化核对提交、只读预览到提交、按轮次标注及约 390 CSS px 窄窗（窄窗下恢复现场改为整屏，断言关键控件落在视口内且文本完整）；它不连接真实执行器、真实模型或用户数据目录，不能替代真实安装与真实供应商验收。
 
 存储回归的六个测试文件 `test_local_attachments.py`、`test_attachment_media.py`、`test_attachment_storage.py`、`test_local_drafts.py`、`test_local_backups.py`、`test_backup_model_restore.py` 已纳入 `workbench`；`test_model_saves.py`、`test_model_preferences.py` 纳入 `direct-models`，备份与恢复专项再组合偏好和历史回归，由现有去重逻辑进入 `all`。v8 迁移夹具应仅保留 v8 的表、索引与迁移记录；升级后检查当前 `SCHEMA_VERSION`、升级前备份仍为 v8、原项目和会话完整，不能用放宽生产迁移约束修复夹具。
 
@@ -169,6 +183,58 @@ node node_modules/@playwright/test/cli.js test e2e/workbench-upgrade.spec.ts e2e
 ```
 
 `workbench` 包含真实本机浏览器和 stdio 进程，但模型及 OAuth 远端仍使用隔离合成数据；浏览器流程验证搜索、归档恢复、运行中输入、排队、审阅反馈、插件和窄窗口。
+
+2026-10-20 上下文管理 M0–M4 的复验入口与结果（详见[实施记录](solutions/2026-10-20-context-management.md)）：
+
+```powershell
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context-baseline
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context-alignment
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite tool-selection
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite mcp-memory-boundaries
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite memory
+```
+
+| 命令 | 结果 |
+| --- | --- |
+| `--suite context-baseline` | 2 passed；26k 窗口、两次以上压缩、真实写入与追加目标；元数据写入隔离目录 `baseline.json` |
+| `--suite context` / `context-alignment` | 54 passed / 24 passed |
+| `--suite tool-selection` / `mcp-memory-boundaries` | 47 passed / 29 passed |
+| `--suite memory` | 145 passed |
+| `--suite tool-evolution` | 908 passed、1 skipped（本机未授予真实符号链接创建权限） |
+| `apps/desktop`：`node node_modules/vitest/vitest.mjs run src/features/coding/components/LocalContextPanel.spec.ts src/features/coding/components/ContextDrawer.spec.ts src/features/agent/model/contextRing.spec.ts src/features/coding/components/SessionMemoryPanel.spec.ts` | 27 passed |
+| `apps/desktop`：`node node_modules/@playwright/test/cli.js test e2e/coding-workbench.spec.ts -g "上下文抽屉" --retries=0` | 1 passed；宽/窄视口下展开明细与交接、无横向溢出 |
+| `apps/desktop`：`npm run build` | 类型检查与 Vite 构建通过；保留既有 antd 分包 >500 kB 警告 |
+
+基线只比较控制流程与内容保留（请求估算、压缩前后、来源覆盖、压缩与调用次数、耗时）；模拟回放不能替代真实供应商效果对照。`search_context_history` 只在按需加载协议下暴露，旧协议的请求定义与既有 26k 窗口回归未改动。
+
+2026-10-21 独立验收返工（F1–F7 与 M5）的复验入口：
+
+```powershell
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context-alignment
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite memory
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite tool-selection
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite mcp-memory-boundaries
+```
+
+`apps/desktop`：
+
+```powershell
+node node_modules/vitest/vitest.mjs run src/features/coding/components/LocalContextPanel.spec.ts src/features/coding/components/ContextDrawer.spec.ts src/features/agent/model/contextRing.spec.ts src/features/coding/components/SessionMemoryPanel.spec.ts src/components/MemorySettingsPanel.spec.ts src/components/MemoryEvidence.spec.ts
+node node_modules/@playwright/test/cli.js test e2e/coding-workbench.spec.ts -g "上下文抽屉" --retries=0
+node node_modules/@playwright/test/cli.js test e2e/memory-maintenance.spec.ts e2e/memories.spec.ts --retries=0
+```
+
+| 命令 | 结果 |
+| --- | --- |
+| `--suite context-alignment` | 114 passed；含不同范围/版本去重、中段摘录、已解决失败、目标契约，以及摘录预算边界与跨组复用调用 ID（R1/R2） |
+| `--suite memory` | 149 passed；含误杀查询预算、追加要求、偏好保底、空查询与人工事实过滤 |
+| `--suite tool-selection` / `mcp-memory-boundaries` | 49 passed / 31 passed；含原生公开正文可搜、内部状态不可搜 |
+| Vitest 六文件 | 40 passed（记忆面板含对照、重复分组、状态筛选） |
+| Playwright（上下文抽屉 1 项 + memory-maintenance/memories 2 项，两条命令合计） | 3 passed；宽/窄窗口与键盘展开 |
+| Playwright `e2e/coding-workbench.spec.ts`（整文件） | 16 passed；Provider 未配置引导按真实“配置模型”按钮契约修正后通过 |
+
+新增浏览器用例 `e2e/memory-maintenance.spec.ts` 使用模拟本机 IPC，验证同主题对照、疑似重复提示、状态筛选与窄窗口布局；它不代表真实安装包验收。`e2e/memories.spec.ts` 的启用、编辑、遗忘、来源与 409 草稿流程保持不变。
 
 ## 7. 静态检查与维护
 
