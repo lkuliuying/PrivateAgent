@@ -42,11 +42,23 @@ it("切换会话和卸载使旧响应失效", async () => {
 });
 
 it("展示逐条命中和预算省略原因，遗忘记录不再提供正文入口", async () => {
-  vi.mocked(api.sessionMemorySettings).mockResolvedValue({ ...state, last_recall: { recalled_ids: [], omitted_ids: ["m"], entries: [{ memory_id: "m", version: 1, scope: "project", title: "语言", matched_terms: ["中文"], source_session_id: 11, source_item_ids: [], decision: "omitted", reason: "context_budget", available: false }] } });
+  vi.mocked(api.sessionMemorySettings).mockResolvedValue({ ...state, last_recall: { recalled_ids: [], omitted_ids: ["m"], entries: [{ memory_id: "m", version: 1, scope: "project", title: "语言", matched_terms: ["中文"], matched_signals: ["step", "paths"], source_session_id: 11, source_item_ids: [], decision: "omitted", reason: "context_budget", available: false }] } });
   const wrapper = mount(SessionMemoryPanel, { props: { sessionId: 7 } });
   await flushPromises();
   expect(wrapper.text()).toContain("上下文预算不足：中文");
+  // 召回解释说明匹配的是当前步骤与路径，不复制额外原文。
+  expect(wrapper.text()).toContain("匹配当前步骤、路径");
   expect(wrapper.find("details").exists()).toBe(false);
+  wrapper.unmount();
+});
+
+it("人工偏好保底单独标注，不伪装成关键词命中", async () => {
+  vi.mocked(api.sessionMemorySettings).mockResolvedValue({ ...state, last_recall: { recalled_ids: ["m"], omitted_ids: [], entries: [
+    { memory_id: "m", version: 2, scope: "project", title: "语言", matched_terms: [], matched_signals: [], source_session_id: null, source_item_ids: [], decision: "included", reason: "preference_floor" }] } });
+  const wrapper = mount(SessionMemoryPanel, { props: { sessionId: 7 } });
+  await flushPromises();
+  expect(wrapper.text()).toContain("人工偏好保底（未命中）");
+  expect(wrapper.text()).not.toContain("关键词匹配");
   wrapper.unmount();
 });
 

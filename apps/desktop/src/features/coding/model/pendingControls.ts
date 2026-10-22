@@ -1,6 +1,7 @@
-import type { ControlRequest, RunControlKind } from "../api/recovery";
-export interface PendingControl { kind: RunControlKind | "queue"; data: ControlRequest }
+import type { ControlPayload, RecoveryControlKind } from "../api/recovery";
+export interface PendingControl { kind: RecoveryControlKind | "queue"; data: ControlPayload }
 const memory = new Map<string, PendingControl>();
+const KINDS = ["pause", "resume", "steer", "cancel", "reconcile", "queue"];
 /** 结果未确认时保留原请求标识，切换任务或刷新后重试不会生成第二次操作。 */
 export function readPendingControl(runId: string): PendingControl | null {
   if (memory.has(runId)) return memory.get(runId)!;
@@ -8,7 +9,7 @@ export function readPendingControl(runId: string): PendingControl | null {
     const raw = sessionStorage.getItem(`pa-control:${runId}`);
     if (!raw) return null;
     const value = JSON.parse(raw) as PendingControl;
-    if (!["pause", "resume", "steer", "queue"].includes(value.kind) || typeof value.data?.request_id !== "string" || !Number.isSafeInteger(value.data.expected_state_version)) return null;
+    if (!KINDS.includes(value.kind) || typeof value.data?.request_id !== "string" || !Number.isSafeInteger(value.data.expected_state_version)) return null;
     memory.set(runId, value); return value;
   } catch { return null; }
 }

@@ -16,6 +16,26 @@ export type {
 export { getRuntimeCapabilities, supportsCodingRunCreation } from "./api/runtime";
 export type { RuntimeCapabilities } from "./api/runtime";
 
+export interface ContextBreakdownItem {
+  category: string;
+  label: string;
+  bytes: number;
+  estimated_tokens: number;
+  measurement: string;
+  messages: number;
+}
+export interface ContextBreakdown {
+  schema: string;
+  basis: string;
+  measurement_source: string;
+  estimate_ratio: number;
+  total_bytes: number;
+  estimate_tokens: number;
+  provider_usage_tokens: number | null;
+  items: ContextBreakdownItem[];
+  notice: string;
+}
+
 export interface ContextBudgetResponse {
   used_tokens: number;
   max_context_tokens: number;
@@ -34,6 +54,8 @@ export interface ContextBudgetResponse {
   last_compacted_at: string | null;
   error_code: string | null;
   error_reason: string | null;
+  /** 分项计量为可选字段：旧记录没有明细，界面须显示“暂无明细”而不是零。 */
+  breakdown?: ContextBreakdown | null;
 }
 
 export async function getContextBudget(

@@ -775,7 +775,7 @@ function navigateToInstruction(instructionId: string): void {
               <p v-else>当前任务暂无本机进程。</p>
             </template>
             <template #recovery>
-              <RecoveryPanel v-if="projection?.runId && store.capabilities.value?.coding_recovery_contract_version === '1.0' && !previewMode" :run-id="projection.runId" @resumed="resumeRun" />
+              <RecoveryPanel v-if="projection?.runId && store.capabilities.value?.coding_recovery_contract_version === '1.0' && !previewMode" :run-id="projection.runId" :reconcile-enabled="store.capabilities.value?.coding_recovery_reconcile_enabled === true" :handoff-enabled="store.capabilities.value?.coding_recovery_model_handoff_enabled === true" @resumed="resumeRun" />
               <p v-else>任务运行后可查看与恢复现场。</p>
             </template>
             <template #context>
@@ -939,7 +939,8 @@ function navigateToInstruction(instructionId: string): void {
   background: var(--color-surface);
 }
 .thread-inspector { flex-shrink: 0; min-width: 0; border-left: 1px solid var(--color-border); background: var(--color-surface); }
-@media (max-width: 900px) { .thread-inspector { position: absolute; inset: 0; z-index: 20; } }
+/* 窄窗口让审阅面板占据整个视口，而不是被侧栏挤压到剩余宽度；否则恢复现场的按钮与说明无法完整阅读。 */
+@media (max-width: 900px) { .thread-inspector { position: fixed; inset: 0; z-index: 80; width: auto !important; max-width: none; } }
 .thread-body {
   position: relative;
   display: flex;

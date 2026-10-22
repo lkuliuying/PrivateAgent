@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { controlRun, fetchRecovery, type RecoveryReport, type RunControlKind } from "../api/recovery";
+import { controlRun, fetchRecovery, type RecoveryControlKind, type RecoveryReport } from "../api/recovery";
 import { enqueueTurn, fetchTurnQueue, removeQueuedTurn, type QueuedTurn } from "../api/turnQueue";
 import { readPendingControl, savePendingControl, type PendingControl } from "../model/pendingControls";
 import { isTerminalRunStatus } from "../model/runContracts";
@@ -32,7 +32,7 @@ async function load(clearError = false) {
   } catch (cause) { if (mine === generation && request === loadSequence && !current.signal.aborted) error.value = (cause as { message?: string }).message || "运行状态读取失败"; }
   finally { if (mine === generation && request === loadSequence) { clearTimeout(timer); if (active.value || queued.value?.state === "pending") timer = setTimeout(() => void load(), 1500); } }
 }
-async function act(kind: RunControlKind | "queue", message?: string, retry = false): Promise<boolean> {
+async function act(kind: RecoveryControlKind | "queue", message?: string, retry = false): Promise<boolean> {
   if (busy.value || pending.value && !retry) return false;
   busy.value = true; error.value = ""; notice.value = "";
   const mine = generation, runId = props.runId, sessionId = props.sessionId;
@@ -93,3 +93,4 @@ p { margin: 5px 0; } [role="alert"] { color: var(--color-danger-fg); }
 .queued-turn span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .queued-turn small { flex-basis: 100%; }
 </style>
+

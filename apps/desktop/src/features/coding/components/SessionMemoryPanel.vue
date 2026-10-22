@@ -6,7 +6,9 @@ import SessionMemoryActions from "./SessionMemoryActions.vue";
 
 const props = defineProps<{ sessionId: number; revision?: number }>();
 const emit = defineEmits<{ "open-source": [target: MemorySourceTarget] }>();
-const reasons: Record<string, string> = { keyword_match: "关键词匹配", manual_reference: "人工维护参考", pending_review: "待复核，未使用", stale: "已过期，未使用", memory_budget: "记忆预算不足", context_budget: "上下文预算不足" };
+const reasons: Record<string, string> = { keyword_match: "关键词匹配", manual_reference: "人工维护参考", preference_floor: "人工偏好保底（未命中）", pending_review: "待复核，未使用", stale: "已过期，未使用", memory_budget: "记忆预算不足", context_budget: "上下文预算不足" };
+// 召回解释只说明匹配的是目标、步骤、路径还是追加要求，不复制额外原文。
+const signals: Record<string, string> = { goal: "目标", step: "当前步骤", paths: "路径", steer: "追加要求" };
 const state = ref<SessionMemorySettings | null>(null);
 const busy = ref(false);
 const error = ref("");
@@ -48,7 +50,7 @@ onBeforeUnmount(() => { generation++; controller.abort(); });
       <ul v-if="state.last_recall?.entries?.length" class="session-memory__entries">
         <li v-for="entry in state.last_recall.entries" :key="entry.memory_id">
           <strong>{{ entry.title ?? '记忆' }}</strong> · {{ entry.scope === 'user' ? '跨项目偏好' : '当前项目' }} · {{ entry.decision === 'included' ? '已使用' : '未使用' }}
-          <p>{{ reasons[entry.reason] ?? entry.reason }}<template v-if="entry.matched_terms.length">：{{ entry.matched_terms.join('、') }}</template></p>
+          <p>{{ reasons[entry.reason] ?? entry.reason }}<template v-if="entry.matched_terms.length">：{{ entry.matched_terms.join('、') }}</template><template v-if="entry.matched_signals?.length"> · 匹配{{ entry.matched_signals.map(name => signals[name] ?? name).join('、') }}</template></p>
           <small v-if="entry.updated_at">本轮引用版本 {{ entry.version }} · 更新时间 {{ entry.updated_at }}</small>
           <MemoryEvidence v-if="entry.available !== false" :memory-id="entry.current_memory_id ?? entry.memory_id" :project-id="entry.project_id ?? null" :source-item-ids="entry.source_item_ids" @open-source="emit('open-source', $event)" />
           <SessionMemoryActions v-if="entry.available !== false" :memory-id="entry.current_memory_id ?? entry.memory_id" :project-id="entry.project_id ?? null" :recalled-version="entry.version" @changed="change => { if (change.forgotten) { entry.available = false; entry.title = '已遗忘的记忆'; } else { entry.title = change.title ?? entry.title; entry.current_memory_id = change.memoryId; } }" />

@@ -144,6 +144,8 @@ button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2
 .environment-tabs button.active { border-bottom-color: var(--color-fg); color: var(--color-fg); }
 .environment-body { padding: 16px; min-height: 150px; overflow-y: auto; overflow-wrap: anywhere; }
 .environment-body :deep(.patch-panel), .environment-body :deep(.execution-panel), .environment-body :deep(.recovery-panel) { width: 100%; margin: 0; }
+/* 恢复现场由外层 .environment-body 统一滚动，避免窄窗口出现内层裁切与双重滚动。 */
+.environment-body :deep(.recovery-body), .environment-body :deep(.recovery-panel details) { max-height: none; overflow: visible; }
 .environment-body :deep(.context-drawer) { width: 100%; border: 0; }
 .environment-body :deep(.drawer-head), .environment-body :deep(.drawer-foot) { display: none; }
 .environment-body :deep(.drawer-body) { padding: 12px 0; }

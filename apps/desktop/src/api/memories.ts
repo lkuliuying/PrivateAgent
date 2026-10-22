@@ -22,17 +22,22 @@ export interface MemoryItem extends MemoryInput {
   version: number;
   origin: "user" | "generated";
   updated_at: string;
+  created_at?: string;
   source_session_id: number | null;
   source_item_ids: string[];
+  source_updated_at?: string;
   status?: "active" | "pending_review" | "stale";
   review_reason?: string | null;
   supersedes_id?: string | null;
+  supersedes_version?: number | null;
+  topic_key?: string | null;
+  stable_key?: string;
   legacy?: boolean;
 }
 export interface MemoryRecallEntry {
   memory_id: string; current_memory_id?: string; version: number; title?: string; scope: "project" | "user";
   project_id?: number | null; updated_at?: string; available?: boolean;
-  matched_terms: string[]; source_session_id: number | null; source_item_ids: string[];
+  matched_terms: string[]; matched_signals?: string[]; source_session_id: number | null; source_item_ids: string[];
   decision: "included" | "omitted" | "excluded"; reason: string;
 }
 export interface MemorySource {

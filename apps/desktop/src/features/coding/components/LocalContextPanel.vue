@@ -17,6 +17,36 @@ let sequence = 0;
 let scopeEpoch = 0;
 let timer: ReturnType<typeof setInterval> | undefined;
 const rules = computed(() => state.value?.active_sources.length ? state.value.active_sources : state.value?.sources ?? []);
+const breakdown = computed(() => budget.value?.breakdown ?? null);
+const metrics = computed(() => state.value?.checkpoint?.compaction_metrics ?? null);
+function tokens(value: number | null | undefined) {
+  return typeof value === "number" ? `${value.toLocaleString()} tokens` : "未知";
+}
+function beforeAfter() {
+  const value = metrics.value;
+  if (!value) return "未记录";
+  const counts = `归档 ${value.archived_items ?? 0} 项 · 保留 ${value.retained_messages ?? 0} 条`;
+  return value.measured ? `${tokens(value.estimated_before_tokens)} → ${tokens(value.estimated_after_tokens)} · ${counts}` : `估算未记录 · ${counts}`;
+}
+const statusLabels: Record<string, string> = {
+  known: "有来源", unknown: "未知 / 待核对", recheck_required: "需复核",
+};
+const handoffSections = computed(() => {
+  const value = state.value?.handoff;
+  if (!value) return [];
+  return [
+    // 后端目标区段使用 requirements；其余区段使用 items，这里统一成同一渲染契约。
+    { key: "goal", title: "当前目标与验收条件", section: { ...value.goal, items: value.goal.requirements ?? [] } },
+    { key: "constraints", title: "生效限制与规则", section: value.constraints },
+    { key: "plan", title: "当前计划与下一步", section: value.plan },
+    { key: "findings", title: "关键发现与决定", section: value.findings },
+    { key: "changes", title: "修改与验证", section: value.changes },
+    { key: "unresolved", title: "未解决问题", section: value.unresolved },
+  ];
+});
+function statusLabel(status: string | undefined) {
+  return statusLabels[status ?? "unknown"] ?? "未知 / 待核对";
+}
 
 async function load() {
   const mine = ++sequence;
@@ -110,8 +140,43 @@ async function trust() {
         <dt>压缩状态</dt><dd>{{ state.pending ? "等待安全请求边界" : budget.compaction_state === 'failed' ? "失败，原历史保留" : state.checkpoint ? "已提交检查点" : "尚未压缩" }}</dd>
         <template v-if="state.checkpoint">
           <dt>历史保留方式</dt><dd>{{ state.checkpoint.summary_strategy === 'model' ? "工作摘要与事实索引" : "事实索引" }} · 原文可续读</dd>
+          <dt>压缩前后估算</dt><dd>{{ beforeAfter() }}</dd>
         </template>
       </dl>
+      <details v-if="budget" class="local-context__breakdown">
+        <summary>上下文分项明细</summary>
+        <p v-if="!breakdown">暂无分项明细（该记录未保存分项或尚未组装请求）。</p>
+        <template v-else>
+          <table>
+            <thead><tr><th scope="col">分类</th><th scope="col">估算</th><th scope="col">字节</th></tr></thead>
+            <tbody>
+              <tr v-for="item in breakdown.items" :key="item.category">
+                <td>{{ item.label }}</td><td>{{ item.estimated_tokens.toLocaleString() }}</td><td>{{ item.bytes.toLocaleString() }}</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>分项合计 {{ breakdown.estimate_tokens.toLocaleString() }} tokens（估算，非供应商实测）。</p>
+          <p v-if="breakdown.provider_usage_tokens">供应商实测前缀 {{ breakdown.provider_usage_tokens.toLocaleString() }} tokens 已用于总量校准。</p>
+          <p><small>{{ breakdown.notice }}</small></p>
+        </template>
+      </details>
+      <template v-if="state.checkpoint">
+        <details v-if="state.handoff" class="local-context__handoff">
+          <summary>压缩交接（程序投影）</summary>
+          <div v-for="entry in handoffSections" :key="entry.key">
+            <p><strong>{{ entry.title }}</strong> · {{ statusLabel(entry.section.status) }}</p>
+            <p v-if="entry.key === 'plan' && entry.section.next_step"><small>下一步：{{ entry.section.next_step }}</small></p>
+            <ul v-if="entry.section.items?.length">
+              <li v-for="(item, index) in entry.section.items" :key="index">
+                {{ item.text }}<span v-if="item.stale"> · 需复核</span>
+              </li>
+            </ul>
+            <p v-else><small>暂无来源；不影响原始历史读取。</small></p>
+            <p v-if="entry.section.note"><small>{{ entry.section.note }}</small></p>
+          </div>
+        </details>
+        <p v-else><small>压缩交接：旧检查点未保存该明细（待核对）。</small></p>
+      </template>
       <p v-if="state.checkpoint?.summary_fallback_reason">本次未采用工作摘要，已保留事实索引和原始历史。</p>
       <p v-if="state.compaction_error" role="alert">{{ state.compaction_error }}</p>
       <p v-if="state.loop_budget">模型 {{ state.loop_budget.model_requests }}/{{ state.loop_budget.max_model_requests }} · 工具 {{ state.loop_budget.tool_calls }}/{{ state.loop_budget.max_tool_calls }}<br>
@@ -130,5 +195,8 @@ async function trust() {
 .local-context dt { color: var(--color-fg-muted); }
 .local-context dd { margin: 0 0 var(--space-2); }
 .local-context pre { max-height: 240px; overflow: auto; white-space: pre-wrap; }
+.local-context__breakdown { margin-top: var(--space-2); }
+.local-context__breakdown table { width: 100%; border-collapse: collapse; margin: var(--space-2) 0; }
+.local-context__breakdown th, .local-context__breakdown td { text-align: left; padding: 2px var(--space-2) 2px 0; border-bottom: 1px solid var(--color-border-subtle, #ddd); }
 .local-context [role="alert"] { color: var(--color-danger-fg); }
 </style>

@@ -21,6 +21,11 @@ const projectId = ref<number | null>(props.initialProjectId ?? null);
 const rangeTouched = ref(false);
 const items = ref<MemoryItem[]>([]);
 const pendingCount = computed(() => items.value.filter(item => item.status === "pending_review").length);
+// 列表筛选只影响展示，不写入数据、不改变条目状态。
+const statusFilter = ref<"all" | "pending_review" | "stale" | "active">("all");
+const visibleItems = computed(() => statusFilter.value === "all"
+  ? items.value
+  : items.value.filter(item => (item.status ?? "active") === statusFilter.value));
 const editing = ref<MemoryItem | null>(null);
 const form = ref<MemoryInput>({ scope: projectId.value === null ? "user" : "project", kind: "preference", title: "", content: "" });
 const busy = ref(false);
@@ -128,6 +133,48 @@ async function forget(item: MemoryItem) {
 }
 const stateLabels = { running: "生成中", completed: "已完成", cancelled: "已取消", failed: "未完成" };
 const memoryStates = { active: "可使用", pending_review: "待复核", stale: "已过期／需更新" };
+
+/** 规范化只处理空白和大小写，不做语义归并。 */
+function normalizeText(text: string) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+interface DuplicateGroup { key: string; reason: string; items: MemoryItem[] }
+/** 有界疑似重复提示：只比较当前列表、同范围、未遗忘条目，按重复组展示。 */
+const duplicateGroups = computed<DuplicateGroup[]>(() => {
+  const groups = new Map<string, DuplicateGroup>();
+  const add = (key: string, reason: string, item: MemoryItem) => {
+    const group = groups.get(key) ?? { key, reason, items: [] };
+    if (!group.items.some(entry => entry.id === item.id)) group.items.push(item);
+    groups.set(key, group);
+  };
+  for (const item of visibleItems.value) {
+    if (item.status === "stale" && item.legacy) continue;
+    // 只比较同一 scope 的条目：跨项目偏好与项目事实即使同名也不合并。
+    if (item.topic_key) add(`topic:${item.scope}:${item.topic_key}`, "同一主题键", item);
+    add(`title:${item.scope}:${normalizeText(item.title)}`, "规范化标题相同", item);
+    add(`content:${item.scope}:${normalizeText(item.content)}`, "规范化正文相同", item);
+  }
+  const kept: DuplicateGroup[] = [];
+  const signatures = new Set<string>();
+  for (const group of [...groups.values()].filter(entry => entry.items.length > 1)
+    .sort((a, b) => b.items.length - a.items.length || a.key.localeCompare(b.key))) {
+    const signature = group.items.map(item => item.id).sort().join(",");
+    if (signatures.has(signature)) continue;
+    signatures.add(signature);
+    kept.push(group);
+    if (kept.length === 6) break;
+  }
+  return kept;
+});
+/** 同一主题的当前条目与新候选对照；旧条目不在当前列表时不伪造对照。 */
+const conflictPairs = computed(() => {
+  const byId = new Map(items.value.map(item => [item.id, item]));
+  return items.value
+    .filter(item => item.supersedes_id && byId.has(item.supersedes_id))
+    .map(item => ({ candidate: item, previous: byId.get(item.supersedes_id!)! }))
+    .slice(0, 4);
+});
+
 async function search() {
   const project = projectId.value, text = query.value.trim();
   await run(async (signal, valid) => {
@@ -184,11 +231,56 @@ async function review(item: MemoryItem, decision: "accept" | "reject" | "stale")
         <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}（含跨项目偏好）</option>
       </select></label>
       <p v-if="projectId === null">当前范围为跨项目偏好。保存后可在所有项目使用；如只适用于一个项目，请先选择该项目。</p>
+      <label>状态筛选<select v-model="statusFilter" class="pa-input" data-testid="memory-status-filter">
+        <option value="all">全部</option><option value="pending_review">待复核</option>
+        <option value="stale">已过期／需更新</option><option value="active">可使用</option>
+      </select></label>
+      <section v-if="conflictPairs.length" aria-label="同主题对照" data-testid="memory-conflicts" class="memory-panel__section">
+        <h4>同主题对照</h4>
+        <p>并列展示当前条目与新候选；只有你的明确操作才会改变状态，不会自动合并或覆盖。</p>
+        <div v-for="pair in conflictPairs" :key="pair.candidate.id" class="memory-panel__item" data-testid="memory-conflict">
+          <div class="memory-panel__compare">
+            <div>
+              <small>当前条目 · 版本 {{ pair.previous.version }} · {{ memoryStates[pair.previous.status ?? 'active'] }} · {{ pair.previous.origin === 'user' ? '手动维护' : '自动提取' }}</small>
+              <strong>{{ pair.previous.title }}</strong>
+              <p class="memory-panel__content">{{ pair.previous.content }}</p>
+              <small>更新于 {{ pair.previous.updated_at }}</small>
+            </div>
+            <div>
+              <small>新候选 · 版本 {{ pair.candidate.version }} · {{ memoryStates[pair.candidate.status ?? 'active'] }} · {{ pair.candidate.origin === 'user' ? '手动维护' : '自动提取' }}</small>
+              <strong>{{ pair.candidate.title }}</strong>
+              <p class="memory-panel__content">{{ pair.candidate.content }}</p>
+              <small>更新于 {{ pair.candidate.updated_at }}</small>
+            </div>
+          </div>
+          <p>来源：当前条目{{ pair.previous.source_item_ids.length ? `有 ${pair.previous.source_item_ids.length} 个会话来源` : '无会话来源（可能由设置页手动创建）' }}；新候选{{ pair.candidate.source_item_ids.length ? `有 ${pair.candidate.source_item_ids.length} 个会话来源` : '无会话来源' }}。来源 ID 只证明可追溯，不代表已核实内容。</p>
+          <div class="memory-panel__actions">
+            <button class="pa-btn pa-btn--subtle" :disabled="busy" @click="review(pair.candidate, 'accept')">采用新值</button>
+            <button class="pa-btn pa-btn--ghost" :disabled="busy" @click="review(pair.candidate, 'reject')">保留旧值</button>
+            <button class="pa-btn pa-btn--ghost" :disabled="busy" @click="selectItem(pair.candidate)">编辑新候选</button>
+          </div>
+        </div>
+      </section>
+      <section v-if="duplicateGroups.length" aria-label="疑似重复" data-testid="memory-duplicates">
+        <h4>疑似重复</h4>
+        <p>派生提示，只比较当前范围内的条目；相似不等于冲突，也不会自动合并或删除。</p>
+        <details v-for="group in duplicateGroups" :key="group.key" :data-testid="`memory-duplicate-${group.key}`">
+          <summary>{{ group.reason }} · {{ group.items.length }} 条</summary>
+          <ul>
+            <li v-for="item in group.items" :key="item.id">
+              <button type="button" class="pa-btn pa-btn--ghost" :disabled="busy" @click="selectItem(item)">{{ item.title }}</button>
+              · 版本 {{ item.version }} · {{ memoryStates[item.status ?? 'active'] }} · 更新于 {{ item.updated_at }}
+            </li>
+          </ul>
+        </details>
+      </section>
       <form class="memory-panel__actions" @submit.prevent="search"><input v-model="query" class="pa-input" aria-label="搜索记忆" placeholder="搜索标题、中文关键词或路径" maxlength="500"><button class="pa-btn pa-btn--subtle" :disabled="busy">搜索</button></form>
-      <p v-if="!items.length && !busy">此范围暂无记忆。可以手动添加，也可以开启后台生成。</p>
-      <article v-for="item in items" :key="item.id" class="memory-panel__item">
+      <p v-if="!visibleItems.length && !busy">此范围暂无记忆。可以手动添加，也可以开启后台生成。</p>
+      <article v-for="item in visibleItems" :key="item.id" class="memory-panel__item">
         <strong>{{ item.title }}</strong>
-        <small>{{ item.scope === 'user' ? '跨项目偏好' : '项目记忆' }} · {{ item.origin === 'user' ? '手动维护' : '自动提取' }} · {{ memoryStates[item.status ?? 'active'] }} · 版本 {{ item.version }}</small>
+        <small>{{ item.scope === 'user' ? '跨项目偏好' : '项目记忆' }} · {{ item.origin === 'user' ? '手动维护' : '自动提取' }} · {{ memoryStates[item.status ?? 'active'] }} · 版本 {{ item.version }} · 更新于 {{ item.updated_at }}</small>
+        <small v-if="item.source_item_ids.length">来源：{{ item.source_item_ids.length }} 个会话条目<template v-if="item.source_updated_at"> · 来源时间 {{ item.source_updated_at }}</template></small>
+        <small v-else>来源：无会话来源（可能由设置页手动创建），不显示为已验证</small>
         <small v-if="item.legacy">历史自动记忆 · 保留原有使用状态，尚未按新策略复核</small>
         <p class="memory-panel__content">{{ item.content }}</p>
         <p v-if="item.review_reason === 'conflict'">同一主题出现不同陈述，复核前不会作为当前事实引用。</p>
@@ -234,6 +326,10 @@ async function review(item: MemoryItem, decision: "accept" | "reject" | "stale")
 .memory-panel__item { display: grid; gap: var(--space-2); padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
 .memory-panel__item small { color: var(--color-fg-muted); }
 .memory-panel__content { white-space: pre-wrap; }
+.memory-panel__compare { display: grid; gap: var(--space-3); }
+.memory-panel__compare > div { display: grid; gap: var(--space-1); padding: var(--space-3); border-radius: var(--radius-md); background: var(--color-surface-muted); min-width: 0; }
+@media (min-width: 760px) { .memory-panel__compare { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.memory-panel h4 { margin: 0; font-size: 14px; }
 .memory-panel__actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 .memory-panel [role='alert'] { color: var(--color-danger-fg); }
 .memory-panel [role='status'] { color: var(--color-accent-soft-fg); }

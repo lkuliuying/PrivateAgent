@@ -110,6 +110,8 @@ interface CodingStateOverrides {
   healthStatus?: number;
   ensureStateful?: boolean;
   onSessionCreated?: (title: string) => unknown;
+  /** 上下文面板夹具：仅在提供时启用压缩能力并返回对应接口数据。 */
+  contextPanel?: { state: unknown; budget: unknown };
 }
 
 function mockCodingApi(page: Page, overrides: CodingStateOverrides = {}) {
@@ -143,8 +145,22 @@ function mockCodingApi(page: Page, overrides: CodingStateOverrides = {}) {
           coding_agent_ui_enabled: true,
           agent_runs_api_enabled: true,
           project_bound_runs_enabled: true,
+          ...(overrides.contextPanel ? { coding_context_compaction_enabled: true } : {}),
         },
       });
+      return;
+    }
+    if (overrides.contextPanel && path === "/sessions/11/context") {
+      await route.fulfill({ json: overrides.contextPanel.state });
+      return;
+    }
+    if (overrides.contextPanel && path === "/sessions/11/context-budget") {
+      await route.fulfill({ json: overrides.contextPanel.budget });
+      return;
+    }
+    if (overrides.contextPanel && path === "/sessions/11/memory-settings") {
+      await route.fulfill({ json: { version: 1, use_memories: true, generate_memories: false,
+        effective_use: true, effective_generate: false, last_recall: null } });
       return;
     }
     if (path === "/health") {
@@ -339,10 +355,11 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
     await expect(page.getByTestId("coding-home-ready")).toBeVisible({ timeout: 10000 });
   });
 
-  test("Provider 未配置（409 coding_mode_disabled）：引导前往设置", async ({ page }) => {
+  test("Provider 未配置（409 coding_mode_disabled）：引导配置模型", async ({ page }) => {
     await openCoding(page, { modelProfiles: 409 });
     await expect(page.getByTestId("coding-home-provider-unconfigured")).toBeVisible();
-    await page.getByRole("button", { name: "前往设置" }).click();
+    // 当前交互契约：未配置状态的按钮是“配置模型”（data-testid 固定），不是旧的“前往设置”。
+    await page.getByTestId("home-provider-create").click();
     await expect(page.getByTestId("settings-section-provider")).toHaveAttribute(
       "aria-current",
       "page"
@@ -503,5 +520,69 @@ test.describe("v0.8.0 W1 CodingWorkbench", () => {
       await page.goto(`/?coding=1&coding-preview=${key}`);
       await expect(page.getByTestId(state)).toBeVisible({ timeout: 10000 });
     }
+  });
+
+  test("上下文抽屉：分项明细与压缩交接在宽窄窗口可读（M1/M2）", async ({ page }) => {
+    const entry = (text: string, extra: Record<string, unknown> = {}) => ({
+      category: "finding", kind: "observation", text, source_item_ids: ["item-1"], version: null, stale: false, ...extra,
+    });
+    const breakdown = {
+      schema: "context-breakdown/1", basis: "utf8_share_estimate", measurement_source: "utf8_conservative",
+      estimate_ratio: 1, total_bytes: 6000, estimate_tokens: 9000, provider_usage_tokens: 8500,
+      items: [
+        { category: "tool_definitions", label: "工具定义", bytes: 4000, estimated_tokens: 5000, measurement: "utf8_share_estimate", messages: 0 },
+        { category: "user_messages", label: "用户消息", bytes: 2000, estimated_tokens: 4000, measurement: "utf8_share_estimate", messages: 2 },
+      ],
+      notice: "分项按同一请求的 UTF-8 字节分摊估算；供应商只返回总输入用量时以该实测总值为准。",
+    };
+    const state = {
+      project_id: 1, trusted: false, sources: [], active_sources: [],
+      checkpoint: { id: "cp", state: "completed", completed_at: "2026-10-20T00:00:00Z", through_ordinal: 12,
+        summary_strategy: "model", summary_fallback_reason: null,
+        compaction_metrics: { measured: true, estimated_before_tokens: 21000, estimated_after_tokens: 12000,
+          archived_items: 32, retained_messages: 9 } },
+      handoff: { version: "1.0",
+        // 与真实后端一致：目标区段使用 requirements。
+        goal: { status: "known", goal_version: 2, source_item_ids: ["item-1"],
+          requirements: [{ ...entry("验收：只读取 src 并报告"), category: "requirement", kind: "user_requirement" }] },
+        constraints: { status: "known", items: [entry("用户禁止修改文件")] },
+        plan: { status: "known", next_step: "核对 src/app.py 接口", items: [entry("核对 src/app.py 接口")] },
+        findings: { status: "known", items: [entry("早期读取失败", { stale: true })] },
+        changes: { status: "recheck_required", items: [entry("修改 src/app.py")] },
+        unresolved: { status: "known", items: [entry("未解决：文件缺失")] } },
+      pending: null, compaction_error: null,
+      loop_budget: { model_requests: 3, max_model_requests: 64, tool_calls: 2, max_tool_calls: 128,
+        active_seconds: 1.5, approval_wait_seconds: 0, cost_usd: null },
+    };
+    const budget = {
+      used_tokens: 0, max_context_tokens: 26000, reserved_output_tokens: 2048, cache_hit_percent: null,
+      usage_percent: null, source: "estimated", estimated_input_tokens: 9000, input_budget_tokens: 22652,
+      auto_compact_threshold_tokens: 20000, compaction_state: "compacted", last_compacted_at: null,
+      error_code: null, error_reason: null, breakdown,
+    };
+    await page.setViewportSize({ width: 1100, height: 760 });
+    await openCoding(page, { contextPanel: { state, budget } }, "drawer-tab");
+    await page.getByTestId("coding-drawer-tab").click();
+    await page.getByTestId("coding-thread-11").click();
+    await page.getByTestId("thread-environment-toggle").click();
+    await page.getByTestId("thread-environment-panel").getByRole("tab", { name: "上下文", exact: true }).click();
+    const pane = page.getByTestId("context-pane-context");
+    const breakdownToggle = pane.locator("summary", { hasText: "上下文分项明细" });
+    await expect(breakdownToggle).toBeVisible();
+    // 折叠时明细不占版面；展开后可读到分类与压缩前后估算。
+    await expect(pane.getByText("工具定义").first()).toBeHidden();
+    await breakdownToggle.click();
+    await expect(pane.getByText("工具定义").first()).toBeVisible();
+    await expect(pane.getByText("21,000 tokens → 12,000 tokens")).toBeVisible();
+    const handoffToggle = pane.locator("summary", { hasText: "压缩交接（程序投影）" });
+    await handoffToggle.click();
+    // 目标正文必须来自真实 requirements 字段并可见，不能只显示“有来源”。
+    await expect(pane.getByText("验收：只读取 src 并报告")).toBeVisible();
+    await expect(pane.getByText("需复核").first()).toBeVisible();
+    // 窄窗口下明细仍可读，且不产生横向溢出。
+    await page.setViewportSize({ width: 900, height: 720 });
+    await expect(pane.getByText("工具定义").first()).toBeVisible();
+    const overflow = await pane.evaluate((element) => element.scrollWidth - element.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(1);
   });
 });
