@@ -226,9 +226,15 @@ async def test_generated_memory_requires_query_overlap_but_manual_context_remain
     await worker.tick()
     assert worker.store.list(session["project_id"])
     assert worker.recall(session["id"], session["project_id"], "unrelated_keyword") == ([], [])
-    manual = worker.store.put(session["project_id"], MemoryInput(title="项目偏好", content="所有代码注释使用中文"))
+    # 人工 project 事实必须与本轮信号相关才会自动注入；无关内容不再强制注入。
+    project_fact = worker.store.put(session["project_id"], MemoryInput(title="项目偏好", content="所有代码注释使用中文"))
+    assert worker.recall(session["id"], session["project_id"], "unrelated_keyword") == ([], [])
+    messages, ids = worker.recall(session["id"], session["project_id"], "代码注释")
+    assert messages and ids == [project_fact["id"]]
+    # 人工维护的稳定偏好可作为零匹配参考候选（保底），不冒充关键词命中。
+    preference = worker.store.put(session["project_id"], MemoryInput(kind="preference", title="语言", content="始终使用简体中文"))
     messages, ids = worker.recall(session["id"], session["project_id"], "unrelated_keyword")
-    assert messages and ids == [manual["id"]]
+    assert messages and ids == [preference["id"]]
 
 
 @pytest.mark.asyncio
@@ -352,7 +358,8 @@ async def test_api_manual_memory_cross_session_recall_conflict_and_account_isola
         assert (await client.put("/local-memories/settings", json={**data, "expected_version": config["version"]})).status_code == 200
         assert (await client.put("/local-memories/settings", json={**data, "expected_version": config["version"]})).status_code == 409
         url = f"/local-memories/items?project_id={body['project_id']}"
-        record = (await client.post(url, json={"title": "约定", "content": "需要测试时使用模块单元测试"})).json()
+        # 人工维护的 preference 可零匹配保底注入；人工 project 事实需要相关才注入。
+        record = (await client.post(url, json={"title": "约定", "content": "需要测试时使用模块单元测试", "kind": "preference"})).json()
         server.responses = [response(text="已理解项目约定")]
         run = (await client.post("/agent-runs", json=body)).json()
         await until(client, run["id"], TERMINAL)
