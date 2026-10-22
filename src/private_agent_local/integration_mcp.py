@@ -27,7 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from private_agent_core.tool_specs import ToolFailure, ToolSpec, object_output
 
 from . import task_constraints
-from .completion import denied_operation
+from .completion import denied_operation, unknown_side_effect
 from .documentation_transport import catalog as remote_catalog
 from .documentation_transport import encoded
 from .mcp_library import McpLibrary, SourceInput, credential_values, required_fields
@@ -391,9 +391,18 @@ class Integrations:
         if not isinstance(arguments, dict) or not Draft202012Validator(tool["input_schema"]).is_valid(arguments) or self.owner.secret_filter.contains_secret(arguments):
             raise ToolFailure("mcp_invalid_arguments", "工具参数无效或含疑似敏感信息")
         generation = run.get("generation", 0)
-        execution["scope"] = {"kind": "external", "source_id": source["id"], "tool": args.tool_name}
-        if denied_operation(run, execution["scope"], collection="uncertain_operations"):
-            raise ToolFailure("execution_unknown", "此前此工具存在未核实的外部副作用，请先核对远端结果，不能再次执行。")
+        execution["scope"] = {"kind": "external", "source_id": source["id"], "tool": args.tool_name,
+                              # 参数指纹用于区分“同一原调用”和同工具的另一个新调用。
+                              "source_version": source["version"],
+                              "tool_version": execution.get("tool_version"),
+                              "arguments_sha256": execution.get("arguments_sha256")}
+        blocked = unknown_side_effect(run, execution["scope"])
+        if blocked == "replay":
+            raise ToolFailure("operation_denied", "该外部调用已核对过结果，不会自动重发；请调整参数后按原审批链重新发起。")
+        if blocked == "conservative":
+            raise ToolFailure("execution_unknown", "此前的未确认调用缺少参数指纹，无法区分原调用与同工具的新调用；同一来源与工具仍被保守阻止。")
+        if blocked:
+            raise ToolFailure("execution_unknown", "此前此工具存在未核实的外部副作用，请先核对远端结果，不能再次执行相同调用。")
         if denied_operation(run, execution["scope"]):
             raise ToolFailure("operation_denied", "本轮已拒绝此工具")
         grant_key = (run["project_id"], run["session_id"], source["id"], source["version"], source["service_version"], args.tool_name)

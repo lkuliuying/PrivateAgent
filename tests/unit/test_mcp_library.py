@@ -10,12 +10,13 @@ import httpx2
 import pytest
 from mcp.shared.auth import OAuthToken
 from test_documentation_mcp import mcp_protocol as mcp_protocol
+from test_local_executor import call
 from test_workbench_integrations import configured, invocation
 from test_workbench_integrations import local as local
 from test_workspace_features import seeded
 
 from private_agent_core.tool_specs import ToolFailure
-from private_agent_local import integration_mcp
+from private_agent_local import files, integration_mcp
 from private_agent_local.documentation_transport import catalog, normalize_schema
 from private_agent_local.integration_mcp import (
     SelectionInput,
@@ -453,10 +454,120 @@ async def test_dispatched_write_is_unknown_and_cannot_be_replayed(local, mcp_pro
         await owner.integrations.execute(run, root, invocation(source), execution)
     assert execution["mcp_call"]["phase"] == "dispatched"
     assert execution["error_code"] == "execution_unknown" and run["uncertain_operations"]
-    with pytest.raises(ToolFailure, match="此前此工具"):
+    with pytest.raises(ToolFailure, match="缺少参数指纹"):
         await owner.integrations.execute(run, root, invocation(source), {})
     assert len(calls) == 1
     assert not owner.recovery.inspect(run)["can_resume"]
+
+
+@pytest.mark.asyncio
+async def test_resolved_unknown_write_blocks_original_call_but_allows_new_arguments(local, mcp_protocol, monkeypatch):
+    """人工核对后，同一原调用（换 call_id/运行）仍禁止自动重发，新参数正常走原审批链。"""
+    app, _, _, root, body = local
+    owner = app.state.desktop.runtime
+    source = await configured(owner, body["project_id"])
+    source["tools"][0].update(readonly=False, approval="always")
+    owner.integrations.save(body["project_id"], source)
+    run = seeded(owner, body)
+    run["permission_mode"] = "workspace"
+    original = {"query": "Vue"}
+    digest = files.digest(json.dumps(original, sort_keys=True).encode())
+    calls = []
+
+    async def approve(*args):
+        return True
+
+    async def invoke(*args, **kwargs):
+        calls.append(args)
+        # 只验证门禁放行与真正派发；发送后断开模拟结果未确认，不影响本用例结论。
+        raise ConnectionError("fixture disconnected after dispatch")
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield SimpleNamespace(session=SimpleNamespace(call_tool=invoke))
+
+    async def directory(client):
+        return source["catalog"]
+
+    monkeypatch.setattr(owner, "approve", approve)
+    monkeypatch.setattr(owner.integrations, "connection", connection)
+    monkeypatch.setattr(integration_mcp, "catalog", directory)
+    # 新格式未知记录：带工具版本与参数指纹；随后由用户核对完成。
+    run["uncertain_operations"] = [{"operation_id": "op-original", "run_id": run["id"],
+                                    "scope": {"kind": "external", "source_id": source["id"], "tool": "search_docs"},
+                                    "tool_name": "search_docs", "tool_version": "1",
+                                    "arguments_sha256": digest}]
+    run["recovery_resolutions"] = [{"format_version": "1.0", "resolution_id": "resolution-1",
+                                    "item_id": "item", "kind": "mcp_write", "decision": "externally_confirmed",
+                                    "source": "user_statement", "verified": False,
+                                    "target": {"operation_id": "op-original"}}]
+
+    replay = {"id": uuid.uuid4().hex, "operation_id": "op-original", "status": "running",
+              "tool_version": "1", "arguments_sha256": digest}
+    with pytest.raises(ToolFailure, match="已核对过结果"):
+        await owner.integrations.execute(run, root, invocation(source), replay)
+    assert not calls
+
+    fresh = {"id": uuid.uuid4().hex, "operation_id": uuid.uuid4().hex, "status": "running",
+             "tool_version": "1", "arguments_sha256": files.digest(json.dumps({"query": "Rust"}, sort_keys=True).encode())}
+    with pytest.raises(ToolFailure) as dispatched:
+        await owner.integrations.execute(run, root,
+                                         call("call_mcp_tool", {"source_id": source["id"],
+                                                                "source_version": source["version"],
+                                                                "tool_name": "search_docs",
+                                                                "arguments_json": json.dumps({"query": "Rust"})}),
+                                         fresh)
+    # 新参数通过了未知副作用门禁，真正进入派发阶段（随后按夹具断开，结果转 unknown）。
+    assert len(calls) == 1 and dispatched.value.code == "execution_unknown"
+    # 原始未知事实与核对决定都保留，核对不删除审计记录。
+    assert run["uncertain_operations"][0]["operation_id"] == "op-original"
+    assert run["recovery_resolutions"][0]["decision"] == "externally_confirmed"
+
+
+@pytest.mark.asyncio
+async def test_unknown_write_without_fingerprint_keeps_conservative_block(local, mcp_protocol, monkeypatch):
+    """旧记录缺少参数指纹时不放宽：同一来源与工具的任何新参数仍被保守阻止。"""
+    app, _, _, root, body = local
+    owner = app.state.desktop.runtime
+    source = await configured(owner, body["project_id"])
+    source["tools"][0].update(readonly=False, approval="always")
+    owner.integrations.save(body["project_id"], source)
+    run = seeded(owner, body)
+    run["permission_mode"] = "workspace"
+    calls = []
+
+    async def approve(*args):
+        return True
+
+    async def invoke(*args, **kwargs):
+        calls.append(args)
+        return SimpleNamespace(result_type="complete", is_error=False, structured_content={}, content=[])
+
+    @asynccontextmanager
+    async def connection(*args, **kwargs):
+        yield SimpleNamespace(session=SimpleNamespace(call_tool=invoke))
+
+    async def directory(client):
+        return source["catalog"]
+
+    monkeypatch.setattr(owner, "approve", approve)
+    monkeypatch.setattr(owner.integrations, "connection", connection)
+    monkeypatch.setattr(integration_mcp, "catalog", directory)
+    run["uncertain_operations"] = [{"operation_id": "op-legacy", "run_id": run["id"],
+                                    "scope": {"kind": "external", "source_id": source["id"], "tool": "search_docs"}}]
+    run["recovery_resolutions"] = [{"target": {"operation_id": "op-legacy"}, "decision": "externally_confirmed"}]
+    fresh = {"id": uuid.uuid4().hex, "operation_id": uuid.uuid4().hex, "status": "running",
+             "arguments_sha256": files.digest(b'{"query": "Rust"}')}
+    with pytest.raises(ToolFailure, match="缺少参数指纹"):
+        await owner.integrations.execute(run, root,
+                                         call("call_mcp_tool", {"source_id": source["id"],
+                                                                "source_version": source["version"],
+                                                                "tool_name": "search_docs",
+                                                                "arguments_json": json.dumps({"query": "Rust"})}),
+                                         fresh)
+    assert not calls
+    report = owner.recovery.inspect(run)
+    assert any("参数指纹" in item for item in report["limitations"])
 
 
 @pytest.mark.asyncio
