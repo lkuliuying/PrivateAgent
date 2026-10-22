@@ -328,8 +328,10 @@ class PatchService:
         result = []
         for change in patch["changes"]:
             log = logs.get(change["change_id"])
+            actual_sha256 = None
             try:
                 actual = state(root, change["rel_path"])
+                actual_sha256 = actual.get("sha256")
                 verified = bool(log and log["status"] == "applied" and matches(actual, log["after"]))
                 observation = "matches_after" if matches(actual, change["after"], identity=False) else "matches_before" if matches(actual, change["before"]) else "conflict"
             except (ValueError, OSError):
@@ -337,5 +339,7 @@ class PatchService:
             result.append({"rel_path": change["rel_path"], "verified": verified,
                            "changed": not matches(change["before"], change["after"], identity=False),
                            "kind": change["after"]["kind"], "sha256": change["after"].get("sha256"),
+                           "before_sha256": change["before"].get("sha256"),
+                           "after_sha256": change["after"].get("sha256"), "actual_sha256": actual_sha256,
                            "journal_status": log["status"] if log else "not_started", "observation": observation})
         return result

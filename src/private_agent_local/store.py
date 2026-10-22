@@ -255,15 +255,8 @@ class Store:
                 patch.update(status="interrupted", error="执行器中断；未重放。请查看逐项落盘日志与当前文件状态")
                 self.db.execute("UPDATE patch_sets SET status=?,data=? WHERE id=?", (patch["status"], self._pack(patch), identifier))
             for run in self.runs(active_only=True):
-                if run.get("recovery_contract_version") and run["status"] == "running":
-                    row = self.db.execute("SELECT data FROM run_checkpoints WHERE id=?", (run.get("checkpoint_id"),)).fetchone()
-                    if row:
-                        saved = self._unpack(row[0])
-                        elapsed = max(0, (datetime.now(timezone.utc) - datetime.fromisoformat(saved["created_at"])).total_seconds())
-                        budget = run.setdefault("loop_budget", {})
-                        limit = run.get("context_limits", {}).get("max_active_seconds", 3600)
-                        budget["active_seconds"] = min(limit, budget.get("active_seconds", 0) + elapsed)
-                        budget["recovery_time_policy"] = "conservative_until_restart"
+                if run.get("recovery_contract_version"):
+                    self._recover_timing(run)
                 status = "interrupted" if run.get("recovery_contract_version") == "1.0" else "failed"
                 run.update(status=status, active_in_process=False, error_code="desktop_restarted",
                            error_message="本机执行服务已重启；未自动重放操作，请检查项目后重试", completed_at=now())
@@ -314,6 +307,28 @@ class Store:
                 self.context.save_checkpoint(session_id, checkpoint)
             for (grant_id,) in self.db.execute("SELECT id FROM grants WHERE revoked_at IS NULL").fetchall():
                 self.revoke_grant(grant_id, "app_exit")
+
+    def _recover_timing(self, run: dict) -> None:
+        """启动恢复只承认已提交的单调计时回执，绝不把关机间隔算作活动时间。"""
+        from .recovery import TIMING_VERSION
+
+        budget = run.setdefault("loop_budget", {})
+        timing = run.get("timing") if isinstance(run.get("timing"), dict) else {}
+        policy = budget.get("recovery_time_policy")
+        confirmed = timing.get("confirmed_active_seconds")
+        limit = run.get("context_limits", {}).get("max_active_seconds", 3600)
+        recorded = budget.get("active_seconds")
+        # 旧版本按 conservative_until_restart 填满的记录不回减，保留原标签作为兼容边界。
+        if policy != "conservative_until_restart":
+            if isinstance(confirmed, (int, float)) and isinstance(recorded, (int, float)) and confirmed > recorded:
+                # 回执已提交而预算快照落后时只向已确认值收敛，不补算离线间隔。
+                budget["active_seconds"] = min(limit, confirmed)
+            budget["recovery_time_policy"] = "confirmed_only"
+        run["timing"] = {"format_version": TIMING_VERSION, "clock_id": None, "monotonic_seconds": None,
+                         "confirmed_active_seconds": budget.get("active_seconds"),
+                         "last_receipt_at": timing.get("last_receipt_at"), "last_source": timing.get("source"),
+                         "source": "restart",
+                         "unconfirmed_tail": run["status"] in {"created", "queued", "running"}}
 
     def _pack(self, value: dict) -> str:
         data = encode(value)

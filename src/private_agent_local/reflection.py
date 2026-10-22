@@ -96,6 +96,11 @@ def _target(name: str, arguments: dict) -> str:
     return _digest([name, target])
 
 
+def target_hash(name: str, arguments: dict) -> str:
+    """公开同一目标摘要算法，供交接区分“历史失败”与“当前未解决”。"""
+    return _target(name, arguments or {})
+
+
 def _source(run: dict, call, execution: dict | None) -> dict:
     return {"run_id": run["id"], "tool_call_hash": _digest(call.id),
             "execution_id": execution.get("id") if execution else None,
@@ -192,14 +197,14 @@ def observe(owner, run: dict, call, result) -> tuple[dict | None, dict | None]:
         return None, None
     target = _target(name, arguments)
     if failed:
-        from .completion import denied_operation
+        from .completion import denied_operation, unknown_side_effect
 
         if execution and execution.get("error_code") in BLOCKED_CODES | UNKNOWN_CODES:
             code = execution["error_code"]
         if execution and execution.get("scope"):
             if denied_operation(run, execution["scope"]):
                 code = "permission_blocked"
-            elif denied_operation(run, execution["scope"], collection="uncertain_operations"):
+            elif unknown_side_effect(run, execution["scope"]):
                 code = "execution_unknown"
         category = _category(code)
         entry = _failure(state, tool_name=name, target=target, category=category,

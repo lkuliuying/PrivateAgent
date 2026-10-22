@@ -18,6 +18,7 @@ from .completion import (
     canonical_command,
     content_ref,
     denied_operation,
+    unknown_side_effect,
     workspace_state,
 )
 
@@ -124,7 +125,7 @@ async def execute(owner, run, root, call, execution):
     if run["permission_mode"] == "readonly":
         raise ValueError("当前任务权限不允许运行命令或写入 stdin")
     execution["scope"] = {"kind": "command"}
-    if denied_operation(run, execution["scope"]) or denied_operation(run, execution["scope"], collection="uncertain_operations"):
+    if denied_operation(run, execution["scope"]) or unknown_side_effect(run, execution["scope"]):
         raise ValueError("当前任务存在已拒绝或结果未知的命令，不允许换入口重试")
     if name == "write_stdin":
         def guard_input():
@@ -133,7 +134,7 @@ async def execute(owner, run, root, call, execution):
             if run["permission_mode"] == "readonly":
                 raise ValueError("当前任务权限不允许写入 stdin")
             task_constraints.guard_command(run, root, [], stdin=True)
-            if denied_operation(run, execution["scope"]) or denied_operation(run, execution["scope"], collection="uncertain_operations"):
+            if denied_operation(run, execution["scope"]) or unknown_side_effect(run, execution["scope"]):
                 raise ValueError("当前任务存在已拒绝或结果未知的命令，不允许继续输入")
 
         def input_binding(record):
@@ -260,7 +261,7 @@ async def execute(owner, run, root, call, execution):
     if not restricted:
         task_constraints.guard_network(run)
     task_constraints.guard_command(run, root, args.argv, cwd=relative, diagnostic=plan.profile == "diagnostic")
-    if denied_operation(run, execution["scope"]) or denied_operation(run, execution["scope"], collection="uncertain_operations"):
+    if denied_operation(run, execution["scope"]) or unknown_side_effect(run, execution["scope"]):
         raise ValueError("当前任务存在已拒绝或结果未知的命令，不允许换入口重试")
     if plan.automatic:
         owner.event(run, "tool.auto_approved", name=name, tool_call_id=call["id"], policy_profile=plan.profile,

@@ -38,7 +38,14 @@ from .model_preferences import (
 from .model_routes import install_model_routes
 from .output import validate_output_schema
 from .planning_interaction import AnswerInput, ImplementPlanInput
-from .recovery import ControlConflict, ControlInput, SteerInput
+from .recovery import (
+    ControlConflict,
+    ControlInput,
+    ReconcileInput,
+    ResumeInput,
+    ResumePreviewInput,
+    SteerInput,
+)
 from .run_review import review
 from .runtime import TERMINAL, Runtime, snapshot
 from .store import DeletionConflict, Store, now
@@ -66,6 +73,9 @@ CAPABILITIES = {
     "coding_rg_available": shutil.which("rg") is not None,
     "coding_execution_sessions_enabled": True,
     "coding_recovery_contract_version": "1.0",
+    "coding_recovery_reconcile_enabled": True,
+    "coding_recovery_model_handoff_enabled": True,
+    "coding_recovery_timing_enabled": True,
     "coding_planning_contract_version": "1.0",
     "coding_evaluation_contract_version": "1.0",
     "coding_direct_evaluation_contract_version": "1.0",
@@ -722,7 +732,11 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
         pending = runtime.store.context.pending(session_id)
         return {"project_id": project["id"], "trusted": project.get("trust_instructions") is True,
                 "sources": [rule.model_dump() for rule in rules], "active_sources": [rule.model_dump(exclude={"content"}) for rule in rules],
-                "checkpoint": {key: checkpoint.get(key) for key in ("id", "state", "completed_at", "through_ordinal", "summary_strategy", "summary_fallback_reason")} if checkpoint else None,
+                "checkpoint": {key: checkpoint.get(key) for key in ("id", "state", "completed_at", "through_ordinal",
+                                                                   "summary_strategy", "summary_fallback_reason",
+                                                                   "compaction_metrics")} if checkpoint else None,
+                # 交接内容是公开派生视图；旧检查点缺少该字段时返回 null，由界面显示“暂无”。
+                "handoff": (checkpoint or {}).get("summary", {}).get("handoff"),
                 "pending": {key: pending[key] for key in ("id", "state")} if pending else None,
                 "compaction_error": (latest or {}).get("error"), "loop_budget": run.get("loop_budget")}
 
@@ -839,12 +853,29 @@ def create_app(*, data_dir: Path, cloud: ConfiguredModels, nonce: str, port: int
         return await control_request(runtime, run_id, "pause", data)
 
     @app.post("/agent-runs/{run_id}/resume", status_code=202)
-    async def resume(run_id: str, data: ControlInput, runtime: Runtime = Depends(local)):
+    async def resume(run_id: str, data: ResumeInput, runtime: Runtime = Depends(local)):
         return await control_request(runtime, run_id, "resume", data)
+
+    @app.post("/agent-runs/{run_id}/resume/preview")
+    async def resume_preview(run_id: str, data: ResumePreviewInput, runtime: Runtime = Depends(local)):
+        """只读预览恢复资格与模型差异；不创建运行、不改默认模型、不调用模型。"""
+        run = runtime.store.run(run_id)
+        if (data.checkpoint_id and data.checkpoint_id != run.get("checkpoint_id")):
+            return JSONResponse(status_code=409, content={"error_code": "run_state_conflict",
+                "detail": "检查点已变化，请重新核对现场", "state_version": run.get("state_version", 0)})
+        try:
+            return await runtime.recovery.preview(run, model_profile_id=data.model_profile_id)
+        except ControlConflict as error:
+            return JSONResponse(status_code=409, content={"error_code": "run_state_conflict",
+                "detail": str(error), "state_version": error.version})
 
     @app.get("/agent-runs/{run_id}/recovery")
     async def recovery(run_id: str, runtime: Runtime = Depends(local)):
         return runtime.recovery.inspect(runtime.store.run(run_id))
+
+    @app.post("/agent-runs/{run_id}/recovery/reconcile", status_code=202)
+    async def reconcile(run_id: str, data: ReconcileInput, runtime: Runtime = Depends(local)):
+        return await control_request(runtime, run_id, "reconcile", data)
 
     @app.post("/agent-runs/{run_id}/answer", status_code=202)
     async def answer(run_id: str, data: AnswerInput, runtime: Runtime = Depends(local)):

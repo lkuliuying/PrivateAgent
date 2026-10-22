@@ -5,8 +5,8 @@ import hashlib
 import json
 
 READ_TOOLS = frozenset({"read_code_file", "list_project_directory", "search_project_files",
-                        "get_git_status", "get_git_diff", "read_context_content", "read_patch_preview",
-                        "read_execution", "tool_search"})
+                        "get_git_status", "get_git_diff", "read_context_content", "search_context_history",
+                        "read_patch_preview", "read_execution", "tool_search"})
 WARNING_AT = 3
 STOP_AT = 6
 

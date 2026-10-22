@@ -259,7 +259,7 @@ def tool_allowed(name: str, run: dict) -> bool:
         return run.get("collaboration_mode") == "plan" and run.get("recovery_contract_version") == "1.0"
     if run.get("collaboration_mode") == "plan" and name not in {
         "update_run_plan", "read_code_file", "list_project_directory", "search_project_files",
-        "read_context_content", "read_task_attachment", "read_patch_preview", "get_git_status", "get_git_diff",
+        "read_context_content", "search_context_history", "read_task_attachment", "read_patch_preview", "get_git_status", "get_git_diff",
         "search_memories", "read_memory",
         "list_documentation_sources", "call_documentation_tool", "tool_search", "list_skills", "load_skill", "read_skill_reference", "list_mcp_tools", "call_mcp_tool", "run_readonly_agents", "read_web_page", "verify_local_preview",
     }:

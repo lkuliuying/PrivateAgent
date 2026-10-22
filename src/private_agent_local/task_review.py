@@ -28,10 +28,29 @@ async def inspect(owner, session_id, scope="last_turn", cursor=None):
         raise ValueError("不支持的审阅范围")
     result = []
     for run in runs:
+        patches = owner.patches.list(run["id"])
         result.append({"id": run["id"], "status": run["status"], "created_at": run["created_at"],
                        "workspace_id": run["workspace_id"], "outcome": run.get("run_outcome"),
-                       "patch_count": len(owner.patches.list(run["id"]))})
+                       "patch_count": len(patches), **_chain(owner, run, patches)})
     return {"scope": scope, "runs": result, "workspace": None}
+
+
+def _chain(owner, run, patches):
+    """按运行轮次展示续跑链与恢复来源；只读已提交事实，不改写旧结论。"""
+    handoff = run.get("model_handoff") or {}
+    return {"resumed_from_run_id": run.get("resumed_from_run_id"),
+            "logical_task_id": run.get("logical_task_id"),
+            "ancestor_count": len(run.get("ancestor_run_ids") or []),
+            "error_code": run.get("error_code"),
+            "error_message": run.get("error_message"),
+            "recovery_class": owner.recovery.classification(run),
+            "resolution_count": len(owner.recovery.resolutions(run)),
+            "model_switch": bool(handoff),
+            "model_switch_from": handoff.get("from_model_name"),
+            "model_switch_to": handoff.get("to_model_name"),
+            "patch_status": sorted({patch["status"] for patch in patches}),
+            "rollback_available": any(patch["kind"] != "rollback" and patch["status"] in
+                                      {"applied", "partially_applied", "failed", "interrupted"} for patch in patches)}
 
 
 async def diff(owner, session_id, relative, staged=False, offset=0, version=None):

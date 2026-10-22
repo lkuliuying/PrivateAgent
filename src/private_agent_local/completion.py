@@ -95,6 +95,46 @@ def operation_scope(name: str, arguments: dict) -> dict:
     return {"kind": "command"}
 
 
+def resolved_operations(run: dict) -> set[str]:
+    """已核对过的原始副作用标识；只解除续跑阻塞，不解除“禁止自动重发”。"""
+    result = set()
+    for record in run.get("recovery_resolutions") or []:
+        operation_id = (record.get("target") or {}).get("operation_id")
+        if operation_id:
+            result.add(str(operation_id))
+    return result
+
+
+def unknown_side_effect(run: dict, scope: dict) -> str | None:
+    """未确认副作用是否阻止本次调用；返回 "unknown"、"replay" 或 None。
+
+    有参数指纹的记录只拦截同一原调用（换运行或换 call_id 也不能重发）；
+    缺指纹的旧记录保持保守，按来源与工具拦截该范围内的新调用。
+    """
+    resolved = resolved_operations(run)
+    for item in run.get("uncertain_operations") or []:
+        old = item.get("scope") or {}
+        fingerprint = item.get("arguments_sha256")
+        if old.get("kind") == "external" or scope.get("kind") == "external":
+            if old.get("kind") != scope.get("kind") or old.get("source_id") != scope.get("source_id") or old.get("tool") != scope.get("tool"):
+                continue
+            if not fingerprint:
+                # 旧记录缺参数指纹：无法区分原调用与同工具的新调用，保守阻止整个范围。
+                return "conservative"
+            current = scope.get("arguments_sha256")
+            if current and fingerprint != current:
+                # 参数不同就是另一个调用，按原权限链重新判定，不算重放。
+                continue
+        elif old.get("kind") == "command" or scope.get("kind") == "command":
+            # 命令范围无法证明等同，保持保守：参数指纹齐备前一律阻止。
+            if item.get("arguments_sha256") and scope.get("arguments_sha256") and item["arguments_sha256"] != scope["arguments_sha256"]:
+                continue
+        else:
+            continue
+        return "replay" if str(item.get("operation_id")) in resolved else "unknown"
+    return None
+
+
 def denied_operation(run: dict, scope: dict, *, collection: str = "denied_operations") -> bool:
     for denial in run.get(collection, []):
         old = denial["scope"]

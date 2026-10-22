@@ -47,6 +47,7 @@ from .completion import (
     denied_operation,
     operation_scope,
     unknown_outcome,
+    unknown_side_effect,
     workspace_state,
 )
 from .context import average_cache_hit_percent, context_budget, matches_profile
@@ -62,7 +63,7 @@ from .output import parse_structured_output, validate_output_schema
 from .patchsets import PatchService
 from .planning import LocalPlanner
 from .planning_interaction import PlanningInteraction
-from .recovery import Recovery, reconcile_mcp_execution
+from .recovery import ACTIVE, TIMING_VERSION, Recovery, reconcile_mcp_execution
 from .run_controls import RunControls
 from .secret_filter import SecretFilter
 from .store import Store, now
@@ -129,6 +130,9 @@ class Runtime:
         self.secret_filter = SecretFilter(lambda: (*getattr(self.cloud, "secrets", {}).values(), self.token, *(self.integrations.secret_values() if hasattr(self, "integrations") else [])))
         self.clock_id = uuid.uuid4().hex
         self.tasks: dict[str, asyncio.Task] = {}
+        self.heartbeats: dict[str, asyncio.Task] = {}
+        # 活动预算回执周期：只更新运行 JSON 元数据，不产生事件或检查点。
+        self.heartbeat_interval = 5.0
         self.decisions: dict[str, asyncio.Future] = {}
         self._profiles: list[dict] = []
         self._profiles_at = 0.0
@@ -203,11 +207,51 @@ class Runtime:
                 budget["last_compacted_at"] = checkpoint["completed_at"]
         return budget
 
-    def event(self, run: dict, event_type: str, **payload):
-        payload["timing"] = {"clock_id": self.clock_id, "monotonic_seconds": time.monotonic()}
+    def receipt(self, run: dict, source: str):
+        """把当前单调活动预算写成有版本的运行 JSON 元数据；不发布事件。"""
         context = self.contexts.get(run["id"])
         if context:
             run["loop_budget"] = context.budget_snapshot()
+        budget = run.get("loop_budget") or {}
+        run["timing"] = {"format_version": TIMING_VERSION, "clock_id": self.clock_id,
+                         "monotonic_seconds": round(time.monotonic(), 6),
+                         "confirmed_active_seconds": budget.get("active_seconds"),
+                         "last_receipt_at": now(), "source": source,
+                         # 进程内回执只声明到本刻为止的已确认活动时间；崩溃后的尾段由启动恢复标记未知。
+                         "unconfirmed_tail": False}
+
+    def _start_heartbeat(self, run: dict):
+        if run.get("recovery_contract_version") != "1.0" or run["id"] in self.heartbeats:
+            return
+        self.heartbeats[run["id"]] = asyncio.create_task(self._heartbeat(run))
+
+    def _stop_heartbeat(self, run_id: str):
+        task = self.heartbeats.pop(run_id, None)
+        if task and not task.done():
+            task.cancel()
+        return task
+
+    async def _heartbeat(self, run: dict):
+        """周期回执：仅活动上下文运行，保存前核验运行仍活动，避免迟到回执覆盖终态。"""
+        try:
+            while True:
+                await asyncio.sleep(self.heartbeat_interval)
+                if self.live.get(run["id"]) is not run or run.get("status") not in ACTIVE:
+                    return
+                # 核验与保存之间不留 await，终态提交不会与迟到回执交错。
+                if self.live.get(run["id"]) is not run or run.get("status") not in ACTIVE:
+                    return
+                self.receipt(run, "periodic")
+                self.store.save_run_state(run)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # 回执失败不能中断任务执行；下一次事件仍会写入完整事实。
+            return
+
+    def event(self, run: dict, event_type: str, **payload):
+        payload["timing"] = {"clock_id": self.clock_id, "monotonic_seconds": time.monotonic()}
+        self.receipt(run, "event")
         return self.store.emit(run, event_type, self.secret_filter.redact_value(payload))
 
     def root(self, project_id: int, workspace_id: int) -> Path:
@@ -303,12 +347,22 @@ class Runtime:
                        workspace_key=workspace_key(root), ancestor_run_ids=[])
         if parent:
             for key in ("logical_task_id", "goal", "goal_version", "generation", "completion_requirements", "completion_policy", "task_interpretation",
-                        "workspace_version", "loop_budget", "denied_operations", "uncertain_operations", "command_scope_issue", "model_config_version",
+                        "workspace_version", "loop_budget", "denied_operations", "uncertain_operations", "recovery_resolutions", "command_scope_issue", "model_config_version",
                         "model_capability_version", "verification_retries", "plan", "orchestration_progress", "tool_catalog", "reflection_state", "reflection_review",
                         "input_tokens", "output_tokens", "cached_tokens", "cost_usd", "tool_call_count", "usage_complete", "attachment_ids"):
                 if key in parent:
                     run[key] = json.loads(json.dumps(parent[key]))
             run.update(resumed_from_run_id=parent["id"], ancestor_run_ids=[*parent.get("ancestor_run_ids", []), parent["id"]])
+            if data.get("model_handoff"):
+                # 显式切换模型：目标模型版本由本次运行重新核验，不继承源模型的配置/能力版本。
+                handoff = json.loads(json.dumps(data["model_handoff"]))
+                run.pop("model_config_version", None)
+                run.pop("model_capability_version", None)
+                run["model_handoff"] = handoff
+                run["model_switched_from_run_id"] = handoff.get("from_run_id")
+            if parent.get("model_handoff") or parent.get("public_history_required"):
+                # 逻辑任务此前的历史已跨过至少一条模型路由；后续续跑只发送公开历史投影。
+                run["public_history_required"] = True
             task_constraints.refresh_interpretation(run)
         run["root_identity"] = files.file_identity(root)
         self.observer.bind(run, parent)
@@ -327,9 +381,15 @@ class Runtime:
                 continuation = ("用户选择按当前计划执行。切换为执行模式，保留原目标、约束、步骤及预算。每项工具操作仍须通过原权限检查，计划确认不是额外授权。"
                                 if parent.get("collaboration_mode") == "plan" and collaboration == "default" else
                                 "用户确认继续原逻辑任务。已核对历史操作；保留原目标、约束、失败尝试和预算。旧工具序列及审批不重放，必要时重新读取。")
+                if run.get("model_handoff"):
+                    # 换模型说明进入新运行上下文；原始用户指令与旧历史保持不变。
+                    handoff = run["model_handoff"]
+                    continuation += (f"本次恢复已由用户确认改用模型：{handoff['to_model_name']}。"
+                                     "此前供应商的原生会话状态在新路由下不再沿用，只使用公开对话历史；原运行的模型配置与结果保留不变。")
                 self.store.context.append(session["id"], run["id"], ModelMessage(role="user", content=continuation),
                                           key=f"{run['id']}:recovery", source="user")
             self.store.update("session", session["id"], last_run_id=run["id"])
+            self.receipt(run, "created")
             self.store.save_run(run)
             if run.get("recovery_contract_version"):
                 self.event(run, "run.created", resumed_from_run_id=run.get("resumed_from_run_id"))
@@ -340,6 +400,7 @@ class Runtime:
     def launch(self, run):
         self.live[run["id"]] = run
         self.tasks[run["id"]] = asyncio.create_task(self.execute(run, self.root(run["project_id"], run["workspace_id"])))
+        self._start_heartbeat(run)
 
     def require_grant(self, run: dict) -> dict | None:
         if run["permission_mode"] != "full_access":
@@ -517,6 +578,7 @@ class Runtime:
         return self.tool_catalog.definitions(run, *self.catalog_inputs(run, root))
 
     def finish(self, run: dict, status: str, code=None, message=None):
+        self._stop_heartbeat(run["id"])
         try:
             self.store.context.close_pending(run["session_id"], run["id"])
             self.controls.commit_messages(run)
@@ -544,6 +606,9 @@ class Runtime:
                    structured_output=run.get("structured_output"), final_output_attempt_id=run.get("final_output_attempt_id"),
                    tool_call_count=run["tool_call_count"], input_tokens=run["input_tokens"], output_tokens=run["output_tokens"],
                    run_outcome=run["run_outcome"], goal_outcome=run["run_outcome"]["goal_outcome"])
+        # 终态回执记录最后确认的活动时间；此前的周期回执不会覆盖该值。
+        self.receipt(run, "finish")
+        self.store.save_run_state(run)
         self.store.update("session", run["session_id"])
         self.turn_queue.settled(run)
 
@@ -552,7 +617,11 @@ class Runtime:
             session = self.store.get("session", session_id)
             run = self.store.run(session["last_run_id"]) if session.get("last_run_id") else None
             task_state = self.planner.context(run) if run else None
-            candidate = self.store.context.compact(session_id, checkpoint, **({"task_state": task_state} if task_state else {}))
+            candidate = self.store.context.compact(session_id, checkpoint, task_state=task_state, run=run)
+            # 手动空闲压缩没有请求边界，只保留结构计量并明确标记估算未记录。
+            candidate["compaction_metrics"] = {**candidate.get("compaction_metrics", {}), "measured": False,
+                                               "estimated_before_tokens": None, "estimated_after_tokens": None,
+                                               "measurement_source": None}
             with self.store.transaction():
                 self.store.context.save_checkpoint(session_id, candidate)
                 session = self.store.get("session", session_id)
@@ -720,7 +789,7 @@ class Runtime:
             if name == "read_patch_preview":
                 preview_patch = self.patches.get(run["id"], args.patch_set_id)
                 task_constraints.guard_paths(run, root, [item["rel_path"] for item in preview_patch["changes"]])
-            if name in {"read_context_content", "read_task_attachment"} and task_constraints.restrictions(run).access_scopes:
+            if name in {"read_context_content", "search_context_history", "read_task_attachment"} and task_constraints.restrictions(run).access_scopes:
                 raise task_constraints.TaskConstraintError("当前限定访问路径，历史内容范围无法确认；请通过文件工具读取允许的路径")
             if name in WRITE_TOOLS:
                 execution["scope"] = ({"kind": "files", "paths": [item["rel_path"] for item in patch["changes"]]}
@@ -733,7 +802,7 @@ class Runtime:
                 if denied_operation(run, execution["scope"]):
                     error_code = "operation_denied"
                     raise ValueError("该操作与本轮已拒绝范围重叠；不得换工具或参数重试，请等待用户新指令")
-                if denied_operation(run, execution["scope"], collection="uncertain_operations"):
+                if unknown_side_effect(run, execution["scope"]):
                     error_code = "execution_unknown"
                     raise ValueError("该范围存在结果未知的副作用；请先人工检查，禁止自动重放")
             # 每次操作重新核对项目根目录和限时授权，审批等待后再次核对。
@@ -825,6 +894,12 @@ class Runtime:
                     raise ToolFailure("sensitive_content_blocked", "附件包含疑似凭据，未返回正文")
             elif name == "read_context_content":
                 output = self.store.context.read(run["session_id"], args.item_id, args.offset, args.limit)
+            elif name == "search_context_history":
+                # 访问范围、敏感内容与原生状态在搜索实现内再次过滤，不依赖前端隐藏。
+                output = self.store.context.search(run["session_id"], args.query, role=args.role,
+                                                   tool_name=args.tool_name, limit=args.limit,
+                                                   secrets=self.memories.secrets(),
+                                                   blocked=self.secret_filter.contains_secret)
             elif name == "read_patch_preview":
                 output = self.patches.diff_page(run["id"], args.patch_set_id, args.change_id, args.offset, args.limit)
             elif name == "list_project_directory":
@@ -1010,6 +1085,9 @@ class Runtime:
 
     async def _cancel(self, run_id: str):
         self.store.run(run_id)
+        heartbeat = self._stop_heartbeat(run_id)
+        if heartbeat:
+            await asyncio.gather(heartbeat, return_exceptions=True)
         await self.execution_sessions.stop_matching(lambda record: record["run_id"] == run_id)
         task = self.tasks.get(run_id)
         if task:
@@ -1028,6 +1106,11 @@ class Runtime:
 
     async def close(self):
         self.turn_queue.closed = True
+        for task in list(self.heartbeats.values()):
+            task.cancel()
+        if self.heartbeats:
+            await asyncio.gather(*self.heartbeats.values(), return_exceptions=True)
+            self.heartbeats.clear()
         await self.integrations.close()
         await self.memories.close()
         for run_id in list(self.tasks):

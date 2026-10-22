@@ -58,10 +58,18 @@ class RunControls:
         prior = owner.recovery.prior(run, kind, data)
         if prior:
             return prior
+        if kind == "reconcile":
+            # 核对只追加人工决定并重建现场事实，不调模型、不自动续跑、不改写原结果。
+            with store.transaction(run=run):
+                record = owner.recovery.apply_reconcile(run, data)
+                record.update(status="applied", applied_at=now())
+                owner.recovery.save_control(run["id"], data["request_id"], record)
+            return record
         if kind == "steer":
             interpret_task(data["message"])
+        handoff = None
         if kind == "resume":
-            await owner.recovery.validate_resume(run, data)
+            handoff = (await owner.recovery.validate_resume(run, data)).get("handoff")
             # 联网核验让出调度后，必须再次校验版本与重复请求。
             run = owner.live.get(run_id) or store.run(run_id)
             prior = owner.recovery.prior(run, kind, data)
@@ -83,12 +91,22 @@ class RunControls:
                     raise ValueError("逻辑任务已继续 32 次，请核对累计结果后开始新任务")
                 parent = dict(run)
                 task_constraints.restore_interpretation(owner, parent)
-                child = owner.create({"session_id": run["session_id"], "project_id": run["project_id"],
+                payload = {"session_id": run["session_id"], "project_id": run["project_id"],
                     "workspace_id": run["workspace_id"], "message": run["goal"], "permission_mode": run["permission_mode"],
-                    "model_profile_id": run["model_profile_id"], "reasoning_effort": run["reasoning_effort"],
+                    "model_profile_id": (handoff or {}).get("to_profile_id") or run["model_profile_id"],
+                    "reasoning_effort": run["reasoning_effort"],
                     "context_limits": run["context_limits"], "execution_contract_version": run.get("execution_contract_version"),
                     "collaboration_mode": run.get("collaboration_mode", "default"),
-                    "recovery_contract_version": "1.0", "client_request_id": f"resume:{run_id}:{data['request_id']}"}, parent=parent, launch=False)
+                    "recovery_contract_version": "1.0", "client_request_id": f"resume:{run_id}:{data['request_id']}"}
+                if handoff:
+                    # 切换模型只记录身份、预览摘要与原因；原运行的模型配置不改写。
+                    payload["model_handoff"] = handoff
+                child = owner.create(payload, parent=parent, launch=False)
+                if handoff:
+                    owner.event(child, "recovery.model_handoff", from_run_id=handoff["from_run_id"],
+                                from_profile_id=handoff["from_profile_id"], to_profile_id=handoff["to_profile_id"],
+                                preview_sha256=handoff["preview_sha256"],
+                                accepted_unconfirmed_timing=handoff["accepted_unconfirmed_timing"])
                 for pending in owner.recovery.controls(run_id):
                     if pending["kind"] == "steer" and pending["status"] == "interrupted":
                         carried = owner.recovery.insert(child, "steer", {"request_id": pending["request_id"],
@@ -96,7 +114,8 @@ class RunControls:
                         carried.update(message_id=pending["message_id"], context_committed=True,
                                        source_run_id=pending.get("source_run_id", run_id))
                         owner.recovery.save_control(child["id"], carried["request_id"], carried)
-                record.update(status="applied", applied_at=now(), result_run_id=child["id"])
+                record.update(status="applied", applied_at=now(), result_run_id=child["id"],
+                              model_profile_id=child["model_profile_id"], model_switched=bool(handoff))
                 owner.recovery.save_control(run_id, data["request_id"], record)
             if not child:
                 self.receive(run, kind, data, record)
