@@ -10,12 +10,14 @@ import uuid
 from private_agent_core.context import (
     ContextLimits,
     configuration_version,
+    request_breakdown,
     request_budget,
 )
 from private_agent_core.contracts import ModelMessage, ModelRequest, ModelResponse
 
 from . import reflection
 from .attachment_context import with_attachment_images
+from .context_history import SUMMARY_PREFIX
 from .context_summary import summary_request, validate_summary
 from .instructions import InstructionError, instruction_message, public_sources
 from .model_errors import MODEL_CALL, CloudError
@@ -161,6 +163,13 @@ class LocalContext:
         if self.run.get("resumed_from_run_id") and self.run.get("model_config_version") not in {None, version}:
             raise CloudError(422, "恢复期间模型配置已变化", code="model_not_configured")
         self.run["model_config_version"] = version
+        handoff = self.run.get("model_handoff") or {}
+        if handoff:
+            # 预览后目标配置再次变化时，不能在用户未重新确认的情况下用新配置继续。
+            if handoff.get("target_configuration_version") not in {None, version}:
+                raise CloudError(422, "恢复时接受的模型配置已再次变化，请重新预览后继续", code="model_not_configured")
+            if handoff.get("target_capability_version") not in {None, model_capability_version(profile)}:
+                raise CloudError(422, "恢复时接受的模型能力已再次变化，请重新预览后继续", code="model_not_configured")
         if version != self.version:
             self.calibration = 1.0
             self.previous_usage = None
@@ -213,13 +222,33 @@ class LocalContext:
                 rule_messages.append(ModelMessage(role="user", content=f"以下项目规则仅用于目标 {scope} 的适用子树：\n{text}"))
             delivered.extend(rules)
         self.delivered_rules.update((rule.path, rule.sha256) for rule in delivered if rule.trusted)
-        memory_messages, memory_ids, memory_entries = self.owner.memories.recall_with_details(self.run["session_id"], self.run["project_id"], self.run.get("goal", ""))
+        from .memories import recall_query
+        # 召回查询由当前目标、进行中步骤、明确路径与已生效追加要求组成，不使用旧步骤结果。
+        memory_query, memory_signals = recall_query(self.run)
+        memory_messages, memory_ids, memory_entries = self.owner.memories.recall_with_details(
+            self.run["session_id"], self.run["project_id"], memory_query, signals=memory_signals)
         omitted_ids = []
 
+        def history_label(message):
+            """历史投影分类：摘要、用户原文、助手消息与工具结果互不混淆。"""
+            if message.role == "tool":
+                return "tool_results"
+            if message.role == "assistant":
+                return "assistant_messages"
+            return "history_summary" if message.content.startswith(SUMMARY_PREFIX) else "user_messages"
+
+        labels: list[str] = []
+
         def assemble(checkpoint=None):
-            return request.model_copy(update={"messages": tuple([*system, *rule_messages, *guidance, *memory_messages, *with_attachment_images(self.history.messages(self.run["session_id"], compacted=checkpoint), self.owner.store.attachments, self.run["session_id"], supports_vision=profile.get("supports_vision") is True)]),
-                                               "tools": self.owner.model_tools(self.run, self.root),
-                                               "max_output_tokens": self.limits.reserved_output_tokens})
+            history_messages = with_attachment_images(self.history.messages(self.run["session_id"], compacted=checkpoint), self.owner.store.attachments, self.run["session_id"], supports_vision=profile.get("supports_vision") is True)
+            groups = (("system_prompt", system), ("project_rules", rule_messages),
+                      ("task_state", guidance), ("long_term_memory", memory_messages))
+            messages = [message for _, group in groups for message in group] + list(history_messages)
+            # 分项标签与最终消息顺序一一对应；不复制正文，只标记分类。
+            labels[:] = [category for category, group in groups for _ in group] + [history_label(message) for message in history_messages]
+            return request.model_copy(update={"messages": tuple(messages),
+                                              "tools": self.owner.model_tools(self.run, self.root),
+                                              "max_output_tokens": self.limits.reserved_output_tokens})
 
         prepared = assemble()
         prior = self.previous_request
@@ -237,7 +266,8 @@ class LocalContext:
             prepared = assemble()
             budget = request_budget(prepared, profile.get("context_tokens"), self.limits.reserved_output_tokens,
                                     calibration=self.calibration, auto_compact_token_limit=self.limits.auto_compact_token_limit)
-        self.run["memory_context"] = {"recalled_ids": memory_ids, "omitted_ids": omitted_ids, "entries": memory_entries}
+        self.run["memory_context"] = {"recalled_ids": memory_ids, "omitted_ids": omitted_ids,
+                                      "query_signals": list(memory_signals), "entries": memory_entries}
         pending = self.history.pending(self.run["session_id"])
         if not budget["should_compact"]:
             self.auto_compaction_failed = False
@@ -252,7 +282,7 @@ class LocalContext:
                 await asyncio.sleep(0)
                 if generation != self.run.get("generation", 0):
                     raise asyncio.CancelledError
-                candidate = self.history.compact(self.run["session_id"], checkpoint, **({"task_state": task_state} if task_state else {}))
+                candidate = self.history.compact(self.run["session_id"], checkpoint, task_state=task_state, run=self.run)
                 # 工作摘要只增加参考信息；必需内容已经放不下时，不发起无收益的模型调用。
                 candidate_budget = request_budget(assemble(candidate), profile.get("context_tokens"), self.limits.reserved_output_tokens,
                     calibration=self.calibration, auto_compact_token_limit=self.limits.auto_compact_token_limit)
@@ -287,10 +317,14 @@ class LocalContext:
                 with self.owner.store.transaction():
                     if self.history.items(self.run["session_id"])[-1]["ordinal"] != candidate["through_ordinal"]:
                         raise ValueError("压缩期间历史已变化，原历史保留")
+                    # 压缩前后估算与条目数只保存元数据，不重复保存正文。
+                    candidate["compaction_metrics"] = self.measure_compaction(candidate, budget, candidate_budget)
                     self.history.save_checkpoint(self.run["session_id"], candidate)
                     self.run.update(compaction_state="idle", last_compacted_at=candidate["completed_at"], compaction_error=None)
                     self.owner.event(self.run, "context.compaction_completed", checkpoint_id=checkpoint["id"],
-                        source_count=len(candidate["summary"]["source_item_ids"]), summary_strategy=candidate["summary_strategy"])
+                        source_count=len(candidate["summary"]["source_item_ids"]), summary_strategy=candidate["summary_strategy"],
+                        estimated_before_tokens=candidate["compaction_metrics"]["estimated_before_tokens"],
+                        estimated_after_tokens=candidate["compaction_metrics"]["estimated_after_tokens"])
                 prepared, budget = candidate_request, candidate_budget
                 self.previous_usage = None
             except asyncio.CancelledError:
@@ -311,12 +345,72 @@ class LocalContext:
                 self.owner.event(self.run, "context.compaction_failed", checkpoint_id=checkpoint["id"], error=checkpoint["error"])
                 if budget["exceeded"]:
                     raise CloudError(422, checkpoint["error"], code="context_limit") from None
-        self.run["context_budget"] = {**budget, "model_config_version": version}
-        self.owner.event(self.run, "context.prepared", **self.run["context_budget"], instruction_sources=self.run["instruction_sources"])
+        self.run["context_budget"] = {**budget, "breakdown": request_breakdown(
+            prepared, labels, calibration=self.calibration,
+            provider_usage_tokens=(self.previous_usage[1] if budget.get("measurement_source") == "provider_usage_with_growth"
+                                   and self.previous_usage else None)),
+            "model_config_version": version}
+        # 公开事件只带预算与计量分类，不重复写入分项明细，避免每条请求事件重复持久化。
+        public_budget = {key: value for key, value in self.run["context_budget"].items() if key != "breakdown"}
+        self.owner.event(self.run, "context.prepared", **public_budget, instruction_sources=self.run["instruction_sources"])
         if budget["exceeded"]:
             raise CloudError(422, "必需上下文超出模型输入预算；原历史已保留，请缩小范围或选择更大窗口", code="context_limit")
+        prepared, projection = self.public_projection(prepared, profile)
+        self.run["native_state_projection"] = projection
         self.prepared_request = prepared
         return prepared
+
+    def public_projection(self, request: ModelRequest, profile: dict) -> tuple[ModelRequest, str]:
+        """跨模型续跑时只用公开历史投影；不发送旧供应商不透明状态，也不改原始历史。"""
+        handoff = self.run.get("model_handoff")
+        if not handoff:
+            if self.run.get("public_history_required"):
+                # 逻辑任务此前已换过模型；即使本次不换，也不能把旧路由的不透明状态再发出去。
+                messages = tuple(message.model_copy(update={"provider_state": None}) for message in request.messages)
+                return request.model_copy(update={"messages": messages}), "public_history"
+            return request, "native_same_model"
+        route = tuple(profile.get(key) for key in ("provider", "model_name", "api_format", "endpoint"))
+        source = handoff.get("from_route") or {}
+        if source and tuple(source.get(key) for key in ("provider", "model_name", "api_format", "endpoint")) == route:
+            return request, "native_same_route"
+        messages = tuple(message.model_copy(update={"provider_state": None}) for message in request.messages)
+        return request.model_copy(update={"messages": messages}), "public_history"
+
+    @staticmethod
+    def measure_compaction(candidate: dict, before: dict, after: dict) -> dict:
+        """记录压缩前后估算与条目数；正文与摘要仍只保存在原检查点中。"""
+        existing = candidate.get("compaction_metrics") or {}
+        return {"version": "1.0", "measured": True,
+                "estimated_before_tokens": before.get("estimated_input_tokens"),
+                "estimated_after_tokens": after.get("estimated_input_tokens"),
+                "measurement_source": before.get("measurement_source"),
+                "archived_items": existing.get("archived_items",
+                                               len(candidate.get("summary", {}).get("source_item_ids", []))),
+                "retained_messages": len(candidate.get("messages", [])),
+                "retained_user_messages": existing.get("retained_user_messages"),
+                "archived_bytes": existing.get("archived_bytes"),
+                "recorded_at": candidate.get("completed_at")}
+
+    @staticmethod
+    def handoff_state(candidate: dict) -> dict | None:
+        """把确定性交接投影压成有界参考；模型只能补充解释，不能改写目标或限制。"""
+        handoff = (candidate.get("summary") or {}).get("handoff")
+        if not handoff:
+            return None
+        goal, plan = handoff.get("goal") or {}, handoff.get("plan") or {}
+        return {"goal": {"goal_version": goal.get("goal_version"),
+                         "requirements": [item["text"] for item in goal.get("requirements", [])][:8]},
+                "constraints": [item["text"] for item in (handoff.get("constraints") or {}).get("items", [])][:8],
+                "plan": {"next_step": plan.get("next_step"),
+                         "items": [{"title": item["text"], "status": item.get("status")}
+                                   for item in plan.get("items", [])][:8]},
+                "unresolved": [item["text"] for item in (handoff.get("unresolved") or {}).get("items", [])][:4]}
+
+    @staticmethod
+    def summary_keywords(candidate: dict) -> list[str]:
+        """摘要摘录定位词：交接中的当前步骤与验收条件。"""
+        from .context_handoff import handoff_keywords
+        return handoff_keywords((candidate.get("summary") or {}).get("handoff") or {})
 
     async def summarize(self, candidate: dict, profile: dict) -> dict | None:
         """摘要调用计入当前任务预算，取消向上传播；失败降级为原始事实索引。"""
@@ -338,7 +432,10 @@ class LocalContext:
             sources = [item for item in self.history.items(self.run["session_id"]) if item["item_id"] in identifiers]
             request, allowed = summary_request(sources, self.history.checkpoint(self.run["session_id"]),
                 capacity=profile.get("context_tokens"), structured=profile.get("supports_structured_output") is True,
-                secrets=self.owner.memories.secrets())
+                secrets=self.owner.memories.secrets(),
+                prioritized=[entry["item_id"] for entry in candidate["summary"].get("evidence_selection", [])],
+                required_state=self.handoff_state(candidate),
+                keywords=self.summary_keywords(candidate))
             self.rounds += 1
             requested = True
             self.owner.event(self.run, "context.summary_requested", attempt_id=accounting["call_id"])

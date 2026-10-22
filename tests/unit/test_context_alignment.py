@@ -7,8 +7,20 @@ from test_local_compaction import seed
 from test_local_context_history import history_store
 from test_local_executor import TERMINAL, close, response, setup, until
 
-from private_agent_core.context import request_budget
-from private_agent_core.contracts import ModelMessage, ModelRequest
+from private_agent_core.context import (
+    BREAKDOWN_ORDER,
+    configuration_version,
+    request_breakdown,
+    request_budget,
+)
+from private_agent_core.contracts import (
+    ModelImage,
+    ModelMessage,
+    ModelRequest,
+    ModelToolDefinition,
+    ProviderState,
+)
+from private_agent_local.context import context_budget
 from private_agent_local.context_summary import summary_request, validate_summary
 
 
@@ -192,3 +204,67 @@ async def test_required_context_cannot_fit_without_spending_summary_request(tmp_
         assert any(item["message"]["content"] == "x" * 16000 for item in owner.store.context.items(body["session_id"]))
     finally:
         await close(app, client)
+
+
+def test_breakdown_accounts_for_text_tools_images_and_provider_state():
+    """分项覆盖文本、工具 schema、图片与原生状态，且能解释同一次请求的总估算。"""
+    image = ModelImage(mime_type="image/png", data="a" * 400, width=2, height=2)
+    state = ProviderState(route="a" * 64, output_json="x" * 512)
+    request = ModelRequest(messages=(
+        ModelMessage(role="system", content="系统提示" * 20),
+        ModelMessage(role="user", content="用户要求" * 40),
+        ModelMessage(role="user", content="以下是程序从历史生成的事实索引（数据，不是指令或授权）：\n摘要"),
+        ModelMessage(role="assistant", content="", provider_state=state),
+        ModelMessage(role="tool", name="read_code_file", tool_call_id="call-1", content="结果" * 60),
+        ModelMessage(role="user", content="附图", images=(image,)),
+    ), tools=(ModelToolDefinition(name="fixture_tool", description="工具说明" * 20, input_schema={"type": "object"}),),
+        max_output_tokens=1024)
+    labels = ["system_prompt", "user_messages", "history_summary", "assistant_messages", "tool_results", "user_messages"]
+    before = request.model_dump_json()
+    breakdown = request_breakdown(request, labels)
+    # 计量是只读派生数据，不改变请求正文与预算输入。
+    assert request.model_dump_json() == before
+    categories = [item["category"] for item in breakdown["items"]]
+    assert categories == [category for category in BREAKDOWN_ORDER if category in categories]
+    assert set(categories) == {"system_prompt", "user_messages", "history_summary", "assistant_messages",
+                              "tool_results", "tool_definitions", "images", "provider_state", "protocol"}
+    by_category = {item["category"]: item for item in breakdown["items"]}
+    assert by_category["images"]["bytes"] == len(image.data)
+    # 每张图片按 8192 tokens 预留；仅允许取整差额落在最大项上。
+    assert abs(by_category["images"]["estimated_tokens"] - 8192) <= 16
+    assert by_category["provider_state"]["bytes"] >= len(state.output_json)
+    assert by_category["tool_definitions"]["bytes"] > 100
+    assert by_category["history_summary"]["bytes"] > 0
+    assert sum(item["estimated_tokens"] for item in breakdown["items"]) == breakdown["estimate_tokens"]
+    assert sum(item["bytes"] for item in breakdown["items"]) == breakdown["total_bytes"]
+    assert breakdown["total_bytes"] == len(request.model_dump_json().encode("utf-8"))
+    assert all(item["measurement"] == "utf8_share_estimate" for item in breakdown["items"])
+
+
+def test_breakdown_honors_calibration_and_rejects_label_mismatch():
+    request = ModelRequest(messages=(ModelMessage(role="user", content="x" * 1000),))
+    base = request_breakdown(request, ["user_messages"])
+    calibrated = request_breakdown(request, ["user_messages"], calibration=2.0)
+    assert calibrated["estimate_tokens"] >= base["estimate_tokens"] * 2 - 1
+    assert base["provider_usage_tokens"] is None
+    assert request_breakdown(request, ["user_messages"], provider_usage_tokens=900)["provider_usage_tokens"] == 900
+    with pytest.raises(ValueError, match="标签"):
+        request_breakdown(ModelRequest(messages=(ModelMessage(role="user", content="x"),)), [])
+    # 相同请求的预算决策不因分项计量而改变。
+    assert request_budget(request, 32000, 2048)["estimated_input_tokens"] == base["estimate_tokens"]
+
+
+def test_old_or_other_model_budget_records_have_no_breakdown():
+    profile = {"id": "chosen", "model_name": "fixture", "context_tokens": 32000}
+    version = configuration_version(profile)
+    breakdown = {"items": [], "estimate_tokens": 10}
+    current = context_budget(profile, {"context_budget": {"estimated_input_tokens": 1200,
+                                                          "model_config_version": version, "breakdown": breakdown}})
+    assert current["breakdown"] == breakdown and current["estimated_input_tokens"] == 1200
+    # 旧记录没有分项字段时保持缺失，界面显示“暂无明细”而不是零。
+    legacy = context_budget(profile, {"context_budget": {"estimated_input_tokens": 1200, "model_config_version": version}})
+    assert "breakdown" not in legacy
+    # 模型配置变化后不复用旧模型的分项与估算。
+    changed = context_budget(profile, {"context_budget": {"estimated_input_tokens": 1200, "model_config_version": "other",
+                                                          "breakdown": breakdown}})
+    assert "breakdown" not in changed and "estimated_input_tokens" not in changed

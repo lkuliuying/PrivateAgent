@@ -1,5 +1,7 @@
 # ContextBuilder 设计
 
+> **2026-10-20 上下文管理补记（M0–M4）**：本机 API Key 链路增加可重复的长任务基线、请求分项计量、压缩前的证据选择与六类交接投影、当前会话归档搜索工具和面向当前步骤的长期记忆召回。全部为可选派生字段与只读工具：不迁移数据库、不升级依赖、不裁剪用户原文、不改动预算总量与阈值。分项计量把同一请求按 UTF-8 字节分摊到系统提示、项目规则、任务状态、工具定义、用户/助手消息、工具结果、历史摘要、长期记忆、图片、原生状态与协议结构，取整差额记入最大项，因此分项之和等于总量估算；供应商总实测仍单独展示。压缩检查点新增可选 `compaction_metrics`（压缩前后估算、归档条目数、保留条目数）与 `summary.handoff`（目标、限制、计划、发现、修改与验证、未解决问题）；证据按“未解决失败 → 当前步骤 → 本轮修改 → 既有摘要 → 普通读取”排序，重复读取同一目标只保留最近一次成功结果，失败与写入记录不合并。`search_context_history` 只读、只针对执行器绑定的当前会话，复用现有历史上限与公开投影，支持中文双字、英文标识符与路径匹配，单条摘录 400 字符、最多 10 条、整体不超过 8 KiB，`provider_state` 不参与匹配、排序或序列化。旧检查点、旧预算记录和旧执行协议保持可读；新工具仅在按需加载协议下暴露，不进入旧协议的请求定义。详见[上下文管理改进实施记录](solutions/2026-10-20-context-management.md)。
+
 > **2026-09-22 指令作用域修复**：内部任务解释升级为 `1.2`，用户原文保持不变，派生限制增加来源 ID、原文位置及整个任务／路径／子任务范围。“修复 A.py，B.py 只分析”保留 A 的修改要求并限制 B；没有具体路径的“这个方向先汇报不动工”作为局部原文提示交给主模型，不扩大为全局禁写。用户明确要求执行的引用内容参与解析，普通示例、文档、日志和未满足的条件不产生执行授权。任务状态提示、执行检查及 Observer 共用同一份解析结果，不新增解析模型调用。
 >
 > 新版本从原始目标与已生效追加指令重建策略，不将旧派生缓存再次合并为独立限制。旧任务在恢复边界核对不可变上下文中的初始消息、已应用控制记录、来源列表及目标版本，来源完整时升级；缺失或不一致时保留原有限制并说明未升级原因。权限模式、审批、已执行事实和原始历史独立保留，数据库表和外部 API 不变。发送给供应商的消息副本仍经过凭据过滤；普通代码表达式及中文标点后的指令不再因误匹配被改写。
@@ -34,6 +36,37 @@
 - `context_limits` 默认 64 次模型请求、128 次工具、3600 秒有效执行；S1 纠偏不重置预算。等待审批单独计时，每次仍最多 600 秒，保留 24 小时绝对兜底。费用未知时显示未知并依靠其他上限；相同参数、失败输出、工作区版本连续三次失败提示模型，四次停止，成功工具打断该旧连续计数。恢复协议 1.0 另外保留上文的结构化失败记录，无关成功不能清除未解决问题。
 - `ModelRequest.max_output_tokens` 在共享契约、网关和 Provider complete/stream 生效；未声明输出上限能力时请求前拒绝。兼容 Provider 和真实模型窗口仍需独立验收。新客户端需与本机执行器来自同一构建，无旧服务端依赖。
 - 新运行可设 `context_limits.auto_compact=false` 停止自动压缩；原始必需输入过大时仍阻断，不静默截断约束。程序回退必须理解当前主库 schema 7，禁止删表或覆盖数据库降级。本次检查点只增加 JSON 元数据，不改变数据库 schema。
+
+## 本机上下文管理（2026-10-20 实施）
+
+| 阶段 | 实现位置 | 行为与边界 |
+| --- | --- | --- |
+| M0 基线 | `tests/unit/test_context_baseline.py`、`scripts/run_coding_validation.py --suite context-baseline` | 26k 窗口、32 次读取、一次失败后修正、真实写入与追加目标；只记录元数据到隔离目录 `baseline.json`，不含正文 |
+| M1 分项计量 | `private_agent_core/context.py` 的 `request_breakdown`、`context_manager.prepare`、`context_budget` API、`LocalContextPanel.vue` | 分类、字节与估算；旧记录无 `breakdown` 时界面显示“暂无明细”，不显示成 0；分项不进入模型请求与公开事件 |
+| M2 证据与交接 | `context_handoff.py`、`context_history.compact`、`context_summary.summary_request` | 稳定优先级与可证明去重（同一工具+同一读取范围+同一结果才合并，失败与写入永不合并）、六类交接、按步骤词/结果位置截取摘录（带 `range` 与截断标记）、区分已解决失败与待核对失败；模型摘要只能补充有来源的解释；请求索引保持有界 |
+| M3 归档搜索 | `ContextHistory.search`、`search_context_history` ToolSpec、`runtime` 执行层 | 只读、当前会话、中文/英文/路径匹配、确定性排序、角色与工具过滤、8 KiB 上限；公开正文（含带原生状态的助手正文）可搜，`provider_state` 不参与匹配、排序、摘录或序列化 |
+| M4 记忆召回 | `memories.recall_query`、`search`、`recall_with_details` | 组合查询 ≤500 字符并按目标/步骤/路径/追加要求分配额度；自动注入先过滤非活跃与敏感再截取；人工偏好保底最多 2 条且排在相关命中之后；解释只说明匹配信号 |
+| M5 维护体验 | `MemorySettingsPanel.vue`、`api/memories.ts`、`e2e/memory-maintenance.spec.ts` | 同主题对照、同 scope 的疑似重复分组提示、状态筛选与来源/更新时间展示；全部为派生展示，不新增表、后台任务或一键合并 |
+
+兼容与失败处理：
+
+- 新字段全部可选；旧检查点缺少 `handoff`/`compaction_metrics` 时按“未知/待核对”展示，原始条目、摘要与工具配对不变。
+- 压缩仍保留全部用户原文与最近两个完整调用组，提交前校验代次、模型配置、项目根、规则、权限与历史末序号；失败保留上一完整检查点。
+- `search_context_history` 与 `read_context_content` 一样在存在 `access_scopes` 时拒绝执行（执行层检查，非前端隐藏）；命中结果不改变 `item_id`、摘要或 payload。
+- 分项计量只读：相同请求的预算决策与模型 payload 不变，新增内容仅进入运行记录、预算接口与界面。
+
+验证入口：
+
+```powershell
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context-alignment
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite context-baseline
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite tool-selection
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite mcp-memory-boundaries
+.venv\Scripts\python.exe -B scripts/run_coding_validation.py --suite memory
+```
+
+实施结果、对照指标与未验证项见[上下文管理改进实施记录](solutions/2026-10-20-context-management.md)。
 
 ## 已退役服务端的历史设计
 

@@ -20,7 +20,8 @@ from .task_constraints import tool_allowed
 
 DEFERRED_TOOLS = frozenset({"request_execution", "list_executions", "run_powershell_command",
                             "list_documentation_sources", "call_documentation_tool", "list_mcp_tools", "call_mcp_tool", "read_web_page", "verify_local_preview", "list_skills", "load_skill", "read_skill_reference",
-                            "search_memories", "read_memory", "remember_memory", "update_memory", "forget_memory"})
+                            "search_memories", "read_memory", "remember_memory", "update_memory", "forget_memory",
+                            "search_context_history"})
 SKILL_TOOLS = frozenset({"list_skills", "load_skill", "read_skill_reference"})
 MCP_TOOLS = frozenset({"list_mcp_tools", "call_mcp_tool"})
 DOCUMENTATION_TOOLS = frozenset({"list_documentation_sources", "call_documentation_tool"})
@@ -58,7 +59,8 @@ class CatalogState(BaseModel):
 SEARCH_SPEC = ToolSpec(
     "tool_search", SearchArgs,
     "Find and load optional tools by name or concise English/Chinese keywords: advanced command options, "
-    "execution sessions, PowerShell, web pages, browser previews, memories (remember/update/forget), or configured MCP tools. Search is local and grants no "
+    "execution sessions, PowerShell, web pages, browser previews, memories (remember/update/forget), "
+    "earlier session history, or configured MCP tools. Search is local and grants no "
     "permissions. Matching tools become callable in the NEXT model response; do not call them in this batch. "
     "Documentation matches include source versions and argument schemas; use call_documentation_tool "
     "after loading. No match means no available matching tool.",
@@ -85,6 +87,7 @@ KEYWORDS = {
     "run_powershell_command": "powershell windows cmdlet 命令行 注册命令",
     "list_documentation_sources": "documentation docs mcp sources catalog 文档 技术资料 文档源 工具目录",
     "call_documentation_tool": "documentation docs mcp search fetch query 文档 技术资料 检索 查询",
+    "search_context_history": "context history archive earlier evidence 上下文 历史 归档 早期 证据 搜索 查找 回溯",
 }
 
 

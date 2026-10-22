@@ -157,6 +157,8 @@ async def test_first_local_request_satisfies_strict_provider_schema(tmp_path, pe
     expected -= {"get_git_status", "get_git_diff"}
     # 本会话没有已提交附件；记忆工具只在新协议下按需发现后进入请求。
     expected -= {"read_task_attachment", "search_memories", "read_memory", "remember_memory", "update_memory", "forget_memory"}
+    # 归档搜索同样只按需加载，首次请求不得携带其 schema。
+    expected.discard("search_context_history")
     if recovery_version is None:
         expected.discard("update_run_plan")
     assert {tool["function"]["name"] for tool in tools} == expected

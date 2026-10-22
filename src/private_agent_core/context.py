@@ -33,6 +33,27 @@ class ContextLimits(BaseModel):
     semantic_compaction: bool = True
 
 
+# 分项计量只保留分类、字节与估算，不复制提示词、工具正文或供应商不透明状态。
+BREAKDOWN_LABELS = {
+    "system_prompt": "系统提示",
+    "project_rules": "项目规则",
+    "task_state": "任务状态",
+    "user_messages": "用户消息",
+    "assistant_messages": "助手消息",
+    "tool_results": "工具结果",
+    "history_summary": "历史摘要",
+    "tool_definitions": "工具定义",
+    "long_term_memory": "长期记忆",
+    "images": "图片",
+    "provider_state": "不透明供应商状态",
+    "protocol": "协议与结构",
+}
+# 固定顺序；预算响应和界面按同一顺序展示，便于对照同一请求。
+BREAKDOWN_ORDER = ("system_prompt", "project_rules", "task_state", "tool_definitions", "user_messages",
+                   "assistant_messages", "tool_results", "history_summary", "long_term_memory",
+                   "images", "provider_state", "protocol")
+
+
 def configuration_version(profile: dict) -> str:
     data = {key: profile.get(key) for key in ("id", "provider", "model_name", "context_tokens")}
     data.update({key: profile[key] for key in ("api_format", "endpoint") if key in profile})
@@ -73,3 +94,72 @@ def request_budget(request: ModelRequest, capacity: int | None, reserve: int, *,
             "auto_compact_threshold_tokens": threshold,
             "should_compact": estimated >= threshold or exceeded,
             "exceeded": exceeded}
+
+
+def request_breakdown(request: ModelRequest, labels, *, calibration: float = 1.0,
+                      provider_usage_tokens: int | None = None) -> dict:
+    """按组装位置分摊同一次请求的估算，不改变预算决策，也不保存任何正文。
+
+    labels 与 request.messages 一一对应；图片与不透明供应商状态单独计量。
+    各项字节之和等于请求字节，剩余结构开销归入“协议与结构”，因此分项可以解释总量。
+    """
+    if len(labels) != len(request.messages):
+        raise ValueError("分项标签数量与请求消息不一致")
+    ratio = max(1.0, calibration)
+    totals: dict[str, dict] = {}
+
+    def add(category: str, *, text_bytes: int = 0, display_bytes: int | None = None,
+            image_count: int = 0, messages: int = 0):
+        # bytes 用于展示（各项之和等于请求字节）；text_bytes 只用于文本 token 估算。
+        entry = totals.setdefault(category, {"bytes": 0, "text_bytes": 0, "images": 0, "messages": 0})
+        entry["bytes"] += max(0, text_bytes if display_bytes is None else display_bytes)
+        entry["text_bytes"] += max(0, text_bytes)
+        entry["images"] += image_count
+        entry["messages"] += messages
+
+    for message, category in zip(request.messages, labels, strict=True):
+        payload = message.model_dump(mode="json")
+        size = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        image_bytes = sum(len(image.data) for image in message.images)
+        state_bytes = 0
+        if message.provider_state is not None:
+            state_bytes = len(json.dumps(message.provider_state.model_dump(mode="json"), ensure_ascii=False,
+                                         separators=(",", ":")).encode("utf-8"))
+        add(category, text_bytes=size - image_bytes - state_bytes, messages=1)
+        if image_bytes:
+            # 图片单独计量：Base64 长度不计入文本估算，按每张 8192 tokens 保守预留。
+            add("images", text_bytes=0, display_bytes=image_bytes, image_count=len(message.images))
+        if state_bytes:
+            add("provider_state", text_bytes=state_bytes)
+    tools = [tool.model_dump(mode="json") for tool in request.tools]
+    if tools:
+        add("tool_definitions", text_bytes=len(json.dumps(tools, ensure_ascii=False, separators=(",", ":")).encode("utf-8")))
+    total_bytes = len(request.model_dump_json().encode("utf-8"))
+    accounted = sum(entry["bytes"] for entry in totals.values())
+    add("protocol", text_bytes=max(0, total_bytes - accounted))
+
+    images_total = totals.get("images", {}).get("images", 0)
+    text_total = total_bytes - totals.get("images", {}).get("bytes", 0)
+    # 与 request_budget 相同的保守口径，便于和总量估算直接核对。
+    estimate = math.ceil((text_total * 1.25 + 8192 * images_total) * ratio)
+    items, running = [], 0
+    for category in BREAKDOWN_ORDER:
+        entry = totals.get(category)
+        if not entry:
+            continue
+        # 逐项取整会与总量有差异，差额并入最大项，避免伪造或丢失预算。
+        tokens = round((entry["text_bytes"] * 1.25 + 8192 * entry["images"]) * ratio)
+        running += tokens
+        items.append({"category": category, "label": BREAKDOWN_LABELS[category],
+                      "bytes": entry["bytes"], "estimated_tokens": tokens,
+                      "measurement": "utf8_share_estimate", "messages": entry["messages"]})
+    if items:
+        # 取整差额记到最大项，保证分项之和等于总量且不产生负数。
+        target = max(items, key=lambda item: item["estimated_tokens"])
+        target["estimated_tokens"] += estimate - running
+    return {"schema": "context-breakdown/1", "basis": "utf8_share_estimate",
+            "measurement_source": "utf8_conservative", "estimate_ratio": ratio,
+            "total_bytes": total_bytes, "estimate_tokens": estimate,
+            "provider_usage_tokens": provider_usage_tokens,
+            "items": items,
+            "notice": "分项按同一请求的 UTF-8 字节分摊估算；供应商只返回总输入用量时以该实测总值为准。"}

@@ -248,7 +248,7 @@ async def test_compaction_cancel_and_hard_limit_preserve_history(tmp_path, monke
         store.context.import_legacy(body["session_id"])
         seed(store, body["session_id"])
         before = store.context.items(body["session_id"])
-        def cancel(*args):
+        def cancel(*args, **kwargs):
             raise asyncio.CancelledError
         monkeypatch.setattr(store.context, "compact", cancel)
         run = (await client.post("/agent-runs", json=body)).json()
@@ -339,3 +339,58 @@ def test_active_and_cost_budgets_are_independent_of_approval_wait():
     context.cost = 1.0
     with pytest.raises(Exception, match="max_cost_usd"):
         context.check_limits()
+
+
+@pytest.mark.asyncio
+async def test_compaction_records_before_after_estimates_and_breakdown(tmp_path):
+    """M1：检查点记录压缩前后估算与条目数，分项只作为元数据，不进入模型 payload。"""
+    app, client, server, root, body = await setup(tmp_path)
+    owner = app.state.desktop.runtime
+    try:
+        seed(owner.store, body["session_id"])
+        server.responses = [response(text="检查完成")]
+        run = (await client.post("/agent-runs", json=body)).json()
+        final = await until(client, run["id"], TERMINAL)
+        assert final["status"] == "completed", final.get("error_message")
+        state = owner.store.run_state(run["id"])
+        metrics = owner.store.context.checkpoint(body["session_id"])["compaction_metrics"]
+        assert metrics["measured"] is True and metrics["version"] == "1.0"
+        assert metrics["archived_items"] > 0 and metrics["retained_messages"] > 0
+        assert metrics["estimated_before_tokens"] > metrics["estimated_after_tokens"] > 0
+        breakdown = state["context_budget"]["breakdown"]
+        assert breakdown["estimate_tokens"] == sum(item["estimated_tokens"] for item in breakdown["items"])
+        assert sum(item["bytes"] for item in breakdown["items"]) == breakdown["total_bytes"]
+        assert {item["category"] for item in breakdown["items"]} >= {
+            "system_prompt", "task_state", "tool_definitions", "user_messages", "tool_results", "protocol"}
+        assert breakdown["estimate_tokens"] == state["context_budget"]["estimated_input_tokens"]
+        # 分项只进入运行记录与预算接口，不进入供应商请求或公开事件。
+        requests = [json.loads(data)["request"] for path, data in server.calls if path == "/desktop/model/complete"]
+        assert "breakdown" not in json.dumps(requests, ensure_ascii=False)
+        assert not [event for event in owner.store.run(run["id"])["events"] if "breakdown" in event["payload"]]
+        ui = (await client.get(f"/sessions/{body['session_id']}/context")).json()
+        assert ui["checkpoint"]["compaction_metrics"]["estimated_before_tokens"] == metrics["estimated_before_tokens"]
+        budget = (await client.get(f"/sessions/{body['session_id']}/context-budget?model_profile_id=test-profile")).json()
+        assert budget["breakdown"]["items"]
+        assert budget["breakdown"]["estimate_tokens"] == breakdown["estimate_tokens"]
+    finally:
+        await close(app, client)
+
+
+@pytest.mark.asyncio
+async def test_manual_compaction_keeps_structural_metrics_without_estimates(tmp_path):
+    """手动空闲压缩没有请求边界，只记录条目数并明确标记估算未记录。"""
+    app, client, server, root, body = await setup(tmp_path)
+    owner = app.state.desktop.runtime
+    try:
+        server.responses = [response(text="完成")]
+        created = (await client.post("/agent-runs", json=body)).json()
+        await until(client, created["id"], TERMINAL)
+        seed(owner.store, body["session_id"])
+        result = await client.post(f"/sessions/{body['session_id']}/context/compact", json={"client_request_id": "manual"})
+        assert result.json()["state"] == "completed"
+        metrics = owner.store.context.checkpoint(body["session_id"])["compaction_metrics"]
+        assert metrics["measured"] is False
+        assert metrics["archived_items"] > 0 and metrics["retained_messages"] > 0
+        assert metrics["estimated_before_tokens"] is None or metrics.get("estimated_before_tokens") is None
+    finally:
+        await close(app, client)
