@@ -80,6 +80,9 @@ apps/spawn-test/target/
 # Canvas 报告会话状态（仅 .canvas.tsx 本体入库）
 *.canvas.status.json
 
+# 本机 Windows 文件权限修复报告（含备份与回滚命令，仅本机保留）
+/.acl-recovery/
+
 # 本机设计验收过程产物；正式文档素材和 e2e 快照仍然入库
 /design-qa.md
 /design-qa-*.png
