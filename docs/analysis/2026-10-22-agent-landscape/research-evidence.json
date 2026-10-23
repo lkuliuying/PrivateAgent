@@ -1,0 +1,270 @@
+{
+  "as_of": "2026-10-22",
+  "timezone": "Asia/Shanghai",
+  "topics": [
+    {
+      "topic": "ai-agents",
+      "count": 123636,
+      "url": "https://github.com/topics/ai-agents",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    },
+    {
+      "topic": "ai-agent",
+      "count": 41286,
+      "url": "https://github.com/topics/ai-agent",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    },
+    {
+      "topic": "agentic-ai",
+      "count": 28782,
+      "url": "https://github.com/topics/agentic-ai",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    },
+    {
+      "topic": "multi-agent",
+      "count": 20568,
+      "url": "https://github.com/topics/multi-agent",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    },
+    {
+      "topic": "autonomous-agents",
+      "count": 6255,
+      "url": "https://github.com/topics/autonomous-agents",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    },
+    {
+      "topic": "llm-agent",
+      "count": 3279,
+      "url": "https://github.com/topics/llm-agent",
+      "observed_date": "2026-10-22",
+      "population": "主题页显示的全部公开仓库；未过滤 fork、归档、模板或教程"
+    }
+  ],
+  "sources": [
+    {
+      "id": "CNNIC2026",
+      "title": "CNNIC：2026中国互联网基础资源大会与生成式AI报告发布说明",
+      "url": "https://www.cnnic.org.cn/n4/2026/1010/c326-11714.html",
+      "published": "2026-10-10",
+      "period": "2026年上半年",
+      "type": "官方发布",
+      "population": "中国生成式AI用户；不是Agent用户",
+      "finding": "用户规模突破7亿人，普及率超过50%。",
+      "access": "官方新闻页已阅读全文；2026报告单独介绍页超时，未核验报告全文及抽样细节。"
+    },
+    {
+      "id": "PEW2026",
+      "title": "Americans and AI 2026: Chatbots, Smart Devices and Views on Impact",
+      "url": "https://www.pewresearch.org/internet/2026/06/17/americans-and-ai-2026-chatbots-smart-devices-and-views-on-impact/",
+      "published": "2026-06-17",
+      "period": "2026-02-17至2026-02-23",
+      "type": "调查机构原始报告",
+      "population": "5119名美国成年人；工作问题仅限在职成年人",
+      "finding": "49%使用过聊天机器人，24%每天使用；用途为多选，不能相加。",
+      "access": "原始调查网页与方法说明可核验。"
+    },
+    {
+      "id": "NBER34255",
+      "title": "How People Use ChatGPT, NBER Working Paper 34255",
+      "url": "https://www.nber.org/papers/w34255",
+      "published": "2025-09",
+      "period": "研究覆盖至2025-07",
+      "type": "研究工作论文",
+      "population": "ChatGPT消费版使用记录；非全部AI或Agent",
+      "finding": "非工作使用超过70%；实际指导、信息搜寻、写作合计近80%。",
+      "access": "NBER检索返回完整摘要及披露；直接打开落地页403；论文PDF检索可访问，未以受阻网页充当全文已读。"
+    },
+    {
+      "id": "MCK2026",
+      "title": "The state of AI in 2026: On the road to ROI",
+      "url": "https://www.mckinsey.com/capabilities/quantumblack/our-insights/the-state-of-ai",
+      "published": "2026-08-25",
+      "period": "2026-05-04至2026-06-08",
+      "type": "机构企业自报调查",
+      "population": "97个国家1719名受访者；按国家GDP加权；不是全球企业随机普查",
+      "finding": "大企业Agent扩展部署40%、较小企业22%；约20%受AI运营成本限制。",
+      "access": "官方网页及研究方法已阅读。"
+    },
+    {
+      "id": "DOCKER2026",
+      "title": "State of Agentic AI Report: Key Findings",
+      "url": "https://www.docker.com/blog/state-of-agentic-ai-key-findings/",
+      "published": "2026-02-20",
+      "period": "2026报告；摘要未给出具体调查日期",
+      "type": "厂商委托或发布的专业样本调查",
+      "population": "800多名开发者、平台工程师和技术决策者",
+      "finding": "60%报告组织有Agent进入生产环境；不能外推所有企业。",
+      "access": "官方摘要已核验；未获取完整抽样框或独立生产审计。"
+    },
+    {
+      "id": "YOUGOV2026",
+      "title": "American trust in AI for retail: Consumer sentiment in 2025",
+      "url": "https://yougov.com/en-us/articles/53808-american-trust-in-ai-for-retail-consumer-sentiment-in-2025",
+      "published": "2026-01-02",
+      "period": "2025-12-04",
+      "type": "加权消费者在线调查",
+      "population": "1287名美国成年人；YouGov Self-serve；总体误差约±3个百分点",
+      "finding": "65%信任/愿意AI比价，14%愿意其代为下单；是态度而不是实际购买转化。",
+      "access": "原始文章及方法已阅读；未使用同页26%信任与32/33%不信任的不一致摘要。"
+    },
+    {
+      "id": "NBER33795",
+      "title": "Shifting Work Patterns with Generative AI",
+      "url": "https://www.nber.org/papers/w33795",
+      "published": "2025-05；2025-11修订",
+      "period": "6个月跨企业实验",
+      "type": "随机现场实验工作论文",
+      "population": "66家企业、7137名知识工作者；集成式生成AI助手",
+      "finding": "修订摘要称，实验后半段实际使用工具的受试人员每周邮件用时约少2小时；不代表完整Agent自动化。",
+      "access": "NBER修订摘要已核验；未使用早期版本3.6小时的结果替代最新摘要。"
+    },
+    {
+      "id": "MEALIE",
+      "title": "Mealie官方文档",
+      "url": "https://mealie.io/",
+      "published": null,
+      "period": "访问于2026-10-22",
+      "type": "官方产品文档",
+      "population": "产品功能，不是需求规模统计",
+      "finding": "自托管食谱管理及膳食规划。",
+      "access": "已打开"
+    },
+    {
+      "id": "GROCY",
+      "title": "Grocy官方说明",
+      "url": "https://grocy.info/",
+      "published": null,
+      "period": "访问于2026-10-22",
+      "type": "官方产品文档",
+      "population": "产品功能，不是需求规模统计",
+      "finding": "家庭杂货、库存及家务管理。",
+      "access": "已打开"
+    },
+    {
+      "id": "ACTUAL",
+      "title": "Actual Budget官方说明",
+      "url": "https://actualbudget.org/",
+      "published": null,
+      "period": "访问于2026-10-22",
+      "type": "官方产品文档",
+      "population": "产品功能，不是需求规模统计",
+      "finding": "本地优先预算、交易分类及财务管理。",
+      "access": "已打开"
+    },
+    {
+      "id": "IMMICH",
+      "title": "Immich Searching官方文档",
+      "url": "https://docs.immich.app/features/searching/",
+      "published": null,
+      "period": "访问于2026-10-22",
+      "type": "官方产品文档",
+      "population": "产品功能，不是需求规模统计",
+      "finding": "相册内容、元数据及OCR搜索。",
+      "access": "已打开"
+    }
+  ],
+  "repository_method": {
+    "sample_size": 54,
+    "categories": 13,
+    "selection": "目的性覆盖抽样；综合主题页、公开检索及典型工具链选取，不是穷尽或排名",
+    "dedup_key": "GitHub repository id",
+    "metadata_tool": "mcp__codex_apps__github_fetch",
+    "metadata_url": "https://api.github.com/repos/{owner}/{repo}",
+    "redirect_resolution": "GitHub get_repo(repository_id)核对后重新fetch规范仓库名",
+    "readme_verified": [
+      {
+        "name": "microsoft/autogen",
+        "url": "https://raw.githubusercontent.com/microsoft/autogen/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "microsoft/agent-framework",
+        "url": "https://raw.githubusercontent.com/microsoft/agent-framework/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "openclaw/openclaw",
+        "url": "https://raw.githubusercontent.com/openclaw/openclaw/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "NousResearch/hermes-agent",
+        "url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "agentscope-ai/QwenPaw",
+        "url": "https://raw.githubusercontent.com/agentscope-ai/QwenPaw/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "paperclipai/paperclip",
+        "url": "https://raw.githubusercontent.com/paperclipai/paperclip/master/README.md",
+        "ok": true
+      },
+      {
+        "name": "bytedance/deer-flow",
+        "url": "https://raw.githubusercontent.com/bytedance/deer-flow/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "n8n-io/n8n",
+        "url": "https://raw.githubusercontent.com/n8n-io/n8n/master/README.md",
+        "ok": true
+      },
+      {
+        "name": "langgenius/dify",
+        "url": "https://raw.githubusercontent.com/langgenius/dify/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "virattt/ai-hedge-fund",
+        "url": "https://raw.githubusercontent.com/virattt/ai-hedge-fund/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "snap-stanford/Biomni",
+        "url": "https://raw.githubusercontent.com/snap-stanford/Biomni/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "langchain-ai/langsmith-sdk",
+        "url": "https://raw.githubusercontent.com/langchain-ai/langsmith-sdk/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "FlowiseAI/Flowise",
+        "url": "https://raw.githubusercontent.com/FlowiseAI/Flowise/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "RooCodeInc/Roo-Code",
+        "url": "https://raw.githubusercontent.com/RooCodeInc/Roo-Code/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "daytonaio/daytona",
+        "url": "https://raw.githubusercontent.com/daytonaio/daytona/main/README.md",
+        "ok": true
+      },
+      {
+        "name": "vanna-ai/vanna",
+        "url": "https://raw.githubusercontent.com/vanna-ai/vanna/main/README.md",
+        "ok": true
+      }
+    ],
+    "license_rule": "API标识不代表完整商业许可；报告仅核验n8n/Dify README许可说明",
+    "negative_results": [
+      "GitHub搜索连接器未返回total_count；不能提供全站去重Agent数。",
+      "公共GitHub Search API网页抓取不可用；未声称完成全量翻页。",
+      "CNNIC 2026报告单独介绍页超时，改用官方同期发布新闻。",
+      "NBER34255落地页直接打开403，使用其可检索原始摘要。",
+      "Paperless-ngx官方文档403，因此不把未读取页面纳入确认产品对照。"
+    ]
+  }
+}
