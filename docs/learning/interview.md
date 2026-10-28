@@ -306,7 +306,7 @@
 
 **场景：**后端导出含 `0.0` 的备份，前端解析为对象再 stringify，数值变成 `0`。文件仍是合法 JSON，但导入摘要不匹配。
 
-**定位链：**[备份导出与加载](../../src/private_agent_local/backups.py)→[历史编码](../../src/private_agent_core/history.py)→[前端原始下载](../../apps/desktop/src/api/backups.ts)→L14 的原始字节与模型恢复用例。
+**定位链：**[备份导出与加载](../../src/private_agent/storage/backups.py)→[历史编码](../../src/private_agent/storage/history.py)→[前端原始下载](../../apps/desktop/src/api/backups.ts)→L14 的原始字节与模型恢复用例。
 
 **复现记录：**
 

@@ -24,7 +24,7 @@
 
 ## 本机 S2 已实现约定
 
-- `private_agent_core/context.py` 提供预算算法与 `ContextLimits`；本机 `instructions.py` 发现规则，`context_history.py` 保存原始上下文与派生检查点，`context_manager.py` 在安全模型请求边界组装。共享 `AgentRuntime.context_sink` 为可选接口。
+- `private_agent/context/budget.py` 提供预算算法与 `ContextLimits`；本机 `instructions.py` 发现规则，`context_history.py` 保存原始上下文与派生检查点，`context_manager.py` 在安全模型请求边界组装。共享 `AgentRuntime.context_sink` 为可选接口。
 - SQLite schema 4 增加 `context_items` 与 `context_checkpoints`。沿用 S0 `ContextItem`，内容摘要只保存在 `content_ref`；工具结果加性关联实际 execution、operation 和事件序号。原始条目不可覆盖，检查点是派生视图；旧消息首次导入标记 legacy，缺失工具正文明确标记，不恢复历史授权。
 - 项目规则只沿授权项目根至目标目录发现；同一目录依次选择首个非空的 `AGENTS.override.md`、`AGENTS.md`，嵌套仅覆盖相应子树。规则源信任单独确认，不增加工具权限；不读取项目外的个人全局规则。单文件 32 KiB、总量 64 KiB、16 份；每次有界读取计算摘要，链接/编码/读取/超限错误明确报告，无效 override 不静默回退。活动任务选中规则或信任变化后，本轮写入保守阻断。
 - 完整请求按 UTF-8 字节数加 25% 余量估算，另预留输出默认 2048 和 `max(512, 窗口×5%)` 安全量。估算、上次供应商实测和缓存计费分别展示。容量未知时仍显示未知，仅允许内部按 8192 保守上限尝试小请求。每次重新读取模型配置，配置版本变化清除旧 usage 校准。
@@ -42,7 +42,7 @@
 | 阶段 | 实现位置 | 行为与边界 |
 | --- | --- | --- |
 | M0 基线 | `tests/unit/test_context_baseline.py`、`scripts/run_coding_validation.py --suite context-baseline` | 26k 窗口、32 次读取、一次失败后修正、真实写入与追加目标；只记录元数据到隔离目录 `baseline.json`，不含正文 |
-| M1 分项计量 | `private_agent_core/context.py` 的 `request_breakdown`、`context_manager.prepare`、`context_budget` API、`LocalContextPanel.vue` | 分类、字节与估算；旧记录无 `breakdown` 时界面显示“暂无明细”，不显示成 0；分项不进入模型请求与公开事件 |
+| M1 分项计量 | `private_agent/context/budget.py` 的 `request_breakdown`、`context_manager.prepare`、`context_budget` API、`LocalContextPanel.vue` | 分类、字节与估算；旧记录无 `breakdown` 时界面显示“暂无明细”，不显示成 0；分项不进入模型请求与公开事件 |
 | M2 证据与交接 | `context_handoff.py`、`context_history.compact`、`context_summary.summary_request` | 稳定优先级与可证明去重（同一工具+同一读取范围+同一结果才合并，失败与写入永不合并）、六类交接、按步骤词/结果位置截取摘录（带 `range` 与截断标记）、区分已解决失败与待核对失败；模型摘要只能补充有来源的解释；请求索引保持有界 |
 | M3 归档搜索 | `ContextHistory.search`、`search_context_history` ToolSpec、`runtime` 执行层 | 只读、当前会话、中文/英文/路径匹配、确定性排序、角色与工具过滤、8 KiB 上限；公开正文（含带原生状态的助手正文）可搜，`provider_state` 不参与匹配、排序、摘录或序列化 |
 | M4 记忆召回 | `memories.recall_query`、`search`、`recall_with_details` | 组合查询 ≤500 字符并按目标/步骤/路径/追加要求分配额度；自动注入先过滤非活跃与敏感再截取；人工偏好保底最多 2 条且排在相关命中之后；解释只说明匹配信号 |

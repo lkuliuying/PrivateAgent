@@ -119,7 +119,7 @@ Ollama 的实际上下文为模型容量与本机 `llm_context_length` 的较小
 
 ## 旧后端与构建边界
 
-`src/personal_assistant`、旧服务器模型代理、Alembic 迁移源码、容器/服务器部署入口及旧 UI 已删除。现行 Python 包只有 `private_agent_core` 和 `private_agent_local`，不再安装 SQLAlchemy/MySQL/Chroma/LangChain 依赖。这里只删除源码和专属测试、配置、脚本，没有删除实际数据库或用户历史，也未操作服务器。
+`src/personal_assistant`、旧服务器模型代理、Alembic 迁移源码、容器/服务器部署入口及旧 UI 已删除。现行 Python 包统一为 `private_agent`，不再安装 SQLAlchemy/MySQL/Chroma/LangChain 依赖。这里只删除源码和专属测试、配置、脚本，没有删除实际数据库或用户历史，也未操作服务器。
 
 当前入口为 `scripts/build-client.cmd`；`build-release.bat` 转发到该本机入口。底层 `scripts/build-remote-client.cjs` 保留桌面标识兼容，但所有产物都使用本机执行器。参数不接受平台 API 源站，不注入平台令牌，元数据记录 `accessMode: api-key`。默认及预览不启用 updater，正式统一客户端要求显式独立更新地址。前端和执行器须来自同一源码构建，旧已安装副本不会自动获得修改。
 

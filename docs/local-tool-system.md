@@ -1,6 +1,6 @@
 # 本机 Agent 工具系统
 
-更新日期：2026-10-02。适用于 `private_agent_local` 桌面执行链。本文记录源码能力与本机验证，不代表安装包、生产部署或真实模型验收。
+更新日期：2026-10-28。适用于 `private_agent` 桌面执行链。本文记录源码能力与本机验证，不代表安装包、生产部署或真实模型验收。
 
 ## 工具边界
 
@@ -10,21 +10,21 @@
 
 | 组件 | 职责 |
 | --- | --- |
-| `private_agent_core/tool_specs.py` | 统一 `ToolSpec`、注册表、模型输入结构、输出结构和稳定错误 |
-| `private_agent_local/tool_registry.py` | 汇集本机工具，声明版本、副作用、能力、审批、幂等、取消与并行属性 |
-| `private_agent_local/tool_catalog.py` | 在当前权限及配置内搜索工具，保存有界加载状态，生成下一轮模型工具定义 |
-| `private_agent_local/runtime.py` | 根据权限、协议及项目状态暴露工具，执行校验并记录现有工具事件 |
-| `private_agent_core/planning.py`、`private_agent_local/planning.py`、`progress.py` | 计划契约、来源核对、持久进度与重复观察保护 |
-| `private_agent_local/planning_interaction.py` | 规划澄清、用户回答的版本校验、计划向执行任务的交接 |
-| `private_agent_local/git_tools.py` | 固定参数的 Git 状态和单文件 diff 查询 |
-| `private_agent_local/execution_tools.py` | 普通命令、高级执行申请、能力查询及执行会话控制 |
-| `private_agent_local/policy.py`、`windows_sandbox.py` | 分别决定交互审批与系统隔离，保护已有敏感对象并回收临时 ACL |
-| `private_agent_local/secret_filter.py` | 公开输出、模型请求与文档外发参数的秘密检测和跨分片过滤 |
-| `private_agent_core/runtime.py`、`private_agent_local/core_adapter.py`、`run_controls.py` | 有界并行、按调用顺序记录结果、暂停/追加约束/取消处理 |
-| `private_agent_local/documentation_mcp.py`、`documentation_transport.py`、`documentation_routes.py` | 项目文档源配置、受控 MCP 通信和逐次审批 |
-| `private_agent_local/mcp_library.py`、`integration_mcp.py` | 个人服务库、项目绑定、目录兼容、认证生命周期及写调用阶段 |
-| `private_agent_local/mcp_credentials.py`、桌面 Rust `mcp_credentials.rs`、`local_executor.rs` | 按身份／服务／配置版本／固定槽访问系统凭据；私有 IPC 取值不进入 WebView |
-| `private_agent_local/memory_tools.py`、`memories.py`、`memory_store.py` | 记忆工具授权、共用管理服务、来源召回、候选修订与幂等回执 |
+| `private_agent/tools/tool_specs.py` | 统一 `ToolSpec`、注册表、模型输入结构、输出结构和稳定错误 |
+| `private_agent/tools/tool_registry.py` | 汇集本机工具，声明版本、副作用、能力、审批、幂等、取消与并行属性 |
+| `private_agent/tools/tool_catalog.py` | 在当前权限及配置内搜索工具，保存有界加载状态，生成下一轮模型工具定义 |
+| `private_agent/agent/runtime.py` | 根据权限、协议及项目状态暴露工具，执行校验并记录现有工具事件 |
+| `private_agent/contracts/planning.py`、`private_agent/agent/planning.py`、`progress.py` | 计划契约、来源核对、持久进度与重复观察保护 |
+| `private_agent/agent/planning_interaction.py` | 规划澄清、用户回答的版本校验、计划向执行任务的交接 |
+| `private_agent/tools/git_tools.py` | 固定参数的 Git 状态和单文件 diff 查询 |
+| `private_agent/execution/execution_tools.py` | 普通命令、高级执行申请、能力查询及执行会话控制 |
+| `private_agent/security/policy.py`、`windows_sandbox.py` | 分别决定交互审批与系统隔离，保护已有敏感对象并回收临时 ACL |
+| `private_agent/security/secret_filter.py` | 公开输出、模型请求与文档外发参数的秘密检测和跨分片过滤 |
+| `private_agent/agent/loop.py`、`private_agent/agent/adapter.py`、`run_controls.py` | 有界并行、按调用顺序记录结果、暂停/追加约束/取消处理 |
+| `private_agent/integrations/documentation_mcp.py`、`documentation_transport.py`、`documentation_routes.py` | 项目文档源配置、受控 MCP 通信和逐次审批 |
+| `private_agent/integrations/mcp_library.py`、`integration_mcp.py` | 个人服务库、项目绑定、目录兼容、认证生命周期及写调用阶段 |
+| `private_agent/integrations/mcp_credentials.py`、桌面 Rust `mcp_credentials.rs`、`local_executor.rs` | 按身份／服务／配置版本／固定槽访问系统凭据；私有 IPC 取值不进入 WebView |
+| `private_agent/memory/memory_tools.py`、`memories.py`、`memory_store.py` | 记忆工具授权、共用管理服务、来源召回、候选修订与幂等回执 |
 | `apps/desktop/src/components/DocumentationMcpPanel.vue` | 桌面设置中的文档源发现、工具选择、启用、停用与移除 |
 
 注册表是工具声明的单一来源。模型只获得名称、说明和输入 schema；权限元数据由程序解释，远端描述不能改变它。现有路径检查、文件版本、任务限制和审批仍在最终执行边界生效。输入错误返回 `invalid_tool_arguments`；结果在记为成功前检查 JSON、大小与声明结构。保留旧导入入口和旧省略参数的默认值。

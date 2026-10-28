@@ -29,10 +29,10 @@ flowchart LR
 | --- | --- | --- |
 | 交互 | [CodingThreadWorkspace](../../apps/desktop/src/features/coding/components/CodingThreadWorkspace.vue)、[useRunStream](../../apps/desktop/src/features/coding/composables/useRunStream.ts) | 提交、展示、重连和组件清理 |
 | 原生边界 | [local_executor](../../apps/desktop/src-tauri/src/local_executor.rs)、[credentials](../../apps/desktop/src-tauri/src/credentials.rs) | 子进程、私有传输、凭据和退出 |
-| 请求分发 | [entry](../../src/private_agent_local/entry.py)、[ipc](../../src/private_agent_local/ipc.py)、[create_app](../../src/private_agent_local/app.py) | 将 IPC 请求变成 ASGI 请求，校验边界并分发 |
-| 本机编排 | [Runtime](../../src/private_agent_local/runtime.py)、[LocalRunAdapter](../../src/private_agent_local/core_adapter.py) | 会话、上下文、工具、事件和最终持久化 |
-| Agent 循环 | [AgentRuntime](../../src/private_agent_core/runtime.py) | 调用模型、派发工具、回填结果、预算和取消 |
-| 平台执行 | [ExecutionSessions](../../src/private_agent_local/execution_sessions.py)、[exec-host](../../apps/exec-host/src/main.rs) | 持续进程、输出、stdin、沙箱和进程树清理 |
+| 请求分发 | [entry](../../src/private_agent/entry.py)、[ipc](../../src/private_agent/api/ipc.py)、[create_app](../../src/private_agent/api/app.py) | 将 IPC 请求变成 ASGI 请求，校验边界并分发 |
+| 本机编排 | [Runtime](../../src/private_agent/agent/runtime.py)、[LocalRunAdapter](../../src/private_agent/agent/adapter.py) | 会话、上下文、工具、事件和最终持久化 |
+| Agent 循环 | [AgentRuntime](../../src/private_agent/agent/loop.py) | 调用模型、派发工具、回填结果、预算和取消 |
+| 平台执行 | [ExecutionSessions](../../src/private_agent/execution/execution_sessions.py)、[exec-host](../../apps/exec-host/src/main.rs) | 持续进程、输出、stdin、沙箱和进程树清理 |
 
 ## 桌面如何启动
 
@@ -104,12 +104,12 @@ sequenceDiagram
 
 1. [任务页的 send](../../apps/desktop/src/features/coding/components/CodingThreadWorkspace.vue#L593)整理项目、工作区、会话、权限、模型和材料。已有任务页直接调用 `useRunStream.startRun`；工作台 store 提供选择状态和任务入口。
 2. [useRunStream.startRun](../../apps/desktop/src/features/coding/composables/useRunStream.ts#L270)维持请求标识。创建响应丢失时按请求标识核对已有运行，同时比较正文和附件。
-3. [create_run](../../src/private_agent_local/app.py#L787)核对模型恢复、作用域模型偏好、视觉附件及执行协议，再调用 `Runtime.create`。
-4. [Runtime.create](../../src/private_agent_local/runtime.py#L225)核对绑定、目录、重复请求、活动任务、权限和任务解释，提交用户消息及运行后再推进执行。
-5. [Runtime._execute](../../src/private_agent_local/runtime.py#L390)记录工作区基线，构造 `LocalRunAdapter` 和 `LocalCompletionVerifier`，接入共享运行时。
-6. [AgentRuntime._drive](../../src/private_agent_core/runtime.py#L775)调用模型。阶段说明可以继续循环；工具结果回填后继续；最终候选需要经过验证器。
-7. [LocalContext.prepare](../../src/private_agent_local/context_manager.py#L135)在每次模型请求前重新核对路由、权限、规则、上下文与预算。
-8. [LocalRunAdapter._execute](../../src/private_agent_local/core_adapter.py#L318)核对代次并交给 `Runtime.tool`。具体文件、命令和 MCP 各有自己的执行边界。
+3. [create_run](../../src/private_agent/api/app.py#L807)核对模型恢复、作用域模型偏好、视觉附件及执行协议，再调用 `Runtime.create`。
+4. [Runtime.create](../../src/private_agent/agent/runtime.py#L269)核对绑定、目录、重复请求、活动任务、权限和任务解释，提交用户消息及运行后再推进执行。
+5. [Runtime._execute](../../src/private_agent/agent/runtime.py#L451)记录工作区基线，构造 `LocalRunAdapter` 和 `LocalCompletionVerifier`，接入共享运行时。
+6. [AgentRuntime._drive](../../src/private_agent/agent/loop.py#L775)调用模型。阶段说明可以继续循环；工具结果回填后继续；最终候选需要经过验证器。
+7. [LocalContext.prepare](../../src/private_agent/context/context_manager.py#L140)在每次模型请求前重新核对路由、权限、规则、上下文与预算。
+8. [LocalRunAdapter._execute](../../src/private_agent/agent/adapter.py#L317)核对代次并交给 `Runtime.tool`。具体文件、命令和 MCP 各有自己的执行边界。
 9. 最终输出、验收结果和助手消息在本机事务中提交。持久化失败会重新读取已提交状态，避免保存内存中的虚假成功。
 
 ## 核心实体
@@ -150,7 +150,7 @@ erDiagram
 | context item | 给模型使用的原始消息与工具结果 | 来源、摘要、配对和原文引用 |
 | checkpoint | 压缩或恢复检查点 | 区分上下文压缩与任务恢复 |
 
-当前主库 `SCHEMA_VERSION = 10`。长期记忆使用同身份目录中的独立 `memories.sqlite3`，凭据由系统凭据库管理，附件正文另存并以 SHA-256 核对。相关实现见 [Store](../../src/private_agent_local/store.py)、[MemoryStore](../../src/private_agent_local/memory_store.py)和[附件模块](../../src/private_agent_local/attachments.py)。
+当前主库 `SCHEMA_VERSION = 10`。长期记忆使用同身份目录中的独立 `memories.sqlite3`，凭据由系统凭据库管理，附件正文另存并以 SHA-256 核对。相关实现见 [Store](../../src/private_agent/storage/store.py)、[MemoryStore](../../src/private_agent/memory/memory_store.py)和[附件模块](../../src/private_agent/workspace/attachments.py)。
 
 ## 三组必须区分的状态
 
@@ -162,7 +162,7 @@ erDiagram
 
 本机运行的 `created`、`queued`、`running`、`waiting_approval`、`waiting_input`、`paused`、`interrupted`、`completed`、`failed`、`cancelled`、`limit_exceeded` 描述执行生命周期。共享核心还区分 `timed_out`，本机交付会映射相应的预算终止状态。
 
-完成契约中的 `goal_outcome` 描述目标是否 `answered`、`verified`、`unmet`、`blocked` 或 `unknown`。结束的运行可以如实报告受阻或未确认，面试时要结合两层判断。定义见[完成契约](../../src/private_agent_core/completion.py)和[本机验证器](../../src/private_agent_local/completion.py)。
+完成契约中的 `goal_outcome` 描述目标是否 `answered`、`verified`、`unmet`、`blocked` 或 `unknown`。结束的运行可以如实报告受阻或未确认，面试时要结合两层判断。定义见[完成契约](../../src/private_agent/agent/completion_rules.py)和[本机验证器](../../src/private_agent/agent/completion.py)。
 
 ### 请求序号与版本
 
@@ -204,7 +204,7 @@ stateDiagram-v2
     waiting_approval --> cancelled: 取消
 ```
 
-`completed` 仍需结合目标结果判断。取消或中断后创建关联恢复运行时，原运行保留终态；这与暂停后沿用同一 run 的继续不同。审批、暂停与取消竞争的细节见[RunControls](../../src/private_agent_local/run_controls.py)和[恢复测试](../../tests/unit/test_local_recovery.py)。
+`completed` 仍需结合目标结果判断。取消或中断后创建关联恢复运行时，原运行保留终态；这与暂停后沿用同一 run 的继续不同。审批、暂停与取消竞争的细节见[RunControls](../../src/private_agent/agent/run_controls.py)和[恢复测试](../../tests/unit/test_local_recovery.py)。
 
 ## 上下文装配与压缩
 
@@ -226,7 +226,7 @@ flowchart TD
     Index --> Original["原始历史独立保留 可按引用续读"]
 ```
 
-这是预算决策示意。实际装配还检查模型路由、原生状态、规则来源和压缩是否过期；token 估算与供应商协议存在差异。原文保留不表示本次请求仍包含全部旧内容。源码见[LocalContext](../../src/private_agent_local/context_manager.py)、[ContextHistory](../../src/private_agent_local/context_history.py)与[上下文测试](../../tests/unit/test_local_compaction.py)。
+这是预算决策示意。实际装配还检查模型路由、原生状态、规则来源和压缩是否过期；token 估算与供应商协议存在差异。原文保留不表示本次请求仍包含全部旧内容。源码见[LocalContext](../../src/private_agent/context/context_manager.py)、[ContextHistory](../../src/private_agent/context/context_history.py)与[上下文测试](../../tests/unit/test_local_compaction.py)。
 
 ## Agent 循环伪代码
 

@@ -73,7 +73,7 @@ control/matrix 保留 fixture 身份和 service/OpenAI/Ollama 的历史计划标
 
 模型评测测试使用合成账号/密钥；正常产品交接由 Agent 查询一个系统凭据，测试子进程设置 `PA_EVALUATION_SYNTHETIC_ONLY=1` 阻止该访问。这个保护仅在 pytest 内传入，不修改全局环境，也不阻断将来已授权的交互式预检。已有 Python、Node/npm 和宿主是前提，测试不会安装依赖。
 
-从 `private_agent_core/coding_contracts.py` 修改类型，再运行 `scripts/protocol_codegen.py`。`--check` 校验旧协议与新 Coding 生成物，`test_contracts.py` 校验 Schema、实例及业务不变量。S1 已接通本机完成要求、运行结果和命令结果；其他类型不代表能力已启用。准确责任见 [契约决议](../../docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md)。
+从 `private_agent/contracts/coding_contracts.py` 修改类型，再运行 `scripts/protocol_codegen.py`。`--check` 校验旧协议与新 Coding 生成物，`test_contracts.py` 校验 Schema、实例及业务不变量。S1 已接通本机完成要求、运行结果和命令结果；其他类型不代表能力已启用。准确责任见 [契约决议](../../docs/analysis/coding-agent-upgrade-20260908/s0-contract-decisions.md)。
 
 ## S1 事实、前端与兼容回归
 

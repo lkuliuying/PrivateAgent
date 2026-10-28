@@ -4,7 +4,7 @@ PrivateAgent 是使用自备 API Key 的本机 AI 编程工作台。桌面界面
 
 项目文件留在用户选择的本机目录；项目元数据、会话、执行记录和记忆保存在本机 SQLite，供应商密钥由系统凭据库管理。模型请求从电脑直接发送给所选供应商，无需 PrivateAgent 平台账号。
 
-> 本文按当前本机桌面源码整理，仓库维护说明更新于 2026-09-28。自 2026-09-20 起，项目仅保留 API Key 本机桌面链；旧 `personal_assistant` 服务端、MySQL/Alembic、RAG/个人中枢业务及服务器部署入口已移除。源码能力、测试结果、安装包与正式发布状态需分别核对，详见[本机化说明](docs/solutions/2026-09-20-local-only-context.md)。
+> 本文按当前本机桌面源码整理，仓库维护说明更新于 2026-10-28。自 2026-09-20 起，项目仅保留 API Key 本机桌面链；旧 `personal_assistant` 服务端、MySQL/Alembic、RAG/个人中枢业务及服务器部署入口已移除。源码能力、测试结果、安装包与正式发布状态需分别核对，详见[本机化说明](docs/solutions/2026-09-20-local-only-context.md)。
 
 [快速开始](#快速开始) · [开发环境](#开发环境) · [仓库维护与凭据安全](#仓库维护与凭据安全) · [测试与验证](#测试与验证) · [构建与更新](#构建与更新) · [文档导航](#文档导航)
 
@@ -43,14 +43,15 @@ PrivateAgent 是使用自备 API Key 的本机 AI 编程工作台。桌面界面
 ```mermaid
 flowchart LR
     UI[Vue 桌面工作区] --> Shell[Tauri 壳]
-    Shell -->|私有 stdio IPC| Local[private_agent_local]
-    Local --> Core[private_agent_core]
-    Core --> Provider[用户配置的模型供应商]
-    Local --> DB[(本机 SQLite)]
-    Local --> Host[exec-host]
-    Local -->|文件工具| Project[授权项目目录]
+    Shell -->|私有 stdio IPC| API[private_agent.api]
+    API --> Agent[private_agent.agent]
+    Agent --> Models[private_agent.models]
+    Models --> Provider[用户配置的模型供应商]
+    Agent --> DB[(本机 SQLite)]
+    Agent --> Host[exec-host]
+    Agent -->|文件工具| Project[授权项目目录]
     Host -->|命令执行| Project
-    Local --> MCP[用户配置的 MCP 工具]
+    Agent --> MCP[用户配置的 MCP 工具]
     Keyring[系统凭据库] --> Shell
 ```
 
@@ -58,13 +59,12 @@ flowchart LR
 | --- | --- |
 | [`apps/desktop`](apps/desktop/README.md) | Vue 工作区、Tauri 生命周期与凭据边界 |
 | `apps/exec-host` | 本机命令执行与平台隔离 |
-| `src/private_agent_core` | 模型契约、适配器、Agent 循环、上下文预算 |
-| `src/private_agent_local` | SQLite、项目与会话、IPC、本机工具、模型路由、上下文与记忆 |
+| [`src/private_agent`](src/private_agent/) | 按职责划分的本机 Agent：API、运行编排、契约、模型、上下文、记忆、工作区、工具、执行、集成、存储和安全 |
 | [`tests`](tests/README.md) | `unit`、`packaging`、`coding_acceptance`：本机单元、打包与隔离评测 |
 | [`scripts`](scripts/README.md) | 协议生成、本机验证、打包与签名辅助 |
 | [`docs`](docs/README.md) | 当前使用说明、专题记录及 `archive` 中的历史资料 |
 
-FastAPI 用于本机请求分发及可选回环 HTTP 入口。Python wheel 只包含 `private_agent_core` 和 `private_agent_local`；运行本机客户端无需部署旧后端、MySQL 或向量数据库。
+FastAPI 用于本机请求分发及可选回环 HTTP 入口。Python wheel 只包含统一的 `private_agent` 包，Python 启动入口为 `python -m private_agent.entry`；运行本机客户端无需部署旧后端、MySQL 或向量数据库。
 
 完整目录职责见[目录说明](docs/repository-layout.md)。`.run/`、`.tmp/`、`dist/` 保存本机生成材料并被 Git 忽略，不随源码克隆分发；历史验证证据的归档位置和保留规则见[整理记录](docs/solutions/2026-09-22-project-cleanup.md)。
 
