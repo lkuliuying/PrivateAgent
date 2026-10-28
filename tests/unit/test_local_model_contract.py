@@ -8,21 +8,21 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from private_agent_core.contracts import ModelRequest
-from private_agent_core.llm.adapters import OpenAIChatAdapter
-from private_agent_core.llm.contracts import ModelGatewayError, RetryPolicy
-from private_agent_core.llm.gateway import ModelGateway
-from private_agent_core.runtime import CancellationToken
-from private_agent_local.execution_tools import TOOLS as EXECUTION_TOOLS
-from private_agent_local.model_errors import CloudError
-from private_agent_local.runtime import (
+from private_agent.agent.loop import CancellationToken
+from private_agent.agent.runtime import (
     TOOLS,
     WRITE_TOOLS,
     DirectoryArgs,
     Runtime,
     SearchArgs,
 )
-from private_agent_local.store import Store
+from private_agent.contracts.runtime import ModelRequest
+from private_agent.execution.execution_tools import TOOLS as EXECUTION_TOOLS
+from private_agent.models.llm.adapters import OpenAIChatAdapter
+from private_agent.models.llm.contracts import ModelGatewayError, RetryPolicy
+from private_agent.models.llm.gateway import ModelGateway
+from private_agent.models.model_errors import CloudError
+from private_agent.storage.store import Store
 
 
 class StrictProvider:

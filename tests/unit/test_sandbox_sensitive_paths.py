@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from private_agent_local import files, windows_sandbox
-from private_agent_local.executor import run_command
-from private_agent_local.windows_sandbox import (
+from private_agent.execution import windows_sandbox
+from private_agent.execution.executor import run_command
+from private_agent.execution.windows_sandbox import (
     DENY_ALL,
     DENY_PARENT,
     DENY_WRITE,
@@ -22,6 +22,7 @@ from private_agent_local.windows_sandbox import (
     WindowsSecurity,
     _check_tree,
 )
+from private_agent.workspace import files
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows AppContainer 原生边界")]
 
@@ -480,7 +481,7 @@ async def test_crashed_sensitive_lease_recovers_acl_and_inheritance(tmp_path):
     source = Path(__file__).resolve().parents[2] / "src"
     code = (
         f"import sys,os; sys.path.insert(0,{str(source)!r}); from pathlib import Path; "
-        "from private_agent_local import files; from private_agent_local.windows_sandbox import SandboxLease; "
+        "from private_agent.workspace import files; from private_agent.execution.windows_sandbox import SandboxLease; "
         f"SandboxLease(Path({str(root)!r}), [os.environ['COMSPEC']], files.prepare_process([os.environ['COMSPEC']])[1], directory=Path({str(state)!r})); os._exit(23)"
     )
     _, env = files.prepare_process([sys.executable])

@@ -7,16 +7,16 @@ from types import SimpleNamespace
 import pytest
 from test_local_executor import close, setup
 
-from private_agent_core.history import FIELDS, FORMAT, encode_archive
-from private_agent_local.mcp_library import McpLibrary, PrepareInput, SourceInput
-from private_agent_local.migration import (
+from private_agent.integrations.mcp_library import McpLibrary, PrepareInput, SourceInput
+from private_agent.security.secret_filter import SecretFilter
+from private_agent.storage.history import FIELDS, FORMAT, encode_archive
+from private_agent.storage.migration import (
     apply_history,
     archive_sqlite,
     preview_history,
     rollback_history,
 )
-from private_agent_local.secret_filter import SecretFilter
-from private_agent_local.store import SCHEMA_VERSION, Store, encode
+from private_agent.storage.store import SCHEMA_VERSION, Store, encode
 
 AUTHORITY = "https://account.example.test"
 

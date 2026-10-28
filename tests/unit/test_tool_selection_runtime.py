@@ -10,10 +10,10 @@ from test_local_model_contract import StrictProvider, run_local_request
 from test_local_planning import idle_run
 from test_local_recovery import control
 
-from private_agent_local.documentation_mcp import SelectionInput, SourceInput
-from private_agent_local.store import now
-from private_agent_local.task_constraints import apply_steer
-from private_agent_local.tool_catalog import DEFERRED_TOOLS
+from private_agent.agent.task_constraints import apply_steer
+from private_agent.integrations.documentation_mcp import SelectionInput, SourceInput
+from private_agent.storage.store import now
+from private_agent.tools.tool_catalog import DEFERRED_TOOLS
 
 
 class SelectionProvider(StrictProvider):

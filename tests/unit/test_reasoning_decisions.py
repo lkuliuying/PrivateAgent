@@ -17,7 +17,8 @@ from test_responses_adapter import (
     sse,
 )
 
-from private_agent_core.contracts import (
+from private_agent.agent.loop import AgentRuntime
+from private_agent.contracts.runtime import (
     AgentEventType,
     AgentRunLimits,
     AgentRunStatus,
@@ -25,8 +26,7 @@ from private_agent_core.contracts import (
     ModelResponse,
     ToolCall,
 )
-from private_agent_core.runtime import AgentRuntime
-from private_agent_local.store import Store
+from private_agent.storage.store import Store
 
 
 @pytest.mark.asyncio

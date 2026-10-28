@@ -8,15 +8,15 @@ import pytest
 from test_direct_models import configure, desktop
 from test_local_attachments import commit_attachment, staged
 
-from private_agent_core.history import encode_archive
-from private_agent_local.backups import (
+from private_agent.storage.backups import (
     export_backup,
     import_configuration,
     import_data,
     load_backup,
     preview_backup,
 )
-from private_agent_local.drafts import DraftData, Drafts, DraftWrite
+from private_agent.storage.history import encode_archive
+from private_agent.workspace.drafts import DraftData, Drafts, DraftWrite
 
 
 async def records(client, root):
@@ -120,7 +120,7 @@ async def test_skipped_history_counts_do_not_claim_unrestored_records_or_attachm
 @pytest.mark.asyncio
 async def test_real_file_size_boundary_accepts_64_mib_and_rejects_one_more_byte(tmp_path):
     async with desktop(tmp_path) as (_, app, _, _, calls):
-        from private_agent_local.backups import MAX_BYTES
+        from private_agent.storage.backups import MAX_BYTES
         runtime = app.state.desktop.runtime
         package = export_backup(runtime, "configuration", "standard")
         content = encode_archive(package)
@@ -246,6 +246,6 @@ async def test_backup_size_limit_fails_explicitly(tmp_path, monkeypatch):
         runtime = app.state.desktop.runtime
         pid, wid, _ = await records(client, tmp_path / "project")
         staged(tmp_path, runtime.store, pid, wid)
-        monkeypatch.setattr("private_agent_local.backups.MAX_BYTES", 10)
+        monkeypatch.setattr("private_agent.storage.backups.MAX_BYTES", 10)
         with pytest.raises(ValueError, match="超过 64 MiB"):
             export_backup(runtime, "application", "standard")

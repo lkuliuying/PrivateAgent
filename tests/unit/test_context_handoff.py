@@ -4,14 +4,14 @@ import json
 import pytest
 from test_local_context_history import history_store
 
-from private_agent_core.contracts import ModelMessage, ToolCall
-from private_agent_local.context_handoff import (
+from private_agent.agent.reflection import target_hash
+from private_agent.context.context_handoff import (
     PRIORITIES,
     excerpt_window,
     select_evidence,
 )
-from private_agent_local.context_summary import summary_request
-from private_agent_local.reflection import target_hash
+from private_agent.context.context_summary import summary_request
+from private_agent.contracts.runtime import ModelMessage, ToolCall
 
 
 def group(store, session, *, key, name="read_code_file", rel_path="src/app.py", success=True, run="run",

@@ -6,12 +6,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_local.integration_mcp import Integrations
-from private_agent_local.mcp_credentials import McpCredentialError
-from private_agent_local.mcp_library import PrepareInput, SourceInput
-from private_agent_local.model_errors import CloudError
-from private_agent_local.secret_filter import SecretFilter
-from private_agent_local.store import Store
+from private_agent.integrations.integration_mcp import Integrations
+from private_agent.integrations.mcp_credentials import McpCredentialError
+from private_agent.integrations.mcp_library import PrepareInput, SourceInput
+from private_agent.models.model_errors import CloudError
+from private_agent.security.secret_filter import SecretFilter
+from private_agent.storage.store import Store
 
 
 class Vault:

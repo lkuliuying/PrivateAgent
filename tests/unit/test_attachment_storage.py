@@ -4,9 +4,9 @@ import uuid
 import pytest
 from test_local_attachments import fixture_store, staged
 
-from private_agent_local.attachment_storage import AttachmentStorage, CleanupInput
-from private_agent_local.drafts import DraftData, Drafts, DraftWrite
-from private_agent_local.model_errors import CloudError
+from private_agent.models.model_errors import CloudError
+from private_agent.workspace.attachment_storage import AttachmentStorage, CleanupInput
+from private_agent.workspace.drafts import DraftData, Drafts, DraftWrite
 
 
 def test_cleanup_keeps_text_and_rejects_stale_preview(tmp_path):

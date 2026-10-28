@@ -6,9 +6,9 @@ from pathlib import Path
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_local import files
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.store import Store
+from private_agent.agent.runtime import TERMINAL
+from private_agent.storage.store import Store
+from private_agent.workspace import files
 
 
 def record(case_id: str, **facts):
@@ -44,7 +44,7 @@ async def test_s0_t02_failed_test(api, monkeypatch):
     async def fail_command(*args, **kwargs):
         return {"returncode": 1, "stdout": "1 failed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", fail_command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", fail_command)
     server.responses = [response(call("run_project_command", {"command": "python -m pytest"})), *[response(text="已完成") for _ in range(3)]]
     run_id = (await client.post("/agent-runs", json={**body, "permission_mode": "workspace"})).json()["id"]
     run = await until(client, run_id, TERMINAL)
@@ -99,7 +99,7 @@ async def test_s0_t05_desktop_passes_s4_timeout(api, monkeypatch):
         observed.append(kwargs["timeout"])
         raise TimeoutError
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", timeout_command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", timeout_command)
     server.responses = [response(call("run_project_command", {"command": "python -m pytest"})), response(text="停止")]
     run_id = (await client.post("/agent-runs", json={**body, "permission_mode": "workspace"})).json()["id"]
     await until(client, run_id, TERMINAL)

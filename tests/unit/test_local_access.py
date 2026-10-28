@@ -13,10 +13,10 @@ from test_direct_models import (
 )
 from test_local_executor import TERMINAL, until
 
-from private_agent_local.app import create_app
-from private_agent_local.direct_models import ConfiguredModels
-from private_agent_local.identity import LOCAL_AUTHORITY, LOCAL_TOKEN_PREFIX
-from private_agent_local.model_errors import CloudError
+from private_agent.api.app import create_app
+from private_agent.models.direct_models import ConfiguredModels
+from private_agent.models.model_errors import CloudError
+from private_agent.security.identity import LOCAL_AUTHORITY, LOCAL_TOKEN_PREFIX
 
 
 @asynccontextmanager

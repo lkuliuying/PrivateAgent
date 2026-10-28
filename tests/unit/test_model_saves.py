@@ -6,9 +6,9 @@ import uuid
 import pytest
 from test_direct_models import configuration, configure, desktop
 
-from private_agent_local.model_catalog import ProviderInput
-from private_agent_local.model_errors import CloudError
-from private_agent_local.model_saves import ModelSaves, PreparedSecret, PrepareSave
+from private_agent.models.model_catalog import ProviderInput
+from private_agent.models.model_errors import CloudError
+from private_agent.models.model_saves import ModelSaves, PreparedSecret, PrepareSave
 
 
 def operation(**values):

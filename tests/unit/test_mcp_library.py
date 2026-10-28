@@ -15,17 +15,18 @@ from test_workbench_integrations import configured, invocation
 from test_workbench_integrations import local as local
 from test_workspace_features import seeded
 
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local import files, integration_mcp
-from private_agent_local.documentation_transport import catalog, normalize_schema
-from private_agent_local.integration_mcp import (
+from private_agent.integrations import integration_mcp
+from private_agent.integrations.documentation_transport import catalog, normalize_schema
+from private_agent.integrations.integration_mcp import (
     SelectionInput,
     SessionTokens,
     SourceInput,
 )
-from private_agent_local.mcp_library import PrepareInput, credential_values
-from private_agent_local.model_errors import CloudError
-from private_agent_local.store import Store
+from private_agent.integrations.mcp_library import PrepareInput, credential_values
+from private_agent.models.model_errors import CloudError
+from private_agent.storage.store import Store
+from private_agent.tools.tool_specs import ToolFailure
+from private_agent.workspace import files
 
 
 class VaultFixture:
@@ -56,7 +57,7 @@ class VaultFixture:
 
 @pytest.fixture
 def vault(local, monkeypatch):
-    from private_agent_local import mcp_credentials
+    from private_agent.integrations import mcp_credentials
     result = VaultFixture()
     monkeypatch.setattr(mcp_credentials, "get_broker", lambda owner: result)
     return result

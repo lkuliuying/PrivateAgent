@@ -8,9 +8,9 @@ from pathlib import Path
 import pytest
 from test_local_executor import close, response, setup, until
 
-from private_agent_local.recovery import ControlConflict
-from private_agent_local.runtime import TERMINAL, Runtime
-from private_agent_local.store import Store, encode
+from private_agent.agent.recovery import ControlConflict
+from private_agent.agent.runtime import TERMINAL, Runtime
+from private_agent.storage.store import Store, encode
 
 
 def helper():

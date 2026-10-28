@@ -5,9 +5,9 @@ import json
 import pytest
 from test_local_executor import Server, close, response, setup, until
 
-from private_agent_core.llm.contracts import ModelTextDelta
-from private_agent_local.model_errors import CloudError
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.runtime import TERMINAL
+from private_agent.models.llm.contracts import ModelTextDelta
+from private_agent.models.model_errors import CloudError
 
 pytestmark = pytest.mark.asyncio
 

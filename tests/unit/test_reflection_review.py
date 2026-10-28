@@ -9,20 +9,20 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_core.coding_contracts import (
-    Requirement,
-    RunOutcome,
-    VerificationResult,
-)
-from private_agent_core.context import ContextLimits, configuration_version
-from private_agent_local.context_manager import LocalContext
-from private_agent_local.model_errors import CloudError
-from private_agent_local.recovery import model_capability_version
-from private_agent_local.reflection_review import (
+from private_agent.agent.recovery import model_capability_version
+from private_agent.agent.reflection_review import (
     review_completion,
     review_request,
     validate_review,
 )
+from private_agent.context.budget import ContextLimits, configuration_version
+from private_agent.context.context_manager import LocalContext
+from private_agent.contracts.coding_contracts import (
+    Requirement,
+    RunOutcome,
+    VerificationResult,
+)
+from private_agent.models.model_errors import CloudError
 
 
 def decision(*, revise=False, **finding):
@@ -349,7 +349,7 @@ async def test_steering_cancels_all_async_review_stages_and_discards_conclusion(
 
 @pytest.mark.asyncio
 async def test_profiles_refresh_is_covered_by_same_timeout(review, monkeypatch):
-    monkeypatch.setattr("private_agent_local.reflection_review.REVIEW_TIMEOUT", 0.03)
+    monkeypatch.setattr("private_agent.agent.reflection_review.REVIEW_TIMEOUT", 0.03)
     review.owner.cloud.profile_release = asyncio.Event()
     result = await asyncio.wait_for(check(review), 1)
     assert not result.passed and not result.retryable and not review.owner.controls.model_tasks
@@ -359,7 +359,7 @@ async def test_profiles_refresh_is_covered_by_same_timeout(review, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_response_generation", [True, False])
 async def test_generation_change_during_initial_scan_never_spends_review_budget(review, monkeypatch, has_response_generation):
-    from private_agent_local.completion import workspace_state
+    from private_agent.agent.completion import workspace_state
 
     entered, release = threading.Event(), threading.Event()
     if has_response_generation:
@@ -370,7 +370,7 @@ async def test_generation_change_during_initial_scan_never_spends_review_budget(
         assert release.wait(timeout=2), "测试必须释放磁盘扫描线程"
         return workspace_state(root)
 
-    monkeypatch.setattr("private_agent_local.completion.workspace_state", scan)
+    monkeypatch.setattr("private_agent.agent.completion.workspace_state", scan)
     task = asyncio.create_task(check(review))
     try:
         assert await asyncio.to_thread(entered.wait, 2)
@@ -415,7 +415,7 @@ async def test_already_superseded_response_is_rejected_before_scanning(review, m
     def forbidden_scan(root):
         pytest.fail("旧模型候选不能进入磁盘扫描或复核请求")
 
-    monkeypatch.setattr("private_agent_local.completion.workspace_state", forbidden_scan)
+    monkeypatch.setattr("private_agent.agent.completion.workspace_state", forbidden_scan)
     result = await check(review)
     assert result.code == "steering_superseded" and not review.owner.cloud.calls
     assert review.context.rounds == 0 and review.run["reflection_review"].get("attempts", 0) == 0

@@ -5,9 +5,9 @@ import subprocess
 import pytest
 from test_local_executor import close, setup
 
-from private_agent_local.skills import manifest
-from private_agent_local.turn_queue import TurnQueue
-from private_agent_local.worktree_handoff import WorktreeHandoff
+from private_agent.agent.turn_queue import TurnQueue
+from private_agent.tools.skills import manifest
+from private_agent.workspace.worktree_handoff import WorktreeHandoff
 
 
 @pytest.fixture

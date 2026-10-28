@@ -2,20 +2,29 @@
 import asyncio
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from private_agent_core.execution.contracts import ExecEvent
-from private_agent_core.execution.exec_host_client import ExecutorUnavailable
-from private_agent_local import policy
-from private_agent_local.entry import parent_alive
-from private_agent_local.executor import (
+from private_agent.entry import parent_alive
+from private_agent.execution.contracts import ExecEvent
+from private_agent.execution.exec_host_client import ExecutorUnavailable
+from private_agent.execution.executor import (
     ExecutionFailure,
     ExecutionTimeout,
     host_path,
     run_command,
 )
+from private_agent.security import policy
+
+
+def test_host_path_uses_checkout_or_packaged_executable_directory(tmp_path, monkeypatch):
+    name = "exec-host.exe" if os.name == "nt" else "exec-host"
+    assert host_path() == Path(__file__).resolve().parents[2] / "apps/exec-host/target/release" / name
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "private-agent-local.exe"))
+    assert host_path() == tmp_path / name
 
 
 @pytest.mark.asyncio
@@ -94,9 +103,9 @@ async def test_protocol_failure_classification_and_close(tmp_path, monkeypatch, 
             self.closed = True
 
     client = Client()
-    monkeypatch.setattr("private_agent_local.executor.ExecHostClient", lambda *args, **kwargs: client)
-    monkeypatch.setattr("private_agent_local.executor.verify_host", lambda path: "a" * 64)
-    monkeypatch.setattr("private_agent_local.files.prepare_process", lambda args: (args, {}))
+    monkeypatch.setattr("private_agent.execution.executor.ExecHostClient", lambda *args, **kwargs: client)
+    monkeypatch.setattr("private_agent.execution.executor.verify_host", lambda path: "a" * 64)
+    monkeypatch.setattr("private_agent.workspace.files.prepare_process", lambda args: (args, {}))
     with pytest.raises(ExecutionFailure) as failure:
         await run_command(tmp_path, ["pytest"], execution_id="execution-123", trusted=True)
     assert failure.value.outcome == expected and client.closed

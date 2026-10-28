@@ -8,12 +8,12 @@ import sys
 import httpx
 import pytest
 
-from private_agent_local import files
-from private_agent_local.app import create_app
-from private_agent_local.entry import parent_alive
-from private_agent_local.model_errors import CloudError
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.store import Store
+from private_agent.agent.runtime import TERMINAL
+from private_agent.api.app import create_app
+from private_agent.entry import parent_alive
+from private_agent.models.model_errors import CloudError
+from private_agent.storage.store import Store
+from private_agent.workspace import files
 
 NONCE = "test-startup-nonce-" * 4
 HEADERS = {"X-PrivateAgent-Local": NONCE, "Authorization": "Bearer account-a", "Origin": "http://tauri.localhost"}
@@ -352,7 +352,7 @@ def test_prepare_process_accepts_complete_native_profile_environment(tmp_path):
 import json
 import os
 import sys
-from private_agent_local.files import prepare_process
+from private_agent.workspace.files import prepare_process
 command, environment = prepare_process([sys.executable])
 print(json.dumps({"command_preserved": command == [sys.executable],
     "profile_preserved": all(environment[name] == os.environ[name]
@@ -369,7 +369,7 @@ print(json.dumps({"command_preserved": command == [sys.executable],
 @pytest.mark.parametrize("missing", ["USERPROFILE", "APPDATA", "LOCALAPPDATA"])
 @pytest.mark.parametrize("empty", [False, True])
 def test_prepare_process_fills_only_missing_or_empty_profile_values(tmp_path, monkeypatch, missing, empty):
-    from private_agent_local import windows_process
+    from private_agent.execution import windows_process
 
     expected = {name: str(tmp_path / name) for name in ("USERPROFILE", "APPDATA", "LOCALAPPDATA")}
     for key, value in expected.items():
@@ -395,7 +395,7 @@ def test_prepare_process_fills_only_missing_or_empty_profile_values(tmp_path, mo
 
 @pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows 目录查询失败")
 def test_prepare_process_missing_profile_lookup_failure_is_not_suppressed(monkeypatch):
-    from private_agent_local import windows_process
+    from private_agent.execution import windows_process
 
     monkeypatch.delenv("APPDATA", raising=False)
 

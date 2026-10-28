@@ -8,11 +8,12 @@ import uuid
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.patches import PatchProposal
-from private_agent_local import git_workspace, patchsets, policy
-from private_agent_local.patchsets import PatchService
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.store import SCHEMA_VERSION, Store
+from private_agent.agent.runtime import TERMINAL
+from private_agent.contracts.patches import PatchProposal
+from private_agent.security import policy
+from private_agent.storage.store import SCHEMA_VERSION, Store
+from private_agent.workspace import git_workspace, patchsets
+from private_agent.workspace.patchsets import PatchService
 
 
 @pytest.fixture

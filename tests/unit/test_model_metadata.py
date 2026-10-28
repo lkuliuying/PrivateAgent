@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from private_agent_core.model_metadata import (
+from private_agent.models.model_metadata import (
     discover_model_metadata,
     ollama_show_metadata,
 )

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_local.mcp_credentials import (
+from private_agent.integrations.mcp_credentials import (
     CredentialTransport,
     McpCredentialError,
     McpCredentials,
@@ -144,8 +144,8 @@ async def test_real_private_pipe_keeps_oauth_exchange_out_of_public_response(tmp
 import asyncio,json,sys
 from types import SimpleNamespace
 from fastapi import FastAPI
-from private_agent_local.ipc import serve
-from private_agent_local.mcp_credentials import McpCredentials
+from private_agent.api.ipc import serve
+from private_agent.integrations.mcp_credentials import McpCredentials
 app=FastAPI()
 app.state.desktop=SimpleNamespace()
 @app.get('/work')

@@ -6,15 +6,15 @@ import pytest
 from test_direct_models import configuration, configure, desktop
 from test_local_backups import records, save_package
 
-from private_agent_core.history import encode_archive
-from private_agent_local.backups import (
+from private_agent.models.model_preferences import resolve
+from private_agent.storage.backups import (
     export_backup,
     import_configuration,
     import_data,
     load_backup,
     preview_backup,
 )
-from private_agent_local.model_preferences import resolve
+from private_agent.storage.history import encode_archive
 
 
 def load_package(tmp_path, runtime, package, *, legacy=False):
@@ -215,7 +215,7 @@ async def test_pending_state_write_failure_rolls_back_whole_import(tmp_path, mon
         await records(client, tmp_path / "project")
         package = export_backup(runtime, "application", "standard")
         data, digest = load_package(tmp_path, runtime, package)
-        from private_agent_local import backups
+        from private_agent.storage import backups
         original = backups.restore_selection
 
         def fail_after_marker(*args):

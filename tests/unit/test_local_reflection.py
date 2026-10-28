@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_core.completion import interpret_execution
-from private_agent_core.contracts import ToolCall, ToolResult
-from private_agent_local import reflection
-from private_agent_local.tool_registry import REGISTRY
+from private_agent.agent import reflection
+from private_agent.agent.completion_rules import interpret_execution
+from private_agent.contracts.runtime import ToolCall, ToolResult
+from private_agent.tools.tool_registry import REGISTRY
 
 
 class Facts:

@@ -18,16 +18,16 @@ from test_direct_models import (
 )
 from test_local_executor import until
 
-from private_agent_local.app import create_app
-from private_agent_local.core_adapter import LocalRunAdapter
-from private_agent_local.direct_models import ConfiguredModels
-from private_agent_local.model_catalog import ModelParameters
-from private_agent_local.model_credentials import (
+from private_agent.agent.adapter import LocalRunAdapter
+from private_agent.agent.runtime import TERMINAL, Runtime
+from private_agent.api.app import create_app
+from private_agent.models.direct_models import ConfiguredModels
+from private_agent.models.model_catalog import ModelParameters
+from private_agent.models.model_credentials import (
     credential_target,
     read_model_credential,
 )
-from private_agent_local.model_errors import CloudError
-from private_agent_local.runtime import TERMINAL, Runtime
+from private_agent.models.model_errors import CloudError
 
 
 @asynccontextmanager
@@ -60,7 +60,7 @@ async def test_handoff_is_readonly_selected_scoped_frozen_and_never_returns_secr
         reads.append((alias, namespace))
         return "S6_SYNTHETIC_PROVIDER_VALUE"
 
-    monkeypatch.setattr("private_agent_local.model_evaluation.read_model_credential", synthetic)
+    monkeypatch.setattr("private_agent.models.model_evaluation.read_model_credential", synthetic)
     async with desktop(tmp_path / "client") as (source, app, client, _, _):
         identifier = await configure(client)
         root = tmp_path / "client/data"
@@ -97,7 +97,7 @@ async def test_handoff_is_readonly_selected_scoped_frozen_and_never_returns_secr
 @pytest.mark.asyncio
 async def test_handoff_other_account_and_missing_credential_cannot_start(tmp_path, monkeypatch):
     reads = []
-    monkeypatch.setattr("private_agent_local.model_evaluation.read_model_credential", lambda *args: reads.append(args))
+    monkeypatch.setattr("private_agent.models.model_evaluation.read_model_credential", lambda *args: reads.append(args))
     async with desktop(tmp_path / "client") as (source, _, client, _, _):
         identifier = await configure(client)
         payload = binding_body(tmp_path / "client/data", identifier)
@@ -126,7 +126,7 @@ def test_native_credential_decoder_frees_and_clears_synthetic_blob(monkeypatch):
     import ctypes
     from types import SimpleNamespace
 
-    from private_agent_local import model_credentials
+    from private_agent.models import model_credentials
 
     allocated, freed, observed = [], [], []
 

@@ -23,8 +23,8 @@ from coding_acceptance_models import check_preflight
 from coding_acceptance_transport import Fixture, RuntimeClient
 from run_coding_local_probe import CATALOG, TEMPLATE, check, initialize, main
 
-from private_agent_local.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
-from private_agent_local.model_catalog import ModelCatalog
+from private_agent.models.model_catalog import ModelCatalog
+from private_agent.security.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
 
 SYNTHETIC_KEY = "S6_LOCAL_SYNTHETIC_PROVIDER_ONLY"
 
@@ -186,7 +186,7 @@ def test_disclosed_command_keeps_out_of_scope_requests_rejected(change):
 def test_execution_instructions_preserve_public_task_requirements(task):
     import run_coding_acceptance as runner
 
-    from private_agent_core.completion import task_requirements
+    from private_agent.agent.completion_rules import task_requirements
 
     previous = task["files"]["README.md"] + "\n请完成上述修改并运行验证。只运行预定验证命令；不要安装依赖。"
     expected = task_requirements(previous)

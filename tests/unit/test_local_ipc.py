@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from private_agent_local.ipc import request_scope
+from private_agent.api.ipc import request_scope
 
 NONCE = "isolated-pipe-fixture-" * 3
 
 
 @asynccontextmanager
 async def runtime_pipe(tmp_path):
-    process = await asyncio.create_subprocess_exec(sys.executable, "-m", "private_agent_local.entry", "--stdio",
+    process = await asyncio.create_subprocess_exec(sys.executable, "-m", "private_agent.entry", "--stdio",
         "--data-dir", str(tmp_path / "records"),
         cwd=tmp_path, env={**os.environ, "PRIVATEAGENT_LOCAL_NONCE": NONCE},
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)

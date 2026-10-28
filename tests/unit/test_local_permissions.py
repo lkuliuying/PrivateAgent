@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_local import policy
+from private_agent.security import policy
 
 
 @pytest.mark.asyncio
@@ -166,7 +166,7 @@ async def test_workspace_runs_registered_powershell_and_records_display_command(
         captured.append((command_root, args, timeout))
         return {"returncode": 0, "stdout": "ok\n", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", fake_run_command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", fake_run_command)
     try:
         server.responses = [
             response(call("run_powershell_command", {

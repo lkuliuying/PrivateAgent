@@ -1,8 +1,8 @@
 /**
  * v0.8.0 W2 · Coding run 契约（wire 字段名与后端 1:1）
  *
- * 事实源：src/private_agent_core/contracts.py 的共享契约与
- * src/private_agent_local/app.py、core_adapter.py 的本机 API 和事件投影。
+ * 事实源：src/private_agent/contracts/runtime.py 的共享契约与
+ * src/private_agent/api/app.py、src/private_agent/agent/adapter.py 的本机 API 和事件投影。
  *
  * 红线：payload 中不携带的敏感数据（审批 arguments 原文、工具完整输出、
  * 隐藏推理）本契约一律不声明；工具结果走 executions API（W3）。

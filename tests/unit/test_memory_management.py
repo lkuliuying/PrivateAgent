@@ -6,11 +6,11 @@ import sqlite3
 import pytest
 from test_local_memories import enable, seed
 
-from private_agent_core.contracts import ModelMessage, ToolCall
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local.memories import external_context, memory_terms
-from private_agent_local.memory_store import MemoryConflict, MemoryInput, MemoryStore
-from private_agent_local.memory_tools import SPECS, MemoryTools, authorization_context
+from private_agent.contracts.runtime import ModelMessage, ToolCall
+from private_agent.memory.memories import external_context, memory_terms
+from private_agent.memory.memory_store import MemoryConflict, MemoryInput, MemoryStore
+from private_agent.memory.memory_tools import SPECS, MemoryTools, authorization_context
+from private_agent.tools.tool_specs import ToolFailure
 
 pytest_plugins = ["test_local_memories"]
 
@@ -306,7 +306,7 @@ async def test_saved_content_must_be_in_user_quote(worker):
 
 
 def test_source_checks_complete_public_text_and_shared_mcp_credentials(worker):
-    from private_agent_local.secret_filter import SecretFilter
+    from private_agent.security.secret_filter import SecretFilter
     session = seed(worker)
     secret = "fixture-mcp-credential-without-token-pattern"
     worker.owner.secret_filter = SecretFilter(lambda: [secret])
@@ -403,7 +403,7 @@ async def test_session_recall_metadata_keeps_used_version_after_later_edit(worke
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient
 
-    from private_agent_local.memory_routes import install_memory_routes
+    from private_agent.api.memory_routes import install_memory_routes
 
     enable(worker)
     session = seed(worker)

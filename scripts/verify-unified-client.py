@@ -132,7 +132,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
         directory.mkdir(parents=True, exist_ok=True)
         env[key] = str(directory)
     if os.name == "nt":
-        from private_agent_local.windows_process import profile_environment
+        from private_agent.execution.windows_process import profile_environment
 
         # AppContainer 临时目录需要系统位置；仅定位，不读取该目录中的用户设置。
         env["LOCALAPPDATA"] = profile_environment()["LOCALAPPDATA"]
@@ -153,7 +153,7 @@ async def verify(bundle: Path, work: Path, model_mode: str = "service") -> dict:
             "--model-json", json.dumps(model_config), cwd=area, env=env, stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, creationflags=getattr(__import__("subprocess"), "CREATE_NO_WINDOW", 0))
         if os.name == "nt":
-            from private_agent_local.windows_process import ProcessJob
+            from private_agent.execution.windows_process import ProcessJob
 
             job = ProcessJob()
             job.assign(process.pid)

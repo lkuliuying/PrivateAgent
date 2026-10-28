@@ -2,8 +2,8 @@
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_local.progress import STOP_AT, observe
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.progress import STOP_AT, observe
+from private_agent.agent.runtime import TERMINAL
 
 
 def record(run, name="read_code_file", arguments=None, output=None):

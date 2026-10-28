@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_core.contracts import (
+from private_agent.agent.loop import AgentRuntime, CancellationToken
+from private_agent.contracts.runtime import (
     ModelMessage,
     ModelResponse,
     ModelToolDefinition,
     ToolCall,
     ToolResult,
 )
-from private_agent_core.runtime import AgentRuntime, CancellationToken
 
 
 @pytest.mark.asyncio
@@ -25,8 +25,8 @@ from private_agent_core.runtime import AgentRuntime, CancellationToken
     ("acknowledged", False, False, False, "steering_superseded"),
 ])
 async def test_mcp_write_receipts_survive_steering_without_promoting_unconfirmed_results(phase, readonly, receipt, prior_success, expected):
-    from private_agent_local.core_adapter import LocalRunAdapter
-    from private_agent_local.tool_registry import REGISTRY
+    from private_agent.agent.adapter import LocalRunAdapter
+    from private_agent.tools.tool_registry import REGISTRY
 
     call = ToolCall(id="current-call", name="call_mcp_tool", arguments={})
     confirmed = {"result": {"content": [{"type": "text", "text": "已完成一项写入"}]}, "untrusted": True}
@@ -59,8 +59,8 @@ async def test_mcp_write_receipts_survive_steering_without_promoting_unconfirmed
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reused_id", [False, True])
 async def test_mcp_receipt_for_another_call_or_response_cannot_authorize_current_success(reused_id):
-    from private_agent_local.core_adapter import LocalRunAdapter
-    from private_agent_local.tool_registry import REGISTRY
+    from private_agent.agent.adapter import LocalRunAdapter
+    from private_agent.tools.tool_registry import REGISTRY
 
     async def boundary(run):
         pass
@@ -80,8 +80,8 @@ async def test_mcp_receipt_for_another_call_or_response_cannot_authorize_current
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase,readonly", [("acknowledged", False), ("dispatched", False), ("acknowledged", True)])
 async def test_mcp_steering_finalization_reaches_next_model_context(phase, readonly):
-    from private_agent_local.core_adapter import LocalRunAdapter
-    from private_agent_local.tool_registry import REGISTRY
+    from private_agent.agent.adapter import LocalRunAdapter
+    from private_agent.tools.tool_registry import REGISTRY
 
     call = ToolCall(id="external-call", name="call_mcp_tool", arguments={})
     run = {"generation": 0, "recovery_contract_version": "1.0", "executions": []}
@@ -212,7 +212,7 @@ async def test_local_steer_cancels_both_reads_without_retaining_old_results(tmp_
     from test_local_executor import close, response, setup, until
     from test_local_recovery import control
 
-    from private_agent_local.runtime import TERMINAL
+    from private_agent.agent.runtime import TERMINAL
 
     api = await setup(tmp_path)
     app, client, server, root, body = api

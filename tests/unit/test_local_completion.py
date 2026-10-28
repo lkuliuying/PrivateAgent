@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.coding_contracts import Requirement, RunOutcome
-from private_agent_core.completion import interpret_execution, task_requirements
-from private_agent_local.completion import LocalCompletionVerifier
-from private_agent_local.executor import ExecutionFailure
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.completion import LocalCompletionVerifier
+from private_agent.agent.completion_rules import interpret_execution, task_requirements
+from private_agent.agent.runtime import TERMINAL
+from private_agent.contracts.coding_contracts import Requirement, RunOutcome
+from private_agent.execution.executor import ExecutionFailure
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,7 +91,7 @@ async def test_s1_t02_failed_test_reaches_same_model_loop(api, monkeypatch):
     async def fail_command(*args, **kwargs):
         return {"returncode": 1, "stdout": "1 failed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", fail_command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", fail_command)
     server.responses = [response(call("run_project_command", {"command": "python -m pytest"})),
                         *[response(text="测试通过") for _ in range(3)]]
     created = await client.post("/agent-runs", json={**body, "message": "运行 python -m pytest", "permission_mode": "workspace"})
@@ -133,7 +133,7 @@ async def test_write_then_verify_preserves_reference_file_and_execution_semantic
         invoked.append(argv)
         return {"returncode": 0, "stdout": "3 passed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", passed)
     run = await create_run(api, f"修改 sample.py。随后执行 {command}。", [
         response(call("write_project_file", {"rel_path": "sample.py", "content": "def double(value):\n    return value * 2\n"})),
         response(call("run_project_command", {"command": command})),
@@ -170,7 +170,7 @@ async def test_s1_t03_search_empty_is_normal(api):
 
 
 async def test_s1_t04_fake_file_result_is_not_evidence(api, monkeypatch):
-    monkeypatch.setattr("private_agent_local.patchsets.replace_one", lambda *args: {"applied": True, "verified": True})
+    monkeypatch.setattr("private_agent.workspace.patchsets.replace_one", lambda *args: {"applied": True, "verified": True})
     run = await create_run(api, "创建 hello.py", [response(call("write_project_file", {"rel_path": "hello.py", "content": "print('hello')"})),
                                                *[response(text="文件已经创建") for _ in range(3)]])
     assert run["goal_outcome"] == "unmet" and not (api[3] / "hello.py").exists()
@@ -188,7 +188,7 @@ async def test_s1_t06_test_evidence_expires_after_write(api, monkeypatch):
     async def passed(*args, **kwargs):
         return {"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", passed)
     run = await create_run(api, "创建 hello.py 并运行 python -m pytest", [
         response(call("run_project_command", {"command": "python -m pytest"})),
         response(call("write_project_file", {"rel_path": "hello.py", "content": "print('hello')"})),
@@ -200,7 +200,7 @@ async def test_s1_t06_test_evidence_expires_after_write(api, monkeypatch):
 
 @pytest.mark.parametrize("history", ["diagnostics", "rejection", "both"])
 async def test_t01_auxiliary_history_does_not_override_fixed_file_and_final_tests(api, monkeypatch, history):
-    from private_agent_local.runtime import TOOLS
+    from private_agent.agent.runtime import TOOLS
 
     if "run_powershell_command" not in TOOLS:
         pytest.skip("本场景包含 Windows PowerShell 工具")
@@ -216,7 +216,7 @@ async def test_t01_auxiliary_history_does_not_override_fixed_file_and_final_test
                     "stdout": "4 failed" if len(test_calls) == 1 else "4 passed", "stderr": ""}
         return {"returncode": 0, "stdout": "diagnostic output", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     responses = [response(call("read_code_file", {"rel_path": "app.py"}))]
     if history in {"rejection", "both"}:
         responses.append(response(call("run_powershell_command", {"command": "Get-Date", "arguments": []})))
@@ -252,7 +252,7 @@ async def test_recovered_auxiliary_command_before_write_remains_only_in_audit(ap
         attempts.append(args)
         return {"returncode": 2 if len(attempts) == 1 else 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     run = await create_run(api, "创建 app.py", [
         response(call("run_project_command", {"command": "git status --short"})),
         response(call("run_project_command", {"command": "git status --short"})),
@@ -270,7 +270,7 @@ async def test_unsuccessful_extra_command_still_prevents_verified_claim(api, mon
     async def failed(*args, **kwargs):
         return {"returncode": 2, "stdout": "", "stderr": "fixture command failed"}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", failed)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", failed)
     run = await create_run(api, "创建 app.py", [
         response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
         response(call("run_project_command", {"command": command})),
@@ -285,7 +285,7 @@ async def test_successful_extra_script_with_disk_changes_still_requires_verifica
         (root / "artifact.txt").write_text("side effect", encoding="utf-8")
         return {"returncode": 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", script)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", script)
     run = await create_run(api, "创建 app.py", [
         response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
         response(call("run_project_command", {"command": "python helper.py"})),
@@ -302,7 +302,7 @@ async def test_unknown_extra_command_is_not_discarded_as_an_observation(api, mon
         attempts.append(args)
         raise ExecutionFailure("宿主失联", outcome="unknown", output={})
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", unknown)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", unknown)
     run = await create_run(api, "创建 app.py", [
         response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
         response(call("run_project_command", {"command": "python helper.py"})), response(text="全部通过"),
@@ -316,7 +316,7 @@ async def test_later_observation_does_not_erase_earlier_command_disk_changes(api
         (root / "artifact.txt").write_text("same content", encoding="utf-8")
         return {"returncode": 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", script)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", script)
     run = await create_run(api, "创建 app.py", [
         response(call("run_project_command", {"command": "python helper.py"})),
         response(call("run_project_command", {"command": "python helper.py"})),
@@ -331,7 +331,7 @@ async def test_explicit_diagnostic_requirement_still_expires_after_write(api, mo
     async def passed(*args, **kwargs):
         return {"returncode": 0, "stdout": "", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", passed)
     run = await create_run(api, "创建 app.py", [
         response(call("run_project_command", {"command": "git status --short"})),
         response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
@@ -343,7 +343,7 @@ async def test_explicit_diagnostic_requirement_still_expires_after_write(api, mo
 
 
 async def test_explicit_rejected_command_remains_blocked(api):
-    from private_agent_local.runtime import TOOLS
+    from private_agent.agent.runtime import TOOLS
 
     if "run_powershell_command" not in TOOLS:
         pytest.skip("本场景包含 Windows PowerShell 工具")
@@ -361,7 +361,7 @@ async def test_explicit_rejected_command_remains_blocked(api):
     call("run_powershell_command", {"command": "Set-Content", "arguments": ["-LiteralPath", "hello.py", "-Value", "different"]}),
 ])
 async def test_s1_t07_denial_cannot_be_bypassed(api, monkeypatch, retry):
-    from private_agent_local.runtime import TOOLS
+    from private_agent.agent.runtime import TOOLS
     if retry["name"] not in TOOLS:
         pytest.skip("本平台未提供 PowerShell 工具")
     app, client, server, root, body = api
@@ -371,7 +371,7 @@ async def test_s1_t07_denial_cannot_be_bypassed(api, monkeypatch, retry):
         invoked.append(args)
         raise AssertionError("拒绝后不应进入宿主")
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", forbidden)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", forbidden)
     server.responses = [response(call("write_project_file", {"rel_path": "hello.py", "content": "original"})),
                         response({**retry, "id": "retry-via-another-tool"}), response(text="等待用户处理")]
     run_id = (await client.post("/agent-runs", json={**body, "message": "创建 hello.py"})).json()["id"]
@@ -402,7 +402,7 @@ async def test_s1_t09_execution_failure_keeps_reason(api, monkeypatch, failure, 
     async def fail(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", fail)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", fail)
     run = await create_run(api, "运行 pytest", [response(call("run_project_command", {"command": "pytest"})), response(text="未完成")])
     execution = (await api[1].get(f"/agent-runs/{run['id']}/executions")).json()[0]
     assert execution["execution_result"]["outcome"] == outcome
@@ -420,7 +420,7 @@ async def test_s1_t09_cancel_is_persisted_without_exit_code(api, monkeypatch):
         entered.set()
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", wait)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", wait)
     server.responses = [response(call("run_project_command", {"command": "pytest"}))]
     run_id = (await client.post("/agent-runs", json={**body, "message": "运行 pytest", "permission_mode": "workspace"})).json()["id"]
     await asyncio.wait_for(entered.wait(), 2)
@@ -510,7 +510,7 @@ async def test_disk_change_after_test_is_detected_without_tool_version_bump(api,
     async def passed(*args, **kwargs):
         return {"returncode": 0, "stdout": "1 passed", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", passed)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", passed)
     original = LocalCompletionVerifier.load_outcome
 
     async def external_edit(verifier, output):
@@ -526,7 +526,7 @@ async def test_version_query_does_not_satisfy_tests(api, monkeypatch):
     async def version(*args, **kwargs):
         return {"returncode": 0, "stdout": "pytest 8", "stderr": ""}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", version)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", version)
     run = await create_run(api, "运行测试", [response(call("run_project_command", {"command": "pytest --version"})),
                                            *[response(text="已通过") for _ in range(3)]])
     assert run["goal_outcome"] == "unmet"
@@ -574,16 +574,20 @@ async def test_unknown_command_is_not_automatically_replayed(api, monkeypatch):
         attempts.append(kwargs["execution_id"])
         raise ExecutionFailure("失联", outcome="unknown", output={})
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", lost)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", lost)
     run = await create_run(api, "运行 pytest", [response(call("run_project_command", {"command": "pytest"})),
         response({"id": "retry", "name": "run_project_command", "arguments": {"command": "pytest -q"}}), response(text="结果未知")])
     assert run["goal_outcome"] == "unknown" and len(attempts) == 1
 
 
 async def test_verification_retries_cannot_reset_step_budget():
-    from private_agent_core.contracts import AgentRunLimits, ModelMessage, ModelResponse
-    from private_agent_core.runtime import AgentRuntime
-    from private_agent_core.verification import OutputVerification
+    from private_agent.agent.loop import AgentRuntime
+    from private_agent.agent.verification import OutputVerification
+    from private_agent.contracts.runtime import (
+        AgentRunLimits,
+        ModelMessage,
+        ModelResponse,
+    )
 
     class Model:
         calls = 0
@@ -613,7 +617,7 @@ async def test_s1_wire_examples_from_real_api(api, monkeypatch, case):
     async def command(*args, **kwargs):
         return {"returncode": 1, "stdout": "1 failed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     message = "解释函数的返回值"
     responses = [response(text="函数返回一个数字")]
     overrides = {}

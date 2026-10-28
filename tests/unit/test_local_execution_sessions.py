@@ -9,11 +9,12 @@ from types import SimpleNamespace
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_local import execution_diagnostics, files
-from private_agent_local.entry import parent_alive
-from private_agent_local.execution_tools import ExecArgs
-from private_agent_local.runtime import Runtime
-from private_agent_local.store import Store
+from private_agent.agent.runtime import Runtime
+from private_agent.entry import parent_alive
+from private_agent.execution import execution_diagnostics
+from private_agent.execution.execution_tools import ExecArgs
+from private_agent.storage.store import Store
+from private_agent.workspace import files
 
 pytestmark = pytest.mark.asyncio
 
@@ -91,12 +92,12 @@ async def finished(session, execution_id):
 
 
 async def test_scoped_test_process_persists_violation_before_terminal_result(session):
-    from private_agent_core.task_intent import interpret_task
-    from private_agent_local.task_constraints import (
+    from private_agent.agent.task_constraints import (
         TaskConstraintError,
         guard_paths,
         store_interpretation,
     )
+    from private_agent.agent.task_intent import interpret_task
 
     owner, run, root = session
     store_interpretation(run, interpret_task("只修改 A.py，然后运行测试"))
@@ -269,8 +270,8 @@ async def test_restricted_request_and_old_host_fail_closed(session, monkeypatch)
     assert capabilities["contract"]["execution"] is True
     assert capabilities["contract"]["pty"] is False
     assert capabilities["network_isolation"] is True
-    from private_agent_core.execution.contracts import ExecHealth
-    from private_agent_core.execution.exec_host_client import ExecHostClient
+    from private_agent.execution.contracts import ExecHealth
+    from private_agent.execution.exec_host_client import ExecHostClient
     original = ExecHostClient.start
 
     async def old_start(client):
@@ -388,7 +389,7 @@ async def test_cmd_quoting_spaces_and_metacharacters(session, tmp_path, monkeypa
     for value in ('%PATH%', '&whoami', 'a"b', '!variable!'):
         with pytest.raises(ValueError, match="shell"):
             files.prepare_process(["echo-fixture", value])
-    from private_agent_local.executor import run_command
+    from private_agent.execution.executor import run_command
     result = await run_command(session[2], ["echo-fixture", "two words"])
     assert result["returncode"] == 0 and "[two words]" in result["stdout"]
 
@@ -407,7 +408,7 @@ async def test_expired_grant_reaps_real_parent_and_child(session):
 
 
 async def test_output_quota_and_restart_never_replay(session, monkeypatch):
-    monkeypatch.setattr("private_agent_local.execution_store.ACCOUNT_BYTES", 1024)
+    monkeypatch.setattr("private_agent.execution.execution_store.ACCOUNT_BYTES", 1024)
     result = await start(session, "print('x'*20000)", yield_time_ms=0)
     final = await finished(session, result["execution_id"])
     assert final["output_quota_exceeded"] and final["dropped_bytes"] > 0 and final["gap"]
@@ -422,7 +423,7 @@ async def test_output_quota_and_restart_never_replay(session, monkeypatch):
 
 @pytest.mark.parametrize("fault", ["previous_execution", "duplicate_sequence", "missing_sequence"])
 async def test_stale_host_output_cannot_cross_execution_identity(session, monkeypatch, fault):
-    from private_agent_local.execution_sessions import ExecHostClient
+    from private_agent.execution.execution_sessions import ExecHostClient
 
     previous = await start(session, "print('OLD-OUTPUT',flush=True)", yield_time_ms=0)
     previous = await finished(session, previous["execution_id"])

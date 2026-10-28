@@ -6,9 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from private_agent_local import patchsets
-from private_agent_local.runtime import Runtime
-from private_agent_local.store import Store
+from private_agent.agent.runtime import Runtime
+from private_agent.storage.store import Store
+from private_agent.workspace import patchsets
 
 
 def response(calls=(), text=""):

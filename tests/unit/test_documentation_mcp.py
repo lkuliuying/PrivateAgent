@@ -7,16 +7,16 @@ import httpx2
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local.documentation_mcp import CallArgs
-from private_agent_local.documentation_transport import (
+from private_agent.agent.runtime import TERMINAL
+from private_agent.integrations.documentation_mcp import CallArgs
+from private_agent.integrations.documentation_transport import (
     BoundedStream,
     DocumentationClient,
     PinnedBackend,
     check_schema,
     endpoint,
 )
-from private_agent_local.runtime import TERMINAL
+from private_agent.tools.tool_specs import ToolFailure
 
 
 @pytest.fixture
@@ -172,7 +172,7 @@ async def test_documentation_schema_timeout_size_error_and_cancel(mcp_protocol, 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, 2)
-    monkeypatch.setattr("private_agent_local.documentation_transport.TIMEOUT", 0.03)
+    monkeypatch.setattr("private_agent.integrations.documentation_transport.TIMEOUT", 0.03)
     with pytest.raises(ToolFailure) as result:
         await client.call(source, catalog["tools"][0], {"query": "public"}, guard)
     assert result.value.code == "mcp_timeout"

@@ -7,15 +7,15 @@ import pytest
 from test_local_attachments import commit_attachment, fixture_store, staged
 from test_local_executor import close, setup
 
-from private_agent_local.drafts import (
+from private_agent.models.model_errors import CloudError
+from private_agent.storage.store import SCHEMA_VERSION, Store, encode, now
+from private_agent.workspace.drafts import (
     DraftAcknowledgement,
     DraftData,
     Drafts,
     DraftTransfer,
     DraftWrite,
 )
-from private_agent_local.model_errors import CloudError
-from private_agent_local.store import SCHEMA_VERSION, Store, encode, now
 
 
 def key(project, workspace, session=None):

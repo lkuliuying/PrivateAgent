@@ -7,12 +7,12 @@ from uuid import uuid4
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.coding_contracts import Requirement
-from private_agent_core.task_intent import interpret_task
-from private_agent_local.completion import LocalCompletionVerifier
-from private_agent_local.observer import selected_checks
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.task_constraints import apply_steer, store_interpretation
+from private_agent.agent.completion import LocalCompletionVerifier
+from private_agent.agent.observer import selected_checks
+from private_agent.agent.runtime import TERMINAL
+from private_agent.agent.task_constraints import apply_steer, store_interpretation
+from private_agent.agent.task_intent import interpret_task
+from private_agent.contracts.coding_contracts import Requirement
 
 pytestmark = pytest.mark.asyncio
 
@@ -267,7 +267,7 @@ async def test_existing_requirement_id_collision_preserves_both_verdicts(api):
 async def test_real_file_evidence_satisfies_project_check(api, monkeypatch):
     await configure(api, [check()])
     command = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     run = await complete(api, [response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
                                response(text="文件已修改")])
     assert run["status"] == "completed" and run["goal_outcome"] == "verified"
@@ -281,7 +281,7 @@ async def test_real_file_evidence_satisfies_project_check(api, monkeypatch):
 async def test_missing_configured_evidence_retries_same_model_at_most_twice(api, monkeypatch):
     await configure(api, [check("test", "python -m pytest", "tests")])
     command = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     run = await complete(api, [response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
                                *[response(text="全部测试通过") for _ in range(3)]])
     assert run["status"] == "failed" and run["goal_outcome"] == "unmet"
@@ -299,7 +299,7 @@ async def test_missing_configured_evidence_retries_same_model_at_most_twice(api,
 async def test_user_ban_skips_configured_tests_without_retry_or_false_success(api, monkeypatch, message):
     await configure(api, [check("test", "python -m pytest", "tests")])
     command = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     run = await complete(api, [response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
                                response(text="修改和测试全部通过")], message=message)
     assert run["status"] == "completed" and run["goal_outcome"] == "unknown"
@@ -316,7 +316,7 @@ async def test_user_ban_skips_configured_tests_without_retry_or_false_success(ap
 async def test_configured_command_requires_current_bound_evidence(api, monkeypatch, change):
     await configure(api, [check("test", "python -m pytest", "tests")])
     owner, run = pending(api)
-    monkeypatch.setattr("private_agent_local.runtime.run_command", AsyncMock(return_value={
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", AsyncMock(return_value={
         "returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False}))
     await owner.tool(run, api[3], call("write_project_file", {"rel_path": "app.py", "content": "fixed"}))
     await owner.tool(run, api[3], call("run_project_command", {"command": "python -m pytest"}))
@@ -346,7 +346,7 @@ async def test_diagnostics_do_not_reuse_checks_after_workspace_or_constraint_cha
     await configure(api, [check(kind, scope)])
     owner, run = pending(api)
     command = AsyncMock(return_value={"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     first_write = await owner.tool(run, api[3], call("write_project_file", {"rel_path": "app.py", "content": "fixed"}))
     assert first_write["status"] == "applied" and first_write.get("error") is None, first_write
     assert (api[3] / "app.py").read_text(encoding="utf-8") == "fixed"

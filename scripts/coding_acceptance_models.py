@@ -7,7 +7,11 @@ from urllib.parse import urlsplit
 
 from coding_acceptance_schema import budget, fields, fingerprint
 
-from private_agent_local.model_catalog import ModelParameters, endpoint_url, validate_id
+from private_agent.models.model_catalog import (
+    ModelParameters,
+    endpoint_url,
+    validate_id,
+)
 
 
 def direct_config(data):

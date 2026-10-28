@@ -7,21 +7,21 @@ from test_local_compaction import seed
 from test_local_context_history import history_store
 from test_local_executor import TERMINAL, close, response, setup, until
 
-from private_agent_core.context import (
+from private_agent.context.budget import (
     BREAKDOWN_ORDER,
     configuration_version,
     request_breakdown,
     request_budget,
 )
-from private_agent_core.contracts import (
+from private_agent.context.context_summary import summary_request, validate_summary
+from private_agent.context.usage import context_budget
+from private_agent.contracts.runtime import (
     ModelImage,
     ModelMessage,
     ModelRequest,
     ModelToolDefinition,
     ProviderState,
 )
-from private_agent_local.context import context_budget
-from private_agent_local.context_summary import summary_request, validate_summary
 
 
 def test_compaction_precedes_small_window_hard_limit_and_honors_lower_override():

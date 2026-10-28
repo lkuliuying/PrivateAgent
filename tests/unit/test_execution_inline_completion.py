@@ -4,14 +4,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from private_agent_core.coding_contracts import Requirement
-from private_agent_core.completion import interpret_execution
-from private_agent_local.completion import (
+from private_agent.agent.completion import (
     LocalCompletionVerifier,
     script_exit_check,
     workspace_state,
 )
-from private_agent_local.store import Store
+from private_agent.agent.completion_rules import interpret_execution
+from private_agent.contracts.coding_contracts import Requirement
+from private_agent.storage.store import Store
 
 pytestmark = pytest.mark.asyncio
 

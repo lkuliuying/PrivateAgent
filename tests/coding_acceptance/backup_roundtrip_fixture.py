@@ -13,8 +13,8 @@ from pathlib import Path
 from test_attachment_media import image_bytes, text_pdf
 from test_direct_models import configure, desktop
 
-from private_agent_local.attachments import read_blob
-from private_agent_local.drafts import DraftData, Drafts, DraftWrite
+from private_agent.workspace.attachments import read_blob
+from private_agent.workspace.drafts import DraftData, Drafts, DraftWrite
 
 
 def emit(value):

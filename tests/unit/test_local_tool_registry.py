@@ -5,16 +5,17 @@ import subprocess
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.tool_specs import (
+from private_agent.agent.runtime import TERMINAL
+from private_agent.execution.execution_tools import BasicExecArgs, ExecArgs, Input
+from private_agent.security import policy
+from private_agent.tools import git_tools
+from private_agent.tools.tool_registry import REGISTRY, WRITE_TOOLS
+from private_agent.tools.tool_specs import (
     ToolFailure,
     ToolRegistry,
     ToolSpec,
     object_output,
 )
-from private_agent_local import git_tools, policy
-from private_agent_local.execution_tools import BasicExecArgs, ExecArgs, Input
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.tool_registry import REGISTRY, WRITE_TOOLS
 
 
 def test_registry_rejects_duplicate_and_unsafe_parallel_contracts():

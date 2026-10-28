@@ -9,12 +9,12 @@ from test_documentation_mcp import mcp_protocol as mcp_protocol
 from test_local_executor import call, close, response, setup, until
 from test_workspace_features import seeded
 
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local.browser_tools import PageText, PreviewProxy, preview_origin
-from private_agent_local.integration_mcp import SelectionInput, SourceInput
-from private_agent_local.public_http import PublicTransport, public_url
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.secret_filter import SecretFilter
+from private_agent.agent.runtime import TERMINAL
+from private_agent.integrations.integration_mcp import SelectionInput, SourceInput
+from private_agent.integrations.public_http import PublicTransport, public_url
+from private_agent.security.secret_filter import SecretFilter
+from private_agent.tools.browser_tools import PageText, PreviewProxy, preview_origin
+from private_agent.tools.tool_specs import ToolFailure
 
 
 @pytest.fixture
@@ -91,7 +91,7 @@ async def test_mcp_catalog_change_and_write_constraints_prevent_invocation(local
 
 @pytest.mark.asyncio
 async def test_mcp_rechecks_configuration_after_discovery(local, mcp_protocol, monkeypatch):
-    from private_agent_local import integration_mcp
+    from private_agent.integrations import integration_mcp
     app, _, _, root, body = local
     owner = app.state.desktop.runtime
     source = await configured(owner, body["project_id"])
@@ -293,7 +293,7 @@ async def test_oauth_callback_requires_matching_state(local):
 
 @pytest.mark.asyncio
 async def test_real_browser_records_dom_assertions_and_owned_screenshot(local):
-    from private_agent_local.browser_tools import PreviewArgs, browser_binary
+    from private_agent.tools.browser_tools import PreviewArgs, browser_binary
     if browser_binary() is None:
         pytest.skip("未安装可用于预览验证的浏览器")
     app, client, _, _, body = local

@@ -7,10 +7,12 @@ from unittest.mock import AsyncMock
 import pytest
 from test_local_executor import call
 
-from private_agent_core.execution.exec_host_client import ExecHostClient
-from private_agent_local import execution_tools, files, policy
-from private_agent_local.runtime import Runtime
-from private_agent_local.store import Store
+from private_agent.agent.runtime import Runtime
+from private_agent.execution import execution_tools
+from private_agent.execution.exec_host_client import ExecHostClient
+from private_agent.security import policy
+from private_agent.storage.store import Store
+from private_agent.workspace import files
 
 pytestmark = pytest.mark.asyncio
 

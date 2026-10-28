@@ -6,12 +6,12 @@ import pytest
 from test_local_executor import close, response, setup, until
 from test_local_recovery import control, waiting_model
 
-from private_agent_local.output import (
+from private_agent.agent.output import (
     parse_structured_output,
     validate_output_schema,
     verify_structured_output,
 )
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.runtime import TERMINAL
 
 SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}},
           "required": ["summary"], "additionalProperties": False}
@@ -158,7 +158,7 @@ def test_recursive_refs_and_large_results_fail_with_bounded_work():
 
 
 def test_nested_dialect_cannot_reset_validation_budget(monkeypatch):
-    monkeypatch.setattr("private_agent_local.output.MAX_VALIDATION_STEPS", 2)
+    monkeypatch.setattr("private_agent.agent.output.MAX_VALIDATION_STEPS", 2)
     schema = validate_output_schema({"type": "object", "properties": {"value": {
         "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "string"}}})
     with pytest.raises(ValueError, match="计算预算"):
@@ -174,7 +174,7 @@ def test_local_anchor_is_validated_before_model_execution():
 
 @pytest.mark.parametrize("branch", [False, {"type": "integer"}])
 def test_many_failing_branches_cannot_amplify_large_error_context(branch, monkeypatch):
-    monkeypatch.setattr("private_agent_local.output.MAX_VALIDATION_BYTES", 1024)
+    monkeypatch.setattr("private_agent.agent.output.MAX_VALIDATION_BYTES", 1024)
     schema = validate_output_schema({"type": "object", "properties": {"value": {"anyOf": [branch] * 24}}})
     with pytest.raises(ValueError, match="计算预算"):
         parse_structured_output(json.dumps({"value": "x" * 64}), schema)

@@ -6,14 +6,14 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from private_agent_core.coding_contracts import (
+from private_agent.contracts.coding_contracts import (
     CONTRACTS,
     CapabilitySnapshot,
     ContextItem,
     ExecutionResult,
     RunOutcome,
 )
-from private_agent_core.contracts import AgentRunResult
+from private_agent.contracts.runtime import AgentRunResult
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,7 +23,7 @@ def test_generated_contracts_and_examples_are_in_sync():
 
     for path, content in generate().items():
         assert Path(path).read_text(encoding="utf-8") == content, path
-    bundle = json.loads((ROOT / "src/private_agent_core/coding_contracts.schema.json").read_text(encoding="utf-8"))
+    bundle = json.loads((ROOT / "src/private_agent/contracts/coding_contracts.schema.json").read_text(encoding="utf-8"))
     examples = json.loads((Path(__file__).parent / "contract_examples.json").read_text(encoding="utf-8"))
     assert set(examples) == {model.__name__ for model in CONTRACTS}
     for model in CONTRACTS:

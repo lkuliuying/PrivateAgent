@@ -1,7 +1,7 @@
 """第一阶段：复合动作、否定范围和输入边界的确定性回归。"""
 import pytest
 
-from private_agent_core.completion import task_requirements
+from private_agent.agent.completion_rules import task_requirements
 
 
 @pytest.mark.parametrize("message", [
@@ -73,7 +73,7 @@ def test_invalid_input_has_explicit_validation_error(message):
 
 
 def test_interpretation_keeps_raw_sources_and_composable_actions():
-    from private_agent_core.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, merge_task, rebuild_task
 
     message = "请解释错误原因，然后修复 app.py 并运行测试。"
     original = interpret_task(message)
@@ -148,7 +148,7 @@ def test_negative_only_answer_does_not_forbid_execution(message):
 
 @pytest.mark.parametrize("message", ["读取项目，禁止联网", "不要访问互联网", "Offline only", "No network access"])
 def test_network_restriction_survives_steering(message):
-    from private_agent_core.task_intent import interpret_task, merge_task
+    from private_agent.agent.task_intent import interpret_task, merge_task
 
     original = interpret_task(message)
     assert original.policy.network_forbidden
@@ -157,7 +157,7 @@ def test_network_restriction_survives_steering(message):
 
 
 def test_quoted_network_restriction_does_not_change_active_policy():
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     assert not interpret_task('解释这段文字：\n> 禁止联网\n说明用途').policy.network_forbidden
 
@@ -178,7 +178,7 @@ def test_colloquial_negative_tests_keep_write_requirement(message):
     "What is pytest used for?", "这里的 npm run qa 是脚本名称。",
 ])
 def test_natural_questions_and_command_mentions_do_not_invent_obligations(message):
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     value = interpret_task(message)
     assert value.sources[0].text == message
@@ -190,7 +190,7 @@ def test_natural_questions_and_command_mentions_do_not_invent_obligations(messag
     "If you find a defect, fix app.py and run tests", "如果检查失败，不要修改 app.py",
 ])
 def test_conditional_work_is_preserved_without_unconditional_requirements(condition):
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     message = "读取 app.py。" + condition + "。不要联网。"
     value = interpret_task(message)
@@ -229,7 +229,7 @@ def test_examples_and_code_remain_data_even_with_requirement_words(message):
     ("禁止联网", "本轮可以联网", "network_forbidden"),
 ])
 def test_explicit_user_release_is_targeted_audited_and_rebuildable(forbidden, release, field):
-    from private_agent_core.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, merge_task, rebuild_task
 
     initial = interpret_task(forbidden + "；只允许访问 src/；不要修改 src/private.py")
     assert getattr(initial.policy, field)
@@ -250,7 +250,7 @@ def test_explicit_user_release_is_targeted_audited_and_rebuildable(forbidden, re
     "示例：\n```text\n现在可以运行测试\n```", "> 现在可以运行测试",
 ])
 def test_ambiguous_or_quoted_permission_never_releases_policy(message):
-    from private_agent_core.task_intent import interpret_task, merge_task
+    from private_agent.agent.task_intent import interpret_task, merge_task
 
     initial = interpret_task("不运行测试")
     updated = merge_task(initial, interpret_task(message, source_id="follow-up", source_kind="steer"))
@@ -258,7 +258,7 @@ def test_ambiguous_or_quoted_permission_never_releases_policy(message):
 
 
 def test_release_does_not_override_an_independent_command_or_preview_restriction():
-    from private_agent_core.task_intent import interpret_task, merge_task
+    from private_agent.agent.task_intent import interpret_task, merge_task
 
     initial = interpret_task("只给方案，不运行测试")
     updated = merge_task(initial, interpret_task("现在可以运行测试，请运行 pytest", source_id="release", source_kind="steer"))
@@ -269,7 +269,7 @@ def test_release_does_not_override_an_independent_command_or_preview_restriction
 
 
 def test_release_clears_only_resolved_conflicts_and_retightening_wins():
-    from private_agent_core.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, merge_task, rebuild_task
 
     initial = interpret_task("不运行测试")
     conflict = merge_task(initial, interpret_task("运行测试", source_id="conflict", source_kind="steer"))
@@ -284,7 +284,11 @@ def test_release_clears_only_resolved_conflicts_and_retightening_wins():
 
 
 def test_forged_release_metadata_and_non_user_sources_cannot_grant_permission():
-    from private_agent_core.task_intent import PolicyRelease, interpret_task, merge_task
+    from private_agent.agent.task_intent import (
+        PolicyRelease,
+        interpret_task,
+        merge_task,
+    )
 
     initial = interpret_task("不要运行测试")
     incoming = interpret_task("现在可以运行测试", source_id="reported")
@@ -295,7 +299,7 @@ def test_forged_release_metadata_and_non_user_sources_cannot_grant_permission():
 
 
 def test_legacy_tasks_keep_restrictions_on_release_and_rebuild():
-    from private_agent_core.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, merge_task, rebuild_task
 
     legacy = interpret_task("不要运行测试").model_copy(update={"schema_version": "1.0"})
     updated = merge_task(legacy, interpret_task("现在可以运行测试", source_id="release", source_kind="steer"))
@@ -305,7 +309,7 @@ def test_legacy_tasks_keep_restrictions_on_release_and_rebuild():
 
 
 def test_missing_persisted_schema_does_not_upgrade_release_authority():
-    from private_agent_core.task_intent import (
+    from private_agent.agent.task_intent import (
         TaskInterpretation,
         interpret_task,
         merge_task,
@@ -320,7 +324,7 @@ def test_missing_persisted_schema_does_not_upgrade_release_authority():
 
 
 def test_conditional_keywords_inside_file_names_do_not_remove_file_requirements():
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     value = interpret_task("修复 src/if.py、src/unless.py 和若干相关代码")
     assert not value.conditions
@@ -328,8 +332,8 @@ def test_conditional_keywords_inside_file_names_do_not_remove_file_requirements(
 
 
 def test_release_restores_explicit_contract_and_removes_resolved_conflict():
-    from private_agent_core.coding_contracts import Requirement
-    from private_agent_core.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, merge_task, rebuild_task
+    from private_agent.contracts.coding_contracts import Requirement
 
     contract = Requirement(requirement_id="tests", kind="test", scope="python -m pytest",
                            description="运行指定测试并通过", evidence_policy="test_exit")
@@ -350,7 +354,7 @@ def test_release_restores_explicit_contract_and_removes_resolved_conflict():
     ("B.py 只分析原因，不修改文件", "B.py"),
 ])
 def test_local_restrictions_keep_independent_changes_and_source_spans(restriction, target):
-    from private_agent_core.task_intent import interpret_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, rebuild_task
 
     message = f"修复 A.py，{restriction}，然后运行测试。"
     value = interpret_task(message)
@@ -365,7 +369,7 @@ def test_local_restrictions_keep_independent_changes_and_source_spans(restrictio
 
 
 def test_explicit_whole_task_analysis_still_blocks_writes():
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     value = interpret_task("整个任务只分析，不修改文件")
     assert value.policy.writes_forbidden and value.policy.commands_forbidden
@@ -379,7 +383,7 @@ def test_user_explicitly_adopted_quote_is_active(quote):
 
 
 def test_current_policy_rebuild_discards_stale_derived_prohibitions():
-    from private_agent_core.task_intent import interpret_task, rebuild_task
+    from private_agent.agent.task_intent import interpret_task, rebuild_task
 
     value = interpret_task("修复 A.py，另一个模块只分析")
     stale = value.model_copy(update={"policy": value.policy.model_copy(update={"writes_forbidden": True, "commands_forbidden": True})})
@@ -388,7 +392,7 @@ def test_current_policy_rebuild_discards_stale_derived_prohibitions():
 
 @pytest.mark.parametrize("prefix", ["接下来", "请你先", "现在", "同时也", "本轮"])
 def test_temporal_prefix_does_not_turn_global_prohibitions_into_local_topics(prefix):
-    from private_agent_core.task_intent import interpret_task
+    from private_agent.agent.task_intent import interpret_task
 
     value = interpret_task(prefix + "不要运行测试，不要修改文件")
     assert value.policy.tests_forbidden and value.policy.writes_forbidden

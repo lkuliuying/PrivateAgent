@@ -5,7 +5,7 @@ import time
 from test_baseline import record
 from test_local_executor import call, close, response, setup
 
-from private_agent_local.entry import parent_alive
+from private_agent.entry import parent_alive
 
 
 async def test_legacy_command_survives_old_timeout(tmp_path):

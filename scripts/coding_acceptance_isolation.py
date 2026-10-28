@@ -233,7 +233,7 @@ class WindowsIsolation:
         if self.agent_backend:
             self.agent_backend.verify()
         if self.host_sha256 is not None:
-            from private_agent_local.executor import host_path, verify_host
+            from private_agent.execution.executor import host_path, verify_host
             if verify_host(host_path()) != self.host_sha256:
                 raise ValueError("隔离执行宿主发生变化")
         for runtime in self.runtimes.values():
@@ -249,7 +249,7 @@ class WindowsIsolation:
         return result
 
     def local_appdata(self) -> Path:
-        from private_agent_local.windows_process import profile_environment
+        from private_agent.execution.windows_process import profile_environment
 
         # 只经 Windows API 定位目录，不读取用户设置；受限子进程无法读取其他应用材料。
         return Path(profile_environment()["LOCALAPPDATA"])
@@ -285,10 +285,10 @@ class WindowsIsolation:
         return asyncio.run(self._execute(family, argv, root, timeout=timeout, output_limit=output_limit))
 
     async def _execute(self, family, argv, root, *, timeout, output_limit):
-        from private_agent_core.execution.contracts import ExecStartParams
-        from private_agent_core.execution.exec_host_client import ExecHostClient
-        from private_agent_local.executor import host_path, verify_host
-        from private_agent_local.windows_sandbox import SandboxLease, runtime_roots
+        from private_agent.execution.contracts import ExecStartParams
+        from private_agent.execution.exec_host_client import ExecHostClient
+        from private_agent.execution.executor import host_path, verify_host
+        from private_agent.execution.windows_sandbox import SandboxLease, runtime_roots
 
         if not 0 < timeout <= 30 or type(output_limit) is not int or not 1 <= output_limit <= 64000:
             raise ValueError("隔离执行预算无效")

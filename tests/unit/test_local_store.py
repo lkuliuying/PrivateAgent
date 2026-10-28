@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from private_agent_local.store import INLINE_BYTES, SCHEMA_VERSION, Store
+from private_agent.storage.store import INLINE_BYTES, SCHEMA_VERSION, Store
 
 
 def legacy_database(path, *, corrupt=False):

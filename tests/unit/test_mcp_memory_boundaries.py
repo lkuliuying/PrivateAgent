@@ -7,9 +7,9 @@ import pytest
 from test_local_attachments import commit_attachment, staged
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_core.contracts import ModelMessage, ToolCall
-from private_agent_local.recovery import reconcile_mcp_execution
-from private_agent_local.store import SCHEMA_VERSION, Store
+from private_agent.agent.recovery import reconcile_mcp_execution
+from private_agent.contracts.runtime import ModelMessage, ToolCall
+from private_agent.storage.store import SCHEMA_VERSION, Store
 
 
 @pytest.mark.asyncio

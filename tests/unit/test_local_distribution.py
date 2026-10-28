@@ -13,16 +13,19 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_local_packages_are_independent_of_retired_server():
     forbidden = {"personal_assistant", "sqlalchemy", "alembic", "aiomysql", "langchain", "chromadb"}
-    for package in ("private_agent_core", "private_agent_local"):
+    assert (ROOT / "src/private_agent").is_dir()
+    assert not (ROOT / "src/private_agent_core").exists()
+    assert not (ROOT / "src/private_agent_local").exists()
+    for package in ("private_agent",):
         for path in (ROOT / "src" / package).rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 imports = [item.name for item in node.names] if isinstance(node, ast.Import) else (
                     [node.module] if isinstance(node, ast.ImportFrom) and node.module and not node.level else [])
                 assert not {name.split(".")[0] for name in imports} & forbidden, path
     assert not (ROOT / "src/personal_assistant").exists()
-    assert not (ROOT / "src/private_agent_local/cloud.py").exists()
+    assert not (ROOT / "src/private_agent/cloud.py").exists()
     manifest = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/private_agent_core", "src/private_agent_local"]
+    assert manifest["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == ["src/private_agent"]
     for dependency in manifest["project"]["dependencies"]:
         assert not any(dependency.startswith(name) for name in forbidden)
 
@@ -40,7 +43,7 @@ def test_release_manifest_requires_complete_local_artifacts_and_matching_hashes(
     artifacts = {"PrivateAgent-windows-x64.exe": b"client", "private-agent-local.exe": b"local", "exec-host.exe": b"host"}
     for name, content in artifacts.items():
         (tmp_path / name).write_bytes(content)
-    sources = [{"path": "src/private_agent_local/entry.py", "sha256": "a" * 64}]
+    sources = [{"path": "src/private_agent/entry.py", "sha256": "a" * 64}]
     source_hash = hashlib.sha256(json.dumps(sources, separators=(",", ":")).encode()).hexdigest()
     host_hash = hashlib.sha256(b"host").hexdigest()
     (tmp_path / "exec-host.sha256").write_text(host_hash, encoding="utf-8")

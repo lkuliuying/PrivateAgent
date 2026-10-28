@@ -17,7 +17,7 @@ from coding_acceptance_schema import (
 )
 from run_coding_validation import ROOT
 
-SOURCE_ROOTS = ("src/private_agent_core", "src/private_agent_local", "apps/desktop/src",
+SOURCE_ROOTS = ("src/private_agent", "apps/desktop/src",
                 "apps/desktop/src-tauri", "apps/exec-host")
 BUILD_INPUTS = ("pyproject.toml", "requirements.txt", "apps/desktop/package.json", "apps/desktop/package-lock.json",
                 "apps/desktop/index.html", "apps/desktop/vite.config.ts", "apps/desktop/tsconfig.json",

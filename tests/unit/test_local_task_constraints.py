@@ -7,9 +7,9 @@ import pytest
 from test_local_completion import create_run
 from test_local_executor import call, close, response, setup
 
-from private_agent_core.coding_contracts import RunOutcome
-from private_agent_local.completion import LocalCompletionVerifier
-from private_agent_local.task_constraints import apply_steer, refresh_interpretation
+from private_agent.agent.completion import LocalCompletionVerifier
+from private_agent.agent.task_constraints import apply_steer, refresh_interpretation
+from private_agent.contracts.coding_contracts import RunOutcome
 
 pytestmark = pytest.mark.asyncio
 
@@ -41,7 +41,7 @@ async def test_known_test_alias_and_lifecycle_never_reach_executor(api, monkeypa
     (api[3] / "package.json").write_text(json.dumps({"scripts": {"check": "npm run qa", "qa": "vitest run",
                                                                  "prebuild": "npm test", "build": "tsc"}}), encoding="utf-8")
     legacy, start, approve = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", legacy)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", legacy)
     monkeypatch.setattr(owner.execution_sessions, "start", start)
     monkeypatch.setattr(owner, "approve", approve)
     args = {"command": " ".join(argv)} if tool == "run_project_command" else {"argv": argv}
@@ -62,7 +62,7 @@ async def test_known_test_alias_and_lifecycle_never_reach_executor(api, monkeypa
 async def test_command_and_stdin_boundaries_cannot_override_constraints(api, monkeypatch, message, tool, args):
     owner, run = pending_run(api, message)
     legacy, start, write, approve = AsyncMock(), AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", legacy)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", legacy)
     monkeypatch.setattr(owner.execution_sessions, "start", start)
     monkeypatch.setattr(owner.execution_sessions, "write", write)
     monkeypatch.setattr(owner, "approve", approve)
@@ -135,7 +135,7 @@ async def test_final_write_guard_rechecks_policy_after_approval(api, monkeypatch
 async def test_modified_file_without_tests_finishes_unverified_without_retry(api, monkeypatch):
     (api[3] / "package.json").write_text(json.dumps({"scripts": {"qa": "pytest"}}), encoding="utf-8")
     command = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     final = await create_run(api, "修复 app.py，但不要运行测试。", [
         response(call("write_project_file", {"rel_path": "app.py", "content": "fixed"})),
         response(call("run_project_command", {"command": "npm run qa"})),
@@ -216,7 +216,7 @@ async def test_cache_cannot_relax_original_restrictions(api):
 async def test_explicit_release_allows_only_the_requested_constraint_change(api, monkeypatch):
     owner, run = pending_run(api, "不运行测试，不要联网")
     execute = AsyncMock(return_value={"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     denied = await owner.tool(run, api[3], call("run_project_command", {"command": "python -m pytest"}))
     assert denied["error_code"] == "user_constraint"
     execute.assert_not_called()
@@ -266,7 +266,7 @@ async def test_conditional_followup_does_not_require_unnecessary_changes(api):
 
 
 async def test_no_write_blocks_legacy_patch_and_final_patch_service(api, monkeypatch):
-    from private_agent_local.task_constraints import TaskConstraintError
+    from private_agent.agent.task_constraints import TaskConstraintError
 
     owner, run = pending_run(api, "只解释，不修改文件，也不运行命令")
     denied = await owner.tool(run, api[3], call("write_project_file", {"rel_path": "A.py", "content": "bad"}))
@@ -277,7 +277,7 @@ async def test_no_write_blocks_legacy_patch_and_final_patch_service(api, monkeyp
     denied = await owner.tool(run, api[3], call("apply_project_patch", args))
     assert denied["error_code"] == "user_constraint"
     replace = AsyncMock()
-    monkeypatch.setattr("private_agent_local.patchsets.replace_one", replace)
+    monkeypatch.setattr("private_agent.workspace.patchsets.replace_one", replace)
     with pytest.raises(TaskConstraintError):
         await owner.patches.apply(run, api[3], args["patch_set_id"], args["preview_sha256"], AsyncMock())
     replace.assert_not_called()
@@ -303,12 +303,12 @@ async def test_ui_stdin_rechecks_active_task_constraints(api, monkeypatch):
 
 
 async def test_direct_session_start_checks_constraints_before_host_start(api, monkeypatch):
-    from private_agent_local.execution_tools import ExecArgs
-    from private_agent_local.task_constraints import TaskConstraintError
+    from private_agent.agent.task_constraints import TaskConstraintError
+    from private_agent.execution.execution_tools import ExecArgs
 
     owner, run = pending_run(api, "不运行任何命令")
     host = AsyncMock()
-    monkeypatch.setattr("private_agent_local.execution_sessions.host_path", host)
+    monkeypatch.setattr("private_agent.execution.execution_sessions.host_path", host)
     args = ExecArgs(argv=["python", "check.py"])
     with pytest.raises(TaskConstraintError):
         await owner.execution_sessions.start(run, {}, api[3], api[3], args.argv, args)
@@ -329,7 +329,7 @@ async def test_write_scope_merge_uses_intersection_and_does_not_loosen(api):
 async def test_steer_does_not_erase_previously_executed_tests(api, monkeypatch):
     owner, run = pending_run(api, "运行测试")
     command = AsyncMock(return_value={"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", command)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", command)
     await owner.tool(run, api[3], call("run_project_command", {"command": "python -m pytest"}))
     apply_steer(run, "不要运行测试", "stop-further-tests")
     verifier = LocalCompletionVerifier(owner, run, api[3])
@@ -352,7 +352,7 @@ async def test_no_tests_allows_unknown_commands_and_unrelated_build(api, monkeyp
     owner, run = pending_run(api, "修复 app.py，不要运行测试")
     (api[3] / "package.json").write_text(json.dumps({"scripts": {"test": "vitest run", "build": "tsc"}}), encoding="utf-8")
     execute = AsyncMock(return_value={"returncode": 0, "stdout": "done", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     result = await owner.tool(run, api[3], call("run_project_command", {"command": command}))
     assert not result.get("error") and result["returncode"] == 0
     execute.assert_awaited_once()
@@ -379,12 +379,12 @@ async def test_explicit_test_with_write_scope_checks_actual_changes(api, monkeyp
             (api[3] / "B.py").write_text("unexpected", encoding="utf-8")
         return {"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False}
 
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     result = await owner.tool(run, api[3], call("run_project_command", {"command": "python -m pytest"}))
     check = run["executions"][-1]["scope_check"]
     assert check["status"] == ("violated" if outside else "passed")
     if outside:
-        from private_agent_local.task_constraints import tool_allowed
+        from private_agent.agent.task_constraints import tool_allowed
 
         assert result["error_code"] == "user_constraint" and check["paths"] == ["B.py"]
         assert not tool_allowed("write_project_file", run) and not tool_allowed("apply_project_patch", run)
@@ -398,7 +398,7 @@ async def test_explicit_test_with_write_scope_checks_actual_changes(api, monkeyp
 
 
 async def test_scoped_test_requires_explicit_user_requirement(api):
-    from private_agent_local.task_constraints import TaskConstraintError, guard_command
+    from private_agent.agent.task_constraints import TaskConstraintError, guard_command
 
     _, run = pending_run(api, "只修改 A.py")
     with pytest.raises(TaskConstraintError):
@@ -411,7 +411,7 @@ async def test_scoped_test_requires_explicit_user_requirement(api):
 
 
 async def test_incomplete_scope_snapshot_is_not_reported_as_passed(api):
-    from private_agent_local.task_constraints import (
+    from private_agent.agent.task_constraints import (
         TaskConstraintError,
         capture_command_scope,
         check_command_scope,
@@ -427,7 +427,7 @@ async def test_incomplete_scope_snapshot_is_not_reported_as_passed(api):
 
 
 async def test_script_tracing_is_bounded_and_ignores_unreachable_tests(api):
-    from private_agent_local.task_constraints import TaskConstraintError, guard_command
+    from private_agent.agent.task_constraints import TaskConstraintError, guard_command
 
     _, run = pending_run(api, "不要运行测试")
     (api[3] / "package.json").write_text(json.dumps({"scripts": {

@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from private_agent_local.secret_filter import MAX_STREAM_LINE, REDACTED, SecretFilter
+from private_agent.security.secret_filter import MAX_STREAM_LINE, REDACTED, SecretFilter
 
 KEY = "fixture-private-key-928173"
 

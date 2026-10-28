@@ -8,16 +8,16 @@ from types import SimpleNamespace
 import pytest
 from test_local_executor import TERMINAL, close, response, setup, until
 
-from private_agent_core.contracts import ModelMessage, ToolCall
-from private_agent_local.memories import Memories
-from private_agent_local.memory_store import (
+from private_agent.agent.runtime import Runtime
+from private_agent.contracts.runtime import ModelMessage, ToolCall
+from private_agent.memory.memories import Memories
+from private_agent.memory.memory_store import (
     MemoryConflict,
     MemoryInput,
     MemorySettings,
     MemoryStore,
 )
-from private_agent_local.runtime import Runtime
-from private_agent_local.store import Store
+from private_agent.storage.store import Store
 
 
 class Model:

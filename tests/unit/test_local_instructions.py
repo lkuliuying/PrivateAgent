@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_local import files
-from private_agent_local.instructions import InstructionError, InstructionLoader
+from private_agent.context.instructions import InstructionError, InstructionLoader
+from private_agent.workspace import files
 
 
 def test_nested_rules_do_not_leak_between_siblings(tmp_path):
@@ -77,7 +77,7 @@ def test_total_size_and_file_count_are_bounded(tmp_path):
 
 @pytest.mark.asyncio
 async def test_account_revocation_after_approval_prevents_write(tmp_path, monkeypatch):
-    from private_agent_local.model_errors import CloudError
+    from private_agent.models.model_errors import CloudError
     app, client, server, root, body = await setup(tmp_path)
     try:
         server.responses = [response(call("write_project_file", {"rel_path": "x.txt", "content": "x"}))]

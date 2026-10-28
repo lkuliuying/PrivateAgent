@@ -6,7 +6,7 @@ import pytest
 import pytest_asyncio
 from test_local_executor import close, setup
 
-from private_agent_local.store import Store
+from private_agent.storage.store import Store
 
 
 @pytest_asyncio.fixture

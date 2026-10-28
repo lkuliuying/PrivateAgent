@@ -6,11 +6,11 @@ import sqlite3
 import pytest
 from test_local_executor import close, response, setup, until
 
-from private_agent_core.contracts import ModelMessage, ProviderState
-from private_agent_local.context_manager import LocalContext
-from private_agent_local.recovery import RESUMABLE_ERRORS
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.store import encode
+from private_agent.agent.recovery import RESUMABLE_ERRORS
+from private_agent.agent.runtime import TERMINAL
+from private_agent.context.context_manager import LocalContext
+from private_agent.contracts.runtime import ModelMessage, ProviderState
+from private_agent.storage.store import encode
 
 
 @pytest.fixture

@@ -9,20 +9,21 @@ from pathlib import Path
 
 import pytest
 
-from private_agent_core.execution.contracts import ExecStartParams
-from private_agent_core.execution.exec_host_client import (
+from private_agent.execution import windows_sandbox
+from private_agent.execution.contracts import ExecStartParams
+from private_agent.execution.exec_host_client import (
     ExecHostClient,
     ExecutorUnavailable,
 )
-from private_agent_local import files, windows_sandbox
-from private_agent_local.executor import host_path, run_command
-from private_agent_local.policy import powershell_plan
-from private_agent_local.windows_sandbox import (
+from private_agent.execution.executor import host_path, run_command
+from private_agent.execution.windows_sandbox import (
     SandboxLease,
     WindowsSecurity,
     runtime_roots,
 )
-from private_agent_local.workspaces import FileLock
+from private_agent.security.policy import powershell_plan
+from private_agent.workspace import files
+from private_agent.workspace.workspaces import FileLock
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows AppContainer 原生边界")]
 
@@ -250,8 +251,8 @@ async def test_crash_journal_is_reconciled_without_pid_only_takeover(tmp_path):
     root.mkdir()
     state = tmp_path / "leases"
     source = Path(__file__).resolve().parents[2] / "src"
-    code = (f"import sys,os; sys.path.insert(0,{str(source)!r}); from private_agent_local import files; "
-            "from private_agent_local.windows_sandbox import SandboxLease; from pathlib import Path; "
+    code = (f"import sys,os; sys.path.insert(0,{str(source)!r}); from private_agent.workspace import files; "
+            "from private_agent.execution.windows_sandbox import SandboxLease; from pathlib import Path; "
             f"SandboxLease(Path({str(root)!r}), [sys.executable], files.prepare_process([sys.executable])[1], directory=Path({str(state)!r})); print(os.getpid(),flush=True); os._exit(23)")
     _, env = files.prepare_process([sys.executable])
     child = await asyncio.create_subprocess_exec(sys.executable, "-B", "-c", code, env=env,

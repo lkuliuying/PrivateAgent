@@ -6,8 +6,8 @@ import pytest
 from test_local_executor import close, response, setup
 from test_local_memories import enable, worker  # noqa: F401  pytest 夹具
 
-from private_agent_local.memories import compose_query, recall_query
-from private_agent_local.memory_store import MemoryInput
+from private_agent.memory.memories import compose_query, recall_query
+from private_agent.memory.memory_store import MemoryInput
 
 
 def project_session(store):

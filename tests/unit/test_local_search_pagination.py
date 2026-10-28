@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from private_agent_local import repository
+from private_agent.workspace import repository
 
 
 @pytest.mark.asyncio

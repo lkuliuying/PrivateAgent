@@ -11,14 +11,14 @@ from pathlib import Path
 from coding_acceptance_models import ProductSession, model_limits, provider_config
 from coding_acceptance_schema import fields, fingerprint
 
-from private_agent_local.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
-from private_agent_local.model_catalog import (
+from private_agent.models.model_catalog import (
     FORMATS,
     ModelCatalog,
     ModelParameters,
     ProviderInput,
     profile_id,
 )
+from private_agent.security.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
 
 ACCOUNT_MODE = "isolated_local_test"
 

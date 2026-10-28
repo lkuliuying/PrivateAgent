@@ -2,8 +2,8 @@
 import pytest
 from test_direct_models import configuration, configure, desktop
 
-from private_agent_local.model_catalog import ProviderInput
-from private_agent_local.model_preferences import (
+from private_agent.models.model_catalog import ProviderInput
+from private_agent.models.model_preferences import (
     ModelRestoreConfirmationRequired,
     resolve,
 )
@@ -138,7 +138,7 @@ async def test_pending_model_preserves_idempotent_receipt_but_blocks_queued_turn
 def test_pending_model_survives_database_reopen(tmp_path):
     from test_local_attachments import fixture_store
 
-    from private_agent_local.store import Store
+    from private_agent.storage.store import Store
 
     store, project, _, session = fixture_store(tmp_path)
     pending = pending_source("source-profile")

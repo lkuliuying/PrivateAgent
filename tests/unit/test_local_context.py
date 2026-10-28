@@ -4,7 +4,7 @@ import json
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_local.context import average_cache_hit_percent, context_budget
+from private_agent.context.usage import average_cache_hit_percent, context_budget
 
 
 @pytest.mark.asyncio

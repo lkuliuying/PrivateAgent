@@ -8,22 +8,22 @@ import pytest
 from test_local_context_history import history_store
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_core.context import ContextLimits, request_budget
-from private_agent_core.contracts import (
+from private_agent.agent.loop import CancellationToken
+from private_agent.context.budget import ContextLimits, request_budget
+from private_agent.context.context_manager import LocalContext
+from private_agent.contracts.runtime import (
     ModelMessage,
     ModelRequest,
     ModelToolDefinition,
     ToolCall,
 )
-from private_agent_core.llm.adapters import (
+from private_agent.models.llm.adapters import (
     ClaudeMessagesAdapter,
     OllamaChatAdapter,
     OpenAIChatAdapter,
 )
-from private_agent_core.llm.contracts import ModelCapabilities, ModelGatewayError
-from private_agent_core.llm.gateway import ModelGateway
-from private_agent_core.runtime import CancellationToken
-from private_agent_local.context_manager import LocalContext
+from private_agent.models.llm.contracts import ModelCapabilities, ModelGatewayError
+from private_agent.models.llm.gateway import ModelGateway
 
 
 def seed(store, session, start=0, count=16):

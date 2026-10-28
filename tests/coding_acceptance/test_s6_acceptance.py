@@ -117,12 +117,12 @@ def test_local_runtime_terminal_contract_does_not_drift():
     from run_coding_validation import ROOT
 
     # 只解析纯常量，契约检查不为获取状态集合而导入或启动业务运行时。
-    module = ast.parse((ROOT / "src/private_agent_local/runtime.py").read_text(encoding="utf-8"))
+    module = ast.parse((ROOT / "src/private_agent/agent/runtime.py").read_text(encoding="utf-8"))
     runtime_terminal = next(ast.literal_eval(node.value) for node in module.body
                             if isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "TERMINAL"
                                                                      for target in node.targets))
     assert TERMINAL == runtime_terminal
-    from private_agent_core.contracts import AgentEventType, AgentRunStatus
+    from private_agent.contracts.runtime import AgentEventType, AgentRunStatus
 
     core_terminal = {item.value for item in AgentRunStatus} - {"created", "running", "waiting_approval"}
     assert core_terminal == TERMINAL - {"interrupted"}
@@ -406,5 +406,5 @@ def test_formal_ipc_streaming_and_false_completion(tmp_path, protocol, legacy):
 def test_source_identity_is_concrete():
     identity = product_identity(None)
     assert len(identity["sha256"]) == 64
-    assert "src/private_agent_local/runtime.py" in identity["files"]
+    assert "src/private_agent/agent/runtime.py" in identity["files"]
     assert identity["installed_desktop_verified"] is False

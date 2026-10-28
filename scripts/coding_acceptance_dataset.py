@@ -28,9 +28,9 @@ def judge_identity() -> dict:
         "coding_acceptance_schema.py", "coding_acceptance_catalog.py", "coding_acceptance_judge.py",
         "coding_acceptance_isolation.py", "coding_acceptance_pytest.py", "coding_acceptance_dataset.py")}
     for name in ("scripts/run_coding_validation.py", "scripts/coding_validation_process.py",
-                 "src/private_agent_local/windows_sandbox.py", "src/private_agent_local/windows_process.py",
-                 "src/private_agent_local/executor.py", "src/private_agent_core/execution/contracts.py",
-                 "src/private_agent_core/execution/exec_host_client.py"):
+                 "src/private_agent/execution/windows_sandbox.py", "src/private_agent/execution/windows_process.py",
+                 "src/private_agent/execution/executor.py", "src/private_agent/execution/contracts.py",
+                 "src/private_agent/execution/exec_host_client.py"):
         identity[name] = file_hash(ROOT / name)
     return identity
 

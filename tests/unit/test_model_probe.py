@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 
-from private_agent_core.contracts import ToolCall
-from private_agent_core.model_probe import (
+from private_agent.contracts.runtime import ToolCall
+from private_agent.models.model_probe import (
     ProbeCapability,
     ProbeCase,
     default_probe_cases,

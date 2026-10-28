@@ -7,12 +7,12 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from private_agent_local.app import create_app
-from private_agent_local.connections import ModelConfig
-from private_agent_local.direct_models import ConfiguredModels
-from private_agent_local.local_models import model_service
-from private_agent_local.model_catalog import ProviderInput
-from private_agent_local.model_errors import CloudError
+from private_agent.api.app import create_app
+from private_agent.models.connections import ModelConfig
+from private_agent.models.direct_models import ConfiguredModels
+from private_agent.models.local_models import model_service
+from private_agent.models.model_catalog import ProviderInput
+from private_agent.models.model_errors import CloudError
 
 NONCE = "direct-fixture-nonce-" * 4
 HEADERS = {"X-PrivateAgent-Local": NONCE, "Authorization": "Bearer fixture-account-a"}

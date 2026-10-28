@@ -4,10 +4,10 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local import tool_catalog
-from private_agent_local.tool_catalog import DEFERRED_TOOLS, SEARCH_SPEC, ToolCatalog
-from private_agent_local.tool_registry import REGISTRY
+from private_agent.tools import tool_catalog
+from private_agent.tools.tool_catalog import DEFERRED_TOOLS, SEARCH_SPEC, ToolCatalog
+from private_agent.tools.tool_registry import REGISTRY
+from private_agent.tools.tool_specs import ToolFailure
 
 
 def run_state(**changes):

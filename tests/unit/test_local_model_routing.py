@@ -5,14 +5,14 @@ from test_direct_models import REQUEST, configure, desktop, enter_local
 from test_direct_models import configuration as provider_configuration
 from test_local_executor import HEADERS, NONCE
 
-from private_agent_local.app import create_app
-from private_agent_local.connections import ModelConfig
-from private_agent_local.local_models import (
+from private_agent.api.app import create_app
+from private_agent.models.connections import ModelConfig
+from private_agent.models.local_models import (
     ConfiguredModels,
     LocalInference,
     model_service,
 )
-from private_agent_local.model_errors import CloudError
+from private_agent.models.model_errors import CloudError
 
 
 def configuration():
@@ -122,7 +122,7 @@ async def test_discovery_is_authenticated_locally_and_does_not_invent_capacity(t
         assert request.url.path == path
         assert "authorization" not in request.headers
         return httpx.Response(200, json=payload)
-    monkeypatch.setattr("private_agent_local.app.LocalInference", lambda config: LocalInference(config, transport=httpx.MockTransport(discover)))
+    monkeypatch.setattr("private_agent.api.app.LocalInference", lambda config: LocalInference(config, transport=httpx.MockTransport(discover)))
     app = create_app(data_dir=tmp_path / "data", cloud=service, nonce=NONCE)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1", headers=HEADERS) as client:
         try:

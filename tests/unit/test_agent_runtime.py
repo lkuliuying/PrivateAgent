@@ -5,7 +5,8 @@ from collections import deque
 
 import pytest
 
-from private_agent_core.contracts import (
+from private_agent.agent.loop import AgentRuntime, CancellationToken, EventSinkError
+from private_agent.contracts.runtime import (
     AgentEventType,
     AgentRunLimits,
     AgentRunStatus,
@@ -18,7 +19,6 @@ from private_agent_core.contracts import (
     ToolCall,
     ToolResult,
 )
-from private_agent_core.runtime import AgentRuntime, CancellationToken, EventSinkError
 
 
 class ScriptedModel:

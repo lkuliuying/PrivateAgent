@@ -1,5 +1,5 @@
 // 由 scripts/protocol_codegen.py 生成，禁止手改。
-// 唯一类型源：private_agent_core/coding_contracts.py；应用边界提供版本化扩展。
+// 唯一类型源：private_agent/contracts/coding_contracts.py；应用边界提供版本化扩展。
 
 export type CapabilitySnapshot = { "protocol_version"?: "1.0"; "tools"?: Array<ToolCapability>; "execution"?: boolean; "stdin"?: boolean; "pty"?: boolean; "model_streaming"?: boolean; "output_streaming"?: boolean; "recovery"?: boolean };
 

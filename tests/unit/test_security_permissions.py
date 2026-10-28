@@ -8,8 +8,8 @@ from test_execution_autonomy import permission
 from test_execution_autonomy import session as session
 from test_local_executor import call
 
-from private_agent_local import policy
-from private_agent_local.completion import content_ref
+from private_agent.agent.completion import content_ref
+from private_agent.security import policy
 
 
 @pytest.mark.asyncio
@@ -25,7 +25,7 @@ async def test_all_ordinary_entries_keep_sandbox(session, monkeypatch, mode, too
     permission(session, mode)
     execute = AsyncMock(return_value={"returncode": 0, "stdout": "done", "stderr": "", "truncated": False})
     approve = AsyncMock(return_value=True)
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     monkeypatch.setattr(owner, "approve", approve)
     result = await owner.tool(run, root, call(tool, args))
     assert "error" not in result, result
@@ -73,7 +73,7 @@ async def test_legacy_command_output_is_redacted_before_recording(session, monke
     owner, run, root = session
     secret = "synthetic-command-output-secret-0123456789"
     owner.cloud.secrets = {"test-provider": secret}
-    monkeypatch.setattr("private_agent_local.runtime.run_command", AsyncMock(return_value={
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", AsyncMock(return_value={
         "returncode": 0, "stdout": "prefix " + secret + " suffix", "stderr": "", "truncated": False,
     }))
     result = await owner.tool(run, root, call("run_project_command", {"command": "python task.py"}))
@@ -87,7 +87,7 @@ async def test_legacy_command_output_is_redacted_before_recording(session, monke
 async def test_legacy_public_arguments_and_evidence_use_the_same_filtered_receipt(session, monkeypatch):
     owner, run, root = session
     execute = AsyncMock(return_value={"returncode": 0, "stdout": "done", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     result = await owner.tool(run, root, call("run_project_command", {"command": "python task.py password=synthetic-value"}))
     assert "error" not in result, result
     assert execute.await_args.args[1][-1] == "password=synthetic-value"

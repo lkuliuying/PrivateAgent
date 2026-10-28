@@ -12,12 +12,12 @@ from test_local_execution_sessions import session as session
 from test_local_executor import call, close, response, setup, until
 from test_local_planning import plan_call, step
 
-from private_agent_core.contracts import AgentEvent, AgentEventType, AgentStep
-from private_agent_local import observer_steps
-from private_agent_local.core_adapter import LocalRunAdapter
-from private_agent_local.execution_tools import ExecArgs
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.store import Store
+from private_agent.agent import observer_steps
+from private_agent.agent.adapter import LocalRunAdapter
+from private_agent.agent.runtime import TERMINAL
+from private_agent.contracts.runtime import AgentEvent, AgentEventType, AgentStep
+from private_agent.execution.execution_tools import ExecArgs
+from private_agent.storage.store import Store
 
 
 def core_step(identifier, ordinal=1, *, kind="tool", call_id="same", status="running"):

@@ -7,7 +7,8 @@ import json
 import httpx
 import pytest
 
-from private_agent_core.contracts import (
+from private_agent.agent.loop import AgentRuntime, CancellationToken
+from private_agent.contracts.runtime import (
     AgentRunStatus,
     ModelMessage,
     ModelOutputFormat,
@@ -17,23 +18,22 @@ from private_agent_core.contracts import (
     ToolCall,
     ToolResult,
 )
-from private_agent_core.llm.adapters import (
+from private_agent.models.llm.adapters import (
     ClaudeMessagesAdapter,
     OllamaChatAdapter,
     OpenAIChatAdapter,
 )
-from private_agent_core.llm.contracts import (
+from private_agent.models.llm.contracts import (
     ModelCapabilities,
     ModelGatewayError,
     ModelTextDelta,
     RetryPolicy,
 )
-from private_agent_core.llm.gateway import ModelGateway
-from private_agent_core.llm.url_policy import (
+from private_agent.models.llm.gateway import ModelGateway
+from private_agent.models.llm.url_policy import (
     UnsafeModelEndpointError,
     validate_remote_base_url,
 )
-from private_agent_core.runtime import AgentRuntime, CancellationToken
 
 OUTPUT_SCHEMA = {
     "type": "object",

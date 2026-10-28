@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.contracts import ToolCall
-from private_agent_core.runtime import CancellationToken
-from private_agent_core.verification import OutputVerification
-from private_agent_local import reflection
-from private_agent_local.completion import LocalCompletionVerifier
-from private_agent_local.core_adapter import LocalRunAdapter
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent import reflection
+from private_agent.agent.adapter import LocalRunAdapter
+from private_agent.agent.completion import LocalCompletionVerifier
+from private_agent.agent.loop import CancellationToken
+from private_agent.agent.runtime import TERMINAL
+from private_agent.agent.verification import OutputVerification
+from private_agent.contracts.runtime import ToolCall
 
 pytestmark = pytest.mark.asyncio
 
@@ -78,7 +78,7 @@ async def pending_failures(api, count=2, **overrides):
 ])
 async def test_review_does_not_add_requests_without_eligible_repeated_failure(api, monkeypatch, failures, write, modern):
     review = AsyncMock(side_effect=AssertionError("未满足条件时不应调用独立复核"))
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     responses = [*failed_reads(failures), *([write_file()] if write else []), response(text="已完成当前任务说明")]
     run = await run_responses(api, responses, message="创建 app.py" if write else "解释项目职责",
                               recovery_contract_version="1.0" if modern else None)
@@ -104,7 +104,7 @@ async def test_two_failed_tools_latch_review_after_successful_write(api, monkeyp
         reviewed.append(candidate)
         return OutputVerification(passed=True, code="reflection_review_passed", message="复核通过", retryable=False)
 
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     run = await run_responses(api, [*failed_reads(), write_file(), response(text="已创建文件")])
     assert run["status"] == "completed" and run["goal_outcome"] == "verified"
     assert reviewed == ["已创建文件"]
@@ -151,7 +151,7 @@ async def test_real_reviewer_revises_then_passes_with_shared_usage_and_fresh_evi
 async def test_unavailable_review_never_delivers_verified(api, monkeypatch):
     review = AsyncMock(return_value=OutputVerification(passed=False, code="reflection_review_unavailable",
         message="独立质量复核未完成，结果尚未确认", retryable=False))
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     run = await run_responses(api, [*failed_reads(), write_file(), response(text="全部验证通过")])
     assert run["goal_outcome"] == "unknown"
     assert run["verification_state"] == "failed"
@@ -175,7 +175,7 @@ async def test_review_pass_cannot_reuse_machine_evidence_after_external_file_cha
         reviewed.append(candidate)
         return OutputVerification(passed=True, code="reflection_review_passed", message="复核通过", retryable=False)
 
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     verifier = LocalCompletionVerifier(owner, run, api[3])
     result = await verifier.verify("已创建 app.py，value 为 1", attempt=1)
     assert reviewed == ["已创建 app.py，value 为 1"]
@@ -188,14 +188,14 @@ async def test_review_pass_cannot_reuse_machine_evidence_after_external_file_cha
 @pytest.mark.parametrize("blocker,expected", [("manual", "unknown"), ("plan", "blocked")])
 async def test_review_cannot_override_manual_or_blocked_machine_outcome(api, monkeypatch, blocker, expected):
     review = AsyncMock(side_effect=AssertionError("机器检查未通过时不应调用独立复核"))
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     owner, run, _ = await pending_failures(api)
     written = await owner.tool(run, api[3], call("write_project_file", {"rel_path": "app.py", "content": "value = 1\n"}))
     assert written["status"] == "applied"
     if blocker == "manual":
-        from private_agent_core.coding_contracts import Requirement
-        from private_agent_core.task_intent import interpret_task
-        from private_agent_local.task_constraints import store_interpretation
+        from private_agent.agent.task_constraints import store_interpretation
+        from private_agent.agent.task_intent import interpret_task
+        from private_agent.contracts.coding_contracts import Requirement
 
         store_interpretation(run, interpret_task("创建 app.py", [
             Requirement(requirement_id="manual", kind="manual", description="人工核对业务结果")]))
@@ -333,7 +333,7 @@ async def test_steer_during_evidence_check_cannot_record_old_failure_in_new_goal
 
     monkeypatch.setattr(verifier, "load_outcome", steer_after_evidence)
     review = AsyncMock(side_effect=AssertionError("旧目标的完成证据不能触发新目标复核"))
-    monkeypatch.setattr("private_agent_local.reflection_review.review_completion", review)
+    monkeypatch.setattr("private_agent.agent.reflection_review.review_completion", review)
     try:
         result = await verifier.verify("已创建 app.py", attempt=1)
         assert not result.passed and result.code == "steering_superseded"

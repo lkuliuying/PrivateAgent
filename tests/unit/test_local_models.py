@@ -7,14 +7,14 @@ import pytest
 from test_direct_models import configuration, configure, desktop, enter_local
 from test_local_executor import NONCE, TERMINAL, until
 
-from private_agent_local.app import create_app
-from private_agent_local.connections import ModelConfig
-from private_agent_local.direct_models import ConfiguredModels
+from private_agent.api.app import create_app
+from private_agent.models.connections import ModelConfig
+from private_agent.models.direct_models import ConfiguredModels
 
 
 def test_entry_rejects_platform_and_removed_connection_arguments(tmp_path):
     for args in (["--server", "https://server.example.test"], ["--connection-json", '{"mode":"local"}']):
-        result = subprocess.run([sys.executable, "-m", "private_agent_local.entry", "--stdio",
+        result = subprocess.run([sys.executable, "-m", "private_agent.entry", "--stdio",
                                  "--data-dir", str(tmp_path / "records"), *args],
                                 cwd=tmp_path, capture_output=True, text=True, timeout=15)
         assert result.returncode != 0 and "unrecognized arguments" in result.stderr
@@ -22,7 +22,7 @@ def test_entry_rejects_platform_and_removed_connection_arguments(tmp_path):
 
 
 def test_shared_core_does_not_import_full_backend_configuration(tmp_path):
-    result = subprocess.run([sys.executable, "-c", "import sys; import private_agent_local.entry; assert not any(k == 'personal_assistant' or k.startswith('personal_assistant.') for k in sys.modules)"],
+    result = subprocess.run([sys.executable, "-c", "import sys; import private_agent.entry; assert not any(k == 'personal_assistant' or k.startswith('personal_assistant.') for k in sys.modules)"],
                             cwd=tmp_path, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
 

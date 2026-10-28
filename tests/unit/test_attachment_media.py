@@ -13,25 +13,25 @@ from test_local_attachments import (
 )
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_core.context import request_budget
-from private_agent_core.contracts import ModelImage, ModelMessage, ModelRequest
-from private_agent_core.history import TEXT_FIELDS, TEXT_FORMAT, validate_archive
-from private_agent_core.llm.adapters import (
+from private_agent.context.budget import request_budget
+from private_agent.contracts.runtime import ModelImage, ModelMessage, ModelRequest
+from private_agent.models.llm.adapters import (
     _claude_messages,
     _ollama_messages,
     _openai_messages,
 )
-from private_agent_core.llm.responses import OpenAIResponsesAdapter
-from private_agent_local import attachment_media as media
-from private_agent_local.attachment_context import with_attachment_images
-from private_agent_local.attachments import read_blob
-from private_agent_local.migration import (
+from private_agent.models.llm.responses import OpenAIResponsesAdapter
+from private_agent.models.model_errors import CloudError
+from private_agent.storage.history import TEXT_FIELDS, TEXT_FORMAT, validate_archive
+from private_agent.storage.migration import (
     apply_history,
     archive_sqlite,
     preview_history,
     rollback_history,
 )
-from private_agent_local.model_errors import CloudError
+from private_agent.workspace import attachment_media as media
+from private_agent.workspace.attachment_context import with_attachment_images
+from private_agent.workspace.attachments import read_blob
 
 
 def image_bytes(format="PNG", size=(40, 30)):
@@ -83,7 +83,7 @@ def test_image_snapshot_scope_and_restart(tmp_path, suffix, format):
         commit_attachment(store, item, draft, session)
         path = store.path
         store.db.close()
-        from private_agent_local.store import Store
+        from private_agent.storage.store import Store
         store = Store(path)
         assert store.attachments.image(item["id"], session_id=session["id"]) == preview
         with pytest.raises(ValueError, match="未提交"):

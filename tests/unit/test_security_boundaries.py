@@ -8,17 +8,17 @@ from test_direct_models import configure, desktop
 from test_local_execution_sessions import finished, start
 from test_local_execution_sessions import session as session
 
-from private_agent_core.contracts import (
+from private_agent.contracts.runtime import (
     ModelMessage,
     ModelRequest,
     ModelToolDefinition,
     ProviderState,
 )
-from private_agent_core.tool_specs import ToolFailure
-from private_agent_local.direct_models import ConfiguredModels
-from private_agent_local.documentation_mcp import DocumentationMcp
-from private_agent_local.secret_filter import REDACTED
-from private_agent_local.store import now
+from private_agent.integrations.documentation_mcp import DocumentationMcp
+from private_agent.models.direct_models import ConfiguredModels
+from private_agent.security.secret_filter import REDACTED
+from private_agent.storage.store import now
+from private_agent.tools.tool_specs import ToolFailure
 
 
 @pytest.mark.asyncio

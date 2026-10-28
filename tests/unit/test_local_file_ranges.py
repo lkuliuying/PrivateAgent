@@ -4,10 +4,10 @@ import subprocess
 
 import pytest
 
-from private_agent_local import files
-from private_agent_local.repository import Repository
-from private_agent_local.store import Store
-from private_agent_local.workspace_files import preview
+from private_agent.storage.store import Store
+from private_agent.workspace import files
+from private_agent.workspace.repository import Repository
+from private_agent.workspace.workspace_files import preview
 
 
 @pytest.fixture

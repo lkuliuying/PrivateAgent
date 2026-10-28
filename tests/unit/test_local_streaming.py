@@ -9,10 +9,10 @@ from test_local_executor import Server, call, close, response, setup, until
 from test_responses_adapter import OPAQUE, message, reasoning, sse
 from test_responses_adapter import response as responses_body
 
-from private_agent_local.connections import ModelConfig
-from private_agent_local.local_models import LocalInference
-from private_agent_local.model_errors import CloudError
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.runtime import TERMINAL
+from private_agent.models.connections import ModelConfig
+from private_agent.models.local_models import LocalInference
+from private_agent.models.model_errors import CloudError
 
 pytestmark = pytest.mark.asyncio
 

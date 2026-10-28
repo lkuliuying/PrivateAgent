@@ -10,7 +10,7 @@ import time
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.contracts import ModelMessage
+from private_agent.contracts.runtime import ModelMessage
 
 EARLY_FINDING = "早期关键发现：认证模块在启动时读取本机配置文件，禁止修改 secrets.txt"
 BASE_GOAL = "检查项目后创建 done.txt；禁止联网"

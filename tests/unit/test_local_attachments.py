@@ -8,20 +8,20 @@ import uuid
 import pytest
 from test_local_executor import TERMINAL, call, close, response, setup, until
 
-from private_agent_core.history import (
+from private_agent.storage.history import (
     LEGACY_FIELDS,
     LEGACY_FORMAT,
     encode_archive,
     validate_archive,
 )
-from private_agent_local.attachments import read_blob
-from private_agent_local.migration import (
+from private_agent.storage.migration import (
     apply_history,
     archive_sqlite,
     preview_history,
     rollback_history,
 )
-from private_agent_local.store import SCHEMA_VERSION, Store
+from private_agent.storage.store import SCHEMA_VERSION, Store
+from private_agent.workspace.attachments import read_blob
 
 AUTHORITY = "local-fixture://attachments"
 
@@ -210,7 +210,7 @@ def test_v7_migration_backup_and_failure_rollback(tmp_path, monkeypatch, fail):
     if fail:
         def broken(_):
             raise RuntimeError("受控迁移失败")
-        monkeypatch.setattr("private_agent_local.attachments.create_schema", broken)
+        monkeypatch.setattr("private_agent.workspace.attachments.create_schema", broken)
         with pytest.raises(RuntimeError, match="受控"):
             Store(path)
         with sqlite3.connect(path) as db:
@@ -265,7 +265,7 @@ def test_v2_roundtrip_digest_limit_v1_and_rollback(tmp_path, monkeypatch):
         (store.attachments.directory / (item["id"] + ".txt")).write_text("损坏", encoding="utf-8")
         with pytest.raises(ValueError, match="损坏"):
             archive_sqlite(store.path, **args)
-        monkeypatch.setattr("private_agent_core.history.MAX_BYTES", 100)
+        monkeypatch.setattr("private_agent.storage.history.MAX_BYTES", 100)
         with pytest.raises(ValueError, match="64 MiB"):
             encode_archive(legacy)
     finally:

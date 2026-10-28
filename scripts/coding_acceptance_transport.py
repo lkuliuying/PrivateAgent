@@ -264,7 +264,7 @@ class RuntimeClient:
                 raise ValueError("候选执行宿主摘要不符")
             command = [str(staged / "private-agent-local.exe")]
         else:
-            command = [sys.executable, "-B", "-m", "private_agent_local.entry"]
+            command = [sys.executable, "-B", "-m", "private_agent.entry"]
         config = {"inference_mode": "auto"}
         if isinstance(fixture, Fixture):
             # service 是历史矩阵标签；新版夹具走本机 OpenAI 协议，不恢复服务器推理。

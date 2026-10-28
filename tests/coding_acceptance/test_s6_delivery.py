@@ -10,7 +10,7 @@ from coding_acceptance_review import review
 from coding_acceptance_transport import Fixture, RuntimeClient, reply
 from run_coding_acceptance import control, events
 
-from private_agent_local.store import INLINE_BYTES, SCHEMA_VERSION, Store
+from private_agent.storage.store import INLINE_BYTES, SCHEMA_VERSION, Store
 
 
 def create(client, directory, message):

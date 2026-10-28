@@ -13,7 +13,7 @@ from test_execution_autonomy import capture_start
 from test_execution_autonomy import session as session
 from test_local_executor import call
 
-from private_agent_local import policy
+from private_agent.security import policy
 
 pytestmark = pytest.mark.asyncio
 windows_sandbox = pytest.mark.skipif(os.name != "nt", reason="仅验证 Windows AppContainer 原生边界")

@@ -7,21 +7,21 @@ import json
 import httpx
 import pytest
 
-from private_agent_core.contracts import (
+from private_agent.agent.loop import AgentRuntime, CancellationToken
+from private_agent.contracts.runtime import (
     AgentRunStatus,
     ModelMessage,
     ModelOutputFormat,
     ModelRequest,
 )
-from private_agent_core.llm.adapters import _openai_messages
-from private_agent_core.llm.contracts import (
+from private_agent.models.llm.adapters import _openai_messages
+from private_agent.models.llm.contracts import (
     ModelGatewayError,
     ModelTextDelta,
     RetryPolicy,
 )
-from private_agent_core.llm.gateway import ModelGateway
-from private_agent_core.llm.responses import OpenAIResponsesAdapter
-from private_agent_core.runtime import AgentRuntime, CancellationToken
+from private_agent.models.llm.gateway import ModelGateway
+from private_agent.models.llm.responses import OpenAIResponsesAdapter
 
 OPAQUE = "fixture-encrypted-reasoning-state"
 REQUEST = ModelRequest(messages=(ModelMessage(role="user", content="检查当前文件"),))

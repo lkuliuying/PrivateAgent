@@ -9,7 +9,7 @@ from coding_task_baseline import judge, load_catalog, materialize
 from coding_validation_process import managed_process
 from run_coding_validation import isolated_environment
 
-from private_agent_local.entry import parent_alive
+from private_agent.entry import parent_alive
 
 
 def test_isolated_environment_drops_credentials_and_pytest_injection(tmp_path, monkeypatch):

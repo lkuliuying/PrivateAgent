@@ -245,7 +245,7 @@ function main(args = process.argv.slice(2)) {
     "--workpath", path.join(output, "pyinstaller-work"), "--specpath", output,
     "--collect-all", "pypdfium2", "--collect-all", "pypdfium2_raw", "--copy-metadata", "Pillow",
     "--exclude-module", "personal_assistant", "--exclude-module", "torch", "--exclude-module", "numpy",
-    path.join(root, "src", "private_agent_local", "entry.py")]);
+    path.join(root, "src", "private_agent", "entry.py")]);
   run(process.execPath, [typecheck, "--noEmit"]);
   // Direct argv avoids cmd/npm double-quoting Windows paths that contain spaces.
   run(process.execPath, [vite, "build", "--outDir", web]);

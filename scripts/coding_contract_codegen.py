@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
-from private_agent_core.coding_contracts import CONTRACTS  # noqa: E402
+from private_agent.contracts.coding_contracts import CONTRACTS  # noqa: E402
 
 
 def typescript_type(schema: dict) -> str:
@@ -50,9 +50,9 @@ def generate() -> dict[str, str]:
         definitions[model.__name__] = schema
     bundle = {"$schema": "https://json-schema.org/draft/2020-12/schema",
               "$id": "urn:private-agent:coding:1.0", "$defs": definitions}
-    header = "// 由 scripts/protocol_codegen.py 生成，禁止手改。\n// 唯一类型源：private_agent_core/coding_contracts.py；应用边界提供版本化扩展。\n"
+    header = "// 由 scripts/protocol_codegen.py 生成，禁止手改。\n// 唯一类型源：private_agent/contracts/coding_contracts.py；应用边界提供版本化扩展。\n"
     types = [f"export type {name} = {typescript_type(value)};" for name, value in sorted(definitions.items())]
     return {
-        str(ROOT / "src/private_agent_core/coding_contracts.schema.json"): json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        str(ROOT / "src/private_agent/contracts/coding_contracts.schema.json"): json.dumps(bundle, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         str(ROOT / "apps/desktop/src/features/coding/model/generated/codingContracts.ts"): header + "\n" + "\n\n".join(types) + "\n",
     }

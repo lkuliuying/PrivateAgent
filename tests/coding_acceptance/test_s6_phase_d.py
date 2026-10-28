@@ -116,7 +116,7 @@ def candidate(tmp_path, monkeypatch):
 
     source = tmp_path / "source"
     source.mkdir()
-    names = ("src/private_agent_local/runtime.py", "apps/desktop/src/services/privateTransport.ts", "apps/exec-host/src/main.rs",
+    names = ("src/private_agent/agent/runtime.py", "apps/desktop/src/services/privateTransport.ts", "apps/exec-host/src/main.rs",
              "apps/desktop/src/api/modelSecrets.spec.ts")
     for name in names:
         path = source / name

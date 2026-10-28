@@ -20,7 +20,7 @@ def managed_process(command, **options):
             source = str(Path(__file__).resolve().parents[1] / "src")
             if source not in sys.path:
                 sys.path.insert(0, source)
-            from private_agent_local.windows_process import ProcessJob
+            from private_agent.execution.windows_process import ProcessJob
 
             job = ProcessJob()
             job.assign(process.pid)

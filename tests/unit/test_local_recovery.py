@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_local.runtime import TERMINAL, Runtime
-from private_agent_local.store import SCHEMA_VERSION, Store
-from private_agent_local.workspaces import FileLock, workspace_key
+from private_agent.agent.runtime import TERMINAL, Runtime
+from private_agent.storage.store import SCHEMA_VERSION, Store
+from private_agent.workspace.workspaces import FileLock, workspace_key
 
 pytestmark = pytest.mark.asyncio
 
@@ -127,7 +127,7 @@ async def test_steer_invalidates_command_approval_and_does_not_replay(api, monke
     from unittest.mock import AsyncMock
 
     execute = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     api[2].responses = [response(call("run_project_command", {"command": "python -m pytest"})),
                         response(text="根据新限制，未执行命令")]
     run_id = await create(api, message="运行测试")
@@ -148,7 +148,7 @@ async def test_tightened_test_restriction_survives_pause_and_linked_resume(api, 
 
     (api[3] / "package.json").write_text(json.dumps({"scripts": {"qa": "pytest"}}), encoding="utf-8")
     execute = AsyncMock()
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     run_id = await create(api, message="读取项目")
     await waiting_model(api, run_id)
     await control(api, run_id, "steer", message="不运行测试")
@@ -170,7 +170,7 @@ async def test_tightened_test_restriction_survives_pause_and_linked_resume(api, 
 
 
 async def test_legacy_restore_reparses_applied_steer_sources(api):
-    from private_agent_local.task_constraints import restore_interpretation
+    from private_agent.agent.task_constraints import restore_interpretation
 
     run_id = await create(api, message="读取项目")
     await waiting_model(api, run_id)
@@ -189,7 +189,7 @@ async def test_legacy_restore_reparses_applied_steer_sources(api):
 
 
 async def test_verified_legacy_sources_remove_stale_global_prohibition(api):
-    from private_agent_local.task_constraints import restore_interpretation
+    from private_agent.agent.task_constraints import restore_interpretation
 
     run_id = await create(api, message="修复 A.py，另一个模块只分析")
     await waiting_model(api, run_id)
@@ -211,7 +211,7 @@ async def test_verified_legacy_sources_remove_stale_global_prohibition(api):
 
 
 async def test_unverifiable_legacy_sources_keep_cached_limits(api):
-    from private_agent_local.task_constraints import restore_interpretation
+    from private_agent.agent.task_constraints import restore_interpretation
 
     run_id = await create(api, message="读取项目")
     await waiting_model(api, run_id)
@@ -236,7 +236,7 @@ async def test_explicit_steer_restores_visible_tools_in_same_model_loop(api, mon
     from unittest.mock import AsyncMock
 
     execute = AsyncMock(return_value={"returncode": 0, "stdout": "1 passed", "stderr": "", "truncated": False})
-    monkeypatch.setattr("private_agent_local.runtime.run_command", execute)
+    monkeypatch.setattr("private_agent.agent.runtime.run_command", execute)
     run_id = await create(api, message=initial, permission_mode="workspace")
     await waiting_model(api, run_id)
     await control(api, run_id, "pause")
@@ -467,7 +467,7 @@ async def test_failed_resume_transaction_never_launches_orphan_run(api, monkeypa
 
 
 async def test_pause_during_real_host_start_prevents_command_dispatch(api, monkeypatch):
-    from private_agent_core.execution.exec_host_client import ExecHostClient
+    from private_agent.execution.exec_host_client import ExecHostClient
 
     owner = api[0].state.desktop.runtime
     starting = asyncio.Event()
@@ -541,8 +541,8 @@ async def test_revoked_grant_requires_explicit_new_grant_to_continue(api):
 
 
 async def test_resume_blocks_changed_model_capability_and_checkpoint_format(api):
-    from private_agent_local import files
-    from private_agent_local.store import encode
+    from private_agent.storage.store import encode
+    from private_agent.workspace import files
 
     run_id = await create(api)
     await waiting_model(api, run_id)

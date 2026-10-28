@@ -7,12 +7,12 @@ from test_local_executor import call, close, response, setup, until
 from test_local_planning import idle_run, model_requests, plan_call, step
 from test_local_recovery import control, create
 
-from private_agent_core.planning import PlanUpdate
-from private_agent_local.completion import LocalCompletionVerifier
-from private_agent_local.planning import completion_blockers
-from private_agent_local.runtime import TERMINAL, Runtime
-from private_agent_local.store import Store
-from private_agent_local.task_constraints import tool_allowed
+from private_agent.agent.completion import LocalCompletionVerifier
+from private_agent.agent.planning import completion_blockers
+from private_agent.agent.runtime import TERMINAL, Runtime
+from private_agent.agent.task_constraints import tool_allowed
+from private_agent.contracts.planning import PlanUpdate
+from private_agent.storage.store import Store
 
 
 @pytest.fixture

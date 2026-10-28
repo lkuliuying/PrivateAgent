@@ -8,13 +8,13 @@ import uuid
 import pytest
 from test_baseline import record
 
-from private_agent_core.execution.contracts import ExecStartParams, ExecStdinParams
-from private_agent_core.execution.exec_host_client import (
+from private_agent.execution.contracts import ExecStartParams, ExecStdinParams
+from private_agent.execution.exec_host_client import (
     ExecHostClient,
     ExecutorUnavailable,
 )
-from private_agent_local import files
-from private_agent_local.executor import host_path, run_command
+from private_agent.execution.executor import host_path, run_command
+from private_agent.workspace import files
 
 
 async def raw_execution(root, code, *, network="approved", mode="argv", stdin=None, integrity="inherit", argv=None,
@@ -27,7 +27,7 @@ async def raw_execution(root, code, *, network="approved", mode="argv", stdin=No
     try:
         health = await client.start()
         if network == "none":
-            from private_agent_local.windows_sandbox import SandboxLease
+            from private_agent.execution.windows_sandbox import SandboxLease
             sandbox = await SandboxLease.prepare(root, command, environment)
             sandbox.bind(client.pid)
             environment = sandbox.environment
@@ -141,7 +141,7 @@ async def test_host_pty_console_input_unicode_and_final_output(tmp_path):
 
 
 async def test_host_pty_cancel_stops_child_and_rejects_restricted_mode(tmp_path):
-    from private_agent_local.entry import parent_alive
+    from private_agent.entry import parent_alive
 
     code = "import os,time; from pathlib import Path; Path('pty.pid').write_text(str(os.getpid())); print('PTY-STARTED',flush=True); time.sleep(60)"
     result = await raw_execution(tmp_path, code, mode="pty", cancel_on="PTY-STARTED")

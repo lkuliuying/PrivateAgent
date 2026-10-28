@@ -24,8 +24,8 @@ from coding_acceptance_schema import budget, load_external
 from coding_acceptance_transport import Fixture
 from test_local_executor import call, close, response, setup, until
 
-from private_agent_core.context import ContextLimits
-from private_agent_local.runtime import TERMINAL
+from private_agent.agent.runtime import TERMINAL
+from private_agent.context.budget import ContextLimits
 
 
 def budgets():
@@ -224,7 +224,7 @@ def test_context_limits_defaults_compatible_and_reject_invalid_tokens():
 
 
 def test_active_budget_excludes_ongoing_approval_wait(monkeypatch):
-    import private_agent_local.context_manager as module
+    import private_agent.context.context_manager as module
 
     clock = SimpleNamespace(now=10.0)
     monkeypatch.setattr(module.time, "monotonic", lambda: clock.now)

@@ -6,15 +6,15 @@ from pydantic import ValidationError
 from test_local_context_history import history_store
 from test_local_executor import close, response, setup, until
 
-from private_agent_core.contracts import (
+from private_agent.agent.runtime import TERMINAL
+from private_agent.contracts.runtime import (
     ModelMessage,
     ModelToolDefinition,
     ProviderState,
 )
-from private_agent_local import tool_catalog
-from private_agent_local.runtime import TERMINAL
-from private_agent_local.tool_catalog import DEFERRED_TOOLS, ToolCatalog
-from private_agent_local.tool_registry import REGISTRY, SearchHistoryArgs
+from private_agent.tools import tool_catalog
+from private_agent.tools.tool_catalog import DEFERRED_TOOLS, ToolCatalog
+from private_agent.tools.tool_registry import REGISTRY, SearchHistoryArgs
 
 QUERY = {"query": "认证 配置"}
 

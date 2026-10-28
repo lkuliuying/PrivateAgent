@@ -10,12 +10,12 @@ from coding_acceptance_models import ProductSession, direct_config
 from coding_acceptance_transport import Fixture, RuntimeClient
 from test_s6_models import budgets, config, event
 
-from private_agent_local.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
-from private_agent_local.model_catalog import (
+from private_agent.models.model_catalog import (
     ModelCatalog,
     ModelParameters,
     ProviderInput,
 )
+from private_agent.security.identity import LOCAL_AUTHORITY, LOCAL_OWNER_ID
 
 
 def direct_data(directory):
